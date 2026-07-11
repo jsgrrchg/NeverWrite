@@ -777,6 +777,33 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.queryByText("Edit 1 file")).not.toBeInTheDocument();
     });
 
+    it("keeps review snapshots on the existing rich diff card", () => {
+        renderMessage({
+            id: "tool:review-snapshot",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit watcher",
+            content: "Updated watcher.rs",
+            timestamp: Date.now(),
+            reviewDiffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: "/vault/src/watcher.rs",
+            },
+        });
+
+        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+    });
+
     it("shows Writing for active edit cards without a target path", () => {
         renderMessage({
             id: "tool:writing",

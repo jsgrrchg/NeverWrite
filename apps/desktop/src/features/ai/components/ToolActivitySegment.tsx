@@ -90,6 +90,9 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     );
     const latestLabel = getActivityTimelineLatestLabel(segment);
     const hasChanges = segment.summary.changeCount > 0;
+    const visibleEntries = expanded
+        ? segment.entries
+        : segment.entries.filter((entry) => entry.policy !== "groupable");
     const activityState = isCurrentTurnTail ? "In progress" : "Completed";
     const accessibleChangeSummary = hasChanges
         ? ` ${segment.summary.changeStats.additions} additions, ${segment.summary.changeStats.deletions} deletions. Changed.`
@@ -181,9 +184,11 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 </span>
             </button>
 
-            {expanded ? (
+            {visibleEntries.length > 0 ? (
                 <div
-                    aria-label="Full tool activity"
+                    aria-label={
+                        expanded ? "Full tool activity" : "Important tool activity"
+                    }
                     className="pt-1"
                     id={contentId}
                     role="region"
@@ -192,7 +197,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                         className="activity-tree flex min-w-0 flex-col gap-1.5"
                         role="list"
                     >
-                        {segment.entries.map((entry) => {
+                        {visibleEntries.map((entry) => {
                             const isHighlighted =
                                 entry.message.id === highlightedMessageId;
                             return (

@@ -15,7 +15,6 @@ import {
 import type {
     AIChatAttachment,
     AIChatMessage,
-    AIChatSession,
     AIFileDiff,
     AIPermissionOption,
     AIUrlElicitationAction,
@@ -27,11 +26,6 @@ import type { ChatPillMetrics } from "./chatPillMetrics";
 import type { ChatPillVariant } from "./chatPillPalette";
 import { useChatStore } from "../store/chatStore";
 import { selectVisibleTrackedFiles } from "../store/editedFilesBufferModel";
-import {
-    resolveChatRowUiSessionId,
-    useChatRowUiStore,
-    type ChatRowUiState,
-} from "../store/chatRowUiStore";
 import {
     computeDiffStats,
     computeFileDiffStats,
@@ -47,7 +41,6 @@ import {
     canOpenAiEditedFileByAbsolutePath,
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
-import { openChatSessionInWorkspace } from "../chatPaneMovement";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -57,15 +50,21 @@ import {
     buildVaultPreviewUrlFromAbsolutePath,
 } from "../../../app/utils/filePreviewUrl";
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
+import {
+    OpenSessionActionButton,
+    ToolActivityItem,
+    ToolIcon,
+    type ToolTargetContextMenuPayload,
+} from "./ToolActivityItem";
+import {
+    useChatRowUiEntry,
+    useStoredRowExpanded,
+} from "./chatRowUiPresentation";
 
 interface UserMentionContextMenuPayload {
     label: string;
     kind: "note" | "file";
     path?: string;
-}
-
-interface ToolTargetContextMenuPayload {
-    target: string;
 }
 
 function isImageFileAttachment(attachment: AIChatAttachment) {
@@ -527,172 +526,13 @@ function stripMarkdownBold(text: string) {
     return text.replace(/\*\*(.+?)\*\*/g, "$1");
 }
 
-function getOpenSessionActionLabel(
-    message: AIChatMessage,
-    resolvedSessionTitle: string | null,
-) {
-    const explicitLabel = message.toolAction?.label?.trim();
-    if (explicitLabel) return explicitLabel;
-
-    if (resolvedSessionTitle) return `Open ${resolvedSessionTitle}`;
-
-    const name = (message.title ?? "")
-        .replace(/^(spawned|started|opened)\s+/i, "")
-        .trim();
-    return name.length > 0 && name.length <= 28 ? `Open ${name}` : "Open";
-}
-
-function sessionMatchesOpenSessionRef(session: AIChatSession, ref: string) {
-    return (
-        session.sessionId === ref ||
-        session.historySessionId === ref ||
-        session.runtimeSessionId === ref
-    );
-}
-
-function resolveOpenSessionActionId(
-    sessionsById: Record<string, AIChatSession>,
-    sessionOrder: string[],
-    ref: string | null,
-) {
-    if (!ref) return null;
-    const candidates = Object.values(sessionsById).filter((session) =>
-        sessionMatchesOpenSessionRef(session, ref),
-    );
-    if (candidates.length === 0) return null;
-
-    const sessionOrderRank = new Map(
-        sessionOrder.map((sessionId, index) => [sessionId, index]),
-    );
-    candidates.sort((left, right) => {
-        const leftLive = left.runtimeState === "live" && !left.isPersistedSession;
-        const rightLive =
-            right.runtimeState === "live" && !right.isPersistedSession;
-        if (leftLive !== rightLive) return leftLive ? -1 : 1;
-
-        const leftExact = left.sessionId === ref;
-        const rightExact = right.sessionId === ref;
-        if (leftExact !== rightExact) return leftExact ? -1 : 1;
-
-        const leftRank = sessionOrderRank.get(left.sessionId) ?? Number.MAX_SAFE_INTEGER;
-        const rightRank =
-            sessionOrderRank.get(right.sessionId) ?? Number.MAX_SAFE_INTEGER;
-        return leftRank - rightRank;
-    });
-
-    return candidates[0].sessionId;
-}
-
-function OpenSessionActionButton({ message }: { message: AIChatMessage }) {
-    const openSessionAction =
-        message.toolAction?.kind === "open_session" ? message.toolAction : null;
-    const openSessionId = openSessionAction?.session_id ?? null;
-    const resolvedOpenSessionId = useChatStore((state) =>
-        resolveOpenSessionActionId(
-            state.sessionsById,
-            state.sessionOrder,
-            openSessionId,
-        ),
-    );
-    const resolvedOpenSessionTitle = useChatStore((state) => {
-        if (!resolvedOpenSessionId) return null;
-        const session = state.sessionsById[resolvedOpenSessionId];
-        return (
-            session?.customTitle?.trim() ||
-            session?.persistedTitle?.trim() ||
-            null
-        );
-    });
-    const canOpenSession = resolvedOpenSessionId !== null;
-
-    if (!openSessionAction) {
-        return null;
-    }
-
-    const label = getOpenSessionActionLabel(message, resolvedOpenSessionTitle);
-
-    return (
-        <button
-            type="button"
-            disabled={!canOpenSession}
-            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            style={{
-                background: "transparent",
-                border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-                color: canOpenSession
-                    ? "var(--text-secondary)"
-                    : "color-mix(in srgb, var(--text-secondary) 62%, transparent)",
-                cursor: canOpenSession ? "pointer" : "default",
-            }}
-            title={canOpenSession ? label : "Session is not available yet"}
-            onClick={(event) => {
-                event.stopPropagation();
-                if (!resolvedOpenSessionId) return;
-                void openChatSessionInWorkspace(resolvedOpenSessionId);
-            }}
-        >
-            {label}
-        </button>
-    );
-}
-
-function useChatRowUiEntry(
-    sessionId: string | null | undefined,
-    messageId: string,
-) {
-    const resolvedSessionId = resolveChatRowUiSessionId(sessionId);
-    const rowState = useChatRowUiStore(
-        (state) => state.rowsBySessionId[resolvedSessionId]?.[messageId],
-    );
-    const patchRow = useChatRowUiStore((state) => state.patchRow);
-
-    const updateRow = useCallback(
-        (
-            patch:
-                | Partial<ChatRowUiState>
-                | ((current: ChatRowUiState) => Partial<ChatRowUiState>),
-        ) => {
-            patchRow(resolvedSessionId, messageId, patch);
-        },
-        [messageId, patchRow, resolvedSessionId],
-    );
-
-    return {
-        rowState,
-        updateRow,
-    };
-}
-
-function useStoredRowExpanded(
-    sessionId: string | null | undefined,
-    messageId: string,
-    fallback: boolean,
-) {
-    const { rowState, updateRow } = useChatRowUiEntry(sessionId, messageId);
-    const expanded = rowState?.expanded ?? fallback;
-
-    const setExpanded = useCallback(
-        (value: boolean | ((current: boolean) => boolean)) => {
-            updateRow((current) => ({
-                expanded:
-                    typeof value === "function"
-                        ? value(current.expanded ?? fallback)
-                        : value,
-            }));
-        },
-        [fallback, updateRow],
-    );
-
-    return [expanded, setExpanded] as const;
-}
-
 type DiffPresentationMode = "active" | "historical" | "none";
 
 function getDiffPresentationMode(
     message: AIChatMessage,
     visibleWorkCycleId?: string | null,
 ) {
-    if (!message.diffs?.length) {
+    if (!message.diffs?.length && !message.reviewDiffs?.length) {
         return "none";
     }
 
@@ -774,327 +614,6 @@ function ThinkingMessage({
     );
 }
 
-/** Catppuccin file-type icon for tool messages with a resolvable file target;
- *  falls back to the verb-based ToolIcon when no path is available. */
-function ToolFileIcon({
-    target,
-    toolKind,
-    size = 13,
-    opacity = 0.86,
-}: {
-    target: string | null;
-    toolKind?: string;
-    size?: number;
-    opacity?: number;
-}) {
-    if (target) {
-        return (
-            <FileTypeIcon
-                fileName={target}
-                size={size}
-                opacity={opacity}
-            />
-        );
-    }
-    return <ToolIcon kind={toolKind} />;
-}
-
-function ToolIcon({ kind }: { kind?: string }) {
-    const k = String(kind ?? "");
-    if (k === "read" || k === "search") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 12 12"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <circle cx="5.5" cy="5.5" r="3" />
-                <path d="M7.5 7.5L10 10" />
-            </svg>
-        );
-    }
-    if (k === "edit") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 12 12"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <path d="M7 2l3 3-7 7H0V9z" />
-            </svg>
-        );
-    }
-    if (k === "execute") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 12 12"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <path d="M2 3l4 3-4 3z" />
-                <path d="M7 9h3" />
-            </svg>
-        );
-    }
-    // default gear
-    return (
-        <svg
-            width="12"
-            height="12"
-            viewBox="0 0 12 12"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        >
-            <circle cx="6" cy="6" r="1.5" />
-            <path d="M6 1v1.5M6 9.5V11M1 6h1.5M9.5 6H11M2.5 2.5l1 1M8.5 8.5l1 1M9.5 2.5l-1 1M3.5 8.5l-1 1" />
-        </svg>
-    );
-}
-
-/** Compact card for file-mutating tools (edit, delete, move). */
-function FileToolMessage({
-    message,
-    sessionId,
-}: {
-    message: AIChatMessage;
-    sessionId?: string | null;
-}) {
-    const [expanded, setExpanded] = useStoredRowExpanded(
-        sessionId,
-        message.id,
-        false,
-    );
-    const [contextMenu, setContextMenu] =
-        useState<ContextMenuState<ToolTargetContextMenuPayload> | null>(null);
-    const toolKind = String(message.meta?.tool ?? "edit");
-    const target = message.meta?.target ? String(message.meta.target) : null;
-    const canOpenTarget = target
-        ? canOpenAiEditedFileByAbsolutePath(target)
-        : false;
-    const shortTarget = target?.split("/").pop() ?? null;
-    const status = String(message.meta?.status ?? "");
-    const isCompleted = status === "completed";
-    const isInProgress = status === "in_progress";
-
-    const isRead = toolKind === "read" || toolKind === "search";
-    const accent = toolKind === "delete" ? "#ef4444" : "#6b7280"; // neutral gray for read/edit/move
-
-    const actionLabel = isRead
-        ? "Read"
-        : toolKind === "delete"
-          ? "Deleted"
-          : toolKind === "move"
-            ? "Moved"
-            : "Updated";
-    const displayLabel =
-        shortTarget ??
-        (toolKind === "edit" && isInProgress ? "Writing" : message.title) ??
-        actionLabel;
-
-    // Detail: show summary/content if it provides extra info beyond filename
-    const detail =
-        message.content &&
-        message.content !== displayLabel &&
-        message.content !== (message.title ?? toolKind)
-            ? message.content
-            : null;
-
-    return (
-        <div
-            className="min-w-0 max-w-full overflow-hidden rounded-lg"
-            style={{
-                border: `1px solid color-mix(in srgb, ${accent} 25%, var(--border))`,
-                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--bg-secondary))`,
-                opacity: isCompleted ? 0.65 : 1,
-                transition: "opacity 0.2s ease",
-            }}
-        >
-            {/* Header */}
-            <div
-                className="flex items-center gap-2 px-3 py-1.5"
-                style={{
-                    cursor: detail ? "pointer" : "default",
-                    borderBottom:
-                        detail && expanded
-                            ? `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`
-                            : "none",
-                }}
-                onClick={detail ? () => setExpanded((v) => !v) : undefined}
-            >
-                {/* Icon */}
-                <span className="shrink-0">
-                    <ToolFileIcon
-                        target={target}
-                        toolKind={toolKind}
-                        size={13}
-                    />
-                </span>
-
-                {/* Filename + action */}
-                <span
-                    className="min-w-0 flex-1 truncate"
-                    title={target ?? undefined}
-                    style={{
-                        color: target ? "var(--accent)" : "var(--text-primary)",
-                        fontSize: "0.83em",
-                        fontWeight: 500,
-                        cursor: canOpenTarget ? "pointer" : "default",
-                        textDecoration: "none",
-                    }}
-                    onClick={
-                        canOpenTarget && target
-                            ? (e) => {
-                                  e.stopPropagation();
-                                  void openAiEditedFileByAbsolutePath(target);
-                              }
-                            : undefined
-                    }
-                    onContextMenu={
-                        canOpenTarget && target
-                            ? (event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  setContextMenu({
-                                      x: event.clientX,
-                                      y: event.clientY,
-                                      payload: { target },
-                                  });
-                              }
-                            : undefined
-                    }
-                    onMouseEnter={
-                        canOpenTarget
-                            ? (e) => {
-                                  (
-                                      e.currentTarget as HTMLElement
-                                  ).style.textDecoration = "underline";
-                              }
-                            : undefined
-                    }
-                    onMouseLeave={
-                        canOpenTarget
-                            ? (e) => {
-                                  (
-                                      e.currentTarget as HTMLElement
-                                  ).style.textDecoration = "none";
-                              }
-                            : undefined
-                    }
-                >
-                    {displayLabel}
-                </span>
-
-                {/* Status */}
-                {isInProgress ? (
-                    <span
-                        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full shrink-0"
-                        style={{ backgroundColor: accent }}
-                    />
-                ) : isCompleted ? (
-                    <span
-                        style={{
-                            color: accent,
-                            fontSize: "0.75em",
-                            opacity: 0.8,
-                        }}
-                    >
-                        {actionLabel}
-                    </span>
-                ) : null}
-
-                {/* Expand chevron */}
-                {detail && (
-                    <svg
-                        width="10"
-                        height="10"
-                        viewBox="0 0 10 10"
-                        fill="none"
-                        stroke={accent}
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="shrink-0"
-                        style={{
-                            transform: expanded
-                                ? "rotate(180deg)"
-                                : "rotate(0)",
-                            transition: "transform 0.15s ease",
-                            opacity: 0.6,
-                        }}
-                    >
-                        <path d="M2.5 4L5 6.5L7.5 4" />
-                    </svg>
-                )}
-            </div>
-
-            {/* Expandable detail */}
-            {expanded && detail && (
-                <div className="px-3 py-1.5">
-                    <pre
-                        className="max-h-32 overflow-y-auto rounded px-2 py-1.5"
-                        style={{
-                            backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--bg-tertiary))`,
-                            border: `1px solid color-mix(in srgb, ${accent} 10%, var(--border))`,
-                            color: "var(--text-secondary)",
-                            fontSize: "0.78em",
-                            lineHeight: 1.4,
-                            overflowWrap: "anywhere",
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            margin: 0,
-                        }}
-                    >
-                        {detail}
-                    </pre>
-                </div>
-            )}
-            {contextMenu ? (
-                <ContextMenu
-                    menu={contextMenu}
-                    onClose={() => setContextMenu(null)}
-                    entries={[
-                        {
-                            label: "Open",
-                            action: () => {
-                                void openAiEditedFileByAbsolutePath(
-                                    contextMenu.payload.target,
-                                );
-                            },
-                        },
-                        {
-                            label: "Open in New Tab",
-                            action: () => {
-                                void openAiEditedFileByAbsolutePath(
-                                    contextMenu.payload.target,
-                                    { newTab: true },
-                                );
-                            },
-                        },
-                    ]}
-                />
-            ) : null}
-        </div>
-    );
-}
-
 function ToolMessage({
     message,
     sessionId,
@@ -1104,19 +623,10 @@ function ToolMessage({
     sessionId?: string | null;
     diffPresentationMode?: DiffPresentationMode;
 }) {
-    const [expanded, setExpanded] = useStoredRowExpanded(
-        sessionId,
-        message.id,
-        false,
-    );
-    const toolKind = String(message.meta?.tool ?? "");
-    const target = message.meta?.target ? String(message.meta.target) : null;
-    const shortTarget = target?.split("/").pop() ?? null;
-    const title = message.title ?? toolKind;
-    const label = shortTarget ?? title;
-    const status = String(message.meta?.status ?? "");
-    const isCompleted = status === "completed";
-    if (diffPresentationMode !== "none" && message.diffs?.length) {
+    if (
+        diffPresentationMode !== "none" &&
+        (message.diffs?.length || message.reviewDiffs?.length)
+    ) {
         return (
             <ChangeReviewPanel
                 message={message}
@@ -1126,88 +636,7 @@ function ToolMessage({
         );
     }
 
-    // File-mutating tools get card treatment
-    if (toolKind === "edit" || toolKind === "delete" || toolKind === "move") {
-        return <FileToolMessage message={message} sessionId={sessionId} />;
-    }
-
-    // Read/search tools with a file target get card treatment
-    if ((toolKind === "read" || toolKind === "search") && target) {
-        return <FileToolMessage message={message} sessionId={sessionId} />;
-    }
-
-    // Show detail content if it differs from the label (e.g. long shell commands)
-    const detail =
-        message.content &&
-        message.content !== label &&
-        message.content !== title
-            ? message.content
-            : null;
-
-    return (
-        <div
-            className="min-w-0 max-w-full py-0.5"
-            style={{
-                color: "var(--text-secondary)",
-                opacity: isCompleted ? 0.45 : 0.7,
-                fontSize: "0.85em",
-            }}
-        >
-            <div
-                className="flex min-w-0 items-center gap-2"
-                style={{ cursor: detail ? "pointer" : "default" }}
-                onClick={detail ? () => setExpanded((v) => !v) : undefined}
-            >
-                <ToolFileIcon target={target} toolKind={toolKind} size={12} />
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-                {!isCompleted && status === "in_progress" ? (
-                    <span
-                        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full"
-                        style={{ backgroundColor: "var(--accent)" }}
-                    />
-                ) : null}
-                {detail && (
-                    <svg
-                        width="10"
-                        height="10"
-                        viewBox="0 0 10 10"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{
-                            flexShrink: 0,
-                            transform: expanded
-                                ? "rotate(180deg)"
-                                : "rotate(0)",
-                            transition: "transform 0.15s ease",
-                        }}
-                    >
-                        <path d="M2.5 4L5 6.5L7.5 4" />
-                    </svg>
-                )}
-                <OpenSessionActionButton message={message} />
-            </div>
-            {expanded && detail && (
-                <pre
-                    className="mt-1 max-h-40 overflow-y-auto rounded px-2 py-1.5"
-                    style={{
-                        backgroundColor: "var(--bg-tertiary)",
-                        border: "1px solid var(--border)",
-                        fontSize: "0.82em",
-                        lineHeight: 1.4,
-                        overflowWrap: "anywhere",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                        margin: 0,
-                    }}
-                >
-                    {detail}
-                </pre>
-            )}
-        </div>
-    );
+    return <ToolActivityItem message={message} sessionId={sessionId} />;
 }
 
 export function PlanMessage({
@@ -3788,7 +3217,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     onDismissMessage,
 }: AIChatMessageItemProps) {
     const diffPresentationMode = readOnly
-        ? message.diffs?.length
+        ? message.diffs?.length || message.reviewDiffs?.length
             ? "historical"
             : "none"
         : getDiffPresentationMode(message, visibleWorkCycleId);

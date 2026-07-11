@@ -149,4 +149,48 @@ describe("ToolActivitySegment", () => {
             document.querySelector("[data-activity-count]"),
         ).toHaveAttribute("data-activity-count", "50");
     });
+
+    it("keeps changes, failures, and subagent breadcrumbs visible while routine work is collapsed", () => {
+        const renderEntry = vi.fn((message: AIChatMessage) => (
+            <div data-child-activity={message.id}>{message.title}</div>
+        ));
+        const segment = createSegment([
+            createTool("tool:read"),
+            createTool("tool:edit", {
+                meta: {
+                    status: "completed",
+                    target: "src/edited.ts",
+                    tool: "edit",
+                },
+            }),
+            createTool("tool:failed", {
+                meta: {
+                    status: "failed",
+                    tool: "command",
+                },
+            }),
+            createTool("tool:subagent", {
+                toolAction: {
+                    kind: "open_session",
+                    session_id: "child-session",
+                },
+            }),
+        ]);
+
+        renderComponent(
+            <ToolActivitySegment
+                renderEntry={renderEntry}
+                segment={segment}
+                sessionId="session-1"
+            />,
+        );
+
+        expect(renderEntry).toHaveBeenCalledTimes(3);
+        expect(
+            document.querySelector('[data-tool-activity-id="tool:read"]'),
+        ).toBeNull();
+        expect(
+            document.querySelectorAll('[data-tool-activity-visibility="always"]'),
+        ).toHaveLength(3);
+    });
 });
