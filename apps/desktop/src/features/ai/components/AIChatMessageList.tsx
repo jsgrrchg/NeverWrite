@@ -534,6 +534,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             activityDisplayMode,
         );
         const trailingPresentationRow = presentationRows.at(-1);
+        const lastTimelineMessageId = timelineMessages.at(-1)?.id;
 
         for (const presentationRow of presentationRows) {
             if (presentationRow.kind === "message") {
@@ -548,7 +549,9 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             rows.push({
                 isCurrentTurnTail:
                     status === "streaming" &&
-                    trailingPresentationRow?.id === presentationRow.id,
+                    trailingPresentationRow?.id === presentationRow.id &&
+                    presentationRow.entries.at(-1)?.message.id ===
+                        lastTimelineMessageId,
                 key: getActivityTimelineRowKey(sessionId, presentationRow.id),
                 kind: "activity-segment",
                 segment: presentationRow,

@@ -1001,6 +1001,42 @@ describe("AIChatMessageList streaming run indicator", () => {
         ]);
     });
 
+    it("does not mark a completed change as active when hidden routine work follows it", () => {
+        useChatStore.setState({ toolActivityDisplayMode: "hidden" });
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-hidden-active-tail"
+                status="streaming"
+                messages={[
+                    {
+                        id: "tool:edit",
+                        role: "assistant",
+                        kind: "tool",
+                        content: "Edited notes",
+                        timestamp: 1,
+                        meta: { status: "completed", tool: "edit" },
+                    },
+                    {
+                        id: "tool:read",
+                        role: "assistant",
+                        kind: "tool",
+                        content: "Reading context",
+                        timestamp: 2,
+                        meta: {
+                            status: "in_progress",
+                            tool: "read",
+                        },
+                    },
+                ]}
+            />,
+        );
+
+        expect(
+            view.container.querySelector('[data-activity-rail="true"]'),
+        ).toHaveAttribute("aria-busy", "false");
+        expect(screen.queryByText(/working/i)).not.toBeInTheDocument();
+    });
+
     it("opens a collapsed rail when the outline targets one of its tools", async () => {
         const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
         const scrollIntoView = vi.fn();
