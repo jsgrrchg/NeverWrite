@@ -1386,6 +1386,7 @@ interface ChatStore {
     editDiffZoom: number;
     historyRetentionDays: number;
     screenshotRetentionSeconds: number;
+    toolActivityDisplayMode: ActivityDisplayMode;
     composerPartsBySessionId: Record<string, AIComposerPart[]>;
     queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>;
     queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
