@@ -43,11 +43,12 @@ use codex_protocol::protocol::{
     ImageGenerationBeginEvent, ImageGenerationEndEvent, ItemCompletedEvent, ItemStartedEvent,
     McpInvocation, McpStartupCompleteEvent, McpStartupUpdateEvent, McpToolCallBeginEvent,
     McpToolCallEndEvent, ModelRerouteEvent, Op, PatchApplyBeginEvent, PatchApplyEndEvent,
-    PatchApplyStatus, PlanDeltaEvent, ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent,
-    ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget, StreamErrorEvent,
-    TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent, ThreadSettingsOverrides,
-    TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
-    ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent, WebSearchEndEvent,
+    PatchApplyStatus, PatchApplyUpdatedEvent, PlanDeltaEvent, ReasoningContentDeltaEvent,
+    ReasoningRawContentDeltaEvent, ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget,
+    StreamErrorEvent, TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent,
+    ThreadSettingsOverrides, TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent,
+    TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent,
+    WebSearchEndEvent,
 };
 use codex_protocol::review_format::format_review_findings_block;
 use codex_protocol::{
@@ -128,6 +129,7 @@ const NEVERWRITE_DIFF_HUNKS_KEY: &str = "neverwriteHunks";
 const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
 const NEVERWRITE_IMAGE_EVENT_ID_PREFIX: &str = "neverwrite:image:";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
+const MAX_PENDING_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_TURN_EVENT_TYPE_KEY: &str = "codexAcpTurnEventType";
 const CODEX_ACP_TURN_ID_KEY: &str = "codexAcpTurnId";
@@ -1192,6 +1194,24 @@ fn turn_item_terminal_status(item: &TurnItem) -> ToolCallStatus {
 
 fn is_terminal_tool_status(status: &ToolCallStatus) -> bool {
     matches!(status, ToolCallStatus::Completed | ToolCallStatus::Failed)
+}
+
+fn append_bounded_output(buffer: &mut String, chunk: &str) {
+    let remaining = MAX_PENDING_COMMAND_OUTPUT_BYTES.saturating_sub(buffer.len());
+    if remaining == 0 {
+        return;
+    }
+    if chunk.len() <= remaining {
+        buffer.push_str(chunk);
+        return;
+    }
+    let end = chunk
+        .char_indices()
+        .take_while(|(index, _)| *index < remaining)
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
+        .unwrap_or_default();
+    buffer.push_str(&chunk[..end]);
 }
 
 fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
@@ -2435,6 +2455,14 @@ impl PromptState {
                 );
                 self.start_patch_apply(client, event).await;
             }
+            EventMsg::PatchApplyUpdated(event) => {
+                info!(
+                    "Patch apply updated: call_id={}, changed_files={}",
+                    event.call_id,
+                    event.changes.len()
+                );
+                self.update_patch_apply(client, event).await;
+            }
             EventMsg::PatchApplyEnd(event) => {
                 info!(
                     "Patch apply end: call_id={}, success={}",
@@ -2736,8 +2764,7 @@ impl PromptState {
             | EventMsg::ModelVerification(..)
             | EventMsg::GuardianWarning(..)
             | EventMsg::HookStarted(..)
-            | EventMsg::HookCompleted(..)
-            | EventMsg::PatchApplyUpdated(..) => {}
+            | EventMsg::HookCompleted(..) => {}
             e @ (EventMsg::RealtimeConversationListVoicesResponse(..)
             | EventMsg::DeprecationNotice(..)) => {
                 warn!("Unexpected event: {:?}", e);
@@ -3046,6 +3073,30 @@ impl PromptState {
                 .locations(locations)
                 .content(content.collect())
                 .raw_input(raw_input),
+        )
+        .await;
+    }
+
+    async fn update_patch_apply(&mut self, client: &SessionClient, event: PatchApplyUpdatedEvent) {
+        let raw_input = serde_json::json!(&event);
+        let PatchApplyUpdatedEvent { call_id, changes } = event;
+        if changes.is_empty() {
+            return;
+        }
+
+        let (title, locations, content) = extract_tool_call_content_from_changes(changes);
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
+                call_id,
+                ToolCallUpdateFields::new()
+                    .title(title)
+                    .locations(locations)
+                    .content(content.collect::<Vec<_>>())
+                    .raw_input(raw_input),
+            ),
+            "Updating files",
+            ToolKind::Edit,
         )
         .await;
     }
@@ -3462,10 +3513,8 @@ impl PromptState {
         } else {
             // Codex can race an output delta ahead of its begin event. Keep it
             // scoped to the call ID so it can never attach to another command.
-            self.pending_command_output
-                .entry(call_id)
-                .or_default()
-                .push_str(&data_str);
+            let buffer = self.pending_command_output.entry(call_id).or_default();
+            append_bounded_output(buffer, &data_str);
         }
     }
 
@@ -3554,6 +3603,24 @@ impl PromptState {
                             }),
                         )])
                     }),
+                ),
+                "Running command",
+                ToolKind::Execute,
+            )
+            .await;
+        } else {
+            let status = match status {
+                ExecCommandStatus::Completed if exit_code == 0 => ToolCallStatus::Completed,
+                ExecCommandStatus::Completed => ToolCallStatus::Failed,
+                ExecCommandStatus::Failed | ExecCommandStatus::Declined => ToolCallStatus::Failed,
+            };
+            self.send_canonical_tool_update(
+                client,
+                ToolCallUpdate::new(
+                    call_id,
+                    ToolCallUpdateFields::new()
+                        .status(status)
+                        .raw_output(raw_output),
                 ),
                 "Running command",
                 ToolKind::Execute,
