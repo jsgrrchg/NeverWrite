@@ -160,19 +160,29 @@ function ChangeReviewToolRailRow({
             }}
         >
             <div className="flex min-h-7 w-full min-w-0 items-center gap-2 px-2">
-                <span
-                    aria-hidden="true"
-                    className="flex w-3.5 shrink-0 items-center justify-center"
-                    data-change-review-operation-icon="true"
-                    style={{
-                        color: isFailed ? accent : "var(--text-secondary)",
-                    }}
-                >
-                    {isFailed ? (
-                        <WarningIcon />
-                    ) : (
-                        <FileTypeIcon fileName={fileName} size={13} opacity={0.86} />
-                    )}
+                <span className="flex shrink-0 items-center gap-1.5">
+                    <span
+                        aria-hidden="true"
+                        className="flex w-3.5 shrink-0 items-center justify-center"
+                        data-change-review-operation-icon="true"
+                        style={{
+                            color: isFailed ? accent : "var(--text-secondary)",
+                        }}
+                    >
+                        {isFailed ? (
+                            <WarningIcon />
+                        ) : (
+                            <FileTypeIcon
+                                fileName={fileName}
+                                size={13}
+                                opacity={0.86}
+                            />
+                        )}
+                    </span>
+                    <span
+                        aria-hidden="true"
+                        className="flex w-3.5 shrink-0 items-center justify-center"
+                    />
                 </span>
                 <span className="shrink-0 opacity-70">{actionLabel}</span>
                 {canOpen && openPath ? (
