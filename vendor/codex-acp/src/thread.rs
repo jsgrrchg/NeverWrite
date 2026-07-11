@@ -1077,6 +1077,66 @@ fn turn_item_id(item: &TurnItem) -> &str {
     }
 }
 
+/// Items that already have a dedicated ACP projection stay out of the generic
+/// lifecycle. Messages and reasoning are streamed through their own channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnItemProjection {
+    Hidden,
+    Dedicated,
+    Status,
+    Tool,
+}
+
+fn turn_item_projection(item: &TurnItem) -> TurnItemProjection {
+    match item {
+        TurnItem::UserMessage(..) | TurnItem::AgentMessage(..) | TurnItem::Reasoning(..) => {
+            TurnItemProjection::Hidden
+        }
+        TurnItem::Plan(..)
+        | TurnItem::ImageGeneration(..)
+        | TurnItem::EnteredReviewMode(..)
+        | TurnItem::ExitedReviewMode(..) => TurnItemProjection::Dedicated,
+        TurnItem::HookPrompt(..) | TurnItem::Sleep(..) | TurnItem::ContextCompaction(..) => {
+            TurnItemProjection::Status
+        }
+        TurnItem::CommandExecution(..)
+        | TurnItem::DynamicToolCall(..)
+        | TurnItem::CollabAgentToolCall(..)
+        | TurnItem::SubAgentActivity(..)
+        | TurnItem::WebSearch(..)
+        | TurnItem::ImageView(..)
+        | TurnItem::Extension(..)
+        | TurnItem::FileChange(..)
+        | TurnItem::McpToolCall(..) => TurnItemProjection::Tool,
+    }
+}
+
+fn turn_item_tool_kind(item: &TurnItem) -> ToolKind {
+    match item {
+        TurnItem::CommandExecution(..) => ToolKind::Execute,
+        TurnItem::WebSearch(..) => ToolKind::Fetch,
+        TurnItem::ImageView(..) => ToolKind::Read,
+        TurnItem::FileChange(..) => ToolKind::Edit,
+        // Extension items are deliberately kept explicit at their handler
+        // boundary; their generic fallback is safe but cannot assume a kind.
+        TurnItem::Extension(..)
+        | TurnItem::DynamicToolCall(..)
+        | TurnItem::CollabAgentToolCall(..)
+        | TurnItem::SubAgentActivity(..)
+        | TurnItem::McpToolCall(..)
+        | TurnItem::HookPrompt(..)
+        | TurnItem::Sleep(..)
+        | TurnItem::ContextCompaction(..)
+        | TurnItem::UserMessage(..)
+        | TurnItem::AgentMessage(..)
+        | TurnItem::Plan(..)
+        | TurnItem::Reasoning(..)
+        | TurnItem::ImageGeneration(..)
+        | TurnItem::EnteredReviewMode(..)
+        | TurnItem::ExitedReviewMode(..) => ToolKind::Other,
+    }
+}
+
 fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
     match item {
         TurnItem::UserMessage(..) => ("Preparing input", None),
