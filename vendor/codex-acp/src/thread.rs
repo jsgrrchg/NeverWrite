@@ -1103,6 +1103,15 @@ enum TurnItemProjection {
     Tool,
 }
 
+struct StatusToolCall {
+    call_id: ToolCallId,
+    kind: &'static str,
+    title: String,
+    detail: Option<String>,
+    emphasis: &'static str,
+    status: ToolCallStatus,
+}
+
 fn turn_item_projection(item: &TurnItem) -> TurnItemProjection {
     match item {
         TurnItem::UserMessage(..) | TurnItem::AgentMessage(..) | TurnItem::Reasoning(..) => {
@@ -1895,22 +1904,16 @@ impl PromptState {
         Ok(())
     }
 
-    async fn send_status_tool_call(
-        &self,
-        client: &SessionClient,
-        call_id: impl Into<ToolCallId>,
-        kind: &str,
-        title: impl Into<String>,
-        detail: Option<String>,
-        emphasis: &str,
-        status: ToolCallStatus,
-    ) {
-        let mut tool_call = ToolCall::new(call_id, title)
+    async fn send_status_tool_call(&self, client: &SessionClient, status_call: StatusToolCall) {
+        let mut tool_call = ToolCall::new(status_call.call_id, status_call.title)
             .kind(ToolKind::Other)
-            .status(status)
-            .meta(neverwrite_status_meta(kind, emphasis));
+            .status(status_call.status)
+            .meta(neverwrite_status_meta(
+                status_call.kind,
+                status_call.emphasis,
+            ));
 
-        if let Some(detail) = detail {
+        if let Some(detail) = status_call.detail {
             tool_call = tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
         }
 
@@ -2257,15 +2260,14 @@ impl PromptState {
                     .send_turn_lifecycle(CODEX_ACP_TURN_STARTED_EVENT_TYPE, Some(&turn_id))
                     .await;
                 let detail = model_context_window.map(|size| format!("Context window: {size}"));
-                self.send_status_tool_call(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}turn:{turn_id}"),
-                    "turn_started",
-                    "New turn",
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}turn:{turn_id}").into(),
+                    kind: "turn_started",
+                    title: "New turn".to_string(),
                     detail,
-                    "neutral",
-                    ToolCallStatus::Completed,
-                )
+                    emphasis: "neutral",
+                    status: ToolCallStatus::Completed,
+                })
                 .await;
             }
             EventMsg::TokenCount(TokenCountEvent { info, .. }) => {
@@ -2636,15 +2638,14 @@ impl PromptState {
                 let detail = additional_details
                     .filter(|details| !details.trim().is_empty())
                     .unwrap_or_else(|| message.clone());
-                self.send_status_tool_call(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}stream_error:{}", self.event_count),
-                    "stream_error",
-                    "Streaming interrupted",
-                    Some(detail),
-                    "error",
-                    ToolCallStatus::Failed,
-                )
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}stream_error:{}", self.event_count).into(),
+                    kind: "stream_error",
+                    title: "Streaming interrupted".to_string(),
+                    detail: Some(detail),
+                    emphasis: "error",
+                    status: ToolCallStatus::Failed,
+                })
                 .await;
             }
             EventMsg::Error(ErrorEvent {
@@ -2701,15 +2702,14 @@ impl PromptState {
             }
             EventMsg::EnteredReviewMode(review_request) => {
                 info!("Review begin: request={review_request:?}");
-                self.send_status_tool_call(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}review:{}", self.event_count),
-                    "review_mode",
-                    "Review mode active",
-                    Some(format_review_target(&review_request.target)),
-                    "info",
-                    ToolCallStatus::Completed,
-                )
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}review:{}", self.event_count).into(),
+                    kind: "review_mode",
+                    title: "Review mode active".to_string(),
+                    detail: Some(format_review_target(&review_request.target)),
+                    emphasis: "info",
+                    status: ToolCallStatus::Completed,
+                })
                 .await;
             }
             EventMsg::ExitedReviewMode(event) => {
@@ -2761,15 +2761,14 @@ impl PromptState {
                 let detail = reason
                     .map(|reason| format!("{from_model} -> {to_model}. {reason}"))
                     .or_else(|| Some(format!("{from_model} -> {to_model}")));
-                self.send_status_tool_call(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}model_reroute:{}", self.event_count),
-                    "model_reroute",
-                    format!("Switched to {to_model}"),
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}model_reroute:{}", self.event_count).into(),
+                    kind: "model_reroute",
+                    title: format!("Switched to {to_model}"),
                     detail,
-                    "info",
-                    ToolCallStatus::Completed,
-                )
+                    emphasis: "info",
+                    status: ToolCallStatus::Completed,
+                })
                 .await;
             }
             EventMsg::RequestUserInput(event) => {
@@ -2947,7 +2946,7 @@ impl PromptState {
             permissions_request_key(&call_id),
             PendingPermissionRequest::RequestPermissions {
                 call_id: call_id.clone(),
-                permissions: permissions.into(),
+                permissions,
             },
             ToolCallUpdate::new(
                 call_id,

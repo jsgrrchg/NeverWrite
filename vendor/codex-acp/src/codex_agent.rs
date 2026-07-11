@@ -527,11 +527,7 @@ impl CodexAgent {
         config: &mut Config,
         session_configured: &SessionConfiguredEvent,
     ) -> Result<(), Error> {
-        config.cwd = session_configured
-            .cwd
-            .clone()
-            .try_into()
-            .map_err(Error::into_internal_error)?;
+        config.cwd = session_configured.cwd.clone();
         config.model = Some(session_configured.model.clone());
         config.model_provider_id = session_configured.model_provider_id.clone();
         config.model_reasoning_effort = session_configured.reasoning_effort.clone();
