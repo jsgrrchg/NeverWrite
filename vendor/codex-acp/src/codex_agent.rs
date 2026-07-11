@@ -276,8 +276,13 @@ impl CodexAgent {
                     let agent = agent.clone();
                     async move |request: PromptRequest, responder, cx: ConnectionTo<Client>| {
                         let agent = agent.clone();
+                        let session_cx = cx.clone();
                         cx.spawn(async move {
-                            responder.respond_with_result(agent.prompt(request).await)
+                            responder.respond_with_result(
+                                agent
+                                    .prompt_with_subagent_registration(request, session_cx)
+                                    .await,
+                            )
                         })?;
                         Ok(())
                     }
@@ -401,6 +406,25 @@ impl CodexAgent {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!("Skipped {skipped} child thread creation notifications");
+                        for thread_id in thread_manager.list_thread_ids().await {
+                            if let Err(error) = register_subagent_thread(
+                                thread_id,
+                                thread_manager.clone(),
+                                sessions.clone(),
+                                session_roots.clone(),
+                                auth_manager.clone(),
+                                models_manager.clone(),
+                                client_capabilities.clone(),
+                                base_config.clone(),
+                                task_cx.clone(),
+                            )
+                            .await
+                            {
+                                warn!(
+                                    "Failed to reconcile spawned child thread {thread_id}: {error:?}"
+                                );
+                            }
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -597,6 +621,14 @@ async fn register_subagent_thread(
         return Ok(());
     };
 
+    if is_self_referential_subagent(&registration) {
+        warn!(
+            thread_id = %registration.child_thread_id,
+            "Ignoring self-referential subagent thread registration"
+        );
+        return Ok(());
+    }
+
     if sessions
         .lock()
         .unwrap()
@@ -645,7 +677,37 @@ async fn register_subagent_thread(
     Ok(())
 }
 
+fn is_self_referential_subagent(registration: &subagents::SubagentThreadRegistration) -> bool {
+    registration.parent_thread_id == registration.child_thread_id
+}
+
 impl CodexAgent {
+    async fn prompt_with_subagent_registration(
+        &self,
+        request: PromptRequest,
+        cx: ConnectionTo<Client>,
+    ) -> Result<PromptResponse, Error> {
+        if self.get_thread(&request.session_id).is_err()
+            && let Ok(thread_id) = ThreadId::from_string(&request.session_id.0)
+            && self.thread_manager.get_thread(thread_id).await.is_ok()
+        {
+            register_subagent_thread(
+                thread_id,
+                self.thread_manager.clone(),
+                self.sessions.clone(),
+                self.session_roots.clone(),
+                self.auth_manager.clone(),
+                Arc::new(self.thread_manager.get_models_manager()),
+                self.client_capabilities.clone(),
+                self.config.clone(),
+                cx,
+            )
+            .await?;
+        }
+
+        self.prompt(request).await
+    }
+
     async fn initialize(&self, request: InitializeRequest) -> Result<InitializeResponse, Error> {
         let InitializeRequest {
             protocol_version,
@@ -1187,5 +1249,21 @@ mod tests {
             stored_session_title(Some("  "), "preview"),
             Some("preview".to_string())
         );
+    }
+
+    #[test]
+    fn self_referential_subagent_registration_is_rejected_by_typed_thread_id() {
+        let thread_id = ThreadId::new();
+        let registration = subagents::SubagentThreadRegistration {
+            parent_thread_id: thread_id,
+            parent_session_id: SessionId::new("parent-session"),
+            child_thread_id: thread_id,
+            child_session_id: SessionId::new("different-child-session-serialization"),
+            agent_path: Some("/root".to_string()),
+            nickname: None,
+            role: None,
+        };
+
+        assert!(is_self_referential_subagent(&registration));
     }
 }
