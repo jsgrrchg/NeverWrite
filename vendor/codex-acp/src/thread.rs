@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -130,6 +130,7 @@ const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
 const NEVERWRITE_IMAGE_EVENT_ID_PREFIX: &str = "neverwrite:image:";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 const MAX_PENDING_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_CLOSED_EVENT_PROJECTIONS: usize = 256;
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_TURN_EVENT_TYPE_KEY: &str = "codexAcpTurnEventType";
 const CODEX_ACP_TURN_ID_KEY: &str = "codexAcpTurnId";
@@ -4295,6 +4296,10 @@ struct ThreadActor<A> {
     submissions: HashMap<String, SubmissionState>,
     /// Drain-only projections for Codex turns created outside ACP prompt calls.
     event_projections: HashMap<String, PromptState>,
+    /// Recently closed external turns. This lifecycle-only tombstone prevents
+    /// late events from recreating activities after their projection ended.
+    closed_event_projections: HashSet<String>,
+    closed_event_projection_order: VecDeque<String>,
     /// A receiver for incoming thread messages.
     message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
     /// A receiver for spawned interaction results.
@@ -4325,6 +4330,8 @@ impl<A: Auth> ThreadActor<A> {
             resolution_tx,
             submissions: HashMap::new(),
             event_projections: HashMap::new(),
+            closed_event_projections: HashSet::new(),
+            closed_event_projection_order: VecDeque::new(),
             message_rx,
             resolution_rx,
             last_sent_config_options: None,
@@ -5565,6 +5572,9 @@ impl<A: Auth> ThreadActor<A> {
         if let Some(submission) = self.submissions.get_mut(&id) {
             submission.handle_event(&self.client, msg).await;
         } else {
+            if self.closed_event_projections.contains(&id) {
+                return;
+            }
             let is_terminal = is_projection_terminal_event(&msg);
             let thread = self.thread.clone();
             let resolution_tx = self.resolution_tx.clone();
@@ -5575,6 +5585,18 @@ impl<A: Auth> ThreadActor<A> {
             projection.handle_event(&self.client, msg).await;
             if is_terminal {
                 self.event_projections.remove(&id);
+                self.remember_closed_event_projection(id);
+            }
+        }
+    }
+
+    fn remember_closed_event_projection(&mut self, id: String) {
+        if self.closed_event_projections.insert(id.clone()) {
+            self.closed_event_projection_order.push_back(id);
+        }
+        while self.closed_event_projection_order.len() > MAX_CLOSED_EVENT_PROJECTIONS {
+            if let Some(expired) = self.closed_event_projection_order.pop_front() {
+                self.closed_event_projections.remove(&expired);
             }
         }
     }
@@ -7704,6 +7726,29 @@ mod tests {
             .await;
         assert!(!actor.event_projections.contains_key(&submission_id));
 
+        let notification_count_after_close = client.notifications.lock().unwrap().len();
+        actor
+            .handle_event(Event {
+                id: submission_id.clone(),
+                msg: EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id: codex_protocol::ThreadId::new(),
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 0,
+                    item: TurnItem::WebSearch(codex_protocol::items::WebSearchItem {
+                        id: "late-web-1".to_string(),
+                        query: "late event".to_string(),
+                        action: WebSearchAction::Other,
+                    }),
+                }),
+            })
+            .await;
+        assert!(!actor.event_projections.contains_key(&submission_id));
+        assert_eq!(
+            client.notifications.lock().unwrap().len(),
+            notification_count_after_close,
+            "late events must not recreate a closed external projection"
+        );
+
         let notifications = client.notifications.lock().unwrap();
         assert!(matches!(
             notifications.first().map(|notification| &notification.update),
@@ -7716,6 +7761,48 @@ mod tests {
                     == Some("subagent_breadcrumb")
         ));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closed_event_projection_tombstones_are_bounded() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client, Arc::default());
+        let conversation = Arc::new(StubCodexThread::new());
+        let models_manager = Arc::new(StubModelsManager);
+        let config = Config::load_with_cli_overrides_and_harness_overrides(
+            vec![],
+            ConfigOverrides::default(),
+        )
+        .await?;
+        let (_message_tx, message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (resolution_tx, resolution_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut actor = ThreadActor::new(
+            StubAuth,
+            session_client,
+            conversation,
+            models_manager,
+            config,
+            message_rx,
+            resolution_tx,
+            resolution_rx,
+        );
+
+        for index in 0..=MAX_CLOSED_EVENT_PROJECTIONS {
+            actor.remember_closed_event_projection(format!("submission-{index}"));
+        }
+
+        assert_eq!(
+            actor.closed_event_projections.len(),
+            MAX_CLOSED_EVENT_PROJECTIONS
+        );
+        assert!(!actor.closed_event_projections.contains("submission-0"));
+        assert!(
+            actor
+                .closed_event_projections
+                .contains(&format!("submission-{MAX_CLOSED_EVENT_PROJECTIONS}"))
+        );
         Ok(())
     }
 
