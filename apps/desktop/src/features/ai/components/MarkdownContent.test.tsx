@@ -372,7 +372,7 @@ describe("MarkdownContent", () => {
             />,
         );
 
-        expect(screen.getByText("c++")).toBeInTheDocument();
+        expect(screen.getByText("C++")).toHaveClass("chat-code-header");
 
         await waitFor(() => {
             expect(
@@ -383,6 +383,22 @@ describe("MarkdownContent", () => {
         expect(screen.getByText("return")).toHaveClass(
             "cm-static-token-keyword",
         );
+    });
+
+    it("uses the compact Comando frame for chat code fences", () => {
+        const { container } = renderComponent(
+            <MarkdownContent
+                content={["```bash", "git status", "```"].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(screen.getByText("Bash")).toHaveClass("chat-code-header");
+        expect(screen.getByRole("button", { name: "Copy code block" })).toHaveClass(
+            "chat-code-copy-button",
+        );
+        expect(container.querySelector(".chat-code-frame")).not.toBeNull();
+        expect(container.querySelector(".chat-code-block")).not.toBeNull();
     });
 
     it("renders markdown tables as semantic table markup", () => {

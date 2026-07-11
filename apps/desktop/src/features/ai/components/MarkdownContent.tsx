@@ -1208,6 +1208,69 @@ function TextBlock({
     );
 }
 
+const codeLanguageLabels: Record<string, string> = {
+    bash: "Bash",
+    c: "C",
+    "c++": "C++",
+    cpp: "C++",
+    cs: "C#",
+    csharp: "C#",
+    css: "CSS",
+    diff: "Diff",
+    docker: "Dockerfile",
+    dockerfile: "Dockerfile",
+    gql: "GraphQL",
+    graphql: "GraphQL",
+    html: "HTML",
+    java: "Java",
+    javascript: "JavaScript",
+    js: "JavaScript",
+    json: "JSON",
+    jsonc: "JSONC",
+    jsx: "JSX",
+    make: "Makefile",
+    makefile: "Makefile",
+    markdown: "Markdown",
+    md: "Markdown",
+    mdx: "MDX",
+    php: "PHP",
+    powershell: "PowerShell",
+    ps1: "PowerShell",
+    pwsh: "PowerShell",
+    py: "Python",
+    python: "Python",
+    rb: "Ruby",
+    rs: "Rust",
+    ruby: "Ruby",
+    rust: "Rust",
+    scss: "SCSS",
+    sh: "Shell",
+    shell: "Shell",
+    sql: "SQL",
+    text: "Text",
+    ts: "TypeScript",
+    tsx: "TSX",
+    typescript: "TypeScript",
+    xml: "XML",
+    yaml: "YAML",
+    yml: "YAML",
+    zsh: "Zsh",
+};
+
+function formatCodeLanguageLabel(language?: string) {
+    const normalizedLanguage = language?.trim().toLowerCase();
+    if (!normalizedLanguage) return undefined;
+
+    return (
+        codeLanguageLabels[normalizedLanguage] ??
+        normalizedLanguage
+            .split(/[-_]+/)
+            .filter(Boolean)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(" ")
+    );
+}
+
 function CodeBlock({
     content,
     info,
@@ -1220,10 +1283,9 @@ function CodeBlock({
     const [copied, setCopied] = useState(false);
     const languageSupport = useMarkdownCodeLanguageSupport(info);
     const languageToken = extractFenceLanguageToken(info ?? "");
-    const languageLabel =
-        languageToken?.toLowerCase() === "md"
-            ? "Markdown"
-            : (languageToken ?? info?.trim());
+    const languageLabel = formatCodeLanguageLabel(
+        languageToken ?? info?.trim(),
+    );
     const isUnifiedDiff =
         languageToken?.toLowerCase() === "diff" ||
         languageToken?.toLowerCase() === "patch";
@@ -1243,28 +1305,16 @@ function CodeBlock({
 
     return (
         <div
-            className="group relative my-2 min-w-0 max-w-full overflow-hidden rounded-lg"
-            style={{
-                backgroundColor: "var(--bg-tertiary)",
-                border: "1px solid var(--border)",
-            }}
+            className={`chat-code-frame group relative my-1 min-w-0 max-w-full overflow-hidden${languageLabel ? "" : " chat-code-frame--unlabeled"}`}
         >
             <button
                 type="button"
                 onClick={handleCopy}
                 aria-label="Copy code block"
                 title={copied ? "Copied" : "Copy"}
-                className="absolute right-2 z-10 flex items-center justify-center rounded-md"
+                className="chat-code-copy-button absolute z-10 flex items-center justify-center"
                 style={{
-                    top: languageLabel ? 5 : 8,
-                    width: 22,
-                    height: 22,
-                    border: "1px solid var(--border)",
-                    backgroundColor:
-                        "color-mix(in srgb, var(--bg-elevated) 92%, transparent)",
                     color: copied ? "var(--accent)" : "var(--text-secondary)",
-                    opacity: 0.9,
-                    cursor: "pointer",
                 }}
             >
                 <svg
@@ -1289,11 +1339,9 @@ function CodeBlock({
             </button>
             {languageLabel ? (
                 <div
-                    className="px-3 py-2 pr-10 uppercase tracking-wider"
+                    className="chat-code-header"
                     style={{
                         fontSize: languageLabelFontSize,
-                        color: "var(--text-secondary)",
-                        borderBottom: "1px solid var(--border)",
                     }}
                 >
                     {languageLabel}
@@ -1314,7 +1362,7 @@ function CodeBlock({
                 </div>
             ) : (
                 <pre
-                    className="max-w-full overflow-y-auto p-3 leading-relaxed"
+                    className="chat-code-block max-w-full overflow-y-auto leading-relaxed"
                     style={{
                         fontSize: codeFontSize,
                         margin: 0,

@@ -616,6 +616,57 @@ html[data-desktop-platform="windows"].dark {
         color-mix(in srgb, var(--code-markup) 72%, transparent);
 }
 
+/* Chat fences share Comando's compact, single-surface code frame. */
+.chat-code-frame {
+    border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--bg-tertiary) 68%, transparent);
+}
+
+.chat-code-header {
+    display: flex;
+    min-height: 2.45em;
+    align-items: center;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-weight: 600;
+    padding: 0.18em 2.75em 0 1em;
+}
+
+.chat-code-copy-button {
+    top: 0.55em;
+    right: 0.55em;
+    width: 20px;
+    height: 20px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    opacity: 0.72;
+    padding: 0;
+    transition:
+        color 100ms ease,
+        opacity 100ms ease;
+}
+
+.chat-code-copy-button:hover {
+    color: var(--text-primary) !important;
+    opacity: 1;
+}
+
+.chat-code-copy-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 42%, transparent);
+    outline-offset: 2px;
+}
+
+.chat-code-block {
+    padding: 0.3em 1em 0.85em;
+}
+
+.chat-code-frame--unlabeled .chat-code-block {
+    padding-top: 0.85em;
+    padding-right: 2.75em;
+}
+
 body.resizing-sidebar,
 body.resizing-sidebar * {
     cursor: col-resize !important;
