@@ -382,8 +382,8 @@ export function ToolActivityItem({
             }}
             tabIndex={detail ? 0 : undefined}
         >
-            <div className="flex min-w-0 items-center gap-2">
-                <span className="flex shrink-0 items-center gap-1.5">
+            <div className="flex min-w-0 items-center gap-1">
+                <span className="flex shrink-0 items-center gap-1">
                     <span
                         className="flex w-3.5 shrink-0 items-center justify-center"
                         data-tool-activity-operation-icon="true"

@@ -159,8 +159,8 @@ function ChangeReviewToolRailRow({
                 fontSize: "0.82em",
             }}
         >
-            <div className="flex min-h-7 w-full min-w-0 items-center gap-2 px-2">
-                <span className="flex shrink-0 items-center gap-1.5">
+            <div className="flex min-h-7 w-full min-w-0 items-center gap-1 px-2">
+                <span className="flex shrink-0 items-center gap-1">
                     <span
                         aria-hidden="true"
                         className="flex w-3.5 shrink-0 items-center justify-center"
