@@ -474,14 +474,7 @@ function renderInlineMarkdown(
                 );
             } else {
                 parts.push(
-                    <code
-                        key={key}
-                        className="rounded px-1.5 py-0.5 text-[0.85em]"
-                        style={{
-                            backgroundColor: "var(--bg-tertiary)",
-                            color: "var(--accent)",
-                        }}
-                    >
+                    <code key={key} className="chat-inline-code">
                         {codeText}
                     </code>,
                 );

@@ -616,6 +616,20 @@ html[data-desktop-platform="windows"].dark {
         color-mix(in srgb, var(--code-markup) 72%, transparent);
 }
 
+.chat-inline-code {
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--bg-tertiary) 82%, transparent);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--border) 42%, transparent);
+    color: color-mix(in srgb, var(--text-primary) 78%, var(--text-secondary));
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.82em;
+    overflow-wrap: anywhere;
+}
+
 /* Chat fences share Comando's compact, single-surface code frame. */
 .chat-code-frame {
     border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
