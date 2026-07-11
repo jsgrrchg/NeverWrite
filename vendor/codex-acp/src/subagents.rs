@@ -21,6 +21,7 @@ const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_PARENT_THREAD_ID_KEY: &str = "codexAcpParentThreadId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_CHILD_THREAD_ID_KEY: &str = "codexAcpChildThreadId";
+const CODEX_ACP_AGENT_PATH_KEY: &str = "codexAcpAgentPath";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 const CODEX_ACP_AGENT_ROLE_KEY: &str = "codexAcpAgentRole";
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
@@ -38,6 +39,7 @@ pub(crate) struct SubagentThreadRegistration {
     pub parent_session_id: SessionId,
     pub child_thread_id: ThreadId,
     pub child_session_id: SessionId,
+    pub agent_path: Option<String>,
     pub nickname: Option<String>,
     pub role: Option<String>,
 }
@@ -53,6 +55,7 @@ pub(crate) fn registration_for_thread(
 ) -> Option<SubagentThreadRegistration> {
     let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
+        agent_path,
         agent_nickname,
         agent_role,
         ..
@@ -66,6 +69,7 @@ pub(crate) fn registration_for_thread(
         parent_session_id: session_id_from_thread_id(*parent_thread_id),
         child_thread_id,
         child_session_id: session_id_from_thread_id(child_thread_id),
+        agent_path: agent_path.as_ref().map(ToString::to_string),
         nickname: agent_nickname.clone(),
         role: agent_role.clone(),
     })
@@ -77,7 +81,11 @@ pub(crate) fn session_created_notification(
 ) -> SessionNotification {
     let meta = session_created_meta(registration, snapshot);
     let mut update = SessionInfoUpdate::new().meta(meta.clone());
-    if let Some(title) = subagent_display_name(registration.nickname.as_deref(), None) {
+    if let Some(title) = subagent_display_name(
+        registration.nickname.as_deref(),
+        registration.agent_path.as_deref(),
+        None,
+    ) {
         update = update.title(title);
     }
 
@@ -114,8 +122,9 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
             ))
         }
         EventMsg::CollabAgentSpawnEnd(event) => {
-            let display_name = subagent_display_name(event.new_agent_nickname.as_deref(), None)
-                .unwrap_or_else(|| "subagent".to_string());
+            let display_name =
+                subagent_display_name(event.new_agent_nickname.as_deref(), None, None)
+                    .unwrap_or_else(|| "subagent".to_string());
             let status = if event.new_thread_id.is_some() {
                 ToolCallStatus::Completed
             } else {
@@ -170,6 +179,7 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
         EventMsg::CollabAgentInteractionEnd(event) => {
             let display_name = subagent_display_name(
                 event.receiver_agent_nickname.as_deref(),
+                None,
                 Some(event.receiver_thread_id),
             )
             .unwrap_or_else(|| "subagent".to_string());
@@ -239,6 +249,7 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
         EventMsg::CollabResumeBegin(event) => {
             let display_name = subagent_display_name(
                 event.receiver_agent_nickname.as_deref(),
+                None,
                 Some(event.receiver_thread_id),
             )
             .unwrap_or_else(|| "subagent".to_string());
@@ -263,6 +274,7 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
         EventMsg::CollabResumeEnd(event) => {
             let display_name = subagent_display_name(
                 event.receiver_agent_nickname.as_deref(),
+                None,
                 Some(event.receiver_thread_id),
             )
             .unwrap_or_else(|| "subagent".to_string());
@@ -305,6 +317,7 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
         EventMsg::CollabCloseEnd(event) => {
             let display_name = subagent_display_name(
                 event.receiver_agent_nickname.as_deref(),
+                None,
                 Some(event.receiver_thread_id),
             )
             .unwrap_or_else(|| "subagent".to_string());
@@ -378,6 +391,9 @@ fn session_created_meta(
     }
     if let Some(nickname) = registration.nickname.as_deref() {
         meta.insert(CODEX_ACP_AGENT_NICKNAME_KEY.to_string(), json!(nickname));
+    }
+    if let Some(agent_path) = registration.agent_path.as_deref() {
+        meta.insert(CODEX_ACP_AGENT_PATH_KEY.to_string(), json!(agent_path));
     }
     if let Some(role) = registration.role.as_deref() {
         meta.insert(CODEX_ACP_AGENT_ROLE_KEY.to_string(), json!(role));
@@ -499,11 +515,17 @@ fn content(detail: Option<String>) -> Vec<ToolCallContent> {
 
 fn subagent_display_name(
     nickname: Option<&str>,
+    agent_path: Option<&str>,
     fallback_thread_id: Option<ThreadId>,
 ) -> Option<String> {
     nickname
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
+        .or_else(|| {
+            agent_path
+                .and_then(|path| path.rsplit('/').find(|segment| !segment.is_empty()))
+                .map(ToString::to_string)
+        })
         .or_else(|| fallback_thread_id.map(|thread_id| format!("subagent {thread_id}")))
 }
 
@@ -538,7 +560,7 @@ fn format_agent_refs(agents: &[CollabAgentRef]) -> Option<String> {
         agents
             .iter()
             .map(|agent| {
-                subagent_display_name(agent.agent_nickname.as_deref(), Some(agent.thread_id))
+                subagent_display_name(agent.agent_nickname.as_deref(), None, Some(agent.thread_id))
                     .unwrap_or_else(|| agent.thread_id.to_string())
             })
             .collect::<Vec<_>>()
@@ -555,9 +577,12 @@ fn format_agent_statuses(statuses: &[CollabAgentStatusEntry]) -> Option<String> 
         statuses
             .iter()
             .map(|entry| {
-                let display_name =
-                    subagent_display_name(entry.agent_nickname.as_deref(), Some(entry.thread_id))
-                        .unwrap_or_else(|| entry.thread_id.to_string());
+                let display_name = subagent_display_name(
+                    entry.agent_nickname.as_deref(),
+                    None,
+                    Some(entry.thread_id),
+                )
+                .unwrap_or_else(|| entry.thread_id.to_string());
                 format!("{display_name}: {}", agent_status_label(&entry.status))
             })
             .collect::<Vec<_>>()
@@ -598,6 +623,7 @@ fn agent_status_label(status: &AgentStatus) -> String {
 mod tests {
     use super::*;
     use codex_protocol::{
+        AgentPath,
         config_types::{ApprovalsReviewer, CollaborationMode, ModeKind, Settings},
         models::PermissionProfile,
         openai_models::ReasoningEffort,
@@ -635,7 +661,10 @@ mod tests {
             session_source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
-                agent_path: None,
+                agent_path: Some(
+                    AgentPath::from_string("/root/research/explorer".to_string())
+                        .expect("agent path should be valid"),
+                ),
                 agent_nickname: Some("Galileo".to_string()),
                 agent_role: Some("explorer".to_string()),
             }),
@@ -668,6 +697,10 @@ mod tests {
         );
         assert_eq!(registration.nickname.as_deref(), Some("Galileo"));
         assert_eq!(registration.role.as_deref(), Some("explorer"));
+        assert_eq!(
+            registration.agent_path.as_deref(),
+            Some("/root/research/explorer")
+        );
     }
 
     #[test]
@@ -704,10 +737,46 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("Galileo")
         );
+        assert_eq!(
+            meta.get(CODEX_ACP_AGENT_PATH_KEY)
+                .and_then(|value| value.as_str()),
+            Some("/root/research/explorer")
+        );
         assert!(matches!(
             notification.update,
             SessionUpdate::SessionInfoUpdate(update) if update.title.value().map(String::as_str) == Some("Galileo")
         ));
+    }
+
+    #[test]
+    fn agent_path_is_optional_metadata_and_visible_title_fallback() {
+        assert_eq!(
+            subagent_display_name(None, Some("/root/research/explorer"), None).as_deref(),
+            Some("explorer")
+        );
+        assert_eq!(
+            subagent_display_name(Some("Galileo"), Some("/root/research/explorer"), None,)
+                .as_deref(),
+            Some("Galileo")
+        );
+
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let mut snapshot = thread_snapshot(parent_thread_id);
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) =
+            &mut snapshot.session_source
+        else {
+            panic!("fixture should be a spawned subagent");
+        };
+        *agent_path = None;
+
+        let registration = registration_for_thread(child_thread_id, &snapshot)
+            .expect("thread spawn subagent should register");
+        let notification = session_created_notification(&registration, &snapshot);
+        let meta = notification
+            .meta
+            .expect("notification should carry metadata");
+        assert!(!meta.contains_key(CODEX_ACP_AGENT_PATH_KEY));
     }
 
     #[test]
