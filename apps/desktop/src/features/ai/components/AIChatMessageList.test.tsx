@@ -618,6 +618,11 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
         expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
         expect(screen.queryByText("Earlier change")).not.toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: /show full activity/i }),
+        );
+
         expect(screen.getByText("Edited oldest.ts")).toBeInTheDocument();
         expect(screen.getByText("Edited older.ts")).toBeInTheDocument();
         expect(screen.getByText("Edited recent.ts")).toBeInTheDocument();
@@ -746,5 +751,186 @@ describe("AIChatMessageList streaming run indicator", () => {
                 configurable: true,
             });
         }
+    });
+
+    it("groups consecutive tools into a collapsed activity rail", () => {
+        const messages: AIChatMessage[] = [
+            {
+                id: "user:prompt",
+                role: "user",
+                kind: "text",
+                content: "Inspect the project",
+                timestamp: 1,
+            },
+            {
+                id: "tool:read",
+                role: "assistant",
+                kind: "tool",
+                content: "Read package.json",
+                title: "Read package.json",
+                timestamp: 2,
+                meta: {
+                    status: "completed",
+                    target: "/vault/package.json",
+                    tool: "read",
+                },
+            },
+            {
+                id: "tool:search",
+                role: "assistant",
+                kind: "tool",
+                content: "Search for review",
+                title: "Search for review",
+                timestamp: 3,
+                meta: {
+                    status: "completed",
+                    tool: "grep",
+                },
+            },
+            {
+                id: "assistant:answer",
+                role: "assistant",
+                kind: "text",
+                content: "The review flow is ready.",
+                timestamp: 4,
+            },
+        ];
+
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-activity-rail"
+                messages={messages}
+                status="idle"
+            />,
+        );
+
+        expect(
+            view.container.querySelectorAll('[data-chat-row="true"]'),
+        ).toHaveLength(3);
+        expect(
+            view.container.querySelector('[data-activity-rail="true"]'),
+        ).toHaveAttribute("data-activity-count", "2");
+        expect(
+            view.container.querySelectorAll("[data-tool-activity-id]"),
+        ).toHaveLength(0);
+
+        fireEvent.click(
+            screen.getByRole("button", { name: /show full activity/i }),
+        );
+
+        expect(
+            view.container.querySelectorAll("[data-tool-activity-id]"),
+        ).toHaveLength(2);
+        expect(
+            view.container.querySelector('[data-chat-message-id="tool:read"]'),
+        ).not.toBeNull();
+        expect(
+            view.container.querySelector('[data-chat-message-id="tool:search"]'),
+        ).not.toBeNull();
+    });
+
+    it("opens a collapsed rail when the outline targets one of its tools", async () => {
+        const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+        const scrollIntoView = vi.fn();
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+            value: scrollIntoView,
+            configurable: true,
+        });
+        const messages: AIChatMessage[] = [
+            createMessages()[0]!,
+            {
+                id: "tool:outline",
+                role: "assistant",
+                kind: "tool",
+                content: "Read context",
+                title: "Read context",
+                timestamp: 2,
+                meta: {
+                    status: "completed",
+                    target: "/vault/context.md",
+                    tool: "read",
+                },
+            },
+        ];
+
+        try {
+            const view = renderComponent(
+                <AIChatMessageList
+                    sessionId="session-activity-outline"
+                    messages={messages}
+                    status="idle"
+                    scrollToMessageId="tool:outline"
+                />,
+            );
+
+            await waitFor(() => {
+                expect(scrollIntoView).toHaveBeenCalledWith({
+                    block: "center",
+                    behavior: "smooth",
+                });
+            });
+
+            expect(
+                view.container.querySelector(
+                    '[data-chat-message-id="tool:outline"]',
+                ),
+            ).toHaveAttribute("data-chat-outline-active", "true");
+
+            view.rerender(
+                <AIChatMessageList
+                    sessionId="session-activity-outline"
+                    messages={messages}
+                    status="idle"
+                />,
+            );
+
+            expect(
+                view.container.querySelector('[data-tool-activity-id="tool:outline"]'),
+            ).not.toBeNull();
+        } finally {
+            Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+                value: originalScrollIntoView,
+                configurable: true,
+            });
+        }
+    });
+
+    it("expands rails while find searches tool activity", async () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-activity-find"
+                messages={[
+                    {
+                        id: "tool:find",
+                        role: "assistant",
+                        kind: "tool",
+                        content: "Read hidden context",
+                        title: "Read hidden context",
+                        timestamp: 1,
+                        meta: {
+                            status: "completed",
+                            target: "/vault/context.md",
+                            tool: "read",
+                        },
+                    },
+                ]}
+                status="idle"
+                findOpen
+            />,
+        );
+
+        expect(
+            view.container.querySelectorAll("[data-tool-activity-id]"),
+        ).toHaveLength(0);
+
+        fireEvent.change(screen.getByRole("textbox", { name: "Find in chat" }), {
+            target: { value: "hidden context" },
+        });
+
+        await waitFor(() => {
+            expect(
+                view.container.querySelector('[data-tool-activity-id="tool:find"]'),
+            ).not.toBeNull();
+        });
     });
 });

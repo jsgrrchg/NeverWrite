@@ -934,6 +934,66 @@ body.dragging-tab * {
     filter: brightness(0.95);
 }
 
+/* Activity rails own their container query so dense chat panes can hide their
+   secondary label without coupling that decision to the application width. */
+.activity-rail {
+    container-type: inline-size;
+}
+
+.activity-tree-branch {
+    --activity-tree-color: color-mix(
+        in srgb,
+        var(--text-secondary) 34%,
+        transparent
+    );
+    position: relative;
+}
+
+.activity-tree-branch::before,
+.activity-tree-branch::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+}
+
+.activity-tree-branch::before {
+    background: repeating-linear-gradient(
+        to bottom,
+        var(--activity-tree-color) 0 2px,
+        transparent 2px 5px
+    );
+    bottom: -0.375rem;
+    left: 1rem;
+    top: -0.375rem;
+    width: 1px;
+}
+
+.activity-tree-branch::after {
+    background: repeating-linear-gradient(
+        to right,
+        var(--activity-tree-color) 0 2px,
+        transparent 2px 5px
+    );
+    height: 1px;
+    left: 1rem;
+    top: 1rem;
+    width: 0.875rem;
+}
+
+.activity-tree-branch:first-child::before {
+    top: -1.5rem;
+}
+
+.activity-tree-branch:last-child::before {
+    bottom: calc(100% - 1rem);
+}
+
+@container (max-width: 360px) {
+    [data-activity-rail-current="true"] {
+        display: none;
+    }
+}
+
 /* ── Settings panel primitives ─────────────────────────────────
    Toggle switches, segmented controls, select dropdowns, +/- steppers
    and theme tiles all share the same tactile press feel as the rest of
