@@ -431,11 +431,15 @@ function getDiffLineGridTemplateColumns({
 function getDiffLineTextStyles(lineWrapping: boolean) {
     return {
         whiteSpace: lineWrapping ? ("pre-wrap" as const) : ("pre" as const),
-        wordBreak: lineWrapping ? ("break-all" as const) : ("normal" as const),
+        wordBreak: "normal" as const,
         overflowWrap: lineWrapping
             ? ("anywhere" as const)
             : ("normal" as const),
     };
+}
+
+function getDiffLineTextColor(line: DiffLine) {
+    return line.type === "context" ? "var(--text-secondary)" : "var(--text-primary)";
 }
 
 function compactExactDiffContext(
@@ -539,6 +543,8 @@ export function DiffLineView({
         if (compactLineNumbers) {
             return (
                 <div
+                    data-diff-line="true"
+                    data-line-wrapping={String(lineWrapping)}
                     style={{
                         display: "grid",
                         gridTemplateColumns: getDiffLineGridTemplateColumns({
@@ -554,18 +560,7 @@ export function DiffLineView({
                                 : line.type === "remove"
                                   ? "color-mix(in srgb, var(--diff-remove) 5%, transparent)"
                                   : "transparent",
-                        color:
-                            line.type === "add"
-                                ? "var(--diff-add)"
-                                : line.type === "remove"
-                                  ? "var(--diff-remove)"
-                                  : "var(--text-secondary)",
-                        borderLeft:
-                            line.type === "add"
-                                ? "2px solid color-mix(in srgb, var(--diff-add) 45%, transparent)"
-                                : line.type === "remove"
-                                  ? "2px solid color-mix(in srgb, var(--diff-remove) 45%, transparent)"
-                                  : "2px solid transparent",
+                        color: getDiffLineTextColor(line),
                     }}
                 >
                     <div
@@ -606,18 +601,7 @@ export function DiffLineView({
                             : line.type === "remove"
                               ? "color-mix(in srgb, var(--diff-remove) 5%, transparent)"
                               : "transparent",
-                    color:
-                        line.type === "add"
-                            ? "var(--diff-add)"
-                            : line.type === "remove"
-                              ? "var(--diff-remove)"
-                              : "var(--text-secondary)",
-                    borderLeft:
-                        line.type === "add"
-                            ? "2px solid color-mix(in srgb, var(--diff-add) 45%, transparent)"
-                            : line.type === "remove"
-                              ? "2px solid color-mix(in srgb, var(--diff-remove) 45%, transparent)"
-                              : "2px solid transparent",
+                    color: getDiffLineTextColor(line),
                 }}
             >
                 <div
@@ -693,18 +677,7 @@ export function DiffLineView({
                         : line.type === "remove"
                           ? "color-mix(in srgb, var(--diff-remove) 5%, transparent)"
                           : "transparent",
-                color:
-                    line.type === "add"
-                        ? "var(--diff-add)"
-                        : line.type === "remove"
-                          ? "var(--diff-remove)"
-                          : "var(--text-secondary)",
-                borderLeft:
-                    line.type === "add"
-                        ? "2px solid color-mix(in srgb, var(--diff-add) 45%, transparent)"
-                        : line.type === "remove"
-                          ? "2px solid color-mix(in srgb, var(--diff-remove) 45%, transparent)"
-                          : "2px solid transparent",
+                color: getDiffLineTextColor(line),
             }}
         >
             <div

@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
 import {
+    computeDiffLines,
     computeFileDiffStats,
     formatDiffStat,
     getFileNameFromPath,
@@ -19,6 +20,8 @@ import {
 } from "../chatFileNavigation";
 import { useChatRowUiEntry } from "./chatRowUiPresentation";
 import type { AIChatMessage, AIFileDiff } from "../types";
+import { MarkdownContent } from "./MarkdownContent";
+import type { ChatPillMetrics } from "./chatPillMetrics";
 
 interface ChangeReviewToolRailProps {
     readonly diffs: readonly AIFileDiff[];
@@ -31,6 +34,127 @@ interface ChangeReviewToolRailProps {
 
 interface OpenFileContextMenuPayload {
     readonly target: string;
+}
+
+type MarkdownPreviewBlock = {
+    content: string;
+    lineNumbers: number[];
+};
+
+const DIFF_PREVIEW_PILL_METRICS: ChatPillMetrics = {
+    fontSize: 12,
+    lineHeight: 1.3,
+    paddingX: 6,
+    paddingY: 1,
+    radius: 6,
+    gapX: 2,
+    maxWidth: 180,
+    offsetY: 0,
+};
+
+function isMarkdownPath(path: string) {
+    return /\.(?:md|mdx|markdown)$/i.test(path);
+}
+
+function getMarkdownPreviewBlocks(diff: AIFileDiff): MarkdownPreviewBlock[] {
+    const blocks: MarkdownPreviewBlock[] = [];
+    let pendingLines: ReturnType<typeof computeDiffLines> = [];
+
+    const flushPendingLines = () => {
+        if (pendingLines.length === 0) return;
+
+        // Prefer the new side of a modified hunk. Rendering a whole Markdown
+        // block lets tables, lists, and other multi-line structures retain
+        // their syntax instead of treating each changed line in isolation.
+        const hasAdditions = pendingLines.some((line) => line.type === "add");
+        const displayLines = pendingLines.filter(
+            (line) =>
+                line.type === "context" ||
+                line.type === (hasAdditions ? "add" : "remove"),
+        );
+
+        if (displayLines.length > 0) {
+            blocks.push({
+                content: displayLines.map((line) => line.text).join("\n"),
+                lineNumbers: displayLines.map(
+                    (line) =>
+                        (hasAdditions
+                            ? line.newLineNumber
+                            : line.oldLineNumber) ?? 0,
+                ),
+            });
+        }
+
+        pendingLines = [];
+    };
+
+    for (const line of computeDiffLines(diff)) {
+        if (line.type === "separator") {
+            flushPendingLines();
+            continue;
+        }
+        pendingLines.push(line);
+    }
+
+    flushPendingLines();
+    return blocks;
+}
+
+function MarkdownChangePreview({
+    blocks,
+}: {
+    blocks: readonly MarkdownPreviewBlock[];
+}) {
+    return (
+        <div
+            data-testid="markdown-diff-preview"
+            className="flex flex-col py-1"
+            style={{
+                color: "var(--text-primary)",
+                fontSize: "1.06em",
+                lineHeight: 1.55,
+            }}
+        >
+            {blocks.map((block, index) => {
+                return (
+                    <section
+                        key={`${block.lineNumbers[0] ?? "block"}:${index}`}
+                        data-markdown-preview-block="true"
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: "44px minmax(0, 1fr)",
+                        }}
+                    >
+                        <div
+                            style={{
+                                padding: "0 6px 0 4px",
+                                borderRight:
+                                    "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+                                color: "var(--text-secondary)",
+                                fontSize: "0.85em",
+                                opacity: 0.55,
+                                textAlign: "right",
+                                userSelect: "none",
+                            }}
+                        >
+                            {block.lineNumbers.map((lineNumber, lineIndex) => (
+                                <div key={`${lineNumber}:${lineIndex}`}>
+                                    {lineNumber || ""}
+                                </div>
+                            ))}
+                        </div>
+                        <MarkdownContent
+                            blockQuoteAppearance="plain"
+                            className="min-w-0 px-2"
+                            content={block.content}
+                            fileReferenceAppearance="link"
+                            pillMetrics={DIFF_PREVIEW_PILL_METRICS}
+                        />
+                    </section>
+                );
+            })}
+        </div>
+    );
 }
 
 function Chevron({ expanded }: { readonly expanded: boolean }) {
@@ -131,6 +255,13 @@ function ChangeReviewToolRailRow({
 }) {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<OpenFileContextMenuPayload> | null>(null);
+    const markdownPreviewBlocks = useMemo(
+        () => (isMarkdownPath(diff.path) ? getMarkdownPreviewBlocks(diff) : []),
+        [diff],
+    );
+    const [showMarkdownPreview, setShowMarkdownPreview] = useState(
+        () => markdownPreviewBlocks.length > 0,
+    );
     const toolKind = String(message.meta?.tool ?? "").toLowerCase();
     const status = String(message.meta?.status ?? "").toLowerCase();
     const fileName = getFileNameFromPath(diff.path);
@@ -250,6 +381,33 @@ function ChangeReviewToolRailRow({
                     onZoomChange={onDiffZoomChange}
                     zoom={diffZoom}
                 />
+                {markdownPreviewBlocks.length > 0 ? (
+                    <button
+                        type="button"
+                        aria-label={
+                            showMarkdownPreview
+                                ? "Show source diff"
+                                : "Show markdown preview"
+                        }
+                        title={
+                            showMarkdownPreview
+                                ? "Show source diff"
+                                : "Show markdown preview"
+                        }
+                        onClick={() =>
+                            setShowMarkdownPreview((current) => !current)
+                        }
+                        className="p-0 text-[10px] font-medium hover:text-text-primary focus-visible:outline-none focus-visible:underline"
+                        style={{
+                            border: "none",
+                            color: "var(--text-secondary)",
+                            backgroundColor: "transparent",
+                            cursor: "pointer",
+                        }}
+                    >
+                        {showMarkdownPreview ? "View" : "Preview"}
+                    </button>
+                ) : null}
                 {isInProgress ? (
                     <span
                         aria-label="Running"
@@ -276,18 +434,22 @@ function ChangeReviewToolRailRow({
             </div>
 
             {expanded ? (
-                <div className="ml-5 mt-1 overflow-hidden border-l border-border pl-2">
+                <div className="ml-5 mt-1 overflow-hidden pl-2">
                     <ResizableDiffContainer accent={accent}>
-                        <EditedFileDiffPreview
-                            compactContextLines={0}
-                            compactLineNumbers
-                            diff={diff}
-                            diffZoom={diffZoom}
-                            expanded={expanded}
-                            lineWrapping={lineWrapping}
-                            showWhenEmpty={false}
-                            testId={`diff-content:${diff.path}`}
-                        />
+                        {showMarkdownPreview && markdownPreviewBlocks.length > 0 ? (
+                            <MarkdownChangePreview blocks={markdownPreviewBlocks} />
+                        ) : (
+                            <EditedFileDiffPreview
+                                compactContextLines={0}
+                                compactLineNumbers
+                                diff={diff}
+                                diffZoom={diffZoom}
+                                expanded={expanded}
+                                lineWrapping={lineWrapping}
+                                showWhenEmpty={false}
+                                testId={`diff-content:${diff.path}`}
+                            />
+                        )}
                     </ResizableDiffContainer>
                 </div>
             ) : null}

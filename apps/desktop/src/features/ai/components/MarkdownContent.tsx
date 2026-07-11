@@ -49,6 +49,7 @@ interface MarkdownContentProps {
     className?: string;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
+    blockQuoteAppearance?: "accent" | "plain";
     /**
      * Visual treatment for inline vault references. Chat surfaces pass "link"
      * for the accent-colored, icon-led appearance; other surfaces keep "pill".
@@ -866,10 +867,12 @@ function TextBlock({
     content,
     pillMetrics,
     fileReferenceAppearance = "pill",
+    blockQuoteAppearance = "accent",
 }: {
     content: string;
     pillMetrics: ChatPillMetrics;
     fileReferenceAppearance?: FileReferenceAppearance;
+    blockQuoteAppearance?: "accent" | "plain";
 }) {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<MarkdownPillContextMenuPayload> | null>(null);
@@ -1198,9 +1201,12 @@ function TextBlock({
             elements.push(
                 <blockquote
                     key={elements.length}
-                    className="my-1 border-l-2 pl-3 italic"
+                    className={
+                        blockQuoteAppearance === "accent"
+                            ? "my-1 border-l-2 pl-3 italic"
+                            : "my-1 italic"
+                    }
                     style={{
-                        borderColor: "var(--accent)",
                         color: "var(--text-secondary)",
                         overflowWrap: "anywhere",
                         wordBreak: "break-word",
@@ -1563,6 +1569,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     className,
     pillMetrics,
     chatFontSize = 14,
+    blockQuoteAppearance = "accent",
     fileReferenceAppearance = "pill",
 }: MarkdownContentProps) {
     const blocks = useMemo(() => parseBlocks(content), [content]);
@@ -1592,6 +1599,7 @@ export const MarkdownContent = memo(function MarkdownContent({
                         key={i}
                         content={block.content}
                         pillMetrics={pillMetrics}
+                        blockQuoteAppearance={blockQuoteAppearance}
                         fileReferenceAppearance={fileReferenceAppearance}
                     />
                 ),

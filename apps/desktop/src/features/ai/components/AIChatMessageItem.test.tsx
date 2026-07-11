@@ -663,6 +663,9 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.queryByText("Reject")).not.toBeInTheDocument();
 
         expandChangeReviewRail("/vault/notes/watcher.md");
+        fireEvent.click(
+            screen.getByRole("button", { name: "Show source diff" }),
+        );
 
         expect(screen.getByText(/old line/)).toBeInTheDocument();
         expect(screen.getByText(/new line/)).toBeInTheDocument();
@@ -704,6 +707,9 @@ describe("AIChatMessageItem tool diffs", () => {
         });
 
         expandChangeReviewRail("/vault/notes/watcher.md");
+        fireEvent.click(
+            screen.getByRole("button", { name: "Show source diff" }),
+        );
 
         const diffPreview = screen.getByTestId(
             "diff-content:/vault/notes/watcher.md",
@@ -1125,6 +1131,9 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.getByText("-~1")).toBeInTheDocument();
 
         expandChangeReviewRail("/vault/giant.md");
+        fireEvent.click(
+            screen.getByRole("button", { name: "Show source diff" }),
+        );
 
         expect(screen.getByText("shared 1199")).toBeInTheDocument();
         expect(screen.getByText(/large file preview/i)).toBeInTheDocument();
@@ -1201,12 +1210,95 @@ describe("AIChatMessageItem tool diffs", () => {
         });
 
         expandChangeReviewRail("/vault/exact.md");
+        fireEvent.click(
+            screen.getByRole("button", { name: "Show source diff" }),
+        );
 
         expect(screen.queryByText("alpha")).not.toBeInTheDocument();
         expect(screen.queryByText("101")).not.toBeInTheDocument();
         expect(screen.getAllByText("102")).toHaveLength(2);
         expect(screen.getByText("before")).toBeInTheDocument();
         expect(screen.getByText("after")).toBeInTheDocument();
+    });
+
+    it("opens Markdown changes as a decorated preview and can return to the source diff", () => {
+        renderMessage({
+            id: "tool:markdown-preview",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit note",
+            content: "Updated briefing.md",
+            timestamp: Date.now(),
+            diffs: [
+                {
+                    path: "/vault/briefing.md",
+                    kind: "update",
+                    old_text: "> **Previous:** short note",
+                    new_text: "> **Updated:** longer note",
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: "/vault/briefing.md",
+            },
+        });
+
+        expandChangeReviewRail("/vault/briefing.md");
+
+        expect(screen.getByTestId("markdown-diff-preview")).toBeInTheDocument();
+        expect(
+            document.querySelectorAll('[data-markdown-preview-block="true"]'),
+        ).toHaveLength(1);
+        expect(screen.queryByText("Previous:")).toBeNull();
+        expect(screen.getByText("Updated:")).toBeInTheDocument();
+        expect(screen.getByText("1")).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Show source diff" }),
+        );
+
+        expect(screen.queryByTestId("markdown-diff-preview")).toBeNull();
+        expect(
+            screen.getByTestId("diff-content:/vault/briefing.md"),
+        ).toBeInTheDocument();
+    });
+
+    it("renders a changed Markdown table in preview mode", () => {
+        renderMessage({
+            id: "tool:markdown-table-preview",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit table",
+            content: "Updated status.md",
+            timestamp: Date.now(),
+            diffs: [
+                {
+                    path: "/vault/status.md",
+                    kind: "update",
+                    old_text: [
+                        "| Status | Owner |",
+                        "| --- | --- |",
+                        "| Draft | Ana |",
+                    ].join("\n"),
+                    new_text: [
+                        "| Status | Owner |",
+                        "| --- | --- |",
+                        "| Ready | Ana |",
+                    ].join("\n"),
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: "/vault/status.md",
+            },
+        });
+
+        expandChangeReviewRail("/vault/status.md");
+
+        expect(screen.getByRole("table")).toBeInTheDocument();
+        expect(screen.getByRole("cell", { name: "Ready" })).toBeInTheDocument();
     });
 
     it("disables zoom controls at the configured min and max", () => {
