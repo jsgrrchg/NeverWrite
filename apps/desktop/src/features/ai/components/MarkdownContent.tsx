@@ -1312,36 +1312,54 @@ function CodeBlock({
         <div
             className={`chat-code-frame group relative my-1 min-w-0 max-w-full overflow-hidden${languageLabel ? "" : " chat-code-frame--unlabeled"}`}
         >
-            <button
-                type="button"
-                onClick={handleCopy}
-                aria-label="Copy code block"
-                title={copied ? "Copied" : "Copy"}
-                className="chat-code-copy-button absolute z-10 flex items-center justify-center"
-                style={{
-                    color: copied ? "var(--accent)" : "var(--text-secondary)",
-                }}
-            >
-                <svg
-                    width="11"
-                    height="11"
-                    viewBox="0 0 14 14"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+            <div className="chat-code-actions absolute z-10 flex items-center">
+                {isMarkdownFence ? (
+                    <button
+                        type="button"
+                        aria-label="Toggle markdown display mode"
+                        title={showMarkdownSource ? "Show preview" : "Show source"}
+                        onClick={() =>
+                            setShowMarkdownSource((value) => !value)
+                        }
+                        className="chat-code-mode-button"
+                        style={{ fontSize: languageLabelFontSize }}
+                    >
+                        {showMarkdownSource ? "Preview" : "Source"}
+                    </button>
+                ) : null}
+                <button
+                    type="button"
+                    onClick={handleCopy}
+                    aria-label="Copy code block"
+                    title={copied ? "Copied" : "Copy"}
+                    className="chat-code-copy-button flex items-center justify-center"
+                    style={{
+                        color: copied
+                            ? "var(--accent)"
+                            : "var(--text-secondary)",
+                    }}
                 >
-                    {copied ? (
-                        <path d="M3 7l2.2 2.2L11 3.8" />
-                    ) : (
-                        <>
-                            <rect x="5" y="3" width="6" height="8" rx="1.2" />
-                            <path d="M3.5 9.5H3A1 1 0 012 8.5v-5A1.5 1.5 0 013.5 2H8" />
-                        </>
-                    )}
-                </svg>
-            </button>
+                    <svg
+                        width="11"
+                        height="11"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        {copied ? (
+                            <path d="M3 7l2.2 2.2L11 3.8" />
+                        ) : (
+                            <>
+                                <rect x="5" y="3" width="6" height="8" rx="1.2" />
+                                <path d="M3.5 9.5H3A1 1 0 012 8.5v-5A1.5 1.5 0 013.5 2H8" />
+                            </>
+                        )}
+                    </svg>
+                </button>
+            </div>
             {languageLabel ? (
                 <div
                     className="chat-code-header"
@@ -1350,30 +1368,6 @@ function CodeBlock({
                     }}
                 >
                     <span>{languageLabel}</span>
-                    {isMarkdownFence ? (
-                        <span
-                            aria-label="Markdown display mode"
-                            className="chat-code-mode-toggle"
-                            role="group"
-                        >
-                            <button
-                                aria-pressed={!showMarkdownSource}
-                                className="chat-code-mode-button"
-                                onClick={() => setShowMarkdownSource(false)}
-                                type="button"
-                            >
-                                Preview
-                            </button>
-                            <button
-                                aria-pressed={showMarkdownSource}
-                                className="chat-code-mode-button"
-                                onClick={() => setShowMarkdownSource(true)}
-                                type="button"
-                            >
-                                Source
-                            </button>
-                        </span>
-                    ) : null}
                 </div>
             ) : null}
             {isMarkdownFence && !showMarkdownSource ? (
