@@ -3506,6 +3506,17 @@ impl PromptState {
             process_id: _,
             ..
         } = event;
+        // Events can arrive out of order. Once an end event has made this
+        // command terminal, a late begin must not recreate active state.
+        if self
+            .projected_tool_calls
+            .get(&call_id)
+            .is_some_and(|state| state.terminal.is_some())
+        {
+            self.pending_command_output.remove(&call_id);
+            return;
+        }
+
         // Create a new tool call for the command execution
         let tool_call_id = ToolCallId::new(call_id.clone());
         let ParseCommandToolCall {
@@ -8351,6 +8362,28 @@ mod tests {
             .await;
 
         assert!(!state.pending_command_output.contains_key("exec-1"));
+
+        state
+            .exec_command_begin(
+                &session_client,
+                ExecCommandBeginEvent {
+                    call_id: "exec-1".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 0,
+                    command: vec!["sh".to_string(), "-c".to_string(), "echo".to_string()],
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                        .expect("current dir should be representable as a path URI"),
+                    parsed_cmd: vec![ParsedCommand::Unknown {
+                        cmd: "sh".to_string(),
+                    }],
+                    source: Default::default(),
+                    interaction_input: None,
+                },
+            )
+            .await;
+        assert!(!state.active_commands.contains_key("exec-1"));
+
         state
             .exec_command_output_delta(
                 &session_client,
