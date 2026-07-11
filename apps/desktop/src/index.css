@@ -1016,6 +1016,18 @@ body.dragging-tab * {
     }
 }
 
+/* Keep user prompts compact in wide panes, then recover the full row width
+   when the chat column itself becomes too narrow for a fixed percentage. */
+[data-user-message="true"] {
+    container-type: inline-size;
+}
+
+@container (max-width: 420px) {
+    [data-user-message-bubble="true"] {
+        width: 100%;
+    }
+}
+
 /* ── Settings panel primitives ─────────────────────────────────
    Toggle switches, segmented controls, select dropdowns, +/- steppers
    and theme tiles all share the same tactile press feel as the rest of

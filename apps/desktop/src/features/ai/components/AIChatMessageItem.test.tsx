@@ -5,6 +5,7 @@ import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import {
+    getClipboardMock,
     renderComponent,
     setEditorTabs,
     setVaultEntries,
@@ -334,6 +335,65 @@ describe("AIChatMessageItem generated images", () => {
 });
 
 describe("AIChatMessageItem user image attachments", () => {
+    it("uses Comando's responsive user bubble width", () => {
+        const view = renderMessage({
+            id: "user:compact-bubble",
+            role: "user",
+            kind: "text",
+            content: "Keep this compact",
+            timestamp: Date.now(),
+        });
+
+        expect(
+            view.container.querySelector("[data-user-message]"),
+        ).toHaveClass("w-full");
+        expect(
+            view.container.querySelector("[data-user-message-bubble]"),
+        ).toHaveClass("ml-auto", "w-[70%]", "max-w-full");
+        expect(
+            view.container.querySelector("[data-user-message-bubble]"),
+        ).toHaveAttribute(
+            "style",
+            expect.stringContaining(
+                "background-color: color-mix(in srgb, var(--accent) 5%, var(--bg-tertiary))",
+            ),
+        );
+        expect(
+            view.container.querySelector("[data-user-message-bubble]"),
+        ).toHaveAttribute(
+            "style",
+            expect.stringContaining(
+                "border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
+            ),
+        );
+    });
+
+    it("shows sent time and copies the user message", async () => {
+        const timestamp = Date.parse("2026-07-11T15:42:00Z");
+        const view = renderMessage({
+            id: "user:copy",
+            role: "user",
+            kind: "text",
+            content: "Copy this prompt",
+            timestamp,
+        });
+
+        expect(
+            view.container.querySelector("[data-user-message-metadata] time"),
+        ).toHaveAttribute("dateTime", new Date(timestamp).toISOString());
+
+        fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+
+        await waitFor(() => {
+            expect(getClipboardMock().writeText).toHaveBeenCalledWith(
+                "Copy this prompt",
+            );
+        });
+        expect(
+            screen.getByRole("button", { name: "Message copied" }),
+        ).toBeInTheDocument();
+    });
+
     it("renders image attachments below user text", () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         const filePath = "/vault/assets/chat/screenshot.png";

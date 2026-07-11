@@ -425,32 +425,78 @@ function UserTextMessage({
 }) {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<UserMentionContextMenuPayload> | null>(null);
+    const [copied, setCopied] = useState(false);
+    const formattedTime = formatUserMessageTime(message.timestamp);
+    const canCopy = message.content.trim().length > 0;
+
+    const copyMessage = () => {
+        if (!canCopy) return;
+
+        void navigator.clipboard.writeText(message.content).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+        });
+    };
 
     return (
         <div
-            className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
-            style={{
-                color: "var(--text-primary)",
-                backgroundColor: "var(--bg-tertiary)",
-                border: "1px solid var(--border)",
-                overflowWrap: "anywhere",
-                wordBreak: "break-word",
-            }}
+            className="min-w-0 w-full max-w-full"
+            data-user-message="true"
         >
-            {renderUserContent(
-                message.content,
-                pillMetrics,
-                (event, payload) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setContextMenu({
-                        x: event.clientX,
-                        y: event.clientY,
-                        payload,
-                    });
-                },
-            )}
-            <UserMessageAttachments attachments={message.attachments} />
+            <div
+                className="ml-auto min-w-0 w-[70%] max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
+                data-user-message-bubble="true"
+                style={{
+                    color: "var(--text-primary)",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--accent) 5%, var(--bg-tertiary))",
+                    border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
+            >
+                {renderUserContent(
+                    message.content,
+                    pillMetrics,
+                    (event, payload) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setContextMenu({
+                            x: event.clientX,
+                            y: event.clientY,
+                            payload,
+                        });
+                    },
+                )}
+                <UserMessageAttachments attachments={message.attachments} />
+            </div>
+            <div
+                className="mt-1 flex min-h-5 items-center justify-end gap-1.5 px-0.5 text-text-secondary"
+                data-user-message-metadata="true"
+                style={{
+                    fontFamily: "var(--font-mono), ui-monospace, monospace",
+                    fontSize: "10px",
+                    opacity: 0.72,
+                }}
+            >
+                {formattedTime ? (
+                    <time dateTime={new Date(message.timestamp).toISOString()}>
+                        {formattedTime}
+                    </time>
+                ) : null}
+                {canCopy ? (
+                    <button
+                        aria-label={copied ? "Message copied" : "Copy message"}
+                        className="flex h-5 w-5 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--accent)]"
+                        onClick={copyMessage}
+                        style={copied ? { color: "var(--diff-add)" } : undefined}
+                        title={copied ? "Copied" : "Copy message"}
+                        type="button"
+                    >
+                        {copied ? <CopySuccessIcon /> : <CopyMessageIcon />}
+                    </button>
+                ) : null}
+            </div>
             {contextMenu ? (
                 <ContextMenu
                     menu={contextMenu}
@@ -500,6 +546,54 @@ function UserTextMessage({
                 />
             ) : null}
         </div>
+    );
+}
+
+function formatUserMessageTime(timestamp: number) {
+    if (!Number.isFinite(timestamp)) {
+        return null;
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+    }).format(timestamp);
+}
+
+function CopyMessageIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+            width="12"
+        >
+            <rect height="13" rx="2" width="13" x="8" y="8" />
+            <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
+        </svg>
+    );
+}
+
+function CopySuccessIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.7"
+            viewBox="0 0 24 24"
+            width="12"
+        >
+            <path d="m5 12 4 4L19 6" />
+        </svg>
     );
 }
 
