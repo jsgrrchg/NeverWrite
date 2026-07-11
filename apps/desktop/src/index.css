@@ -703,6 +703,19 @@ body.dragging-tab * {
     animation-delay: 330ms;
 }
 
+.activity-rail-worked-indicator {
+    display: inline-grid;
+    flex: 0 0 auto;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    color: var(--text-primary);
+}
+
+.activity-rail-worked-cube {
+    display: block;
+}
+
 @media (prefers-reduced-motion: reduce) {
     .activity-rail-working-cubes,
     .activity-rail-working-cube {

@@ -70,6 +70,30 @@ function WorkingActivityIndicator() {
     );
 }
 
+function WorkedActivityIndicator() {
+    return (
+        <span
+            aria-hidden="true"
+            className="activity-rail-worked-indicator"
+            data-activity-rail-worked-indicator="true"
+        >
+            <svg
+                className="activity-rail-worked-cube"
+                fill="none"
+                height="12"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.8"
+                viewBox="0 0 16 16"
+                width="12"
+            >
+                <path d="m6 4 4 4-4 4" />
+            </svg>
+        </span>
+    );
+}
+
 function getChatOutlineStyle(isActive: boolean): CSSProperties | undefined {
     return isActive
         ? {
@@ -160,7 +184,11 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 type="button"
             >
                 <span className="flex min-w-0 flex-1 items-start gap-1.5">
-                    {isCurrentTurnTail ? <WorkingActivityIndicator /> : null}
+                    {isCurrentTurnTail ? (
+                        <WorkingActivityIndicator />
+                    ) : (
+                        <WorkedActivityIndicator />
+                    )}
                     <span className="min-w-0 flex-1">
                         <span
                             className="block truncate text-[11px] font-medium leading-4"
