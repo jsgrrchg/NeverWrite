@@ -6,7 +6,8 @@ use agent_client_protocol::schema::{
 };
 use codex_core::ThreadConfigSnapshot;
 use codex_protocol::{
-    ThreadId,
+    AgentPath, ThreadId,
+    items::SubAgentActivityItem,
     protocol::{
         AgentStatus, CollabAgentRef, CollabAgentStatusEntry, EventMsg, SessionSource,
         SubAgentActivityEvent, SubAgentActivityKind, SubAgentSource,
@@ -415,12 +416,48 @@ fn project_subagent_activity(
     current_thread_id: ThreadId,
     parent_session_id: &SessionId,
 ) -> Option<SubagentProjection> {
-    if event.agent_thread_id == current_thread_id {
+    project_subagent_activity_fields(
+        &event.event_id,
+        event.kind,
+        event.agent_thread_id,
+        &event.agent_path,
+        current_thread_id,
+        parent_session_id,
+        event,
+    )
+}
+
+pub(crate) fn projection_for_subagent_activity_item(
+    item: &SubAgentActivityItem,
+    current_thread_id: ThreadId,
+    parent_session_id: &SessionId,
+) -> Option<SubagentProjection> {
+    project_subagent_activity_fields(
+        &item.id,
+        item.kind,
+        item.agent_thread_id,
+        &item.agent_path,
+        current_thread_id,
+        parent_session_id,
+        item,
+    )
+}
+
+fn project_subagent_activity_fields(
+    activity_id: &str,
+    kind: SubAgentActivityKind,
+    agent_thread_id: ThreadId,
+    agent_path: &AgentPath,
+    current_thread_id: ThreadId,
+    parent_session_id: &SessionId,
+    raw_output: impl Serialize,
+) -> Option<SubagentProjection> {
+    if agent_thread_id == current_thread_id {
         return None;
     }
 
-    let display_name = event.agent_path.name();
-    let (event_type, title, status) = match event.kind {
+    let display_name = agent_path.name();
+    let (event_type, title, status) = match kind {
         SubAgentActivityKind::Started => (
             "activity_started",
             format!("Started {display_name}"),
@@ -457,24 +494,21 @@ fn project_subagent_activity(
     );
     meta.insert(
         CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
-        json!(event.agent_thread_id.to_string()),
+        json!(agent_thread_id.to_string()),
     );
     meta.insert(
         CODEX_ACP_CHILD_THREAD_ID_KEY.to_string(),
-        json!(event.agent_thread_id.to_string()),
+        json!(agent_thread_id.to_string()),
     );
-    meta.insert(
-        CODEX_ACP_AGENT_PATH_KEY.to_string(),
-        json!(event.agent_path),
-    );
+    meta.insert(CODEX_ACP_AGENT_PATH_KEY.to_string(), json!(agent_path));
     meta.insert(CODEX_ACP_AGENT_STATUS_KEY.to_string(), json!(status));
 
     Some(SubagentProjection::ToolCall(
-        ToolCall::new(subagent_activity_tool_call_id(&event.event_id), title)
+        ToolCall::new(subagent_activity_tool_call_id(activity_id), title)
             .kind(ToolKind::Other)
             .status(ToolCallStatus::Completed)
-            .content(content(Some(format!("Agent: {}", event.agent_path))))
-            .raw_output(raw_event(event))
+            .content(content(Some(format!("Agent: {agent_path}"))))
+            .raw_output(raw_event(raw_output))
             .meta(meta),
     ))
 }

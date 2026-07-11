@@ -527,9 +527,14 @@ function stripMarkdownBold(text: string) {
     return text.replace(/\*\*(.+?)\*\*/g, "$1");
 }
 
-function getOpenSessionActionLabel(message: AIChatMessage) {
+function getOpenSessionActionLabel(
+    message: AIChatMessage,
+    resolvedSessionTitle: string | null,
+) {
     const explicitLabel = message.toolAction?.label?.trim();
     if (explicitLabel) return explicitLabel;
+
+    if (resolvedSessionTitle) return `Open ${resolvedSessionTitle}`;
 
     const name = (message.title ?? "")
         .replace(/^(spawned|started|opened)\s+/i, "")
@@ -589,13 +594,22 @@ function OpenSessionActionButton({ message }: { message: AIChatMessage }) {
             openSessionId,
         ),
     );
+    const resolvedOpenSessionTitle = useChatStore((state) => {
+        if (!resolvedOpenSessionId) return null;
+        const session = state.sessionsById[resolvedOpenSessionId];
+        return (
+            session?.customTitle?.trim() ||
+            session?.persistedTitle?.trim() ||
+            null
+        );
+    });
     const canOpenSession = resolvedOpenSessionId !== null;
 
     if (!openSessionAction) {
         return null;
     }
 
-    const label = getOpenSessionActionLabel(message);
+    const label = getOpenSessionActionLabel(message, resolvedOpenSessionTitle);
 
     return (
         <button

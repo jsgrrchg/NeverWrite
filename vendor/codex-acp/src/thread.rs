@@ -1948,6 +1948,16 @@ impl PromptState {
         if is_self_referential_subagent_activity(item, client.thread_id) {
             return;
         }
+        if let TurnItem::SubAgentActivity(activity) = item {
+            if let Some(projection) = subagents::projection_for_subagent_activity_item(
+                activity,
+                client.thread_id,
+                &client.session_id,
+            ) {
+                self.send_subagent_projection(client, projection).await;
+            }
+            return;
+        }
         let projection = turn_item_projection(item);
         if matches!(
             projection,
@@ -1993,6 +2003,16 @@ impl PromptState {
 
     async fn complete_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
         if is_self_referential_subagent_activity(item, client.thread_id) {
+            return;
+        }
+        if let TurnItem::SubAgentActivity(activity) = item {
+            if let Some(projection) = subagents::projection_for_subagent_activity_item(
+                activity,
+                client.thread_id,
+                &client.session_id,
+            ) {
+                self.send_subagent_projection(client, projection).await;
+            }
             return;
         }
         let projection = turn_item_projection(item);
@@ -7779,7 +7799,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completed_only_subagent_activity_enriches_fallback_without_second_tool_call()
+    async fn completed_only_subagent_activity_is_navigable_without_specific_event()
     -> anyhow::Result<()> {
         let parent_thread_id = ThreadId::new();
         let child_thread_id = ThreadId::new();
@@ -7805,6 +7825,36 @@ mod tests {
                 }),
             )
             .await;
+        let notifications = client.notifications.lock().unwrap();
+        let tool_call_id = "codex-acp:subagent:subagent-activity-1";
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCall(tool_call)
+                        if tool_call.tool_call_id.0.as_ref() == tool_call_id
+                ))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCall(tool_call)
+                if tool_call.tool_call_id.0.as_ref() == tool_call_id
+                    && tool_call.title == "Started explorer"
+                    && tool_call.meta.as_ref().is_some_and(|meta| {
+                        meta.get("codexAcpSubagentEventType")
+                            .and_then(|value| value.as_str())
+                            == Some("activity_started")
+                            && meta.get("codexAcpChildSessionId")
+                                .and_then(|value| value.as_str())
+                                == Some(child_thread_id.to_string().as_str())
+                    })
+        )));
+        drop(notifications);
+
         prompt_state
             .handle_event(
                 &session_client,
@@ -7819,7 +7869,6 @@ mod tests {
             .await;
 
         let notifications = client.notifications.lock().unwrap();
-        let tool_call_id = "codex-acp:subagent:subagent-activity-1";
         assert_eq!(
             notifications
                 .iter()
@@ -7841,19 +7890,9 @@ mod tests {
                         if update.tool_call_id.0.as_ref() == tool_call_id
                 ))
                 .count(),
-            1,
+            0,
             "notifications={notifications:?}"
         );
-        assert!(notifications.iter().any(|notification| matches!(
-            &notification.update,
-            SessionUpdate::ToolCallUpdate(update)
-                if update.tool_call_id.0.as_ref() == tool_call_id
-                    && update.meta.as_ref().is_some_and(|meta| {
-                        meta.get("codexAcpSubagentEventType")
-                            .and_then(|value| value.as_str())
-                            == Some("activity_started")
-                    })
-        )));
         Ok(())
     }
 
