@@ -7,6 +7,7 @@ import {
 } from "react";
 
 import { formatDiffStat } from "../diff/reviewDiff";
+import type { ActivityDisplayMode } from "../activityDisplayMode";
 import type { AIChatMessage } from "../types";
 import {
     resolveChatRowUiSessionId,
@@ -19,6 +20,7 @@ import {
 } from "./activityTimelinePresentation";
 
 interface ToolActivitySegmentProps {
+    readonly activityDisplayMode?: ActivityDisplayMode;
     readonly forceExpandedMessageId?: string | null;
     readonly forceExpandedForSearch?: boolean;
     readonly highlightedMessageId?: string | null;
@@ -88,6 +90,7 @@ function getChatOutlineStyle(isActive: boolean): CSSProperties | undefined {
 }
 
 export const ToolActivitySegment = memo(function ToolActivitySegment({
+    activityDisplayMode = "collapsed",
     forceExpandedMessageId = null,
     forceExpandedForSearch = false,
     highlightedMessageId = null,
@@ -107,7 +110,10 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
         (entry) => entry.message.id === forceExpandedMessageId,
     );
     const expanded =
-        forceExpanded || forceExpandedForSearch || storedExpanded === true;
+        forceExpanded ||
+        forceExpandedForSearch ||
+        activityDisplayMode === "hidden" ||
+        (storedExpanded ?? activityDisplayMode === "expanded");
     const contentId = `${segment.id}:activity`;
     const headline = getActivityTimelineSegmentHeadline(
         segment.summary,

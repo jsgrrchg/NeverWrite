@@ -236,7 +236,7 @@ describe("buildActivityTimelineRows", () => {
         expect(segment.summary.failureCount).toBe(1);
     });
 
-    it("joins routine status updates with surrounding activity", () => {
+    it("keeps subagent lifecycle updates visible within surrounding activity", () => {
         const callingMcp = createMessage("status:mcp", {
             content: "binance_get_futures_usds_mark_price",
             kind: "status",
@@ -275,7 +275,7 @@ describe("buildActivityTimelineRows", () => {
         expect(segment.entries.map((entry) => entry.policy)).toEqual([
             "groupable",
             "groupable",
-            "groupable",
+            "standalone-attention",
         ]);
         expect(segment.summary.actionCount).toBe(1);
     });

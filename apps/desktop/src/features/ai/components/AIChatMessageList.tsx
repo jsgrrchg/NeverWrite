@@ -37,6 +37,7 @@ import {
     useChatRowUiStore,
 } from "../store/chatRowUiStore";
 import { useChatStore } from "../store/chatStore";
+import type { ActivityDisplayMode } from "../activityDisplayMode";
 import { isTurnStartedStatusMessage } from "../transcriptModel";
 import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
 import { ChatFindBar } from "./find/ChatFindBar";
@@ -284,6 +285,7 @@ function renderTimelineRow(
         highlightedMessageId?: string | null;
         forceExpandedMessageId?: string | null;
         forceExpandedForSearch?: boolean;
+        activityDisplayMode: ActivityDisplayMode;
     },
 ) {
     if (row.kind === "run-indicator") {
@@ -299,6 +301,7 @@ function renderTimelineRow(
     if (row.kind === "activity-segment") {
         return (
             <ToolActivitySegment
+                activityDisplayMode={options.activityDisplayMode}
                 forceExpandedMessageId={options.forceExpandedMessageId}
                 forceExpandedForSearch={options.forceExpandedForSearch}
                 highlightedMessageId={options.highlightedMessageId}
@@ -422,6 +425,9 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     );
     const rowUiSessionId = resolveChatRowUiSessionId(sessionId);
     const dismissMessage = useChatStore((state) => state.dismissMessage);
+    const activityDisplayMode = useChatStore(
+        (state) => state.toolActivityDisplayMode,
+    );
     const handleDismissMessage = useCallback(
         (messageId: string) => {
             if (!sessionId) return;
@@ -523,7 +529,10 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                     message.id === visiblePinnedPlanId
                 ),
         );
-        const presentationRows = buildActivityTimelineRows(timelineMessages);
+        const presentationRows = buildActivityTimelineRows(
+            timelineMessages,
+            activityDisplayMode,
+        );
         const trailingPresentationRow = presentationRows.at(-1);
 
         for (const presentationRow of presentationRows) {
@@ -560,6 +569,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
         return rows;
     }, [
+        activityDisplayMode,
         messages,
         runIndicatorAnchor,
         sessionId,
@@ -581,8 +591,10 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             forceExpandedMessageId: scrollToMessageId,
             forceExpandedForSearch: findOpen && findQuery.trim().length > 0,
             highlightedMessageId: outlineHighlightedMessageId,
+            activityDisplayMode,
         }),
         [
+            activityDisplayMode,
             chatFontSize,
             findOpen,
             scrollToMessageId,

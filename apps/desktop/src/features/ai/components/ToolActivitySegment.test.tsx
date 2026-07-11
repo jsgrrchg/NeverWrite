@@ -170,6 +170,49 @@ describe("ToolActivitySegment", () => {
         ).toBeInTheDocument();
     });
 
+    it("uses the display preference as the immediate rail state", () => {
+        const renderEntry = vi.fn((message: AIChatMessage) => (
+            <div>{message.title}</div>
+        ));
+        const segment = createSegment([createTool("tool-1")]);
+        const view = renderComponent(
+            <ToolActivitySegment
+                activityDisplayMode="collapsed"
+                renderEntry={renderEntry}
+                segment={segment}
+                sessionId="session-display-mode"
+            />,
+        );
+
+        expect(renderEntry).not.toHaveBeenCalled();
+
+        view.rerender(
+            <ToolActivitySegment
+                activityDisplayMode="expanded"
+                renderEntry={renderEntry}
+                segment={segment}
+                sessionId="session-display-mode"
+            />,
+        );
+
+        expect(renderEntry).toHaveBeenCalledWith(
+            expect.objectContaining({ id: "tool-1" }),
+        );
+
+        view.rerender(
+            <ToolActivitySegment
+                activityDisplayMode="collapsed"
+                renderEntry={renderEntry}
+                segment={segment}
+                sessionId="session-display-mode"
+            />,
+        );
+
+        expect(
+            view.container.querySelector('[data-tool-activity-id="tool-1"]'),
+        ).toBeNull();
+    });
+
     it("only shows the terminal indicator while a rail is active", () => {
         const view = renderComponent(
             <ToolActivitySegment

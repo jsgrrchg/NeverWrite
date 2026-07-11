@@ -1,4 +1,5 @@
 import { computeDiffStats, type DiffStats } from "../diff/reviewDiff";
+import type { ActivityDisplayMode } from "../activityDisplayMode";
 import type { AIChatMessage, AIFileDiff } from "../types";
 
 const COMMAND_TOOL_KINDS = new Set([
@@ -143,6 +144,13 @@ function isRoutineStatusActivity(message: AIChatMessage): boolean {
     // activity stream. State changes and recovery notices remain boundaries.
     return (
         getStatusEventKind(message) === "item_activity" ||
+        getStatusEventKind(message) === "subagent_lifecycle"
+    );
+}
+
+function isSubagentLifecycleActivity(message: AIChatMessage): boolean {
+    return (
+        message.kind === "status" &&
         getStatusEventKind(message) === "subagent_lifecycle"
     );
 }
@@ -333,6 +341,10 @@ export function getActivityTimelineToolPolicy(
         return "standalone-attention";
     }
 
+    if (isSubagentLifecycleActivity(message)) {
+        return "standalone-attention";
+    }
+
     if (isRoutineStatusActivity(message)) {
         return "groupable";
     }
@@ -504,6 +516,7 @@ export function getActivityTimelineRowKey(
 
 export function buildActivityTimelineRows(
     messages: readonly AIChatMessage[],
+    displayMode: ActivityDisplayMode = "collapsed",
 ): ActivityTimelineRow[] {
     const rows: ActivityTimelineRow[] = [];
     let segmentEntries: ActivityTimelineToolEntry[] = [];
@@ -525,10 +538,16 @@ export function buildActivityTimelineRows(
 
     for (const message of messages) {
         if (isActivityTimelineEntry(message)) {
-            segmentEntries.push({
+            const entry = {
                 message,
                 policy: getActivityTimelineToolPolicy(message),
-            });
+            };
+
+            if (displayMode === "hidden" && entry.policy === "groupable") {
+                continue;
+            }
+
+            segmentEntries.push(entry);
             continue;
         }
 

@@ -561,6 +561,47 @@ describe("chatStore", () => {
         expect(useChatStore.getState().editDiffZoom).toBe(0.72);
     });
 
+    it("uses collapsed tool activity display by default", () => {
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe(
+            "collapsed",
+        );
+    });
+
+    it("restores a valid persisted tool activity display preference", () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ toolActivityDisplayMode: "expanded" }),
+        );
+
+        resetChatStore();
+
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe(
+            "expanded",
+        );
+    });
+
+    it("normalizes an invalid persisted tool activity display preference", () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ toolActivityDisplayMode: "always-open" }),
+        );
+
+        resetChatStore();
+
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe(
+            "collapsed",
+        );
+    });
+
+    it("persists tool activity display updates globally", () => {
+        useChatStore.getState().setToolActivityDisplayMode("hidden");
+
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe("hidden");
+        expect(
+            JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}"),
+        ).toMatchObject({ toolActivityDisplayMode: "hidden" });
+    });
+
     it("restores persisted edit diff zoom from AI preferences", () => {
         localStorage.setItem(
             AI_PREFS_KEY,
@@ -848,6 +889,28 @@ describe("chatStore", () => {
         vi.advanceTimersByTime(80);
 
         expect(useChatStore.getState().editDiffZoom).toBe(0.9);
+        vi.useRealTimers();
+    });
+
+    it("synchronizes tool activity display changes from another window", () => {
+        vi.useFakeTimers();
+
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ toolActivityDisplayMode: "expanded" }),
+        );
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: AI_PREFS_KEY,
+                newValue: localStorage.getItem(AI_PREFS_KEY),
+            }),
+        );
+
+        vi.advanceTimersByTime(80);
+
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe(
+            "expanded",
+        );
         vi.useRealTimers();
     });
 

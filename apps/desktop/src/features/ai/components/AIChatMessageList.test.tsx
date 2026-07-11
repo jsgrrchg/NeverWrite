@@ -5,6 +5,7 @@ import type { AIChatMessage } from "../types";
 import { AIChatMessageList } from "./AIChatMessageList";
 import { resetChatMessageListViewState } from "./chatMessageListViewState";
 import { resetChatRowUiStore } from "../store/chatRowUiStore";
+import { useChatStore } from "../store/chatStore";
 import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 
 function createMessages(): AIChatMessage[] {
@@ -107,6 +108,7 @@ describe("AIChatMessageList streaming run indicator", () => {
         vi.useRealTimers();
         resetChatMessageListViewState();
         resetChatRowUiStore();
+        useChatStore.setState({ toolActivityDisplayMode: "collapsed" });
     });
 
     it("keeps reasoning, web, edit, and MCP activity in one chronological rail", () => {
@@ -916,6 +918,87 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(
             view.container.querySelector('[data-chat-message-id="tool:search"]'),
         ).not.toBeNull();
+    });
+
+    it("hides routine activity while preserving changes, failures, and subagents", () => {
+        useChatStore.setState({ toolActivityDisplayMode: "hidden" });
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-hidden-activity"
+                status="idle"
+                messages={[
+                    {
+                        id: "tool:read",
+                        role: "assistant",
+                        kind: "tool",
+                        content: "Read notes",
+                        timestamp: 1,
+                        meta: { status: "completed", tool: "read" },
+                    },
+                    {
+                        id: "tool:search",
+                        role: "assistant",
+                        kind: "tool",
+                        content: "Search notes",
+                        timestamp: 2,
+                        meta: { status: "completed", tool: "search" },
+                    },
+                    {
+                        id: "tool:edit",
+                        role: "assistant",
+                        kind: "tool",
+                        content: "Edited notes",
+                        timestamp: 3,
+                        meta: { status: "completed", tool: "edit" },
+                    },
+                    {
+                        id: "status:subagent",
+                        role: "system",
+                        kind: "status",
+                        content: "Subagent completed",
+                        timestamp: 4,
+                        title: "Analyst completed",
+                        meta: {
+                            status: "completed",
+                            status_event: "subagent_lifecycle",
+                        },
+                    },
+                    {
+                        id: "tool:failed",
+                        role: "assistant",
+                        kind: "tool",
+                        content: "Command failed",
+                        timestamp: 5,
+                        meta: { status: "failed", tool: "command" },
+                    },
+                    {
+                        id: "tool:subagent",
+                        role: "assistant",
+                        kind: "tool",
+                        content: "Spawned analyst",
+                        timestamp: 6,
+                        meta: { status: "completed", tool: "other" },
+                        toolAction: {
+                            kind: "open_session",
+                            session_id: "child-session",
+                        },
+                    },
+                ]}
+            />,
+        );
+
+        expect(
+            Array.from(
+                view.container.querySelectorAll<HTMLElement>(
+                    "[data-tool-activity-id]",
+                ),
+            ).map((entry) => entry.dataset.toolActivityId),
+        ).toEqual([
+            "tool:edit",
+            "status:subagent",
+            "tool:failed",
+            "tool:subagent",
+        ]);
     });
 
     it("opens a collapsed rail when the outline targets one of its tools", async () => {
