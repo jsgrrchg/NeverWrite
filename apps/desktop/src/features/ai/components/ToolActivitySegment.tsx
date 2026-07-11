@@ -191,7 +191,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                     )}
                     <span className="min-w-0 flex-1">
                         <span
-                            className="block truncate text-[11px] font-medium leading-4"
+                            className="block truncate text-[11px] font-semibold leading-4"
                             title={headline}
                         >
                             {headline}

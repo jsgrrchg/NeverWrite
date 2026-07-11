@@ -383,22 +383,28 @@ export function ToolActivityItem({
             tabIndex={detail ? 0 : undefined}
         >
             <div className="flex min-w-0 items-center gap-2">
-                <span
-                    className="flex shrink-0 items-center"
-                    data-tool-activity-operation-icon="true"
-                    style={{ color: isFailed ? "#f87171" : undefined }}
-                >
-                    <ToolIcon kind={displayKind} />
-                </span>
-                {target ? (
+                <span className="flex shrink-0 items-center gap-1.5">
+                    <span
+                        className="flex w-3.5 shrink-0 items-center justify-center"
+                        data-tool-activity-operation-icon="true"
+                        style={{ color: isFailed ? "#f87171" : undefined }}
+                    >
+                        <ToolIcon kind={displayKind} />
+                    </span>
                     <span
                         aria-hidden="true"
-                        className="flex shrink-0 items-center"
+                        className="flex w-3.5 shrink-0 items-center justify-center"
                         data-tool-activity-file-icon="true"
                     >
-                        <FileTypeIcon fileName={target} size={13} opacity={0.86} />
+                        {target ? (
+                            <FileTypeIcon
+                                fileName={target}
+                                size={13}
+                                opacity={0.86}
+                            />
+                        ) : null}
                     </span>
-                ) : null}
+                </span>
                 <span
                     className="min-w-0 flex-1 truncate font-medium"
                     title={target ?? undefined}
