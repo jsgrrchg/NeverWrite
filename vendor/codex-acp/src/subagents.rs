@@ -6,10 +6,11 @@ use agent_client_protocol::schema::{
 };
 use codex_core::ThreadConfigSnapshot;
 use codex_protocol::{
-    ThreadId,
+    AgentPath, ThreadId,
+    items::SubAgentActivityItem,
     protocol::{
         AgentStatus, CollabAgentRef, CollabAgentStatusEntry, EventMsg, SessionSource,
-        SubAgentSource,
+        SubAgentActivityEvent, SubAgentActivityKind, SubAgentSource,
     },
 };
 use serde::Serialize;
@@ -21,6 +22,7 @@ const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_PARENT_THREAD_ID_KEY: &str = "codexAcpParentThreadId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_CHILD_THREAD_ID_KEY: &str = "codexAcpChildThreadId";
+const CODEX_ACP_AGENT_PATH_KEY: &str = "codexAcpAgentPath";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 const CODEX_ACP_AGENT_ROLE_KEY: &str = "codexAcpAgentRole";
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
@@ -38,6 +40,7 @@ pub(crate) struct SubagentThreadRegistration {
     pub parent_session_id: SessionId,
     pub child_thread_id: ThreadId,
     pub child_session_id: SessionId,
+    pub agent_path: Option<String>,
     pub nickname: Option<String>,
     pub role: Option<String>,
 }
@@ -47,12 +50,69 @@ pub(crate) enum SubagentProjection {
     ToolCallUpdate(ToolCallUpdate),
 }
 
+#[derive(Default)]
+pub(crate) struct SubagentProjectionState {
+    wait_tool_call_ids_by_group: HashMap<String, String>,
+    wait_tool_call_ids_by_call: HashMap<String, String>,
+    wait_group_keys_by_call: HashMap<String, String>,
+}
+
+impl SubagentProjectionState {
+    pub(crate) fn coalesce_wait_projection(
+        &mut self,
+        event: &EventMsg,
+        projection: &mut SubagentProjection,
+    ) {
+        let stable_tool_call_id = match event {
+            EventMsg::CollabWaitingBegin(event) => {
+                let group_key = waiting_group_key(event);
+                let stable_tool_call_id = self
+                    .wait_tool_call_ids_by_group
+                    .entry(group_key.clone())
+                    .or_insert_with(|| subagent_tool_call_id(&event.call_id))
+                    .clone();
+                self.wait_tool_call_ids_by_call
+                    .insert(event.call_id.clone(), stable_tool_call_id.clone());
+                self.wait_group_keys_by_call
+                    .insert(event.call_id.clone(), group_key);
+                stable_tool_call_id
+            }
+            EventMsg::CollabWaitingEnd(event) => {
+                let stable_tool_call_id = self
+                    .wait_tool_call_ids_by_call
+                    .remove(&event.call_id)
+                    .unwrap_or_else(|| subagent_tool_call_id(&event.call_id));
+                if let Some(group_key) = self.wait_group_keys_by_call.remove(&event.call_id)
+                    && !self
+                        .wait_group_keys_by_call
+                        .values()
+                        .any(|active_group_key| active_group_key == &group_key)
+                {
+                    self.wait_tool_call_ids_by_group.remove(&group_key);
+                }
+                stable_tool_call_id
+            }
+            _ => return,
+        };
+
+        match projection {
+            SubagentProjection::ToolCall(tool_call) => {
+                tool_call.tool_call_id = stable_tool_call_id.into();
+            }
+            SubagentProjection::ToolCallUpdate(update) => {
+                update.tool_call_id = stable_tool_call_id.into();
+            }
+        }
+    }
+}
+
 pub(crate) fn registration_for_thread(
     child_thread_id: ThreadId,
     snapshot: &ThreadConfigSnapshot,
 ) -> Option<SubagentThreadRegistration> {
     let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
+        agent_path,
         agent_nickname,
         agent_role,
         ..
@@ -66,6 +126,7 @@ pub(crate) fn registration_for_thread(
         parent_session_id: session_id_from_thread_id(*parent_thread_id),
         child_thread_id,
         child_session_id: session_id_from_thread_id(child_thread_id),
+        agent_path: agent_path.as_ref().map(ToString::to_string),
         nickname: agent_nickname.clone(),
         role: agent_role.clone(),
     })
@@ -77,7 +138,11 @@ pub(crate) fn session_created_notification(
 ) -> SessionNotification {
     let meta = session_created_meta(registration, snapshot);
     let mut update = SessionInfoUpdate::new().meta(meta.clone());
-    if let Some(title) = subagent_display_name(registration.nickname.as_deref(), None) {
+    if let Some(title) = subagent_display_name(
+        registration.nickname.as_deref(),
+        registration.agent_path.as_deref(),
+        None,
+    ) {
         update = update.title(title);
     }
 
@@ -88,8 +153,15 @@ pub(crate) fn session_created_notification(
     .meta(meta)
 }
 
-pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentProjection> {
+pub(crate) fn projection_for_event(
+    event: &EventMsg,
+    current_thread_id: ThreadId,
+    parent_session_id: &SessionId,
+) -> Option<SubagentProjection> {
     match event {
+        EventMsg::SubAgentActivity(event) => {
+            project_subagent_activity(event, current_thread_id, parent_session_id)
+        }
         EventMsg::CollabAgentSpawnBegin(event) => {
             let title = "Spawning subagent";
             Some(SubagentProjection::ToolCall(
@@ -114,8 +186,9 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
             ))
         }
         EventMsg::CollabAgentSpawnEnd(event) => {
-            let display_name = subagent_display_name(event.new_agent_nickname.as_deref(), None)
-                .unwrap_or_else(|| "subagent".to_string());
+            let display_name =
+                subagent_display_name(event.new_agent_nickname.as_deref(), None, None)
+                    .unwrap_or_else(|| "subagent".to_string());
             let status = if event.new_thread_id.is_some() {
                 ToolCallStatus::Completed
             } else {
@@ -170,6 +243,7 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
         EventMsg::CollabAgentInteractionEnd(event) => {
             let display_name = subagent_display_name(
                 event.receiver_agent_nickname.as_deref(),
+                None,
                 Some(event.receiver_thread_id),
             )
             .unwrap_or_else(|| "subagent".to_string());
@@ -226,8 +300,8 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
             ToolCallUpdate::new(
                 subagent_tool_call_id(&event.call_id),
                 ToolCallUpdateFields::new()
-                    .title("Subagents finished")
-                    .status(ToolCallStatus::Completed)
+                    .title(waiting_end_title(event))
+                    .status(waiting_end_tool_status(event))
                     .content(content(
                         format_agent_statuses(&event.agent_statuses)
                             .or_else(|| format_thread_statuses(&event.statuses)),
@@ -239,6 +313,7 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
         EventMsg::CollabResumeBegin(event) => {
             let display_name = subagent_display_name(
                 event.receiver_agent_nickname.as_deref(),
+                None,
                 Some(event.receiver_thread_id),
             )
             .unwrap_or_else(|| "subagent".to_string());
@@ -263,6 +338,7 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
         EventMsg::CollabResumeEnd(event) => {
             let display_name = subagent_display_name(
                 event.receiver_agent_nickname.as_deref(),
+                None,
                 Some(event.receiver_thread_id),
             )
             .unwrap_or_else(|| "subagent".to_string());
@@ -305,6 +381,7 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
         EventMsg::CollabCloseEnd(event) => {
             let display_name = subagent_display_name(
                 event.receiver_agent_nickname.as_deref(),
+                None,
                 Some(event.receiver_thread_id),
             )
             .unwrap_or_else(|| "subagent".to_string());
@@ -332,6 +409,108 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
         }
         _ => None,
     }
+}
+
+fn project_subagent_activity(
+    event: &SubAgentActivityEvent,
+    current_thread_id: ThreadId,
+    parent_session_id: &SessionId,
+) -> Option<SubagentProjection> {
+    project_subagent_activity_fields(
+        &event.event_id,
+        event.kind,
+        event.agent_thread_id,
+        &event.agent_path,
+        current_thread_id,
+        parent_session_id,
+        event,
+    )
+}
+
+pub(crate) fn projection_for_subagent_activity_item(
+    item: &SubAgentActivityItem,
+    current_thread_id: ThreadId,
+    parent_session_id: &SessionId,
+) -> Option<SubagentProjection> {
+    project_subagent_activity_fields(
+        &item.id,
+        item.kind,
+        item.agent_thread_id,
+        &item.agent_path,
+        current_thread_id,
+        parent_session_id,
+        item,
+    )
+}
+
+fn project_subagent_activity_fields(
+    activity_id: &str,
+    kind: SubAgentActivityKind,
+    agent_thread_id: ThreadId,
+    agent_path: &AgentPath,
+    current_thread_id: ThreadId,
+    parent_session_id: &SessionId,
+    raw_output: impl Serialize,
+) -> Option<SubagentProjection> {
+    if agent_thread_id == current_thread_id {
+        return None;
+    }
+
+    let display_name = agent_path.name();
+    let (event_type, title, status) = match kind {
+        SubAgentActivityKind::Started => (
+            "activity_started",
+            format!("Started {display_name}"),
+            "running",
+        ),
+        SubAgentActivityKind::Interacted => (
+            "activity_interacted",
+            format!("Contacted {display_name}"),
+            "running",
+        ),
+        SubAgentActivityKind::Interrupted => (
+            "activity_interrupted",
+            format!("Interrupted {display_name}"),
+            "interrupted",
+        ),
+    };
+
+    let mut meta = Meta::new();
+    meta.insert(
+        CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+        json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+    );
+    meta.insert(
+        CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+        json!(event_type),
+    );
+    meta.insert(
+        CODEX_ACP_PARENT_SESSION_ID_KEY.to_string(),
+        json!(parent_session_id.0.to_string()),
+    );
+    meta.insert(
+        CODEX_ACP_PARENT_THREAD_ID_KEY.to_string(),
+        json!(current_thread_id.to_string()),
+    );
+    meta.insert(
+        CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+        json!(agent_thread_id.to_string()),
+    );
+    meta.insert(
+        CODEX_ACP_CHILD_THREAD_ID_KEY.to_string(),
+        json!(agent_thread_id.to_string()),
+    );
+    meta.insert(CODEX_ACP_AGENT_PATH_KEY.to_string(), json!(agent_path));
+    meta.insert(CODEX_ACP_AGENT_STATUS_KEY.to_string(), json!(status));
+
+    Some(SubagentProjection::ToolCall(
+        ToolCall::new(subagent_activity_tool_call_id(activity_id), title)
+            .kind(ToolKind::Other)
+            .status(ToolCallStatus::Completed)
+            .content(content(Some(format!("Agent: {agent_path}"))))
+            .raw_output(raw_event(raw_output))
+            .meta(meta),
+    ))
 }
 
 fn session_id_from_thread_id(thread_id: ThreadId) -> SessionId {
@@ -378,6 +557,9 @@ fn session_created_meta(
     }
     if let Some(nickname) = registration.nickname.as_deref() {
         meta.insert(CODEX_ACP_AGENT_NICKNAME_KEY.to_string(), json!(nickname));
+    }
+    if let Some(agent_path) = registration.agent_path.as_deref() {
+        meta.insert(CODEX_ACP_AGENT_PATH_KEY.to_string(), json!(agent_path));
     }
     if let Some(role) = registration.role.as_deref() {
         meta.insert(CODEX_ACP_AGENT_ROLE_KEY.to_string(), json!(role));
@@ -449,6 +631,74 @@ fn waiting_end_breadcrumb_meta(event: &codex_protocol::protocol::CollabWaitingEn
     meta
 }
 
+fn waiting_group_key(event: &codex_protocol::protocol::CollabWaitingBeginEvent) -> String {
+    let mut receiver_thread_ids = event
+        .receiver_thread_ids
+        .iter()
+        .chain(event.receiver_agents.iter().map(|agent| &agent.thread_id))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    receiver_thread_ids.sort();
+    receiver_thread_ids.dedup();
+
+    if receiver_thread_ids.is_empty() {
+        format!("{}:all", event.sender_thread_id)
+    } else {
+        format!(
+            "{}:{}",
+            event.sender_thread_id,
+            receiver_thread_ids.join(",")
+        )
+    }
+}
+
+fn waiting_end_title(event: &codex_protocol::protocol::CollabWaitingEndEvent) -> &'static str {
+    let statuses = waiting_end_agent_statuses(event);
+    if statuses.is_empty() {
+        "Checked subagents"
+    } else if statuses
+        .iter()
+        .all(|status| is_terminal_agent_status(status))
+    {
+        "Subagents finished"
+    } else {
+        "Subagents still running"
+    }
+}
+
+fn waiting_end_tool_status(
+    event: &codex_protocol::protocol::CollabWaitingEndEvent,
+) -> ToolCallStatus {
+    let statuses = waiting_end_agent_statuses(event);
+    if !statuses.is_empty()
+        && statuses
+            .iter()
+            .all(|status| is_terminal_agent_status(status))
+    {
+        ToolCallStatus::Completed
+    } else {
+        ToolCallStatus::InProgress
+    }
+}
+
+fn waiting_end_agent_statuses(
+    event: &codex_protocol::protocol::CollabWaitingEndEvent,
+) -> Vec<&AgentStatus> {
+    if event.agent_statuses.is_empty() {
+        event.statuses.values().collect()
+    } else {
+        event
+            .agent_statuses
+            .iter()
+            .map(|entry| &entry.status)
+            .collect()
+    }
+}
+
+fn is_terminal_agent_status(status: &AgentStatus) -> bool {
+    !matches!(status, AgentStatus::PendingInit | AgentStatus::Running)
+}
+
 fn waiting_end_statuses(
     event: &codex_protocol::protocol::CollabWaitingEndEvent,
 ) -> Vec<serde_json::Value> {
@@ -485,6 +735,12 @@ fn subagent_tool_call_id(call_id: &str) -> String {
     format!("{CODEX_ACP_SUBAGENT_TOOL_CALL_ID_PREFIX}{call_id}")
 }
 
+/// Both 0.144 representations of a subagent activity share this protocol ID.
+/// No descriptive attribute is a valid correlation fallback when the IDs differ.
+pub(crate) fn subagent_activity_tool_call_id(protocol_id: &str) -> String {
+    subagent_tool_call_id(protocol_id)
+}
+
 fn raw_event(event: impl Serialize) -> serde_json::Value {
     serde_json::to_value(event).unwrap_or_else(|_| json!({}))
 }
@@ -499,11 +755,17 @@ fn content(detail: Option<String>) -> Vec<ToolCallContent> {
 
 fn subagent_display_name(
     nickname: Option<&str>,
+    agent_path: Option<&str>,
     fallback_thread_id: Option<ThreadId>,
 ) -> Option<String> {
     nickname
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
+        .or_else(|| {
+            agent_path
+                .and_then(|path| path.rsplit('/').find(|segment| !segment.is_empty()))
+                .map(ToString::to_string)
+        })
         .or_else(|| fallback_thread_id.map(|thread_id| format!("subagent {thread_id}")))
 }
 
@@ -538,7 +800,7 @@ fn format_agent_refs(agents: &[CollabAgentRef]) -> Option<String> {
         agents
             .iter()
             .map(|agent| {
-                subagent_display_name(agent.agent_nickname.as_deref(), Some(agent.thread_id))
+                subagent_display_name(agent.agent_nickname.as_deref(), None, Some(agent.thread_id))
                     .unwrap_or_else(|| agent.thread_id.to_string())
             })
             .collect::<Vec<_>>()
@@ -555,9 +817,12 @@ fn format_agent_statuses(statuses: &[CollabAgentStatusEntry]) -> Option<String> 
         statuses
             .iter()
             .map(|entry| {
-                let display_name =
-                    subagent_display_name(entry.agent_nickname.as_deref(), Some(entry.thread_id))
-                        .unwrap_or_else(|| entry.thread_id.to_string());
+                let display_name = subagent_display_name(
+                    entry.agent_nickname.as_deref(),
+                    None,
+                    Some(entry.thread_id),
+                )
+                .unwrap_or_else(|| entry.thread_id.to_string());
                 format!("{display_name}: {}", agent_status_label(&entry.status))
             })
             .collect::<Vec<_>>()
@@ -598,6 +863,7 @@ fn agent_status_label(status: &AgentStatus) -> String {
 mod tests {
     use super::*;
     use codex_protocol::{
+        AgentPath,
         config_types::{ApprovalsReviewer, CollaborationMode, ModeKind, Settings},
         models::PermissionProfile,
         openai_models::ReasoningEffort,
@@ -635,7 +901,10 @@ mod tests {
             session_source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
-                agent_path: None,
+                agent_path: Some(
+                    AgentPath::from_string("/root/research/explorer".to_string())
+                        .expect("agent path should be valid"),
+                ),
                 agent_nickname: Some("Galileo".to_string()),
                 agent_role: Some("explorer".to_string()),
             }),
@@ -668,6 +937,10 @@ mod tests {
         );
         assert_eq!(registration.nickname.as_deref(), Some("Galileo"));
         assert_eq!(registration.role.as_deref(), Some("explorer"));
+        assert_eq!(
+            registration.agent_path.as_deref(),
+            Some("/root/research/explorer")
+        );
     }
 
     #[test]
@@ -704,6 +977,11 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("Galileo")
         );
+        assert_eq!(
+            meta.get(CODEX_ACP_AGENT_PATH_KEY)
+                .and_then(|value| value.as_str()),
+            Some("/root/research/explorer")
+        );
         assert!(matches!(
             notification.update,
             SessionUpdate::SessionInfoUpdate(update) if update.title.value().map(String::as_str) == Some("Galileo")
@@ -711,20 +989,165 @@ mod tests {
     }
 
     #[test]
+    fn agent_path_is_optional_metadata_and_visible_title_fallback() {
+        assert_eq!(
+            subagent_display_name(None, Some("/root/research/explorer"), None).as_deref(),
+            Some("explorer")
+        );
+        assert_eq!(
+            subagent_display_name(Some("Galileo"), Some("/root/research/explorer"), None,)
+                .as_deref(),
+            Some("Galileo")
+        );
+
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let mut snapshot = thread_snapshot(parent_thread_id);
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) =
+            &mut snapshot.session_source
+        else {
+            panic!("fixture should be a spawned subagent");
+        };
+        *agent_path = None;
+
+        let registration = registration_for_thread(child_thread_id, &snapshot)
+            .expect("thread spawn subagent should register");
+        let notification = session_created_notification(&registration, &snapshot);
+        let meta = notification
+            .meta
+            .expect("notification should carry metadata");
+        assert!(!meta.contains_key(CODEX_ACP_AGENT_PATH_KEY));
+    }
+
+    #[test]
+    fn subagent_activity_projects_navigable_breadcrumbs() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let parent_session_id = SessionId::new("parent-runtime-session-id");
+
+        for (kind, event_type, status, title) in [
+            (
+                SubAgentActivityKind::Started,
+                "activity_started",
+                "running",
+                "Started explorer",
+            ),
+            (
+                SubAgentActivityKind::Interacted,
+                "activity_interacted",
+                "running",
+                "Contacted explorer",
+            ),
+            (
+                SubAgentActivityKind::Interrupted,
+                "activity_interrupted",
+                "interrupted",
+                "Interrupted explorer",
+            ),
+        ] {
+            let projection = projection_for_event(
+                &EventMsg::SubAgentActivity(SubAgentActivityEvent {
+                    event_id: format!("event-{kind:?}"),
+                    occurred_at_ms: 12,
+                    agent_thread_id: child_thread_id,
+                    agent_path: "/root/research/explorer"
+                        .try_into()
+                        .expect("agent path should be valid"),
+                    kind,
+                }),
+                parent_thread_id,
+                &parent_session_id,
+            )
+            .expect("activity should project");
+            let SubagentProjection::ToolCall(tool_call) = projection else {
+                panic!("activity should create a tool call");
+            };
+
+            assert_eq!(tool_call.title, title);
+            assert_eq!(tool_call.status, ToolCallStatus::Completed);
+            assert_eq!(
+                tool_call.tool_call_id.0.as_ref(),
+                subagent_activity_tool_call_id(&format!("event-{kind:?}"))
+            );
+            let meta = tool_call.meta.expect("activity should include metadata");
+            assert_eq!(
+                meta.get(CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY)
+                    .and_then(|value| value.as_str()),
+                Some(event_type)
+            );
+            assert_eq!(
+                meta.get(CODEX_ACP_PARENT_SESSION_ID_KEY)
+                    .and_then(|value| value.as_str()),
+                Some("parent-runtime-session-id")
+            );
+            assert_eq!(
+                meta.get(CODEX_ACP_CHILD_THREAD_ID_KEY)
+                    .and_then(|value| value.as_str()),
+                Some(child_thread_id.to_string().as_str())
+            );
+            assert_eq!(
+                meta.get(CODEX_ACP_AGENT_STATUS_KEY)
+                    .and_then(|value| value.as_str()),
+                Some(status)
+            );
+        }
+    }
+
+    #[test]
+    fn subagent_activity_uses_typed_thread_identity_for_self_reference() {
+        let current_thread_id = ThreadId::new();
+        let event = EventMsg::SubAgentActivity(SubAgentActivityEvent {
+            event_id: "self".to_string(),
+            occurred_at_ms: 0,
+            agent_thread_id: current_thread_id,
+            agent_path: "/root".try_into().expect("root path should be valid"),
+            kind: SubAgentActivityKind::Started,
+        });
+        assert!(
+            projection_for_event(
+                &event,
+                current_thread_id,
+                &SessionId::new("session-id-with-a-different-serialization"),
+            )
+            .is_none()
+        );
+
+        let distinct_thread_id = ThreadId::new();
+        let EventMsg::SubAgentActivity(event) = event else {
+            unreachable!();
+        };
+        assert!(
+            projection_for_event(
+                &EventMsg::SubAgentActivity(SubAgentActivityEvent {
+                    agent_thread_id: distinct_thread_id,
+                    ..event
+                }),
+                current_thread_id,
+                &SessionId::new("parent-session"),
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
     fn collab_spawn_events_project_compact_breadcrumbs() {
         let parent_thread_id = ThreadId::new();
         let child_thread_id = ThreadId::new();
 
-        let begin = projection_for_collab_event(&EventMsg::CollabAgentSpawnBegin(
-            codex_protocol::protocol::CollabAgentSpawnBeginEvent {
-                call_id: "spawn-1".to_string(),
-                sender_thread_id: parent_thread_id,
-                prompt: "inspect the renderer".to_string(),
-                model: "gpt-5.5".to_string(),
-                reasoning_effort: ReasoningEffort::Medium,
-                started_at_ms: 0,
-            },
-        ))
+        let begin = projection_for_event(
+            &EventMsg::CollabAgentSpawnBegin(
+                codex_protocol::protocol::CollabAgentSpawnBeginEvent {
+                    call_id: "spawn-1".to_string(),
+                    sender_thread_id: parent_thread_id,
+                    prompt: "inspect the renderer".to_string(),
+                    model: "gpt-5.5".to_string(),
+                    reasoning_effort: ReasoningEffort::Medium,
+                    started_at_ms: 0,
+                },
+            ),
+            parent_thread_id,
+            &SessionId::new(parent_thread_id.to_string()),
+        )
         .expect("spawn begin should project");
         let SubagentProjection::ToolCall(tool_call) = begin else {
             panic!("expected ToolCall projection");
@@ -747,8 +1170,8 @@ mod tests {
             "spawn begin should not invent a child before Codex returns it"
         );
 
-        let end = projection_for_collab_event(&EventMsg::CollabAgentSpawnEnd(
-            codex_protocol::protocol::CollabAgentSpawnEndEvent {
+        let end = projection_for_event(
+            &EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                 call_id: "spawn-1".to_string(),
                 sender_thread_id: parent_thread_id,
                 new_thread_id: Some(child_thread_id),
@@ -759,8 +1182,10 @@ mod tests {
                 reasoning_effort: ReasoningEffort::Medium,
                 status: AgentStatus::Running,
                 completed_at_ms: 0,
-            },
-        ))
+            }),
+            parent_thread_id,
+            &SessionId::new(parent_thread_id.to_string()),
+        )
         .expect("spawn end should project");
         let SubagentProjection::ToolCallUpdate(update) = end else {
             panic!("expected ToolCallUpdate projection");
@@ -781,8 +1206,8 @@ mod tests {
     fn collab_waiting_end_projects_structured_agent_statuses() {
         let parent_thread_id = ThreadId::new();
         let child_thread_id = ThreadId::new();
-        let projection = projection_for_collab_event(&EventMsg::CollabWaitingEnd(
-            codex_protocol::protocol::CollabWaitingEndEvent {
+        let projection = projection_for_event(
+            &EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
                 sender_thread_id: parent_thread_id,
                 call_id: "wait-1".to_string(),
                 agent_statuses: vec![codex_protocol::protocol::CollabAgentStatusEntry {
@@ -793,8 +1218,10 @@ mod tests {
                 }],
                 statuses: HashMap::new(),
                 completed_at_ms: 0,
-            },
-        ))
+            }),
+            parent_thread_id,
+            &SessionId::new(parent_thread_id.to_string()),
+        )
         .expect("waiting end should project");
         let SubagentProjection::ToolCallUpdate(update) = projection else {
             panic!("expected ToolCallUpdate projection");
@@ -825,6 +1252,184 @@ mod tests {
                 .and_then(|value| value.get("completed"))
                 .is_some(),
             "status={status:?}"
+        );
+    }
+
+    #[test]
+    fn collab_waiting_end_keeps_partial_and_empty_waits_in_progress() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let parent_session_id = SessionId::new(parent_thread_id.to_string());
+
+        for (call_id, statuses, expected_title) in [
+            (
+                "wait-running",
+                vec![
+                    AgentStatus::Completed(Some("done".to_string())),
+                    AgentStatus::Running,
+                ],
+                "Subagents still running",
+            ),
+            ("wait-empty", Vec::new(), "Checked subagents"),
+        ] {
+            let agent_statuses = statuses
+                .into_iter()
+                .enumerate()
+                .map(|(index, status)| CollabAgentStatusEntry {
+                    thread_id: if index == 0 {
+                        child_thread_id
+                    } else {
+                        ThreadId::new()
+                    },
+                    agent_nickname: None,
+                    agent_role: None,
+                    status,
+                })
+                .collect();
+            let projection = projection_for_event(
+                &EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                    sender_thread_id: parent_thread_id,
+                    call_id: call_id.to_string(),
+                    agent_statuses,
+                    statuses: HashMap::new(),
+                    completed_at_ms: 0,
+                }),
+                parent_thread_id,
+                &parent_session_id,
+            )
+            .expect("waiting end should project");
+            let SubagentProjection::ToolCallUpdate(update) = projection else {
+                panic!("waiting end should update a tool call");
+            };
+            assert_eq!(update.fields.title.as_deref(), Some(expected_title));
+            assert_eq!(update.fields.status, Some(ToolCallStatus::InProgress));
+        }
+    }
+
+    #[test]
+    fn repeated_waits_coalesce_by_parent_and_normalized_receivers() {
+        let parent_thread_id = ThreadId::new();
+        let other_parent_thread_id = ThreadId::new();
+        let first_child_thread_id = ThreadId::new();
+        let second_child_thread_id = ThreadId::new();
+        let parent_session_id = SessionId::new(parent_thread_id.to_string());
+        let mut state = SubagentProjectionState::default();
+
+        let project_begin = |state: &mut SubagentProjectionState,
+                             sender_thread_id,
+                             call_id: &str,
+                             receiver_thread_ids| {
+            let event =
+                EventMsg::CollabWaitingBegin(codex_protocol::protocol::CollabWaitingBeginEvent {
+                    sender_thread_id,
+                    receiver_thread_ids,
+                    receiver_agents: Vec::new(),
+                    call_id: call_id.to_string(),
+                    started_at_ms: 0,
+                });
+            let mut projection = projection_for_event(&event, parent_thread_id, &parent_session_id)
+                .expect("waiting begin should project");
+            state.coalesce_wait_projection(&event, &mut projection);
+            let SubagentProjection::ToolCall(tool_call) = projection else {
+                panic!("waiting begin should create a tool call");
+            };
+            tool_call.tool_call_id.to_string()
+        };
+
+        let first = project_begin(
+            &mut state,
+            parent_thread_id,
+            "wait-1",
+            vec![first_child_thread_id, second_child_thread_id],
+        );
+        let repeated = project_begin(
+            &mut state,
+            parent_thread_id,
+            "wait-2",
+            vec![
+                second_child_thread_id,
+                first_child_thread_id,
+                first_child_thread_id,
+            ],
+        );
+        let different_group = project_begin(
+            &mut state,
+            parent_thread_id,
+            "wait-3",
+            vec![first_child_thread_id],
+        );
+        let different_parent = project_begin(
+            &mut state,
+            other_parent_thread_id,
+            "wait-4",
+            vec![first_child_thread_id, second_child_thread_id],
+        );
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, different_group);
+        assert_ne!(first, different_parent);
+
+        let repeated_end =
+            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id: parent_thread_id,
+                call_id: "wait-2".to_string(),
+                agent_statuses: vec![CollabAgentStatusEntry {
+                    thread_id: first_child_thread_id,
+                    agent_nickname: None,
+                    agent_role: None,
+                    status: AgentStatus::Completed(None),
+                }],
+                statuses: HashMap::new(),
+                completed_at_ms: 0,
+            });
+        let mut projection =
+            projection_for_event(&repeated_end, parent_thread_id, &parent_session_id)
+                .expect("waiting end should project");
+        state.coalesce_wait_projection(&repeated_end, &mut projection);
+        let SubagentProjection::ToolCallUpdate(update) = projection else {
+            panic!("waiting end should update a tool call");
+        };
+        assert_eq!(update.tool_call_id.0.as_ref(), first);
+        assert_eq!(update.fields.status, Some(ToolCallStatus::Completed));
+
+        let first_end =
+            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id: parent_thread_id,
+                call_id: "wait-1".to_string(),
+                agent_statuses: Vec::new(),
+                statuses: HashMap::new(),
+                completed_at_ms: 0,
+            });
+        let mut projection = projection_for_event(&first_end, parent_thread_id, &parent_session_id)
+            .expect("waiting end should project");
+        state.coalesce_wait_projection(&first_end, &mut projection);
+
+        let next_cycle = project_begin(
+            &mut state,
+            parent_thread_id,
+            "wait-next-cycle",
+            vec![first_child_thread_id, second_child_thread_id],
+        );
+        assert_ne!(next_cycle, first, "a completed wait group must be reusable");
+
+        let end_without_begin =
+            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id: parent_thread_id,
+                call_id: "missing-begin".to_string(),
+                agent_statuses: Vec::new(),
+                statuses: HashMap::new(),
+                completed_at_ms: 0,
+            });
+        let mut projection =
+            projection_for_event(&end_without_begin, parent_thread_id, &parent_session_id)
+                .expect("waiting end should project");
+        state.coalesce_wait_projection(&end_without_begin, &mut projection);
+        let SubagentProjection::ToolCallUpdate(update) = projection else {
+            panic!("waiting end should update a tool call");
+        };
+        assert_eq!(
+            update.tool_call_id.0.as_ref(),
+            "codex-acp:subagent:missing-begin"
         );
     }
 }

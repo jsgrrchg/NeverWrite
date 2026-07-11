@@ -125,4 +125,33 @@ describe("buildAiSessionHierarchyGroups", () => {
             "second",
         ]);
     });
+
+    it("keeps self-parented and cyclic historical sessions visible as roots", () => {
+        const selfParented = session("self", "Self parented", {
+            parentSessionId: "self",
+            runtimeState: "persisted_only",
+        });
+        const cycleA = session("cycle-a", "Cycle A", {
+            parentSessionId: "cycle-b",
+            runtimeState: "persisted_only",
+        });
+        const cycleB = session("cycle-b", "Cycle B", {
+            parentSessionId: "cycle-a",
+            runtimeState: "persisted_only",
+        });
+
+        const result = buildAiSessionHierarchyGroups({
+            sessions: [selfParented, cycleA, cycleB],
+        });
+
+        expect(result.rootSessionIds).toEqual(["self", "cycle-a", "cycle-b"]);
+        expect(result.groups.map((group) => group.root.sessionId)).toEqual([
+            "self",
+            "cycle-a",
+            "cycle-b",
+        ]);
+        expect(result.groups.every((group) => group.children.length === 0)).toBe(
+            true,
+        );
+    });
 });

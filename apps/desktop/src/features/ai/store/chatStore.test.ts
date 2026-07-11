@@ -15175,6 +15175,130 @@ describe("chatStore", () => {
         });
     });
 
+    it("keeps parent and child review decisions isolated after restoring the same path and tool id", async () => {
+        const sharedPath = "/vault/src/shared.md";
+        const sharedToolMessage = {
+            id: "tool:shared-tool-call",
+            role: "assistant" as const,
+            kind: "tool" as const,
+            title: "Edit shared file",
+            content: "Updated shared.md",
+            timestamp: 10,
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: sharedPath,
+            },
+        };
+        const parentFile = createTrackedFile(
+            sharedPath,
+            "base line",
+            "parent line",
+        );
+        const childFile = createTrackedFile(
+            sharedPath,
+            "base line",
+            "child line",
+        );
+        const parent = createSessionWithTrackedFiles("parent-session", [
+            parentFile,
+        ]);
+        parent.messages = [
+            {
+                ...sharedToolMessage,
+                diffs: [
+                    {
+                        path: sharedPath,
+                        kind: "update",
+                        old_text: "base line",
+                        new_text: "parent line",
+                    },
+                ],
+            },
+        ];
+        const child = createSessionWithTrackedFiles("child-session", [childFile]);
+        child.parentSessionId = parent.sessionId;
+        child.messages = [
+            {
+                ...sharedToolMessage,
+                diffs: [
+                    {
+                        path: sharedPath,
+                        kind: "update",
+                        old_text: "base line",
+                        new_text: "child line",
+                    },
+                ],
+            },
+        ];
+
+        // A structured clone models the persisted/restored session boundary:
+        // no object identity is shared between the parent and child snapshots.
+        const restoredSessions = structuredClone({
+            [parent.sessionId]: parent,
+            [child.sessionId]: child,
+        });
+        resetChatStore();
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState({
+            sessionsById: restoredSessions,
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: parent.sessionId,
+        });
+
+        useChatStore
+            .getState()
+            .keepEditedFile(parent.sessionId, parentFile.identityKey);
+
+        expect(getVisibleBuffer(parent.sessionId)).toHaveLength(0);
+        expect(getVisibleBuffer(child.sessionId)).toEqual([
+            expect.objectContaining({ currentText: "child line" }),
+        ]);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(childFile.currentText);
+            }
+            if (command === "ai_restore_text_file") {
+                return {
+                    vault_path: "/vault",
+                    kind: "upsert",
+                    note: null,
+                    note_id: null,
+                    entry: null,
+                    relative_path: "src/shared.md",
+                    origin: "agent",
+                    op_id: "child-review-reject",
+                    revision: 2,
+                    content_hash: hashTextContent(childFile.diffBase),
+                    graph_revision: 1,
+                };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .rejectEditedFile(child.sessionId, childFile.identityKey);
+
+        expect(getVisibleBuffer(child.sessionId)).toHaveLength(0);
+        expect(getVisibleBuffer(parent.sessionId)).toHaveLength(0);
+        expect(
+            useChatStore.getState().sessionsById[parent.sessionId]?.messages[0]
+                ?.id,
+        ).toBe("tool:shared-tool-call");
+        expect(
+            useChatStore.getState().sessionsById[child.sessionId]?.messages[0]
+                ?.id,
+        ).toBe("tool:shared-tool-call");
+    });
+
     it("restores composer state when closing a subagent with an edited queued message", () => {
         const parent = {
             ...createSessionWithTrackedFiles("session-parent", []),

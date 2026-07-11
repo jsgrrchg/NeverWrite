@@ -1352,6 +1352,115 @@ describe("AIChatMessageItem read tool targets", () => {
         });
     });
 
+    it("labels subagent breadcrumbs from the resolved child session", () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "child-session": {
+                    sessionId: "child-session",
+                    historySessionId: "child-session",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    parentSessionId: "parent-session",
+                    persistedTitle: "Franklin",
+                    runtimeState: "live",
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["child-session"],
+        }));
+
+        renderMessage({
+            id: "tool:subagent-name",
+            role: "assistant",
+            kind: "tool",
+            title: "Started explorer",
+            content: "Agent: /root/explorer",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "child-session",
+            },
+            meta: {
+                tool: "other",
+                status: "completed",
+            },
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Open Franklin" }),
+        ).toBeEnabled();
+        expect(
+            screen.queryByRole("button", { name: "Open explorer" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("updates a breadcrumb label when the child session arrives later", () => {
+        renderMessage({
+            id: "tool:subagent-late-name",
+            role: "assistant",
+            kind: "tool",
+            title: "Started explorer",
+            content: "Agent: /root/explorer",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "runtime-child",
+            },
+            meta: {
+                tool: "other",
+                status: "completed",
+            },
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Open explorer" }),
+        ).toBeDisabled();
+
+        act(() => {
+            useChatStore.setState((state) => ({
+                ...state,
+                sessionsById: {
+                    ...state.sessionsById,
+                    "child-session": {
+                        sessionId: "child-session",
+                        historySessionId: "child-session",
+                        runtimeSessionId: "runtime-child",
+                        status: "idle",
+                        runtimeId: "codex-acp",
+                        modelId: "test-model",
+                        modeId: "default",
+                        models: [],
+                        modes: [],
+                        configOptions: [],
+                        messages: [],
+                        attachments: [],
+                        parentSessionId: "parent-session",
+                        persistedTitle: "Franklin",
+                        runtimeState: "live",
+                        activeWorkCycleId: null,
+                        visibleWorkCycleId: null,
+                        resumeContextPending: false,
+                    },
+                },
+                sessionOrder: [...state.sessionOrder, "child-session"],
+            }));
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Open Franklin" }),
+        ).toBeEnabled();
+    });
+
     it("opens restored subagent sessions by history id from persisted breadcrumbs", async () => {
         useEditorStore.getState().hydrateWorkspace(
             [
