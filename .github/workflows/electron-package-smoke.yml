@@ -60,8 +60,8 @@ jobs:
               run: |
                   cargo build -p neverwrite-native-backend --quiet --release --target aarch64-apple-darwin
                   cargo build -p neverwrite-native-backend --quiet --release --target x86_64-apple-darwin
-                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin
-                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin
+                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin --bins
+                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin --bins
 
             - name: Download embedded Node runtimes
               shell: bash
@@ -87,6 +87,8 @@ jobs:
                   echo "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN_X64=$GITHUB_WORKSPACE/target/x86_64-apple-darwin/release/neverwrite-native-backend" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_ARM64=$GITHUB_WORKSPACE/vendor/codex-acp/target/aarch64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_X64=$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN_ARM64=$GITHUB_WORKSPACE/vendor/codex-acp/target/aarch64-apple-darwin/release/codex-code-mode-host" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN_X64=$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-apple-darwin/release/codex-code-mode-host" >> "$GITHUB_ENV"
 
             - name: Package unsigned Electron app
               working-directory: apps/desktop
@@ -127,7 +129,7 @@ jobs:
                     local archs
                     archs="$(lipo -archs "$binary_path")"
                     echo "$binary_path: $archs"
-                    if [[ "$archs" != *"arm64"* || "$archs" != *"x86_64"* ]]; then
+                    if [[ "$archs" != "arm64 x86_64" && "$archs" != "x86_64 arm64" ]]; then
                       echo "Expected universal arm64/x86_64 binary: $binary_path" >&2
                       exit 1
                     fi
@@ -135,6 +137,7 @@ jobs:
 
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/neverwrite-native-backend"
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-acp"
+                  verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-code-mode-host"
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/embedded/node/bin/node"
 
     windows-x64:
@@ -169,7 +172,7 @@ jobs:
               shell: bash
               run: |
                   cargo build -p neverwrite-native-backend --quiet --release --target x86_64-pc-windows-msvc
-                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-pc-windows-msvc
+                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-pc-windows-msvc --bins
 
             - name: Download embedded Node runtime
               shell: bash
@@ -188,8 +191,10 @@ jobs:
               run: |
                   NATIVE_BACKEND_BIN="$GITHUB_WORKSPACE/target/x86_64-pc-windows-msvc/release/neverwrite-native-backend.exe"
                   CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-pc-windows-msvc/release/codex-acp.exe"
+                  CODEX_CODE_MODE_HOST_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-pc-windows-msvc/release/codex-code-mode-host.exe"
                   echo "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN=$NATIVE_BACKEND_BIN" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN=$CODEX_CODE_MODE_HOST_BIN" >> "$GITHUB_ENV"
 
             - name: Package unsigned Electron app
               working-directory: apps/desktop
@@ -202,6 +207,18 @@ jobs:
               env:
                   NEVERWRITE_ELECTRON_DIST_ARCH: x64
               run: npm run electron:sidecar:smoke:packaged
+
+            - name: Verify packaged Codex runtime files
+              shell: bash
+              run: |
+                  for binary in codex-acp.exe codex-code-mode-host.exe; do
+                    mapfile -t matches < <(find "$NEVERWRITE_ELECTRON_OUTPUT_DIR" -type f -path "*/resources/native-backend/binaries/$binary")
+                    if [[ "${#matches[@]}" -ne 1 ]]; then
+                      echo "Expected one packaged $binary, found ${#matches[@]}." >&2
+                      exit 1
+                    fi
+                    echo "Packaged $binary: ${matches[0]}"
+                  done
 
     linux:
         name: ${{ matrix.name }}
@@ -276,6 +293,22 @@ jobs:
               working-directory: apps/desktop
               run: npm ci
 
+            - name: Build target-specific sidecars
+              shell: bash
+              run: |
+                  cargo build -p neverwrite-native-backend --quiet --release --target ${{ matrix.target }}
+                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
+
+            - name: Export sidecar environment
+              shell: bash
+              run: |
+                  NATIVE_BACKEND_BIN="$GITHUB_WORKSPACE/target/${{ matrix.target }}/release/neverwrite-native-backend"
+                  CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp"
+                  CODEX_CODE_MODE_HOST_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-code-mode-host"
+                  echo "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN=$NATIVE_BACKEND_BIN" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN=$CODEX_CODE_MODE_HOST_BIN" >> "$GITHUB_ENV"
+
             - name: Package unsigned Electron app
               working-directory: apps/desktop
               env:
@@ -298,6 +331,24 @@ jobs:
                   NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
                   NEVERWRITE_ELECTRON_DIST_ARCH: ${{ matrix.arch }}
               run: npm run electron:app:smoke:packaged
+
+            - name: Verify packaged Codex runtime files
+              shell: bash
+              env:
+                  NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
+              run: |
+                  for binary in codex-acp codex-code-mode-host; do
+                    mapfile -t matches < <(find "$NEVERWRITE_ELECTRON_OUTPUT_DIR" -type f -path "*/resources/native-backend/binaries/$binary")
+                    if [[ "${#matches[@]}" -ne 1 ]]; then
+                      echo "Expected one packaged $binary, found ${#matches[@]}." >&2
+                      exit 1
+                    fi
+                    if [[ ! -x "${matches[0]}" ]]; then
+                      echo "Packaged $binary is not executable: ${matches[0]}" >&2
+                      exit 1
+                    fi
+                    echo "Packaged $binary: ${matches[0]}"
+                  done
 
             - name: Stage release assets and feed metadata
               shell: bash

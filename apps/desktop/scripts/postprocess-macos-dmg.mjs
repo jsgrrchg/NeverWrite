@@ -119,6 +119,24 @@ function assertElectronFrameworkBinary(appPath) {
     }
 }
 
+function assertCodexRuntimeSignatures(appPath) {
+    const binariesDir = path.join(
+        appPath,
+        "Contents",
+        "Resources",
+        "native-backend",
+        "binaries",
+    );
+    for (const binaryName of ["codex-acp", "codex-code-mode-host"]) {
+        run("codesign", [
+            "--verify",
+            "--strict",
+            "--verbose=2",
+            path.join(binariesDir, binaryName),
+        ]);
+    }
+}
+
 function attachDmg(dmgPath, mountPoint) {
     fs.mkdirSync(mountPoint, { recursive: true });
     run("hdiutil", [
@@ -147,6 +165,7 @@ function detachDmg(mountPoint) {
 
 function validateMountedApp(appPath, requireNotarization) {
     assertElectronFrameworkBinary(appPath);
+    assertCodexRuntimeSignatures(appPath);
     run("codesign", [
         "--verify",
         "--deep",

@@ -7,6 +7,11 @@ import {
     rpmArchForBuildTarget,
 } from "../../../scripts/electron-release-lib.mjs";
 
+const REQUIRED_CODEX_RUNTIME_PATHS = [
+    "/native-backend/binaries/codex-acp",
+    "/native-backend/binaries/codex-code-mode-host",
+];
+
 function parseArgs(argv) {
     const args = {
         stagedAssetsDir: null,
@@ -90,6 +95,16 @@ function assertRpmSignature(rpmPath) {
     }
 }
 
+function assertRuntimeContents(files) {
+    for (const runtimePath of REQUIRED_CODEX_RUNTIME_PATHS) {
+        if (!files.includes(runtimePath)) {
+            throw new Error(
+                `RPM package is missing required Codex runtime binary: ${runtimePath}`,
+            );
+        }
+    }
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
     assertRpmAvailable();
@@ -105,6 +120,7 @@ function main() {
     }
     const info = runCommand("rpm", ["-qip", rpmPath]);
     const files = runCommand("rpm", ["-qlp", rpmPath]);
+    assertRuntimeContents(files);
 
     const nameMatch = info.match(/^Name\s*:\s*(\S+)/m);
     if (!nameMatch || nameMatch[1] !== "neverwrite") {
