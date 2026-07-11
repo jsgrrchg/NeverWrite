@@ -92,7 +92,11 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     const hasChanges = segment.summary.changeCount > 0;
     const visibleEntries = expanded
         ? segment.entries
-        : segment.entries.filter((entry) => entry.policy !== "groupable");
+        : segment.entries.filter(
+              (entry) =>
+                  entry.policy === "standalone-attention" ||
+                  entry.policy === "standalone-unknown",
+          );
     const activityState = isCurrentTurnTail ? "In progress" : "Completed";
     const accessibleChangeSummary = hasChanges
         ? ` ${segment.summary.changeStats.additions} additions, ${segment.summary.changeStats.deletions} deletions. Changed.`

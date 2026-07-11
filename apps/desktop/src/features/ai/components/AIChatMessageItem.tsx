@@ -563,21 +563,25 @@ function ThinkingMessage({
     const content = stripMarkdownBold(message.content).trim();
 
     return (
-        <div className="min-w-0 max-w-full">
+        <div
+            className="group min-w-0 max-w-full rounded-md px-2 py-1 transition-colors hover:bg-bg-elevated"
+            data-reasoning-activity="true"
+            style={{ color: "var(--text-secondary)", fontSize: "0.83em" }}
+        >
             <button
                 type="button"
                 onClick={() => {
                     if (content || message.inProgress) setExpanded((v) => !v);
                 }}
-                className="flex items-center gap-2 py-0.5"
+                className="flex min-h-7 w-full items-center gap-2 text-left"
                 style={{
                     color: "var(--text-secondary)",
                     backgroundColor: "transparent",
                     border: "none",
                     cursor:
                         !content && !message.inProgress ? "default" : "pointer",
-                    opacity: 0.7,
-                    fontSize: "0.85em",
+                    opacity: 0.8,
+                    padding: 0,
                 }}
             >
                 <svg
@@ -596,20 +600,34 @@ function ThinkingMessage({
                 >
                     <path d="M4.5 2.5L8 6L4.5 9.5" />
                 </svg>
-                <span>Thinking{message.inProgress ? "..." : ""}</span>
+                <span className="min-w-0 flex-1 truncate font-medium">
+                    Reasoning{message.inProgress ? "..." : ""}
+                </span>
+                {message.inProgress ? (
+                    <span
+                        aria-label="Reasoning in progress"
+                        className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+                        style={{ backgroundColor: "var(--accent)" }}
+                    />
+                ) : null}
             </button>
             {expanded && (content || message.inProgress) && (
-                <div
-                    className="mt-1 whitespace-pre-wrap pl-5 italic"
+                <pre
+                    className="mt-1 max-h-40 overflow-y-auto rounded px-2 py-1.5"
                     style={{
+                        backgroundColor: "var(--bg-tertiary)",
+                        border: "1px solid var(--border)",
                         color: "var(--text-secondary)",
-                        opacity: 0.7,
+                        fontSize: "0.96em",
+                        lineHeight: 1.4,
+                        margin: 0,
                         overflowWrap: "anywhere",
+                        whiteSpace: "pre-wrap",
                         wordBreak: "break-word",
                     }}
                 >
                     {content}
-                </div>
+                </pre>
             )}
         </div>
     );

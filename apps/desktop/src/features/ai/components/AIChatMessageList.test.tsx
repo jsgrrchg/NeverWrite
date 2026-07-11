@@ -109,6 +109,86 @@ describe("AIChatMessageList streaming run indicator", () => {
         resetChatRowUiStore();
     });
 
+    it("keeps reasoning, web, edit, and MCP activity in one chronological rail", () => {
+        renderComponent(
+            <AIChatMessageList
+                messages={[
+                    {
+                        content: "Checking sources",
+                        id: "thinking:1",
+                        kind: "thinking",
+                        role: "assistant",
+                        timestamp: 1,
+                        title: "Thinking",
+                    },
+                    {
+                        content: "Search: site:aljazeera.com",
+                        id: "tool:web",
+                        kind: "tool",
+                        meta: {
+                            status: "completed",
+                            target: "site:aljazeera.com",
+                            tool: "web_search",
+                        },
+                        role: "assistant",
+                        timestamp: 2,
+                        title: "Web search",
+                    },
+                    {
+                        content: "Comparing results",
+                        id: "thinking:2",
+                        kind: "thinking",
+                        role: "assistant",
+                        timestamp: 3,
+                        title: "Thinking",
+                    },
+                    {
+                        content: "Updated daily.md",
+                        id: "tool:edit",
+                        kind: "tool",
+                        meta: {
+                            status: "completed",
+                            target: "/vault/daily.md",
+                            tool: "edit",
+                        },
+                        role: "assistant",
+                        timestamp: 4,
+                        title: "Edit daily note",
+                    },
+                    {
+                        content: "Fetched market data",
+                        id: "tool:mcp",
+                        kind: "tool",
+                        meta: {
+                            status: "completed",
+                            tool: "mcp_market_data",
+                        },
+                        role: "assistant",
+                        timestamp: 5,
+                        title: "Query market MCP",
+                    },
+                ]}
+                status="idle"
+            />,
+        );
+
+        expect(document.querySelectorAll("[data-activity-rail]")).toHaveLength(1);
+        expect(document.querySelector("[data-activity-count]")).toHaveAttribute(
+            "data-activity-count",
+            "3",
+        );
+
+        fireEvent.click(
+            screen.getByRole("button", { name: /show full activity/i }),
+        );
+
+        expect(
+            Array.from(
+                document.querySelectorAll<HTMLElement>("[data-chat-message-id]"),
+            ).map((entry) => entry.dataset.chatMessageId),
+        ).toEqual(["thinking:1", "tool:web", "thinking:2", "tool:edit", "tool:mcp"]);
+    });
+
     it("renders the elapsed timer during streaming and hides it when the run ends", () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date("2026-03-12T15:00:00Z"));

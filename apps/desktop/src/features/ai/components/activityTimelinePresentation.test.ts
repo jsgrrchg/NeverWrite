@@ -97,8 +97,68 @@ describe("buildActivityTimelineRows", () => {
         ]);
     });
 
+    it("keeps reasoning and tools in one chronological rail", () => {
+        const reasoning = createMessage("thinking-1", {
+            content: "Inspecting sources",
+            kind: "thinking",
+            title: "Thinking",
+        });
+        const webSearch = createTool("tool:web-search", {
+            meta: { status: "completed", tool: "web_search" },
+            title: "Web search",
+        });
+        const edit = createTool("tool:edit", {
+            diffs: [
+                {
+                    kind: "update",
+                    new_text: "after",
+                    old_text: "before",
+                    path: "/vault/note.md",
+                },
+            ],
+            meta: { status: "completed", tool: "edit" },
+            title: "Edit note",
+        });
+        const mcp = createTool("tool:mcp", {
+            meta: { status: "completed", tool: "mcp_browser_query" },
+            title: "Query browser MCP",
+        });
+
+        const rows = buildActivityTimelineRows([
+            reasoning,
+            webSearch,
+            createMessage("thinking-2", {
+                kind: "thinking",
+                title: "Thinking",
+            }),
+            edit,
+            mcp,
+        ]);
+
+        const segment = getOnlySegment(rows);
+        expect(rows).toHaveLength(1);
+        expect(segment.entries.map((entry) => entry.message)).toEqual([
+            reasoning,
+            webSearch,
+            expect.objectContaining({ id: "thinking-2" }),
+            edit,
+            mcp,
+        ]);
+        expect(segment.entries.map((entry) => entry.policy)).toEqual([
+            "groupable",
+            "groupable",
+            "groupable",
+            "standalone-change",
+            "standalone-unknown",
+        ]);
+        expect(segment.summary).toMatchObject({
+            actionCount: 3,
+            latestMessageId: "tool:mcp",
+            reasoningCount: 2,
+        });
+    });
+
     it.each([
-        "thinking",
         "status",
         "permission",
         "error",

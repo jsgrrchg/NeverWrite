@@ -85,6 +85,67 @@ describe("ToolActivitySegment", () => {
         );
     });
 
+    it("renders reasoning, web, edit, and MCP entries in their original order", () => {
+        const reasoning: AIChatMessage = {
+            content: "Checking sources",
+            id: "thinking-1",
+            kind: "thinking",
+            role: "assistant",
+            timestamp: 1,
+            title: "Thinking",
+        };
+        const webSearch = createTool("tool:web", {
+            meta: {
+                status: "completed",
+                tool: "web_search",
+            },
+            timestamp: 2,
+            title: "Web search",
+        });
+        const edit = createTool("tool:edit", {
+            meta: {
+                status: "completed",
+                target: "src/note.ts",
+                tool: "edit",
+            },
+            timestamp: 3,
+            title: "Edit note",
+        });
+        const mcp = createTool("tool:mcp", {
+            meta: {
+                status: "completed",
+                tool: "mcp_browser_query",
+            },
+            timestamp: 4,
+            title: "Query browser MCP",
+        });
+        const renderEntry = vi.fn((message: AIChatMessage) => (
+            <div>{message.id}</div>
+        ));
+        const segment = createSegment([reasoning, webSearch, edit, mcp]);
+
+        renderComponent(
+            <ToolActivitySegment
+                renderEntry={renderEntry}
+                segment={segment}
+                sessionId="session-1"
+            />,
+        );
+
+        renderEntry.mockClear();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: /show full activity/i }),
+        );
+
+        expect(renderEntry.mock.calls.map(([message]) => message.id)).toEqual([
+            "thinking-1",
+            "tool:web",
+            "tool:edit",
+            "tool:mcp",
+        ]);
+    });
+
     it("uses current wording only for the active turn tail", () => {
         const segment = createSegment([createTool("tool-1")]);
 
@@ -150,7 +211,7 @@ describe("ToolActivitySegment", () => {
         ).toHaveAttribute("data-activity-count", "50");
     });
 
-    it("keeps changes, failures, and subagent breadcrumbs visible while routine work is collapsed", () => {
+    it("keeps failures and subagent breadcrumbs visible while changes stay collapsed", () => {
         const renderEntry = vi.fn((message: AIChatMessage) => (
             <div data-child-activity={message.id}>{message.title}</div>
         ));
@@ -185,12 +246,15 @@ describe("ToolActivitySegment", () => {
             />,
         );
 
-        expect(renderEntry).toHaveBeenCalledTimes(3);
+        expect(renderEntry).toHaveBeenCalledTimes(2);
         expect(
             document.querySelector('[data-tool-activity-id="tool:read"]'),
         ).toBeNull();
         expect(
+            document.querySelector('[data-tool-activity-id="tool:edit"]'),
+        ).toBeNull();
+        expect(
             document.querySelectorAll('[data-tool-activity-visibility="always"]'),
-        ).toHaveLength(3);
+        ).toHaveLength(2);
     });
 });

@@ -130,6 +130,33 @@ describe("AIChatMessageItem errors", () => {
     });
 });
 
+describe("AIChatMessageItem reasoning", () => {
+    it("renders reasoning with the same compact activity language", () => {
+        renderMessage({
+            content: "Checking source reliability",
+            id: "thinking:1",
+            kind: "thinking",
+            role: "assistant",
+            timestamp: Date.now(),
+            title: "Thinking",
+        });
+
+        expect(screen.getByText("Reasoning")).toBeInTheDocument();
+        expect(
+            document.querySelector("[data-reasoning-activity]"),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByText("Checking source reliability"),
+        ).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
+
+        expect(
+            screen.getByText("Checking source reliability"),
+        ).toBeInTheDocument();
+    });
+});
+
 describe("AIChatMessageItem user input", () => {
     it("submits all selected options for multi-select questions", () => {
         const onUserInputResponse = vi.fn();

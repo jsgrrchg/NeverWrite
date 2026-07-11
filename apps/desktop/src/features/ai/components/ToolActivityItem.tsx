@@ -18,6 +18,16 @@ export interface ToolTargetContextMenuPayload {
     target: string;
 }
 
+const SEARCH_TOOL_KINDS = new Set([
+    "browse",
+    "fetch",
+    "find",
+    "grep",
+    "search",
+    "web_fetch",
+    "web_search",
+]);
+
 function getOpenSessionActionLabel(
     message: AIChatMessage,
     resolvedSessionTitle: string | null,
@@ -133,7 +143,7 @@ export function OpenSessionActionButton({
 
 export function ToolIcon({ kind }: { kind?: string }) {
     const normalizedKind = String(kind ?? "");
-    if (normalizedKind === "read" || normalizedKind === "search") {
+    if (normalizedKind === "read" || SEARCH_TOOL_KINDS.has(normalizedKind)) {
         return (
             <svg
                 width="12"
@@ -190,6 +200,26 @@ export function ToolIcon({ kind }: { kind?: string }) {
         );
     }
 
+    if (normalizedKind === "mcp" || normalizedKind.startsWith("mcp_")) {
+        return (
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <circle cx="3" cy="3" r="1.25" />
+                <circle cx="9" cy="3" r="1.25" />
+                <circle cx="6" cy="9" r="1.25" />
+                <path d="M4.1 3h3.8M3.7 4.1l1.6 3.1M8.3 4.1L6.7 7.2" />
+            </svg>
+        );
+    }
+
     return (
         <svg
             width="12"
@@ -207,22 +237,13 @@ export function ToolIcon({ kind }: { kind?: string }) {
     );
 }
 
-function ToolFileIcon({
-    target,
-    toolKind,
-}: {
-    target: string | null;
-    toolKind: string;
-}) {
-    if (target) {
-        return <FileTypeIcon fileName={target} size={13} opacity={0.86} />;
-    }
-    return <ToolIcon kind={toolKind} />;
-}
-
 function getActionLabel(toolKind: string) {
     if (toolKind === "read") return "Read";
-    if (toolKind === "search") return "Searched";
+    if (SEARCH_TOOL_KINDS.has(toolKind)) {
+        return toolKind === "fetch" || toolKind === "web_fetch"
+            ? "Fetched"
+            : "Searched";
+    }
     if (toolKind === "delete") return "Deleted";
     if (toolKind === "move") return "Moved";
     if (toolKind === "edit") return "Updated";
@@ -299,6 +320,11 @@ export function ToolActivityItem({
         ? canOpenAiEditedFileByAbsolutePath(target)
         : false;
     const isAttention = isFailed || message.toolAction != null;
+    const activitySource = toolKind === "mcp" || toolKind.startsWith("mcp_")
+        ? "mcp"
+        : SEARCH_TOOL_KINDS.has(toolKind)
+          ? "web"
+          : "tool";
     const stateLabel = isFailed
         ? status === "cancelled"
             ? "Cancelled"
@@ -328,6 +354,7 @@ export function ToolActivityItem({
             aria-expanded={detail ? expanded : undefined}
             className="group min-w-0 rounded-md px-2 py-1 transition-colors hover:bg-bg-elevated"
             data-tool-activity-row={isAttention ? "attention" : "routine"}
+            data-tool-activity-source={activitySource}
             data-tool-activity-status={status || undefined}
             onClick={toggleDetail}
             onKeyDown={onKeyDown}
@@ -345,10 +372,20 @@ export function ToolActivityItem({
             <div className="flex min-w-0 items-center gap-2">
                 <span
                     className="flex shrink-0 items-center"
+                    data-tool-activity-operation-icon="true"
                     style={{ color: isFailed ? "#f87171" : undefined }}
                 >
-                    <ToolFileIcon target={target} toolKind={toolKind} />
+                    <ToolIcon kind={toolKind} />
                 </span>
+                {target ? (
+                    <span
+                        aria-hidden="true"
+                        className="flex shrink-0 items-center"
+                        data-tool-activity-file-icon="true"
+                    >
+                        <FileTypeIcon fileName={target} size={13} opacity={0.86} />
+                    </span>
+                ) : null}
                 <span
                     className="min-w-0 flex-1 truncate font-medium"
                     title={target ?? undefined}

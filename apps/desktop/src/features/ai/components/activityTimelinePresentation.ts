@@ -10,6 +10,7 @@ const COMMAND_TOOL_KINDS = new Set([
 ]);
 
 const GROUPABLE_TOOL_KINDS = new Set([
+    "browse",
     "fetch",
     "find",
     "glob",
@@ -18,6 +19,8 @@ const GROUPABLE_TOOL_KINDS = new Set([
     "read",
     "read_file",
     "search",
+    "web_fetch",
+    "web_search",
 ]);
 
 const MUTATING_FILE_TOOL_KINDS = new Set([
@@ -46,6 +49,7 @@ export type ActivityTimelineToolPolicy =
     | "standalone-attention"
     | "standalone-unknown";
 
+/** A rail entry may be a reasoning event or a runtime tool activity. */
 export interface ActivityTimelineToolEntry {
     readonly message: AIChatMessage;
     readonly policy: ActivityTimelineToolPolicy;
@@ -68,6 +72,7 @@ export interface ActivityTimelineSegmentSummary {
     readonly isInProgress: boolean;
     readonly latestMessageId: string;
     readonly latestTitle: string;
+    readonly reasoningCount: number;
     readonly searchCount: number;
     readonly startedAt: number;
     readonly updatedAt: number;
@@ -143,7 +148,21 @@ function hasChangeData(message: AIChatMessage): boolean {
 }
 
 function getEntryTitle(message: AIChatMessage): string {
-    return message.title?.trim() || message.content.trim() || "Tool activity";
+    return (
+        message.title?.trim() ||
+        message.content.trim() ||
+        (message.kind === "thinking" ? "Thinking" : "Tool activity")
+    );
+}
+
+function isTimelineActivity(message: AIChatMessage) {
+    return message.kind === "thinking" || message.kind === "tool";
+}
+
+function getLatestToolEntry(
+    entries: readonly ActivityTimelineToolEntry[],
+) {
+    return entries.findLast((entry) => entry.message.kind === "tool") ?? null;
 }
 
 function addPath(paths: Set<string>, path: string | null | undefined) {
@@ -285,6 +304,9 @@ export function deriveActivityTimelineChangeStats(
 export function getActivityTimelineToolPolicy(
     message: AIChatMessage,
 ): ActivityTimelineToolPolicy {
+    if (message.kind === "thinking") {
+        return "groupable";
+    }
     if (hasChangeData(message)) {
         // Changes keep their own review surface instead of becoming a routine row.
         return "standalone-change";
@@ -309,6 +331,7 @@ export function buildActivityTimelineSegmentSummary(
     entries: readonly ActivityTimelineToolEntry[],
 ): ActivityTimelineSegmentSummary {
     const latestEntry = entries.at(-1);
+    const latestToolEntry = getLatestToolEntry(entries);
     const firstEntry = entries[0];
     if (!firstEntry || !latestEntry) {
         throw new Error("An activity segment requires at least one tool entry.");
@@ -319,12 +342,16 @@ export function buildActivityTimelineSegmentSummary(
     let changeCount = 0;
     let commandCount = 0;
     let failureCount = 0;
+    let reasoningCount = 0;
     let searchCount = 0;
     let isInProgress = false;
     let updatedAt = firstEntry.message.timestamp;
 
     for (const entry of entries) {
         const { message, policy } = entry;
+        if (message.kind === "thinking") {
+            reasoningCount += 1;
+        }
         const kind = getToolKind(message);
         const target = getToolTarget(message);
         const diffs = getToolDiffs(message);
@@ -362,7 +389,8 @@ export function buildActivityTimelineSegmentSummary(
     }
 
     return {
-        actionCount: entries.length,
+        actionCount: entries.filter((entry) => entry.message.kind === "tool")
+            .length,
         changeCount,
         changeStats: deriveActivityTimelineChangeStats(entries),
         changedFileCount: changedFiles.size,
@@ -370,8 +398,9 @@ export function buildActivityTimelineSegmentSummary(
         failureCount,
         fileCount: fileTargets.size,
         isInProgress,
-        latestMessageId: latestEntry.message.id,
-        latestTitle: getEntryTitle(latestEntry.message),
+        latestMessageId: (latestToolEntry ?? latestEntry).message.id,
+        latestTitle: getEntryTitle((latestToolEntry ?? latestEntry).message),
+        reasoningCount,
         searchCount,
         startedAt: firstEntry.message.timestamp,
         updatedAt,
@@ -397,7 +426,14 @@ export function getActivityTimelineSegmentHeadline(
     ].filter((detail): detail is string => detail !== null);
 
     if (isCurrentTurnTail) {
+        if (summary.actionCount === 0 && summary.reasoningCount > 0) {
+            return "Thinking";
+        }
         return `Working · ${details.join(" · ")}`;
+    }
+
+    if (summary.actionCount === 0 && summary.reasoningCount > 0) {
+        return "Reasoned";
     }
 
     if (
@@ -423,7 +459,7 @@ export function getActivityTimelineSegmentHeadline(
 export function getActivityTimelineLatestLabel(
     segment: ActivityTimelineSegmentRow,
 ): string {
-    const latestMessage = segment.entries.at(-1)?.message;
+    const latestMessage = getLatestToolEntry(segment.entries)?.message;
     return latestMessage
         ? (getToolTarget(latestMessage) ?? getEntryTitle(latestMessage))
         : segment.summary.latestTitle;
@@ -458,7 +494,7 @@ export function buildActivityTimelineRows(
     };
 
     for (const message of messages) {
-        if (message.kind === "tool") {
+        if (isTimelineActivity(message)) {
             segmentEntries.push({
                 message,
                 policy: getActivityTimelineToolPolicy(message),

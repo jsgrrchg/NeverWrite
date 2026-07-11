@@ -64,8 +64,55 @@ describe("ToolActivityItem", () => {
         expect(screen.getByText("Read")).toBeInTheDocument();
         expect(screen.getByText("Searched")).toBeInTheDocument();
         expect(
+            view.container.querySelectorAll(
+                '[data-tool-activity-operation-icon="true"]',
+            ),
+        ).toHaveLength(2);
+        expect(
+            view.container.querySelectorAll(
+                '[data-tool-activity-file-icon="true"]',
+            ),
+        ).toHaveLength(2);
+        expect(
             view.container.querySelectorAll('[data-tool-activity-row="routine"]'),
         ).toHaveLength(2);
+    });
+
+    it("gives web and MCP tools their own semantic activity treatment", () => {
+        const view = renderComponent(
+            <div>
+                <ToolActivityItem
+                    message={createTool("tool:web", {
+                        meta: {
+                            status: "completed",
+                            target: "https://example.com/search?q=markets",
+                            tool: "web_search",
+                        },
+                        title: "Web search",
+                    })}
+                    sessionId="session-1"
+                />
+                <ToolActivityItem
+                    message={createTool("tool:mcp", {
+                        meta: {
+                            status: "completed",
+                            tool: "mcp_browser_query",
+                        },
+                        title: "Query browser MCP",
+                    })}
+                    sessionId="session-1"
+                />
+            </div>,
+        );
+
+        expect(screen.getByText("Searched")).toBeInTheDocument();
+        expect(screen.getByText("Query browser MCP")).toBeInTheDocument();
+        expect(
+            view.container.querySelector('[data-tool-activity-source="web"]'),
+        ).toBeInTheDocument();
+        expect(
+            view.container.querySelector('[data-tool-activity-source="mcp"]'),
+        ).toBeInTheDocument();
     });
 
     it("discloses command detail without changing the row identity", () => {
