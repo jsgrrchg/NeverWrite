@@ -4,7 +4,6 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
-import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import {
     computeFileDiffStats,
     formatDiffStat,
@@ -18,6 +17,7 @@ import {
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
 import { useChatRowUiEntry } from "./chatRowUiPresentation";
+import { ToolIcon } from "./ToolActivityItem";
 import type { AIChatMessage, AIFileDiff } from "../types";
 
 interface ChangeReviewToolRailProps {
@@ -147,6 +147,13 @@ function ChangeReviewToolRailRow({
         : false;
     const isFailed = status === "failed" || status === "error";
     const isInProgress = status === "in_progress" || status === "pending";
+    const operationIconKind =
+        toolKind === "edit" ||
+        toolKind === "update" ||
+        toolKind === "write" ||
+        toolKind === "create"
+            ? "edit"
+            : toolKind;
 
     return (
         <div
@@ -163,13 +170,13 @@ function ChangeReviewToolRailRow({
                 <span
                     aria-hidden="true"
                     className="shrink-0"
-                    style={{ color: accent, display: "inline-flex" }}
+                    data-change-review-operation-icon="true"
+                    style={{
+                        color: isFailed ? accent : "var(--text-secondary)",
+                        display: "inline-flex",
+                    }}
                 >
-                    {isFailed ? (
-                        <WarningIcon />
-                    ) : (
-                        <FileTypeIcon fileName={diff.path} opacity={0.85} size={14} />
-                    )}
+                    {isFailed ? <WarningIcon /> : <ToolIcon kind={operationIconKind} />}
                 </span>
                 <span className="shrink-0 opacity-70">{actionLabel}</span>
                 {canOpen && openPath ? (

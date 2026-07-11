@@ -83,6 +83,10 @@ function getChangeReviewRail(path: string) {
 
 function expectChangeReviewRail(path: string, action = "Edited") {
     const rail = getChangeReviewRail(path);
+    expect(
+        rail.querySelector("[data-change-review-operation-icon]"),
+    ).not.toBeNull();
+    expect(rail.querySelector("[data-change-review-file-icon]")).toBeNull();
     expect(within(rail).getByText(action)).toBeInTheDocument();
     expect(
         within(rail).getByText(path.split("/").at(-1) ?? path),
