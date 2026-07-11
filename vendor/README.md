@@ -105,17 +105,26 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 - state DB lookup plus thread-store and installation-ID wiring used by list,
   load, resume, fork, and child-thread registration
 - actor lifecycle behavior that does not keep the internal message channel alive after external senders disappear
-- subagent thread projection for collaboration events surfaced through the desktop ACP session
+- subagent sessions with typed `ThreadId` identity, descriptive `agent_path` metadata,
+  idempotent registration, and reconciliation after missed child-thread broadcasts
+- a private `codexAcp*` subagent contract for session creation, navigable activity
+  breadcrumbs, child lifecycle, and receiver-owned inter-agent transcripts
+- per-turn coalescing of equivalent subagent waits; only fully terminal status sets
+  complete the ACP activity
 - a local `codex-utils-pty` 0.144 snapshot with process-group signaling and
   Windows input/ConPTY compatibility tests
 
-The 0.144 API shapes for deferred turn items and `SubAgentActivity` are handled
-exhaustively as localized no-ops. This baseline does not add their functional
-ACP projection. Specifically deferred work is:
+The 0.144 API shapes for deferred turn items are handled as localized
+projections. `SubAgentActivity` is projected through the same canonical
+activity identity as its `TurnItem` fallback: matching protocol IDs update one
+ACP tool call, while distinct IDs remain separate rather than being correlated
+by descriptive metadata. Child `ThreadId` values remain authoritative; paths,
+nicknames, and roles are display metadata only.
+
+The deferred work is:
 
 - `codex-code-mode-host` and release packaging in PR 2
 - `ItemStarted`/`ItemCompleted` activity projection for new `TurnItem` variants in PR 3
-- the 0.144 `SubAgentActivity` ACP contract in PR 4
 - native image generation outside this PR series
 
 The current bundle must not be treated as self-contained until the companion
