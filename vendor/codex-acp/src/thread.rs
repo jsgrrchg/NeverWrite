@@ -52,6 +52,7 @@ use codex_protocol::protocol::{
 };
 use codex_protocol::review_format::format_review_findings_block;
 use codex_protocol::{
+    ThreadId,
     approvals::{ElicitationRequest, ElicitationRequestEvent},
     config_types::{ServiceTier, TrustLevel},
     dynamic_tools::{DynamicToolCallOutputContentItem, DynamicToolCallRequest},
@@ -366,6 +367,7 @@ pub struct Thread {
 impl Thread {
     pub fn new(
         session_id: SessionId,
+        thread_id: ThreadId,
         thread: Arc<dyn CodexThreadImpl>,
         auth: Arc<AuthManager>,
         models_manager: Arc<dyn ModelsManagerImpl>,
@@ -378,7 +380,7 @@ impl Thread {
 
         let actor = ThreadActor::new(
             auth,
-            SessionClient::new(session_id, cx, client_capabilities),
+            SessionClient::new(session_id, thread_id, cx, client_capabilities),
             thread.clone(),
             models_manager,
             config,
@@ -895,6 +897,7 @@ struct PromptState {
 #[derive(Default)]
 struct ProjectedToolCallState {
     emitted: bool,
+    subagent_activity: bool,
     canonical_seen: bool,
     canonical_terminal_seen: bool,
     terminal: Option<ToolCallStatus>,
@@ -1163,6 +1166,10 @@ fn turn_item_tool_kind(item: &TurnItem) -> ToolKind {
 }
 
 fn turn_item_call_id(item: &TurnItem, projection: TurnItemProjection) -> String {
+    if let TurnItem::SubAgentActivity(item) = item {
+        return subagents::subagent_activity_tool_call_id(&item.id);
+    }
+
     match projection {
         TurnItemProjection::Status => format!(
             "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}",
@@ -1934,6 +1941,7 @@ impl PromptState {
             .projected_tool_calls
             .entry(call_id.clone())
             .or_default();
+        state.subagent_activity |= matches!(item, TurnItem::SubAgentActivity(..));
         if state.emitted || state.terminal.is_some() {
             return;
         }
@@ -1978,6 +1986,7 @@ impl PromptState {
             .projected_tool_calls
             .entry(call_id.clone())
             .or_default();
+        state.subagent_activity |= matches!(item, TurnItem::SubAgentActivity(..));
         if state.canonical_terminal_seen || state.terminal.is_some() {
             return;
         }
@@ -2149,6 +2158,27 @@ impl PromptState {
         client.send_tool_call_update(update).await;
     }
 
+    async fn send_subagent_projection(
+        &mut self,
+        client: &SessionClient,
+        projection: SubagentProjection,
+    ) {
+        match projection {
+            SubagentProjection::ToolCall(tool_call) => {
+                self.send_canonical_tool_call(client, tool_call).await;
+            }
+            SubagentProjection::ToolCallUpdate(update) => {
+                self.send_canonical_tool_update(
+                    client,
+                    update,
+                    "Subagent activity",
+                    ToolKind::Other,
+                )
+                .await;
+            }
+        }
+    }
+
     async fn send_image_generation_started(
         &self,
         client: &SessionClient,
@@ -2215,8 +2245,25 @@ impl PromptState {
     async fn handle_event(&mut self, client: &SessionClient, event: EventMsg) {
         self.event_count += 1;
 
-        if let Some(projection) = subagents::projection_for_collab_event(&event) {
-            send_subagent_projection(client, projection).await;
+        if let EventMsg::SubAgentActivity(activity) = &event {
+            let tool_call_id = subagents::subagent_activity_tool_call_id(&activity.event_id);
+            if !self.projected_tool_calls.contains_key(&tool_call_id)
+                && self
+                    .projected_tool_calls
+                    .values()
+                    .any(|state| state.subagent_activity)
+            {
+                warn!(
+                    event_id = %activity.event_id,
+                    "No matching protocol ID links this subagent activity to an earlier fallback; preserving separate activities"
+                );
+            }
+        }
+
+        if let Some(projection) =
+            subagents::projection_for_event(&event, client.thread_id, &client.session_id)
+        {
+            self.send_subagent_projection(client, projection).await;
             return;
         }
 
@@ -4128,6 +4175,7 @@ fn parse_command_tool_call(parsed_cmd: Vec<ParsedCommand>, cwd: &Path) -> ParseC
 #[derive(Clone)]
 struct SessionClient {
     session_id: SessionId,
+    thread_id: ThreadId,
     client: Arc<dyn ClientSender>,
     client_capabilities: Arc<Mutex<ClientCapabilities>>,
 }
@@ -4135,11 +4183,13 @@ struct SessionClient {
 impl SessionClient {
     fn new(
         session_id: SessionId,
+        thread_id: ThreadId,
         cx: ConnectionTo<Client>,
         client_capabilities: Arc<Mutex<ClientCapabilities>>,
     ) -> Self {
         Self {
             session_id,
+            thread_id,
             client: Arc::new(AcpConnection(cx)),
             client_capabilities,
         }
@@ -4151,8 +4201,19 @@ impl SessionClient {
         client: Arc<dyn ClientSender>,
         client_capabilities: Arc<Mutex<ClientCapabilities>>,
     ) -> Self {
+        Self::with_client_for_thread(session_id, ThreadId::new(), client, client_capabilities)
+    }
+
+    #[cfg(test)]
+    fn with_client_for_thread(
+        session_id: SessionId,
+        thread_id: ThreadId,
+        client: Arc<dyn ClientSender>,
+        client_capabilities: Arc<Mutex<ClientCapabilities>>,
+    ) -> Self {
         Self {
             session_id,
+            thread_id,
             client,
             client_capabilities,
         }
@@ -5609,13 +5670,6 @@ impl<A: Auth> ThreadActor<A> {
                 self.closed_event_projections.remove(&expired);
             }
         }
-    }
-}
-
-async fn send_subagent_projection(client: &SessionClient, projection: SubagentProjection) {
-    match projection {
-        SubagentProjection::ToolCall(tool_call) => client.send_tool_call(tool_call).await,
-        SubagentProjection::ToolCallUpdate(update) => client.send_tool_call_update(update).await,
     }
 }
 
@@ -7678,6 +7732,206 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_only_subagent_activity_enriches_fallback_without_second_tool_call()
+    -> anyhow::Result<()> {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let (mut prompt_state, session_client, client) =
+            prompt_state_for_projection(parent_thread_id);
+        let agent_path: codex_protocol::AgentPath = "/root/research/explorer"
+            .try_into()
+            .expect("valid agent path");
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: parent_thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
+                        id: "subagent-activity-1".to_string(),
+                        kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+                        agent_thread_id: child_thread_id,
+                        agent_path: agent_path.clone(),
+                    }),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                    event_id: "subagent-activity-1".to_string(),
+                    occurred_at_ms: 1,
+                    agent_thread_id: child_thread_id,
+                    agent_path,
+                    kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let tool_call_id = "codex-acp:subagent:subagent-activity-1";
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCall(tool_call)
+                        if tool_call.tool_call_id.0.as_ref() == tool_call_id
+                ))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCallUpdate(update)
+                        if update.tool_call_id.0.as_ref() == tool_call_id
+                ))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref() == tool_call_id
+                    && update.meta.as_ref().is_some_and(|meta| {
+                        meta.get("codexAcpSubagentEventType")
+                            .and_then(|value| value.as_str())
+                            == Some("activity_started")
+                    })
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn specific_subagent_activity_prevents_a_later_turn_item_duplicate() -> anyhow::Result<()>
+    {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let (mut prompt_state, session_client, client) =
+            prompt_state_for_projection(parent_thread_id);
+        let agent_path: codex_protocol::AgentPath = "/root/research/explorer"
+            .try_into()
+            .expect("valid agent path");
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                    event_id: "subagent-activity-1".to_string(),
+                    occurred_at_ms: 1,
+                    agent_thread_id: child_thread_id,
+                    agent_path: agent_path.clone(),
+                    kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: parent_thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
+                        id: "subagent-activity-1".to_string(),
+                        kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+                        agent_thread_id: child_thread_id,
+                        agent_path,
+                    }),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(notification.update, SessionUpdate::ToolCall(_)))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    notification.update,
+                    SessionUpdate::ToolCallUpdate(_)
+                ))
+                .count(),
+            0,
+            "notifications={notifications:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn distinct_subagent_activity_ids_remain_separate_tool_calls() -> anyhow::Result<()> {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let (mut prompt_state, session_client, client) =
+            prompt_state_for_projection(parent_thread_id);
+        let agent_path: codex_protocol::AgentPath = "/root/research/explorer"
+            .try_into()
+            .expect("valid agent path");
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: parent_thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
+                        id: "fallback-id".to_string(),
+                        kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+                        agent_thread_id: child_thread_id,
+                        agent_path: agent_path.clone(),
+                    }),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                    event_id: "specific-id".to_string(),
+                    occurred_at_ms: 1,
+                    agent_thread_id: child_thread_id,
+                    agent_path,
+                    kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let ids = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(tool_call) => Some(tool_call.tool_call_id.0.as_ref()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "codex-acp:subagent:fallback-id",
+                "codex-acp:subagent:specific-id"
+            ],
+            "notifications={notifications:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn unknown_submission_events_use_drain_only_projection() -> anyhow::Result<()> {
         let session_id = SessionId::new("test");
         let client = Arc::new(StubClient::new());
@@ -8395,6 +8649,26 @@ mod tests {
             )
             .await;
         assert!(!state.pending_command_output.contains_key("exec-1"));
+    }
+
+    fn prompt_state_for_projection(
+        current_thread_id: ThreadId,
+    ) -> (PromptState, SessionClient, Arc<StubClient>) {
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client_for_thread(
+            SessionId::new("parent-runtime-session-id"),
+            current_thread_id,
+            client.clone(),
+            Arc::default(),
+        );
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        (
+            PromptState::new("projection".to_string(), thread, resolution_tx, response_tx),
+            session_client,
+            client,
+        )
     }
 
     async fn setup(

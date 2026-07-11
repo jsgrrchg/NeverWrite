@@ -615,6 +615,7 @@ async fn register_subagent_thread(
 
     let thread = Arc::new(Thread::new(
         registration.child_session_id.clone(),
+        registration.child_thread_id,
         child_thread,
         auth_manager,
         models_manager,
@@ -797,6 +798,7 @@ impl CodexAgent {
             .insert(session_id.clone(), config.cwd.to_path_buf());
         let thread = Arc::new(Thread::new(
             session_id.clone(),
+            thread_id,
             thread,
             self.auth_manager.clone(),
             Arc::new(self.thread_manager.get_models_manager()),
@@ -897,7 +899,7 @@ impl CodexAgent {
         let mut config = self.build_session_config(&cwd, mcp_servers)?;
 
         let NewThread {
-            thread_id: _,
+            thread_id,
             thread,
             session_configured,
         } = Box::pin(self.thread_manager.resume_thread_from_rollout(
@@ -914,6 +916,7 @@ impl CodexAgent {
 
         let thread = Arc::new(Thread::new(
             session_id.clone(),
+            thread_id,
             thread,
             self.auth_manager.clone(),
             Arc::new(self.thread_manager.get_models_manager()),
