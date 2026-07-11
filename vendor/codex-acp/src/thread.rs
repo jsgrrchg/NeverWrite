@@ -61,7 +61,7 @@ use codex_protocol::{
     mcp::CallToolResult,
     models::{
         ActivePermissionProfile, AdditionalPermissionProfile, PermissionProfile, ResponseItem,
-        WebSearchAction, plaintext_agent_message_content,
+        WebSearchAction,
     },
     openai_models::{ModelPreset, ReasoningEffort},
     parse_command::ParsedCommand,
@@ -942,13 +942,6 @@ fn codex_turn_lifecycle_meta(event_type: &str, turn_id: Option<&str>) -> Meta {
         meta.insert(CODEX_ACP_TURN_ID_KEY.to_string(), json!(turn_id));
     }
     meta
-}
-
-fn plaintext_inter_agent_message_payload(item: &ResponseItem) -> Option<(Option<String>, String)> {
-    let ResponseItem::AgentMessage { id, content, .. } = item else {
-        return None;
-    };
-    Some((id.clone(), plaintext_agent_message_content(content)?))
 }
 
 fn image_generation_tool_call_id(call_id: &str) -> String {
@@ -2415,15 +2408,6 @@ impl PromptState {
                     client.send_user_message(message).await;
                 }
             }
-            EventMsg::RawResponseItem(event) => {
-                if let Some((message_id, payload)) =
-                    plaintext_inter_agent_message_payload(&event.item)
-                {
-                    client
-                        .send_user_message_with_id(payload, message_id.as_deref())
-                        .await;
-                }
-            }
             EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
                 thread_id,
                 turn_id,
@@ -2939,6 +2923,7 @@ impl PromptState {
             | EventMsg::ThreadRolledBack(..)
             // we already have a way to diff the turn, so ignore
             | EventMsg::TurnDiff(..)
+            | EventMsg::RawResponseItem(..)
             | EventMsg::ThreadSettingsApplied(..)
             | EventMsg::SessionConfigured(..)
             | EventMsg::RealtimeConversationStarted(..)
@@ -4303,16 +4288,10 @@ impl SessionClient {
     }
 
     async fn send_user_message(&self, text: impl Into<String>) {
-        self.send_user_message_with_id(text, None).await;
-    }
-
-    async fn send_user_message_with_id(&self, text: impl Into<String>, message_id: Option<&str>) {
-        let mut chunk = ContentChunk::new(text.into().into());
-        if let Some(message_id) = message_id {
-            chunk = chunk.message_id(message_id);
-        }
-        self.send_notification(SessionUpdate::UserMessageChunk(chunk))
-            .await;
+        self.send_notification(SessionUpdate::UserMessageChunk(ContentChunk::new(
+            text.into().into(),
+        )))
+        .await;
     }
 
     async fn send_agent_text(&self, text: impl Into<String>) {
@@ -5520,15 +5499,10 @@ impl<A: Auth> ThreadActor<A> {
     /// Only handles tool calls - messages/reasoning are handled via EventMsg.
     async fn replay_response_item(&self, item: &ResponseItem) {
         match item {
-            ResponseItem::AgentMessage { .. } => {
-                if let Some((message_id, payload)) = plaintext_inter_agent_message_payload(item) {
-                    self.client
-                        .send_user_message_with_id(payload, message_id.as_deref())
-                        .await;
-                }
-            }
-            // Skip Message and Reasoning - these are handled via EventMsg
-            ResponseItem::Message { .. } | ResponseItem::Reasoning { .. } => {}
+            // Skip messages and reasoning - these are handled internally by Codex.
+            ResponseItem::AgentMessage { .. }
+            | ResponseItem::Message { .. }
+            | ResponseItem::Reasoning { .. } => {}
             ResponseItem::FunctionCall {
                 name,
                 arguments,
@@ -8056,7 +8030,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inter_agent_messages_stay_in_the_receiving_actor_transcript() {
+    async fn inter_agent_messages_are_not_projected_into_acp_transcripts() {
         let root_thread_id = ThreadId::new();
         let child_thread_id = ThreadId::new();
         let root_session_id = SessionId::new("root-runtime-session-id");
@@ -8097,53 +8071,12 @@ mod tests {
             )
             .await;
 
-        let root_updates = root_notifications.notifications.lock().unwrap();
-        assert!(
-            root_updates
-                .iter()
-                .all(|notification| notification.session_id == root_session_id)
-        );
-        assert!(root_updates.iter().any(|notification| matches!(
-            &notification.update,
-            SessionUpdate::UserMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent { text, .. }),
-                message_id: Some(message_id),
-                ..
-            }) if text == "answer for root" && message_id.0.as_ref() == "child-to-root"
-        )));
-        assert!(!root_updates.iter().any(|notification| matches!(
-            &notification.update,
-            SessionUpdate::UserMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent { text, .. }),
-                ..
-            }) if text == "task for child"
-        )));
-
-        let child_updates = child_notifications.notifications.lock().unwrap();
-        assert!(
-            child_updates
-                .iter()
-                .all(|notification| notification.session_id == child_session_id)
-        );
-        assert!(child_updates.iter().any(|notification| matches!(
-            &notification.update,
-            SessionUpdate::UserMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent { text, .. }),
-                message_id: Some(message_id),
-                ..
-            }) if text == "task for child" && message_id.0.as_ref() == "root-to-child"
-        )));
-        assert!(!child_updates.iter().any(|notification| matches!(
-            &notification.update,
-            SessionUpdate::UserMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent { text, .. }),
-                ..
-            }) if text == "answer for root"
-        )));
+        assert!(root_notifications.notifications.lock().unwrap().is_empty());
+        assert!(child_notifications.notifications.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn inter_agent_messages_match_between_live_and_replay() -> anyhow::Result<()> {
+    async fn inter_agent_messages_are_not_replayed_into_acp_transcripts() -> anyhow::Result<()> {
         let recipient_thread_id = ThreadId::new();
         let (mut live_state, live_client, live_notifications) =
             prompt_state_for_projection(recipient_thread_id);
@@ -8175,28 +8108,14 @@ mod tests {
         drop(message_tx);
         actor_handle.await?;
 
-        let extract_user_chunk = |notifications: &[SessionNotification]| {
-            notifications
-                .iter()
-                .find_map(|notification| match &notification.update {
-                    SessionUpdate::UserMessageChunk(ContentChunk {
-                        content: ContentBlock::Text(TextContent { text, .. }),
-                        message_id,
-                        ..
-                    }) => Some((text.clone(), message_id.clone())),
-                    _ => None,
-                })
-        };
-        let live = extract_user_chunk(&live_notifications.notifications.lock().unwrap())
-            .expect("live projection should contain a user message");
-        let replay = extract_user_chunk(&replay_notifications.notifications.lock().unwrap())
-            .expect("replay projection should contain a user message");
-        assert_eq!(live.0, "plaintext payload");
-        assert_eq!(
-            live.1.as_ref().map(|message_id| message_id.0.as_ref()),
-            Some("inter-agent-message-id")
+        assert!(live_notifications.notifications.lock().unwrap().is_empty());
+        assert!(
+            replay_notifications
+                .notifications
+                .lock()
+                .unwrap()
+                .is_empty()
         );
-        assert_eq!(live, replay);
         Ok(())
     }
 
