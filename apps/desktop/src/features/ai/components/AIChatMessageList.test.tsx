@@ -623,10 +623,18 @@ describe("AIChatMessageList streaming run indicator", () => {
             screen.getByRole("button", { name: /show full activity/i }),
         );
 
-        expect(screen.getByText("Edited oldest.ts")).toBeInTheDocument();
-        expect(screen.getByText("Edited older.ts")).toBeInTheDocument();
-        expect(screen.getByText("Edited recent.ts")).toBeInTheDocument();
-        expect(screen.getByText("Edited current.ts")).toBeInTheDocument();
+        expect(
+            document.querySelector('[data-change-review-path="/vault/src/oldest.ts"]'),
+        ).toBeInTheDocument();
+        expect(
+            document.querySelector('[data-change-review-path="/vault/src/older.ts"]'),
+        ).toBeInTheDocument();
+        expect(
+            document.querySelector('[data-change-review-path="/vault/src/recent.ts"]'),
+        ).toBeInTheDocument();
+        expect(
+            document.querySelector('[data-change-review-path="/vault/src/current.ts"]'),
+        ).toBeInTheDocument();
     });
 
     it("lets the user dismiss the pinned plan banner and keeps the plan in the timeline", () => {

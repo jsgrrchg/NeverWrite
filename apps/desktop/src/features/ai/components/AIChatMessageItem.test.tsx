@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { invoke, openPath, revealItemInDir } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
@@ -68,6 +68,35 @@ function createDiffMessage(
             target: diff.path,
         },
     };
+}
+
+function getChangeReviewRail(path: string) {
+    const rail = document.querySelector<HTMLElement>(
+        `[data-change-review-path="${path}"]`,
+    );
+    if (!rail) {
+        throw new Error(`Expected a change review rail for ${path}.`);
+    }
+    return rail;
+}
+
+function expectChangeReviewRail(path: string, action = "Edited") {
+    const rail = getChangeReviewRail(path);
+    expect(within(rail).getByText(action)).toBeInTheDocument();
+    expect(
+        within(rail).getByText(path.split("/").at(-1) ?? path),
+    ).toBeInTheDocument();
+    return rail;
+}
+
+function expandChangeReviewRail(path: string) {
+    const rail = getChangeReviewRail(path);
+    fireEvent.click(
+        within(rail).getByRole("button", {
+            name: "Expand inline diff review",
+        }),
+    );
+    return rail;
 }
 
 beforeEach(() => {
@@ -499,15 +528,15 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        expect(screen.getByText("Edited watcher.md")).toBeInTheDocument();
+        const rail = expectChangeReviewRail("/vault/notes/watcher.md");
         expect(
-            screen.getByRole("button", { name: "Open" }),
+            within(rail).getByRole("button", {
+                name: "Open /vault/notes/watcher.md",
+            }),
         ).toBeInTheDocument();
         expect(screen.queryByText("Reject")).not.toBeInTheDocument();
 
-        fireEvent.click(
-            screen.getByRole("button", { name: /Edited watcher\.md/i }),
-        );
+        expandChangeReviewRail("/vault/notes/watcher.md");
 
         expect(screen.getByText(/old line/)).toBeInTheDocument();
         expect(screen.getByText(/new line/)).toBeInTheDocument();
@@ -548,7 +577,7 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        fireEvent.click(screen.getByRole("button", { name: /watcher.md/i }));
+        expandChangeReviewRail("/vault/notes/watcher.md");
 
         const diffPreview = screen.getByTestId(
             "diff-content:/vault/notes/watcher.md",
@@ -595,7 +624,7 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        fireEvent.click(screen.getByRole("button", { name: /watcher.rs/i }));
+        expandChangeReviewRail("/vault/src/watcher.rs");
 
         expect(screen.getAllByText("13").length).toBeGreaterThanOrEqual(1);
         expect(screen.queryByText("+ old line")).not.toBeInTheDocument();
@@ -629,9 +658,11 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
+        const rail = expectChangeReviewRail("/vault/src/watcher.rs");
         expect(
-            screen.getByRole("button", { name: "Open" }),
+            within(rail).getByRole("button", {
+                name: "Open /vault/src/watcher.rs",
+            }),
         ).toBeInTheDocument();
     });
 
@@ -665,7 +696,7 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
         expect(screen.queryByText("Earlier change")).not.toBeInTheDocument();
         expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
-        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
+        expectChangeReviewRail("/vault/src/watcher.rs");
     });
 
     it("keeps non-visible work cycles on the rich diff card without a recency badge", () => {
@@ -700,7 +731,7 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
         expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
         expect(screen.queryByText("Recent change")).not.toBeInTheDocument();
-        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
+        expectChangeReviewRail("/vault/src/watcher.rs");
     });
 
     it("keeps historical permission diffs inspectable without rendering decision actions", () => {
@@ -800,8 +831,12 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+        const rail = expectChangeReviewRail("/vault/src/watcher.rs");
+        expect(
+            within(rail).getByRole("button", {
+                name: "Open /vault/src/watcher.rs",
+            }),
+        ).toBeInTheDocument();
     });
 
     it("shows Writing for active edit cards without a target path", () => {
@@ -898,12 +933,10 @@ describe("AIChatMessageItem tool diffs", () => {
             }),
         );
 
-        expect(screen.getByText("Edited final.md")).toBeInTheDocument();
-        expect(screen.getByText("moved from draft.md")).toBeInTheDocument();
+        const rail = expectChangeReviewRail("/vault/archive/final.md");
+        expect(within(rail).getByText("Moved from draft.md")).toBeInTheDocument();
 
-        fireEvent.click(
-            screen.getByRole("button", { name: /Edited final\.md/i }),
-        );
+        expandChangeReviewRail("/vault/archive/final.md");
 
         expect(
             screen.queryByTestId("diff-content:/vault/archive/final.md"),
@@ -921,11 +954,10 @@ describe("AIChatMessageItem tool diffs", () => {
             }),
         );
 
-        expect(screen.getByText("partial")).toBeInTheDocument();
+        const rail = expectChangeReviewRail("/vault/archive/deleted.md");
+        expect(within(rail).getByText("Partial")).toBeInTheDocument();
 
-        fireEvent.click(
-            screen.getByRole("button", { name: /Edited deleted\.md/i }),
-        );
+        expandChangeReviewRail("/vault/archive/deleted.md");
 
         expect(
             screen.getByText("(partial preview — delete snapshot unavailable)"),
@@ -966,9 +998,7 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.getByText("+~1")).toBeInTheDocument();
         expect(screen.getByText("-~1")).toBeInTheDocument();
 
-        fireEvent.click(
-            screen.getByRole("button", { name: /Edited giant\.md/i }),
-        );
+        expandChangeReviewRail("/vault/giant.md");
 
         expect(screen.getByText("shared 1199")).toBeInTheDocument();
         expect(screen.getByText(/large file preview/i)).toBeInTheDocument();
@@ -985,7 +1015,7 @@ describe("AIChatMessageItem tool diffs", () => {
             }),
         );
 
-        fireEvent.click(screen.getByRole("button", { name: /watcher.rs/i }));
+        expandChangeReviewRail("/vault/src/watcher.rs");
 
         const diffContent = screen.getByTestId(
             "diff-content:/vault/src/watcher.rs",
@@ -1044,7 +1074,7 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        fireEvent.click(screen.getByRole("button", { name: /exact.md/i }));
+        expandChangeReviewRail("/vault/exact.md");
 
         expect(screen.queryByText("alpha")).not.toBeInTheDocument();
         expect(screen.queryByText("101")).not.toBeInTheDocument();
@@ -1126,8 +1156,8 @@ describe("AIChatMessageItem tool diffs", () => {
         fireEvent.click(
             screen.getAllByRole("button", { name: "Increase diff zoom" })[0],
         );
-        fireEvent.click(screen.getByRole("button", { name: /first.rs/i }));
-        fireEvent.click(screen.getByRole("button", { name: /second.rs/i }));
+        expandChangeReviewRail("/vault/src/first.rs");
+        expandChangeReviewRail("/vault/src/second.rs");
 
         expect(
             screen.getByTestId("diff-content:/vault/src/first.rs"),
@@ -1149,7 +1179,7 @@ describe("AIChatMessageItem tool diffs", () => {
             sessionId: "session-diff-state",
         });
 
-        fireEvent.click(screen.getByRole("button", { name: /persisted\.rs/i }));
+        expandChangeReviewRail("/vault/src/persisted.rs");
         expect(
             screen.getByTestId("diff-content:/vault/src/persisted.rs"),
         ).toBeInTheDocument();
