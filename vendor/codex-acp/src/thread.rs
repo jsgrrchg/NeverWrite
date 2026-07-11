@@ -897,6 +897,8 @@ struct ProjectedToolCallState {
     canonical_seen: bool,
     canonical_terminal_seen: bool,
     terminal: Option<ToolCallStatus>,
+    pending_canonical_fields: Option<ToolCallUpdateFields>,
+    pending_canonical_meta: Option<Meta>,
 }
 #[derive(Debug, serde::Deserialize)]
 struct NeverWriteUserInputAnswerPayload {
@@ -1212,6 +1214,47 @@ fn append_bounded_output(buffer: &mut String, chunk: &str) {
         .last()
         .unwrap_or_default();
     buffer.push_str(&chunk[..end]);
+}
+
+fn merge_tool_call_update_fields(into: &mut ToolCallUpdateFields, fields: ToolCallUpdateFields) {
+    if fields.kind.is_some() {
+        into.kind = fields.kind;
+    }
+    if fields.status.is_some() {
+        into.status = fields.status;
+    }
+    if fields.title.is_some() {
+        into.title = fields.title;
+    }
+    if fields.content.is_some() {
+        into.content = fields.content;
+    }
+    if fields.locations.is_some() {
+        into.locations = fields.locations;
+    }
+    if fields.raw_input.is_some() {
+        into.raw_input = fields.raw_input;
+    }
+    if fields.raw_output.is_some() {
+        into.raw_output = fields.raw_output;
+    }
+}
+
+fn merge_tool_call_meta(into: &mut Option<Meta>, meta: Option<Meta>) {
+    let Some(meta) = meta else {
+        return;
+    };
+    into.get_or_insert_with(Meta::new).extend(meta);
+}
+
+fn canonical_update_can_materialize(update: &ToolCallUpdate) -> bool {
+    is_terminal_tool_status(&update.fields.status.unwrap_or(ToolCallStatus::InProgress))
+        || update.fields.title.is_some()
+        || update.fields.kind.is_some()
+        || update.fields.content.is_some()
+        || update.fields.locations.is_some()
+        || update.fields.raw_input.is_some()
+        || update.fields.raw_output.is_some()
 }
 
 fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
@@ -1891,6 +1934,8 @@ impl PromptState {
             return;
         }
         state.emitted = true;
+        let pending_fields = state.pending_canonical_fields.take();
+        let pending_meta = state.pending_canonical_meta.take();
 
         let (title, detail) = describe_turn_item(item);
         let mut tool_call = ToolCall::new(call_id, title)
@@ -1907,6 +1952,10 @@ impl PromptState {
         if projection == TurnItemProjection::Status {
             tool_call = tool_call.meta(neverwrite_status_meta("item_activity", "neutral"));
         }
+        if let Some(fields) = pending_fields {
+            tool_call.update(fields);
+        }
+        merge_tool_call_meta(&mut tool_call.meta, pending_meta);
         client.send_tool_call(tool_call).await;
     }
 
@@ -1966,10 +2015,10 @@ impl PromptState {
         }
     }
 
-    async fn send_canonical_tool_call(&mut self, client: &SessionClient, tool_call: ToolCall) {
+    async fn send_canonical_tool_call(&mut self, client: &SessionClient, mut tool_call: ToolCall) {
         let call_id = tool_call.tool_call_id.to_string();
         let terminal = is_terminal_tool_status(&tool_call.status);
-        let (emitted, preserve_terminal) = {
+        let (emitted, preserve_terminal, pending_fields, pending_meta) = {
             let state = self
                 .projected_tool_calls
                 .entry(call_id.clone())
@@ -1985,8 +2034,18 @@ impl PromptState {
             }
             let emitted = state.emitted;
             state.emitted = true;
-            (emitted, preserve_terminal)
+            (
+                emitted,
+                preserve_terminal,
+                state.pending_canonical_fields.take(),
+                state.pending_canonical_meta.take(),
+            )
         };
+
+        if let Some(fields) = pending_fields {
+            tool_call.update(fields);
+        }
+        merge_tool_call_meta(&mut tool_call.meta, pending_meta);
 
         if !emitted {
             client.send_tool_call(tool_call).await;
@@ -2015,17 +2074,31 @@ impl PromptState {
     async fn send_canonical_tool_update(
         &mut self,
         client: &SessionClient,
-        update: ToolCallUpdate,
+        mut update: ToolCallUpdate,
         title_if_unmaterialized: impl Into<String>,
         kind_if_unmaterialized: ToolKind,
     ) {
         let call_id = update.tool_call_id.to_string();
+        if !canonical_update_can_materialize(&update)
+            && !self
+                .projected_tool_calls
+                .get(&call_id)
+                .is_some_and(|state| state.emitted)
+        {
+            let state = self.projected_tool_calls.entry(call_id).or_default();
+            state.canonical_seen = true;
+            let pending_fields = state.pending_canonical_fields.get_or_insert_default();
+            merge_tool_call_update_fields(pending_fields, update.fields);
+            merge_tool_call_meta(&mut state.pending_canonical_meta, update.meta);
+            return;
+        }
+
         let terminal = update
             .fields
             .status
             .as_ref()
             .is_some_and(is_terminal_tool_status);
-        let (emitted, preserve_terminal) = {
+        let (emitted, preserve_terminal, pending_fields, pending_meta) = {
             let state = self
                 .projected_tool_calls
                 .entry(call_id.clone())
@@ -2041,8 +2114,20 @@ impl PromptState {
             let preserve_terminal = state.terminal.is_some() && !terminal;
             let emitted = state.emitted;
             state.emitted = true;
-            (emitted, preserve_terminal)
+            (
+                emitted,
+                preserve_terminal,
+                state.pending_canonical_fields.take(),
+                state.pending_canonical_meta.take(),
+            )
         };
+
+        if let Some(pending_fields) = pending_fields {
+            let mut merged = pending_fields;
+            merge_tool_call_update_fields(&mut merged, update.fields);
+            update.fields = merged;
+        }
+        merge_tool_call_meta(&mut update.meta, pending_meta);
 
         if !emitted {
             let mut tool_call = ToolCall::new(call_id, title_if_unmaterialized)
@@ -2054,7 +2139,6 @@ impl PromptState {
             return;
         }
 
-        let mut update = update;
         if preserve_terminal {
             update.fields.status = None;
         }
@@ -7136,6 +7220,109 @@ mod tests {
         );
         assert_eq!(parsed.entries.len(), 1);
         assert_eq!(parsed.entries[0].step, "Inspect current state");
+    }
+
+    #[tokio::test]
+    async fn canonical_metadata_waits_for_a_materializing_turn_item() {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new("submission-1".into(), thread, resolution_tx, response_tx);
+
+        state
+            .send_canonical_tool_update(
+                &session_client,
+                ToolCallUpdate::new("web-1", ToolCallUpdateFields::new()).meta(Meta::from_iter([
+                    ("query_source".into(), json!("canonical")),
+                ])),
+                "Searching the Web",
+                ToolKind::Fetch,
+            )
+            .await;
+        assert!(client.notifications.lock().unwrap().is_empty());
+
+        state
+            .start_turn_item(
+                &session_client,
+                &TurnItem::WebSearch(codex_protocol::items::WebSearchItem {
+                    id: "web-1".into(),
+                    query: "Rust ACP".into(),
+                    action: WebSearchAction::Other,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let calls = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool_call_id.0.as_ref(), "web-1");
+        assert_eq!(
+            calls[0]
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("query_source")),
+            Some(&json!("canonical"))
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_and_canonical_turn_item_share_one_tool_call() {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new("submission-1".into(), thread, resolution_tx, response_tx);
+        let item = TurnItem::WebSearch(codex_protocol::items::WebSearchItem {
+            id: "web-1".into(),
+            query: "Rust ACP".into(),
+            action: WebSearchAction::Other,
+        });
+
+        state.start_turn_item(&session_client, &item).await;
+        state
+            .send_canonical_tool_call(
+                &session_client,
+                ToolCall::new("web-1", "Searching the Web")
+                    .kind(ToolKind::Fetch)
+                    .status(ToolCallStatus::InProgress)
+                    .content(vec![ToolCallContent::Content(Content::new("Rust ACP"))]),
+            )
+            .await;
+        state.complete_turn_item(&session_client, &item).await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let call_count = notifications
+            .iter()
+            .filter(|notification| matches!(notification.update, SessionUpdate::ToolCall(_)))
+            .count();
+        let updates = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => Some(update),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(call_count, 1);
+        assert_eq!(updates.len(), 2);
+        assert!(
+            updates
+                .iter()
+                .all(|update| update.tool_call_id.0.as_ref() == "web-1")
+        );
+        assert_eq!(updates[0].fields.content.as_ref().map(Vec::len), Some(1));
+        assert_eq!(updates[1].fields.status, Some(ToolCallStatus::Completed));
+        assert!(updates[1].fields.content.is_none());
     }
 
     #[tokio::test]
