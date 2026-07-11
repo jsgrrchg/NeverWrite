@@ -171,7 +171,7 @@ The Fliege Mono license text is included at
 
 | Crate                      | License               |
 | -------------------------- | --------------------- |
-| agent-client-protocol      | Apache-2.0            |
+| agent-client-protocol, codex-extension-items | Apache-2.0            |
 | serde, serde_json          | MIT OR Apache-2.0     |
 | tokio                      | MIT                   |
 | tokio-util                 | MIT                   |
@@ -279,7 +279,7 @@ Original source: https://github.com/zed-industries/codex
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
 | `src/thread.rs`       | Extended to support AI review flow, multi-vault sessions, and custom diff streaming |
-| `src/codex_agent.rs`  | Adapted for Agent Client Protocol 0.11.1 compatibility        |
+| `src/codex_agent.rs`  | Adapted for Agent Client Protocol 0.14 compatibility and session configuration |
 
 ### `vendor/Claude-agent-acp-upstream` — Anthropic (Apache-2.0)
 
@@ -309,4 +309,4 @@ Original source: https://github.com/zed-industries/codex
 
 ---
 
-*This file is maintained from project dependency metadata. Last updated: 2026-04-24.*
+*This file is maintained from project dependency metadata. Last updated: 2026-07-11.*
