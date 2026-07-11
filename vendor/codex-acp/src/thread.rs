@@ -875,6 +875,7 @@ struct PromptState {
     active_web_search: Option<String>,
     active_guardian_assessments: HashSet<String>,
     active_plan_text: HashMap<String, String>,
+    projected_tool_calls: HashMap<String, ProjectedToolCallState>,
     thread: Arc<dyn CodexThreadImpl>,
     resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
     pending_permission_interactions: HashMap<String, PendingPermissionInteraction>,
@@ -884,6 +885,14 @@ struct PromptState {
     seen_message_deltas: bool,
     seen_reasoning_deltas: bool,
     project_user_messages: bool,
+}
+
+#[derive(Default)]
+struct ProjectedToolCallState {
+    emitted: bool,
+    canonical_seen: bool,
+    canonical_terminal_seen: bool,
+    terminal: Option<ToolCallStatus>,
 }
 #[derive(Debug, serde::Deserialize)]
 struct NeverWriteUserInputAnswerPayload {
@@ -1134,6 +1143,48 @@ fn turn_item_tool_kind(item: &TurnItem) -> ToolKind {
         | TurnItem::ImageGeneration(..)
         | TurnItem::EnteredReviewMode(..)
         | TurnItem::ExitedReviewMode(..) => ToolKind::Other,
+    }
+}
+
+fn turn_item_call_id(item: &TurnItem, projection: TurnItemProjection) -> String {
+    match projection {
+        TurnItemProjection::Status => format!(
+            "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}",
+            turn_item_id(item)
+        ),
+        TurnItemProjection::Hidden | TurnItemProjection::Dedicated | TurnItemProjection::Tool => {
+            turn_item_id(item).to_string()
+        }
+    }
+}
+
+fn turn_item_terminal_status(item: &TurnItem) -> ToolCallStatus {
+    use codex_protocol::items::{
+        CollabAgentToolCallStatus, CommandExecutionStatus, DynamicToolCallStatus, McpToolCallStatus,
+    };
+
+    let failed = match item {
+        TurnItem::CommandExecution(item) => {
+            matches!(
+                item.status,
+                CommandExecutionStatus::Failed | CommandExecutionStatus::Declined
+            )
+        }
+        TurnItem::DynamicToolCall(item) => matches!(item.status, DynamicToolCallStatus::Failed),
+        TurnItem::CollabAgentToolCall(item) => {
+            matches!(item.status, CollabAgentToolCallStatus::Failed)
+        }
+        TurnItem::FileChange(item) => matches!(
+            item.status,
+            Some(PatchApplyStatus::Failed | PatchApplyStatus::Declined)
+        ),
+        TurnItem::McpToolCall(item) => matches!(item.status, McpToolCallStatus::Failed),
+        _ => false,
+    };
+    if failed {
+        ToolCallStatus::Failed
+    } else {
+        ToolCallStatus::Completed
     }
 }
 
@@ -1523,6 +1574,7 @@ impl PromptState {
             active_web_search: None,
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
+            projected_tool_calls: HashMap::new(),
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
@@ -1546,6 +1598,7 @@ impl PromptState {
             active_web_search: None,
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
+            projected_tool_calls: HashMap::new(),
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
@@ -1804,6 +1857,96 @@ impl PromptState {
             .await;
     }
 
+    async fn start_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+        let projection = turn_item_projection(item);
+        if matches!(
+            projection,
+            TurnItemProjection::Hidden | TurnItemProjection::Dedicated
+        ) {
+            return;
+        }
+
+        let call_id = turn_item_call_id(item, projection);
+        let state = self
+            .projected_tool_calls
+            .entry(call_id.clone())
+            .or_default();
+        if state.emitted || state.terminal.is_some() {
+            return;
+        }
+        state.emitted = true;
+
+        let (title, detail) = describe_turn_item(item);
+        let mut tool_call = ToolCall::new(call_id, title)
+            .kind(if projection == TurnItemProjection::Status {
+                ToolKind::Other
+            } else {
+                turn_item_tool_kind(item)
+            })
+            .status(ToolCallStatus::InProgress)
+            .raw_input(serde_json::json!(item));
+        if let Some(detail) = detail {
+            tool_call = tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
+        }
+        if projection == TurnItemProjection::Status {
+            tool_call = tool_call.meta(neverwrite_status_meta("item_activity", "neutral"));
+        }
+        client.send_tool_call(tool_call).await;
+    }
+
+    async fn complete_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+        let projection = turn_item_projection(item);
+        if matches!(
+            projection,
+            TurnItemProjection::Hidden | TurnItemProjection::Dedicated
+        ) {
+            return;
+        }
+
+        let call_id = turn_item_call_id(item, projection);
+        let terminal = turn_item_terminal_status(item);
+        let state = self
+            .projected_tool_calls
+            .entry(call_id.clone())
+            .or_default();
+        if state.canonical_terminal_seen || state.terminal.is_some() {
+            return;
+        }
+        state.terminal = Some(terminal.clone());
+        let emitted = state.emitted;
+        state.emitted = true;
+
+        let (title, detail) = describe_turn_item(item);
+        if emitted {
+            let mut fields = ToolCallUpdateFields::new()
+                .title(title.to_string())
+                .status(terminal)
+                .raw_output(serde_json::json!(item));
+            if let Some(detail) = detail {
+                fields = fields.content(vec![ToolCallContent::Content(Content::new(detail))]);
+            }
+            client
+                .send_tool_call_update(ToolCallUpdate::new(call_id, fields))
+                .await;
+        } else {
+            let mut tool_call = ToolCall::new(call_id, title)
+                .kind(if projection == TurnItemProjection::Status {
+                    ToolKind::Other
+                } else {
+                    turn_item_tool_kind(item)
+                })
+                .status(terminal)
+                .raw_input(serde_json::json!(item));
+            if let Some(detail) = detail {
+                tool_call = tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
+            }
+            if projection == TurnItemProjection::Status {
+                tool_call = tool_call.meta(neverwrite_status_meta("item_activity", "neutral"));
+            }
+            client.send_tool_call(tool_call).await;
+        }
+    }
+
     async fn send_image_generation_started(
         &self,
         client: &SessionClient,
@@ -1955,30 +2098,7 @@ impl PromptState {
                         )
                         .await;
                     }
-                    TurnItem::CommandExecution(..)
-                    | TurnItem::DynamicToolCall(..)
-                    | TurnItem::CollabAgentToolCall(..)
-                    | TurnItem::SubAgentActivity(..)
-                    | TurnItem::Sleep(..)
-                    | TurnItem::Extension(..)
-                    | TurnItem::EnteredReviewMode(..)
-                    | TurnItem::ExitedReviewMode(..) => {}
-                    other_item => {
-                        let (title, detail) = describe_turn_item(&other_item);
-                        self.send_status_tool_call(
-                            client,
-                            format!(
-                                "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}",
-                                turn_item_id(&other_item)
-                            ),
-                            "item_activity",
-                            title,
-                            detail,
-                            "neutral",
-                            ToolCallStatus::InProgress,
-                        )
-                        .await;
-                    }
+                    other_item => self.start_turn_item(client, &other_item).await,
                 }
             }
             EventMsg::UserMessage(UserMessageEvent {
@@ -2249,27 +2369,8 @@ impl PromptState {
                         )
                         .await;
                     }
-                    TurnItem::CommandExecution(..)
-                    | TurnItem::DynamicToolCall(..)
-                    | TurnItem::CollabAgentToolCall(..)
-                    | TurnItem::SubAgentActivity(..)
-                    | TurnItem::Sleep(..)
-                    | TurnItem::Extension(..)
-                    | TurnItem::EnteredReviewMode(..)
-                    | TurnItem::ExitedReviewMode(..) => {}
                     other_item => {
-                        let (title, detail) = describe_turn_item(&other_item);
-                        self.send_status_tool_call_update(
-                            client,
-                            format!(
-                                "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}",
-                                turn_item_id(&other_item)
-                            ),
-                            title,
-                            detail,
-                            ToolCallStatus::Completed,
-                        )
-                        .await;
+                        self.complete_turn_item(client, &other_item).await;
                         // Notify the client when context compaction completes so users see
                         // a status message rather than silence during /compact.
                         if matches!(other_item, TurnItem::ContextCompaction(..)) {
