@@ -372,7 +372,9 @@ describe("MarkdownContent", () => {
             />,
         );
 
-        expect(screen.getByText("C++")).toHaveClass("chat-code-header");
+        expect(screen.getByText("C++").parentElement).toHaveClass(
+            "chat-code-header",
+        );
 
         await waitFor(() => {
             expect(
@@ -393,12 +395,54 @@ describe("MarkdownContent", () => {
             />,
         );
 
-        expect(screen.getByText("Bash")).toHaveClass("chat-code-header");
+        expect(screen.getByText("Bash").parentElement).toHaveClass(
+            "chat-code-header",
+        );
         expect(screen.getByRole("button", { name: "Copy code block" })).toHaveClass(
             "chat-code-copy-button",
         );
         expect(container.querySelector(".chat-code-frame")).not.toBeNull();
         expect(container.querySelector(".chat-code-block")).not.toBeNull();
+    });
+
+    it("previews markdown fences and lets the user inspect their source", () => {
+        renderComponent(
+            <MarkdownContent
+                content={[
+                    "```markdown",
+                    "# Rendered heading",
+                    "",
+                    "1. First item",
+                    "2. Second item",
+                    "```",
+                ].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const preview = screen.getByTestId("chat-markdown-preview");
+        expect(preview).toHaveTextContent("Rendered heading");
+        expect(preview.querySelector(".nw-md-heading")).toHaveTextContent(
+            "Rendered heading",
+        );
+        expect(preview.querySelector("ol")).toHaveTextContent(
+            "First itemSecond item",
+        );
+        expect(screen.getByRole("button", { name: "Preview" })).toHaveAttribute(
+            "aria-pressed",
+            "true",
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Source" }));
+
+        expect(screen.queryByTestId("chat-markdown-preview")).toBeNull();
+        expect(screen.getByRole("button", { name: "Source" })).toHaveAttribute(
+            "aria-pressed",
+            "true",
+        );
+        expect(screen.getByText((_text, node) => node?.tagName === "CODE")).toHaveTextContent(
+            /# Rendered heading.*1\. First item.*2\. Second item/s,
+        );
     });
 
     it("renders markdown tables as semantic table markup", () => {

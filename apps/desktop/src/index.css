@@ -627,10 +627,43 @@ html[data-desktop-platform="windows"].dark {
     display: flex;
     min-height: 2.45em;
     align-items: center;
+    gap: 0.75em;
     color: var(--text-secondary);
     font-family: var(--font-mono);
     font-weight: 600;
     padding: 0.18em 2.75em 0 1em;
+}
+
+.chat-code-mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: auto;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--bg-primary) 34%, transparent);
+    padding: 2px;
+}
+
+.chat-code-mode-button {
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 500;
+    line-height: 1.4;
+    padding: 1px 6px;
+}
+
+.chat-code-mode-button[aria-pressed="true"] {
+    background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+    color: var(--text-primary);
+}
+
+.chat-code-mode-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 42%, transparent);
+    outline-offset: 1px;
 }
 
 .chat-code-copy-button {
@@ -659,6 +692,11 @@ html[data-desktop-platform="windows"].dark {
 }
 
 .chat-code-block {
+    padding: 0.3em 1em 0.85em;
+}
+
+.chat-markdown-preview {
+    min-width: 0;
     padding: 0.3em 1em 0.85em;
 }
 

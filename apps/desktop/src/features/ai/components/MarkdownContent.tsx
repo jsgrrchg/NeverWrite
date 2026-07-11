@@ -1274,21 +1274,26 @@ function formatCodeLanguageLabel(language?: string) {
 function CodeBlock({
     content,
     info,
+    pillMetrics,
     chatFontSize = 14,
 }: {
     content: string;
     info?: string;
+    pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
 }) {
     const [copied, setCopied] = useState(false);
+    const [showMarkdownSource, setShowMarkdownSource] = useState(false);
     const languageSupport = useMarkdownCodeLanguageSupport(info);
     const languageToken = extractFenceLanguageToken(info ?? "");
+    const normalizedLanguage = languageToken?.toLowerCase();
     const languageLabel = formatCodeLanguageLabel(
         languageToken ?? info?.trim(),
     );
+    const isMarkdownFence =
+        normalizedLanguage === "markdown" || normalizedLanguage === "md";
     const isUnifiedDiff =
-        languageToken?.toLowerCase() === "diff" ||
-        languageToken?.toLowerCase() === "patch";
+        normalizedLanguage === "diff" || normalizedLanguage === "patch";
     const diffLines = useMemo(
         () => (isUnifiedDiff ? computeUnifiedDiffLines(content) : []),
         [content, isUnifiedDiff],
@@ -1344,10 +1349,42 @@ function CodeBlock({
                         fontSize: languageLabelFontSize,
                     }}
                 >
-                    {languageLabel}
+                    <span>{languageLabel}</span>
+                    {isMarkdownFence ? (
+                        <span
+                            aria-label="Markdown display mode"
+                            className="chat-code-mode-toggle"
+                            role="group"
+                        >
+                            <button
+                                aria-pressed={!showMarkdownSource}
+                                className="chat-code-mode-button"
+                                onClick={() => setShowMarkdownSource(false)}
+                                type="button"
+                            >
+                                Preview
+                            </button>
+                            <button
+                                aria-pressed={showMarkdownSource}
+                                className="chat-code-mode-button"
+                                onClick={() => setShowMarkdownSource(true)}
+                                type="button"
+                            >
+                                Source
+                            </button>
+                        </span>
+                    ) : null}
                 </div>
             ) : null}
-            {diffLines.length > 0 ? (
+            {isMarkdownFence && !showMarkdownSource ? (
+                <div
+                    className="chat-markdown-preview"
+                    data-testid="chat-markdown-preview"
+                    style={{ fontSize: chatFontSize }}
+                >
+                    <TextBlock content={content} pillMetrics={pillMetrics} />
+                </div>
+            ) : diffLines.length > 0 ? (
                 <div
                     className="max-w-full overflow-auto leading-relaxed"
                     style={{
@@ -1415,6 +1452,7 @@ export const MarkdownContent = memo(function MarkdownContent({
                         key={i}
                         content={block.content}
                         info={block.info}
+                        pillMetrics={pillMetrics}
                         chatFontSize={chatFontSize}
                     />
                 ) : (
