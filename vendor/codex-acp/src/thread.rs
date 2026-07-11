@@ -883,6 +883,7 @@ struct PromptState {
     active_guardian_assessments: HashSet<String>,
     active_plan_text: HashMap<String, String>,
     projected_tool_calls: HashMap<String, ProjectedToolCallState>,
+    subagent_projection_state: subagents::SubagentProjectionState,
     thread: Arc<dyn CodexThreadImpl>,
     resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
     pending_permission_interactions: HashMap<String, PendingPermissionInteraction>,
@@ -1671,6 +1672,7 @@ impl PromptState {
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
             projected_tool_calls: HashMap::new(),
+            subagent_projection_state: subagents::SubagentProjectionState::default(),
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
@@ -1696,6 +1698,7 @@ impl PromptState {
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
             projected_tool_calls: HashMap::new(),
+            subagent_projection_state: subagents::SubagentProjectionState::default(),
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
@@ -2260,9 +2263,11 @@ impl PromptState {
             }
         }
 
-        if let Some(projection) =
+        if let Some(mut projection) =
             subagents::projection_for_event(&event, client.thread_id, &client.session_id)
         {
+            self.subagent_projection_state
+                .coalesce_wait_projection(&event, &mut projection);
             self.send_subagent_projection(client, projection).await;
             return;
         }
