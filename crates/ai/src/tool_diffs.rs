@@ -40,9 +40,15 @@ impl ToolDiffState {
 
     pub fn upsert_tool_call(&self, session_id: &str, tool_call: ToolCall) -> ToolCall {
         let key = call_key(session_id, &tool_call.tool_call_id.0);
-        if let Ok(mut guard) = self.calls.lock() {
+        let became_completed = if let Ok(mut guard) = self.calls.lock() {
+            let was_completed = guard
+                .get(&key)
+                .is_some_and(|existing| existing.status == ToolCallStatus::Completed);
             guard.insert(key, tool_call.clone());
-        }
+            tool_call.status == ToolCallStatus::Completed && !was_completed
+        } else {
+            false
+        };
 
         self.cache_read_baseline(session_id, &tool_call);
         self.capture_write_diff(
@@ -51,7 +57,7 @@ impl ToolDiffState {
             tool_call.raw_input.as_ref(),
         );
         self.cache_content_diffs(session_id, &tool_call);
-        if tool_call.status == ToolCallStatus::Completed {
+        if became_completed {
             self.advance_baseline_after_success(session_id, tool_call.raw_input.as_ref());
         }
 
@@ -69,21 +75,28 @@ impl ToolDiffState {
         let update_meta = update.meta.clone();
         let mut guard = self.calls.lock().ok()?;
         let tool_call = if let Some(existing) = guard.get_mut(&key) {
+            let was_completed = existing.status == ToolCallStatus::Completed;
             existing.update(update.fields);
             if let Some(update_meta) = update_meta {
                 merge_tool_call_meta(existing, update_meta);
             }
-            existing.clone()
+            (
+                existing.clone(),
+                !was_completed && existing.status == ToolCallStatus::Completed,
+            )
         } else {
             let tool_call = ToolCall::try_from(update).ok()?;
             guard.insert(key, tool_call.clone());
-            tool_call
+            let became_completed = tool_call.status == ToolCallStatus::Completed;
+            (tool_call, became_completed)
         };
         drop(guard);
 
+        let (tool_call, became_completed) = tool_call;
+
         self.cache_content_diffs(session_id, &tool_call);
         self.cache_read_baseline(session_id, &tool_call);
-        if tool_call.status == ToolCallStatus::Completed {
+        if became_completed {
             self.advance_baseline_after_success(session_id, tool_call.raw_input.as_ref());
         }
 
