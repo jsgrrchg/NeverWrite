@@ -872,6 +872,7 @@ fn format_mcp_tool_approval_value(value: &serde_json::Value) -> String {
 struct PromptState {
     submission_id: String,
     active_commands: HashMap<String, ActiveCommand>,
+    pending_command_output: HashMap<String, String>,
     active_web_search: Option<String>,
     active_guardian_assessments: HashSet<String>,
     active_plan_text: HashMap<String, String>,
@@ -1186,6 +1187,10 @@ fn turn_item_terminal_status(item: &TurnItem) -> ToolCallStatus {
     } else {
         ToolCallStatus::Completed
     }
+}
+
+fn is_terminal_tool_status(status: &ToolCallStatus) -> bool {
+    matches!(status, ToolCallStatus::Completed | ToolCallStatus::Failed)
 }
 
 fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
@@ -1571,6 +1576,7 @@ impl PromptState {
         Self {
             submission_id,
             active_commands: HashMap::new(),
+            pending_command_output: HashMap::new(),
             active_web_search: None,
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
@@ -1595,6 +1601,7 @@ impl PromptState {
         Self {
             submission_id,
             active_commands: HashMap::new(),
+            pending_command_output: HashMap::new(),
             active_web_search: None,
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
@@ -1836,27 +1843,6 @@ impl PromptState {
         client.send_tool_call(tool_call).await;
     }
 
-    async fn send_status_tool_call_update(
-        &self,
-        client: &SessionClient,
-        call_id: impl Into<ToolCallId>,
-        title: impl Into<String>,
-        detail: Option<String>,
-        status: ToolCallStatus,
-    ) {
-        let mut fields = ToolCallUpdateFields::new()
-            .title(title.into())
-            .status(status);
-
-        if let Some(detail) = detail {
-            fields = fields.content(vec![ToolCallContent::Content(Content::new(detail))]);
-        }
-
-        client
-            .send_tool_call_update(ToolCallUpdate::new(call_id, fields))
-            .await;
-    }
-
     async fn start_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
         let projection = turn_item_projection(item);
         if matches!(
@@ -1914,16 +1900,19 @@ impl PromptState {
         }
         state.terminal = Some(terminal.clone());
         let emitted = state.emitted;
+        let canonical_seen = state.canonical_seen;
         state.emitted = true;
 
         let (title, detail) = describe_turn_item(item);
         if emitted {
-            let mut fields = ToolCallUpdateFields::new()
-                .title(title.to_string())
-                .status(terminal)
-                .raw_output(serde_json::json!(item));
-            if let Some(detail) = detail {
-                fields = fields.content(vec![ToolCallContent::Content(Content::new(detail))]);
+            let mut fields = ToolCallUpdateFields::new().status(terminal);
+            if !canonical_seen {
+                fields = fields
+                    .title(title.to_string())
+                    .raw_output(serde_json::json!(item));
+                if let Some(detail) = detail {
+                    fields = fields.content(vec![ToolCallContent::Content(Content::new(detail))]);
+                }
             }
             client
                 .send_tool_call_update(ToolCallUpdate::new(call_id, fields))
@@ -1945,6 +1934,107 @@ impl PromptState {
             }
             client.send_tool_call(tool_call).await;
         }
+    }
+
+    async fn send_canonical_tool_call(&mut self, client: &SessionClient, tool_call: ToolCall) {
+        let call_id = tool_call.tool_call_id.to_string();
+        let terminal = is_terminal_tool_status(&tool_call.status);
+        let (emitted, preserve_terminal) = {
+            let state = self
+                .projected_tool_calls
+                .entry(call_id.clone())
+                .or_default();
+            state.canonical_seen = true;
+            let preserve_terminal = state.terminal.is_some() && !terminal;
+            if terminal {
+                if state.canonical_terminal_seen {
+                    return;
+                }
+                state.canonical_terminal_seen = true;
+                state.terminal = Some(tool_call.status.clone());
+            }
+            let emitted = state.emitted;
+            state.emitted = true;
+            (emitted, preserve_terminal)
+        };
+
+        if !emitted {
+            client.send_tool_call(tool_call).await;
+            return;
+        }
+
+        let mut fields = ToolCallUpdateFields::new()
+            .kind(tool_call.kind)
+            .title(tool_call.title)
+            .raw_input(tool_call.raw_input)
+            .raw_output(tool_call.raw_output);
+        if !tool_call.content.is_empty() {
+            fields = fields.content(tool_call.content);
+        }
+        if !tool_call.locations.is_empty() {
+            fields = fields.locations(tool_call.locations);
+        }
+        if !preserve_terminal {
+            fields = fields.status(tool_call.status);
+        }
+        client
+            .send_tool_call_update(ToolCallUpdate::new(call_id, fields).meta(tool_call.meta))
+            .await;
+    }
+
+    async fn send_canonical_tool_update(
+        &mut self,
+        client: &SessionClient,
+        update: ToolCallUpdate,
+        title_if_unmaterialized: impl Into<String>,
+        kind_if_unmaterialized: ToolKind,
+    ) {
+        let call_id = update.tool_call_id.to_string();
+        let terminal = update
+            .fields
+            .status
+            .as_ref()
+            .is_some_and(is_terminal_tool_status);
+        let (emitted, preserve_terminal) = {
+            let state = self
+                .projected_tool_calls
+                .entry(call_id.clone())
+                .or_default();
+            state.canonical_seen = true;
+            if terminal {
+                if state.canonical_terminal_seen {
+                    return;
+                }
+                state.canonical_terminal_seen = true;
+                state.terminal = update.fields.status.clone();
+            }
+            let preserve_terminal = state.terminal.is_some() && !terminal;
+            let emitted = state.emitted;
+            state.emitted = true;
+            (emitted, preserve_terminal)
+        };
+
+        if !emitted {
+            let mut tool_call = ToolCall::new(call_id, title_if_unmaterialized)
+                .kind(kind_if_unmaterialized)
+                .status(
+                    update
+                        .fields
+                        .status
+                        .clone()
+                        .unwrap_or(ToolCallStatus::InProgress),
+                );
+            tool_call.update(update.fields);
+            tool_call.meta = update.meta;
+            client.send_tool_call(tool_call).await;
+            return;
+        }
+
+        let mut update = update;
+        if preserve_terminal {
+            update.fields.status = None;
+        }
+        client.send_tool_call_update(update).await;
     }
 
     async fn send_image_generation_started(
@@ -2863,6 +2953,20 @@ impl PromptState {
             ..
         } = event;
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
+        let mut content = content.collect::<Vec<_>>();
+        if let Some(reason) = reason.as_ref() {
+            content.push(reason.clone().into());
+        }
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id.clone(), title.clone())
+                .kind(ToolKind::Edit)
+                .status(ToolCallStatus::Pending)
+                .locations(locations.clone())
+                .content(content.clone())
+                .raw_input(raw_input.clone()),
+        )
+        .await;
         let request_key = patch_request_key(&call_id);
         let options = vec![
             PermissionOption::new("approved", "Yes", PermissionOptionKind::AllowOnce),
@@ -2889,7 +2993,7 @@ impl PromptState {
                     .status(ToolCallStatus::Pending)
                     .title(title)
                     .locations(locations)
-                    .content(content.chain(reason.map(|r| r.into())).collect::<Vec<_>>())
+                    .content(content)
                     .raw_input(raw_input),
             ),
             options,
@@ -2897,7 +3001,7 @@ impl PromptState {
         Ok(())
     }
 
-    async fn start_patch_apply(&self, client: &SessionClient, event: PatchApplyBeginEvent) {
+    async fn start_patch_apply(&mut self, client: &SessionClient, event: PatchApplyBeginEvent) {
         let raw_input = serde_json::json!(&event);
         let PatchApplyBeginEvent {
             call_id,
@@ -2908,19 +3012,19 @@ impl PromptState {
 
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
 
-        client
-            .send_tool_call(
-                ToolCall::new(call_id, title)
-                    .kind(ToolKind::Edit)
-                    .status(ToolCallStatus::InProgress)
-                    .locations(locations)
-                    .content(content.collect())
-                    .raw_input(raw_input),
-            )
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id, title)
+                .kind(ToolKind::Edit)
+                .status(ToolCallStatus::InProgress)
+                .locations(locations)
+                .content(content.collect())
+                .raw_input(raw_input),
+        )
+        .await;
     }
 
-    async fn end_patch_apply(&self, client: &SessionClient, event: PatchApplyEndEvent) {
+    async fn end_patch_apply(&mut self, client: &SessionClient, event: PatchApplyEndEvent) {
         let raw_output = serde_json::json!(&event);
         let PatchApplyEndEvent {
             call_id,
@@ -2945,8 +3049,9 @@ impl PromptState {
             PatchApplyStatus::Failed | PatchApplyStatus::Declined => ToolCallStatus::Failed,
         };
 
-        client
-            .send_tool_call_update(ToolCallUpdate::new(
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
                 call_id,
                 ToolCallUpdateFields::new()
                     .status(status)
@@ -2954,44 +3059,47 @@ impl PromptState {
                     .title(title)
                     .locations(locations)
                     .content(content),
-            ))
-            .await;
+            ),
+            "Updating files",
+            ToolKind::Edit,
+        )
+        .await;
     }
 
     async fn start_dynamic_tool_call(
-        &self,
+        &mut self,
         client: &SessionClient,
         call_id: String,
         tool: String,
         arguments: serde_json::Value,
     ) {
-        client
-            .send_tool_call(
-                ToolCall::new(call_id, format!("Tool: {tool}"))
-                    .status(ToolCallStatus::InProgress)
-                    .raw_input(serde_json::json!(&arguments)),
-            )
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id, format!("Tool: {tool}"))
+                .status(ToolCallStatus::InProgress)
+                .raw_input(serde_json::json!(&arguments)),
+        )
+        .await;
     }
 
     async fn start_mcp_tool_call(
-        &self,
+        &mut self,
         client: &SessionClient,
         call_id: String,
         invocation: McpInvocation,
     ) {
         let title = format!("Tool: {}/{}", invocation.server, invocation.tool);
-        client
-            .send_tool_call(
-                ToolCall::new(call_id, title)
-                    .status(ToolCallStatus::InProgress)
-                    .raw_input(serde_json::json!(&invocation)),
-            )
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id, title)
+                .status(ToolCallStatus::InProgress)
+                .raw_input(serde_json::json!(&invocation)),
+        )
+        .await;
     }
 
     async fn end_dynamic_tool_call(
-        &self,
+        &mut self,
         client: &SessionClient,
         event: DynamicToolCallResponseEvent,
     ) {
@@ -3008,8 +3116,9 @@ impl PromptState {
             ..
         } = event;
 
-        client
-            .send_tool_call_update(ToolCallUpdate::new(
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
                 call_id,
                 ToolCallUpdateFields::new()
                     .status(if success {
@@ -3037,12 +3146,15 @@ impl PromptState {
                             .chain(error.map(|e| ToolCallContent::Content(Content::new(e))))
                             .collect::<Vec<_>>(),
                     ),
-            ))
-            .await;
+            ),
+            "Tool call",
+            ToolKind::Other,
+        )
+        .await;
     }
 
     async fn end_mcp_tool_call(
-        &self,
+        &mut self,
         client: &SessionClient,
         call_id: String,
         result: Result<CallToolResult, String>,
@@ -3056,8 +3168,9 @@ impl PromptState {
             Err(err) => serde_json::json!(err),
         };
 
-        client
-            .send_tool_call_update(ToolCallUpdate::new(
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
                 call_id,
                 ToolCallUpdateFields::new()
                     .status(if is_error {
@@ -3078,8 +3191,11 @@ impl PromptState {
                                 .collect()
                         },
                     )),
-            ))
-            .await;
+            ),
+            "MCP tool call",
+            ToolKind::Other,
+        )
+        .await;
     }
 
     async fn exec_approval(
@@ -3171,6 +3287,17 @@ impl PromptState {
             additional_permissions.as_ref(),
         );
 
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(tool_call_id.clone(), title.clone())
+                .kind(kind.clone())
+                .status(ToolCallStatus::Pending)
+                .raw_input(raw_input.clone())
+                .content(content.clone().unwrap_or_default())
+                .locations(locations.clone()),
+        )
+        .await;
+
         self.spawn_permission_request(
             client,
             exec_request_key(&call_id),
@@ -3237,7 +3364,10 @@ impl PromptState {
 
         let active_command = ActiveCommand {
             tool_call_id: tool_call_id.clone(),
-            output: String::new(),
+            output: self
+                .pending_command_output
+                .remove(&call_id)
+                .unwrap_or_default(),
             file_extension,
             terminal_output,
             file_snapshots,
@@ -3258,17 +3388,17 @@ impl PromptState {
 
         self.active_commands.insert(call_id.clone(), active_command);
 
-        client
-            .send_tool_call(
-                ToolCall::new(tool_call_id, title)
-                    .kind(kind)
-                    .status(ToolCallStatus::InProgress)
-                    .locations(locations)
-                    .raw_input(raw_input)
-                    .content(content)
-                    .meta(meta),
-            )
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(tool_call_id, title)
+                .kind(kind)
+                .status(ToolCallStatus::InProgress)
+                .locations(locations)
+                .raw_input(raw_input)
+                .content(content)
+                .meta(meta),
+        )
+        .await;
     }
 
     async fn exec_command_output_delta(
@@ -3282,9 +3412,8 @@ impl PromptState {
             stream: _,
         } = event;
         // Stream output bytes to the display-only terminal via ToolCallUpdate meta.
+        let data_str = String::from_utf8_lossy(&chunk).to_string();
         if let Some(active_command) = self.active_commands.get_mut(&call_id) {
-            let data_str = String::from_utf8_lossy(&chunk).to_string();
-
             if client.supports_terminal_output(active_command) {
                 let update = ToolCallUpdate::new(
                     active_command.tool_call_id.clone(),
@@ -3304,6 +3433,13 @@ impl PromptState {
                 // and can exhaust memory for commands with long output.
                 active_command.output.push_str(&data_str);
             }
+        } else {
+            // Codex can race an output delta ahead of its begin event. Keep it
+            // scoped to the call ID so it can never attach to another command.
+            self.pending_command_output
+                .entry(call_id)
+                .or_default()
+                .push_str(&data_str);
         }
     }
 
@@ -3379,22 +3515,24 @@ impl PromptState {
                 .raw_output(raw_output)
                 .content(content);
 
-            client
-                .send_tool_call_update(
-                    ToolCallUpdate::new(active_command.tool_call_id.clone(), fields).meta(
-                        client.supports_terminal_output(&active_command).then(|| {
-                            Meta::from_iter([(
-                                "terminal_exit".into(),
-                                serde_json::json!({
-                                    "terminal_id": call_id,
-                                    "exit_code": exit_code,
-                                    "signal": null
-                                }),
-                            )])
-                        }),
-                    ),
-                )
-                .await;
+            self.send_canonical_tool_update(
+                client,
+                ToolCallUpdate::new(active_command.tool_call_id.clone(), fields).meta(
+                    client.supports_terminal_output(&active_command).then(|| {
+                        Meta::from_iter([(
+                            "terminal_exit".into(),
+                            serde_json::json!({
+                                "terminal_id": call_id,
+                                "exit_code": exit_code,
+                                "signal": null
+                            }),
+                        )])
+                    }),
+                ),
+                "Running command",
+                ToolKind::Execute,
+            )
+            .await;
         }
     }
 
@@ -3435,13 +3573,17 @@ impl PromptState {
 
     async fn start_web_search(&mut self, client: &SessionClient, call_id: String) {
         self.active_web_search = Some(call_id.clone());
-        client
-            .send_tool_call(ToolCall::new(call_id, "Searching the Web").kind(ToolKind::Fetch))
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id, "Searching the Web")
+                .kind(ToolKind::Fetch)
+                .status(ToolCallStatus::InProgress),
+        )
+        .await;
     }
 
     async fn update_web_search_query(
-        &self,
+        &mut self,
         client: &SessionClient,
         call_id: String,
         query: String,
@@ -3466,8 +3608,9 @@ impl PromptState {
             WebSearchAction::Other => "Web search".to_string(),
         };
 
-        client
-            .send_tool_call_update(ToolCallUpdate::new(
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
                 call_id,
                 ToolCallUpdateFields::new()
                     .status(ToolCallStatus::InProgress)
@@ -3476,18 +3619,25 @@ impl PromptState {
                         "query": query,
                         "action": action
                     })),
-            ))
-            .await;
+            ),
+            "Searching the Web",
+            ToolKind::Fetch,
+        )
+        .await;
     }
 
     async fn complete_web_search(&mut self, client: &SessionClient) {
         if let Some(call_id) = self.active_web_search.take() {
-            client
-                .send_tool_call_update(ToolCallUpdate::new(
+            self.send_canonical_tool_update(
+                client,
+                ToolCallUpdate::new(
                     call_id,
                     ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
-                ))
-                .await;
+                ),
+                "Searching the Web",
+                ToolKind::Fetch,
+            )
+            .await;
         }
     }
 }
