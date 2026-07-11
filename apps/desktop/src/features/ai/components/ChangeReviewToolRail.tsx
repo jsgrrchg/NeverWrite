@@ -240,10 +240,9 @@ function ChangeReviewToolRailRow({
     const accent = getAccent(toolKind, status);
     const stats = computeFileDiffStats(diff);
     const badge = getDiffBadge(diff);
-    const openPath =
-        diff.kind === "delete"
-            ? null
-            : (message.meta?.target ? String(message.meta.target) : diff.path);
+    // A tool target can describe the operation (or just one file in a batch).
+    // Each rail row must open the file represented by its own diff.
+    const openPath = diff.kind === "delete" ? null : diff.path;
     const canOpen = openPath
         ? canOpenAiEditedFileByAbsolutePath(openPath)
         : false;

@@ -519,6 +519,13 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     const dismissPinnedPlan = useChatRowUiStore((state) => state.patchRow);
     const visiblePinnedPlan = pinnedPlanDismissed ? null : pinnedPlan;
     const visiblePinnedPlanId = visiblePinnedPlan?.id ?? null;
+    const shouldRevealHiddenActivity =
+        scrollToMessageId !== null ||
+        (findOpen && findQuery.trim().length > 0);
+    const timelineActivityDisplayMode =
+        activityDisplayMode === "hidden" && shouldRevealHiddenActivity
+            ? "collapsed"
+            : activityDisplayMode;
     const timelineRows = useMemo(() => {
         const rows: TimelineRow[] = [];
         const timelineMessages = messages.filter(
@@ -531,7 +538,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         );
         const presentationRows = buildActivityTimelineRows(
             timelineMessages,
-            activityDisplayMode,
+            timelineActivityDisplayMode,
         );
         const trailingPresentationRow = presentationRows.at(-1);
         const lastTimelineMessageId = timelineMessages.at(-1)?.id;
@@ -572,11 +579,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
         return rows;
     }, [
-        activityDisplayMode,
         messages,
         runIndicatorAnchor,
         sessionId,
         status,
+        timelineActivityDisplayMode,
         visiblePinnedPlanId,
     ]);
     const rowRenderOptions = useMemo(

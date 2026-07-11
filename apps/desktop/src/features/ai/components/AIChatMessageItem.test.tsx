@@ -671,6 +671,66 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.getByText(/new line/)).toBeInTheDocument();
     });
 
+    it("opens the diff's own file when a tool reports multiple changes", () => {
+        const firstPath = "/vault/notes/first.md";
+        const secondPath = "/vault/notes/second.md";
+        setVaultNotes([
+            {
+                id: "first-note",
+                path: firstPath,
+                title: "first",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "second-note",
+                path: secondPath,
+                title: "second",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        renderMessage({
+            id: "tool:multi-file",
+            role: "assistant",
+            kind: "tool",
+            title: "Apply updates",
+            content: "Updated two notes",
+            timestamp: Date.now(),
+            diffs: [
+                {
+                    path: firstPath,
+                    kind: "update",
+                    old_text: "first old",
+                    new_text: "first new",
+                },
+                {
+                    path: secondPath,
+                    kind: "update",
+                    old_text: "second old",
+                    new_text: "second new",
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: firstPath,
+            },
+        });
+
+        expect(
+            within(getChangeReviewRail(firstPath)).getByRole("button", {
+                name: `Open ${firstPath}`,
+            }),
+        ).toBeInTheDocument();
+        expect(
+            within(getChangeReviewRail(secondPath)).getByRole("button", {
+                name: `Open ${secondPath}`,
+            }),
+        ).toBeInTheDocument();
+    });
+
     it("disables line wrapping inside edit file diffs when editor line wrapping is disabled", () => {
         useSettingsStore.setState({ lineWrapping: false });
         setVaultNotes([

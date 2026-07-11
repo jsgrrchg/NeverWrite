@@ -1037,7 +1037,8 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(screen.queryByText(/working/i)).not.toBeInTheDocument();
     });
 
-    it("opens a collapsed rail when the outline targets one of its tools", async () => {
+    it("opens a hidden routine rail when the outline targets one of its tools", async () => {
+        useChatStore.setState({ toolActivityDisplayMode: "hidden" });
         const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
         const scrollIntoView = vi.fn();
         Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -1094,7 +1095,7 @@ describe("AIChatMessageList streaming run indicator", () => {
 
             expect(
                 view.container.querySelector('[data-tool-activity-id="tool:outline"]'),
-            ).not.toBeNull();
+            ).toBeNull();
         } finally {
             Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
                 value: originalScrollIntoView,
@@ -1104,6 +1105,7 @@ describe("AIChatMessageList streaming run indicator", () => {
     });
 
     it("expands rails while find searches tool activity", async () => {
+        useChatStore.setState({ toolActivityDisplayMode: "hidden" });
         const view = renderComponent(
             <AIChatMessageList
                 sessionId="session-activity-find"
