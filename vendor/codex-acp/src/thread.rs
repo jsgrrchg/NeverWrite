@@ -3523,17 +3523,25 @@ impl PromptState {
             file_snapshots.insert(path.clone(), read_text_snapshot(&path));
         }
 
-        let active_command = ActiveCommand {
+        let pending_output = self
+            .pending_command_output
+            .remove(&call_id)
+            .unwrap_or_default();
+        let mut active_command = ActiveCommand {
             tool_call_id: tool_call_id.clone(),
-            output: self
-                .pending_command_output
-                .remove(&call_id)
-                .unwrap_or_default(),
+            output: pending_output,
             file_extension,
             terminal_output,
             file_snapshots,
         };
-        let (content, meta) = if client.supports_terminal_output(&active_command) {
+        let supports_terminal_output = client.supports_terminal_output(&active_command);
+        // Output can arrive before the command begin event. A terminal client
+        // needs that buffered output replayed as a terminal update, not kept in
+        // the fallback content buffer.
+        let pending_terminal_output = supports_terminal_output
+            .then(|| std::mem::take(&mut active_command.output))
+            .filter(|output| !output.is_empty());
+        let (content, meta) = if supports_terminal_output {
             let content = vec![ToolCallContent::Terminal(Terminal::new(call_id.clone()))];
             let meta = Some(Meta::from_iter([(
                 "terminal_info".to_owned(),
@@ -3551,7 +3559,7 @@ impl PromptState {
 
         self.send_canonical_tool_call(
             client,
-            ToolCall::new(tool_call_id, title)
+            ToolCall::new(tool_call_id.clone(), title)
                 .kind(kind)
                 .status(ToolCallStatus::InProgress)
                 .locations(locations)
@@ -3560,6 +3568,22 @@ impl PromptState {
                 .meta(meta),
         )
         .await;
+
+        if let Some(data) = pending_terminal_output {
+            client
+                .send_tool_call_update(
+                    ToolCallUpdate::new(tool_call_id, ToolCallUpdateFields::new()).meta(
+                        Meta::from_iter([(
+                            "terminal_output".to_owned(),
+                            serde_json::json!({
+                                "terminal_id": call_id,
+                                "data": data,
+                            }),
+                        )]),
+                    ),
+                )
+                .await;
+        }
     }
 
     async fn exec_command_output_delta(
@@ -3597,6 +3621,13 @@ impl PromptState {
         } else {
             // Codex can race an output delta ahead of its begin event. Keep it
             // scoped to the call ID so it can never attach to another command.
+            if self
+                .projected_tool_calls
+                .get(&call_id)
+                .is_some_and(|state| state.terminal.is_some())
+            {
+                return;
+            }
             let buffer = self.pending_command_output.entry(call_id).or_default();
             append_bounded_output(buffer, &data_str);
         }
@@ -3693,6 +3724,8 @@ impl PromptState {
             )
             .await;
         } else {
+            // No later event can consume this buffer once the command has ended.
+            self.pending_command_output.remove(&call_id);
             let status = match status {
                 ExecCommandStatus::Completed if exit_code == 0 => ToolCallStatus::Completed,
                 ExecCommandStatus::Completed => ToolCallStatus::Failed,
@@ -8110,6 +8143,139 @@ mod tests {
         assert!(text.contains("typed input"));
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn early_command_output_is_replayed_to_terminal_clients() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let capabilities = Arc::new(std::sync::Mutex::new(ClientCapabilities::new().meta(
+            Meta::from_iter([("terminal_output".to_string(), json!(true))]),
+        )));
+        let session_client = SessionClient::with_client(session_id, client.clone(), capabilities);
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+        let cwd = std::env::current_dir().expect("current dir should be available");
+
+        state
+            .exec_command_output_delta(
+                &session_client,
+                ExecCommandOutputDeltaEvent {
+                    call_id: "exec-1".to_string(),
+                    stream: codex_protocol::protocol::ExecOutputStream::Stdout,
+                    chunk: b"output before begin".to_vec(),
+                },
+            )
+            .await;
+        state
+            .exec_command_begin(
+                &session_client,
+                ExecCommandBeginEvent {
+                    call_id: "exec-1".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 0,
+                    command: vec!["sh".to_string(), "-c".to_string(), "echo".to_string()],
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                        .expect("current dir should be representable as a path URI"),
+                    parsed_cmd: vec![ParsedCommand::Unknown {
+                        cmd: "sh".to_string(),
+                    }],
+                    source: Default::default(),
+                    interaction_input: None,
+                },
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let replay = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => update
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("terminal_output")),
+                _ => None,
+            })
+            .expect("early output should be replayed to the terminal");
+        assert_eq!(replay.get("terminal_id"), Some(&json!("exec-1")));
+        assert_eq!(replay.get("data"), Some(&json!("output before begin")));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn command_end_discards_output_without_a_begin_event() {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client, Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+        let cwd = std::env::current_dir().expect("current dir should be available");
+
+        state
+            .exec_command_output_delta(
+                &session_client,
+                ExecCommandOutputDeltaEvent {
+                    call_id: "exec-1".to_string(),
+                    stream: codex_protocol::protocol::ExecOutputStream::Stdout,
+                    chunk: b"orphaned output".to_vec(),
+                },
+            )
+            .await;
+        assert!(state.pending_command_output.contains_key("exec-1"));
+
+        state
+            .exec_command_end(
+                &session_client,
+                ExecCommandEndEvent {
+                    call_id: "exec-1".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    completed_at_ms: 0,
+                    command: vec!["sh".to_string(), "-c".to_string(), "echo".to_string()],
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                        .expect("current dir should be representable as a path URI"),
+                    parsed_cmd: vec![],
+                    source: Default::default(),
+                    interaction_input: None,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    aggregated_output: String::new(),
+                    exit_code: 0,
+                    duration: std::time::Duration::from_millis(1),
+                    formatted_output: String::new(),
+                    status: ExecCommandStatus::Completed,
+                },
+            )
+            .await;
+
+        assert!(!state.pending_command_output.contains_key("exec-1"));
+        state
+            .exec_command_output_delta(
+                &session_client,
+                ExecCommandOutputDeltaEvent {
+                    call_id: "exec-1".to_string(),
+                    stream: codex_protocol::protocol::ExecOutputStream::Stdout,
+                    chunk: b"late output".to_vec(),
+                },
+            )
+            .await;
+        assert!(!state.pending_command_output.contains_key("exec-1"));
     }
 
     async fn setup(
