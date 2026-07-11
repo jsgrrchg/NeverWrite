@@ -51,34 +51,16 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
     );
 }
 
-function WorkingActivityIndicator() {
+function ActivityIndicator({ active }: { readonly active: boolean }) {
     return (
         <span
             aria-hidden="true"
-            className="activity-rail-working-indicator"
-            data-activity-rail-working-indicator="true"
-        >
-            <span className="activity-rail-working-cubes">
-                {[0, 1, 2, 3].map((cube) => (
-                    <span
-                        className="activity-rail-working-cube"
-                        key={cube}
-                    />
-                ))}
-            </span>
-        </span>
-    );
-}
-
-function WorkedActivityIndicator() {
-    return (
-        <span
-            aria-hidden="true"
-            className="activity-rail-worked-indicator"
-            data-activity-rail-worked-indicator="true"
+            className="activity-rail-indicator"
+            data-activity-rail-worked-indicator={active ? undefined : "true"}
+            data-activity-rail-working-indicator={active ? "true" : undefined}
         >
             <svg
-                className="activity-rail-worked-cube"
+                className="activity-rail-chevron"
                 fill="none"
                 height="12"
                 stroke="currentColor"
@@ -184,11 +166,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 type="button"
             >
                 <span className="flex min-w-0 flex-1 items-start gap-1.5">
-                    {isCurrentTurnTail ? (
-                        <WorkingActivityIndicator />
-                    ) : (
-                        <WorkedActivityIndicator />
-                    )}
+                    <ActivityIndicator active={isCurrentTurnTail} />
                     <span className="min-w-0 flex-1">
                         <span
                             className="block truncate text-[11px] font-semibold leading-4"

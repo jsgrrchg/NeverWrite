@@ -686,75 +686,7 @@ body.dragging-tab * {
     cursor: grabbing !important;
 }
 
-@keyframes activity-rail-cube-orbit {
-    to {
-        transform: rotate(1turn);
-    }
-}
-
-@keyframes activity-rail-cube-pulse {
-    0%,
-    100% {
-        opacity: 0.28;
-        transform: scale(0.72);
-    }
-    50% {
-        opacity: 1;
-        transform: scale(1);
-    }
-}
-
-.activity-rail-working-indicator {
-    display: inline-grid;
-    flex: 0 0 auto;
-    place-items: center;
-    width: 16px;
-    height: 16px;
-}
-
-.activity-rail-working-cubes {
-    position: relative;
-    display: block;
-    width: 12px;
-    height: 12px;
-    animation: activity-rail-cube-orbit 1.15s linear infinite;
-}
-
-.activity-rail-working-cube {
-    position: absolute;
-    width: 4px;
-    height: 4px;
-    border-radius: 1px;
-    background: var(--accent);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
-    animation: activity-rail-cube-pulse 880ms ease-in-out infinite;
-}
-
-.activity-rail-working-cube:nth-child(1) {
-    top: 0;
-    left: 4px;
-    animation-delay: 0ms;
-}
-
-.activity-rail-working-cube:nth-child(2) {
-    top: 4px;
-    right: 0;
-    animation-delay: 110ms;
-}
-
-.activity-rail-working-cube:nth-child(3) {
-    bottom: 0;
-    left: 4px;
-    animation-delay: 220ms;
-}
-
-.activity-rail-working-cube:nth-child(4) {
-    top: 4px;
-    left: 0;
-    animation-delay: 330ms;
-}
-
-.activity-rail-worked-indicator {
+.activity-rail-indicator {
     display: inline-grid;
     flex: 0 0 auto;
     place-items: center;
@@ -763,15 +695,8 @@ body.dragging-tab * {
     color: var(--text-primary);
 }
 
-.activity-rail-worked-cube {
+.activity-rail-chevron {
     display: block;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .activity-rail-working-cubes,
-    .activity-rail-working-cube {
-        animation: none;
-    }
 }
 
 .terminal-surface {
