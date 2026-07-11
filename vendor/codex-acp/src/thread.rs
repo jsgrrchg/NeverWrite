@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -29,6 +29,7 @@ use codex_core::{
     config::{Config, PermissionProfileSnapshot, set_project_trust_level},
     review_prompts::user_facing_hint,
 };
+use codex_extension_items::ExtensionItem;
 use codex_features::Feature;
 use codex_http_client::{HttpClientFactory, OutboundProxyPolicy};
 use codex_login::auth::AuthManager;
@@ -42,11 +43,12 @@ use codex_protocol::protocol::{
     ImageGenerationBeginEvent, ImageGenerationEndEvent, ItemCompletedEvent, ItemStartedEvent,
     McpInvocation, McpStartupCompleteEvent, McpStartupUpdateEvent, McpToolCallBeginEvent,
     McpToolCallEndEvent, ModelRerouteEvent, Op, PatchApplyBeginEvent, PatchApplyEndEvent,
-    PatchApplyStatus, PlanDeltaEvent, ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent,
-    ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget, StreamErrorEvent,
-    TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent, ThreadSettingsOverrides,
-    TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
-    ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent, WebSearchEndEvent,
+    PatchApplyStatus, PatchApplyUpdatedEvent, PlanDeltaEvent, ReasoningContentDeltaEvent,
+    ReasoningRawContentDeltaEvent, ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget,
+    StreamErrorEvent, TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent,
+    ThreadSettingsOverrides, TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent,
+    TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent,
+    WebSearchEndEvent,
 };
 use codex_protocol::review_format::format_review_findings_block;
 use codex_protocol::{
@@ -127,6 +129,8 @@ const NEVERWRITE_DIFF_HUNKS_KEY: &str = "neverwriteHunks";
 const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
 const NEVERWRITE_IMAGE_EVENT_ID_PREFIX: &str = "neverwrite:image:";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
+const MAX_PENDING_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_CLOSED_EVENT_PROJECTIONS: usize = 256;
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_TURN_EVENT_TYPE_KEY: &str = "codexAcpTurnEventType";
 const CODEX_ACP_TURN_ID_KEY: &str = "codexAcpTurnId";
@@ -872,9 +876,11 @@ fn format_mcp_tool_approval_value(value: &serde_json::Value) -> String {
 struct PromptState {
     submission_id: String,
     active_commands: HashMap<String, ActiveCommand>,
+    pending_command_output: HashMap<String, String>,
     active_web_search: Option<String>,
     active_guardian_assessments: HashSet<String>,
     active_plan_text: HashMap<String, String>,
+    projected_tool_calls: HashMap<String, ProjectedToolCallState>,
     thread: Arc<dyn CodexThreadImpl>,
     resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
     pending_permission_interactions: HashMap<String, PendingPermissionInteraction>,
@@ -884,6 +890,16 @@ struct PromptState {
     seen_message_deltas: bool,
     seen_reasoning_deltas: bool,
     project_user_messages: bool,
+}
+
+#[derive(Default)]
+struct ProjectedToolCallState {
+    emitted: bool,
+    canonical_seen: bool,
+    canonical_terminal_seen: bool,
+    terminal: Option<ToolCallStatus>,
+    pending_canonical_fields: Option<ToolCallUpdateFields>,
+    pending_canonical_meta: Option<Meta>,
 }
 #[derive(Debug, serde::Deserialize)]
 struct NeverWriteUserInputAnswerPayload {
@@ -1077,6 +1093,180 @@ fn turn_item_id(item: &TurnItem) -> &str {
     }
 }
 
+/// Items that already have a dedicated ACP projection stay out of the generic
+/// lifecycle. Messages and reasoning are streamed through their own channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnItemProjection {
+    Hidden,
+    Dedicated,
+    Status,
+    Tool,
+}
+
+struct StatusToolCall {
+    call_id: ToolCallId,
+    kind: &'static str,
+    title: String,
+    detail: Option<String>,
+    emphasis: &'static str,
+    status: ToolCallStatus,
+}
+
+fn turn_item_projection(item: &TurnItem) -> TurnItemProjection {
+    match item {
+        TurnItem::UserMessage(..) | TurnItem::AgentMessage(..) | TurnItem::Reasoning(..) => {
+            TurnItemProjection::Hidden
+        }
+        TurnItem::Plan(..)
+        | TurnItem::ImageGeneration(..)
+        | TurnItem::Extension(ExtensionItem::ImageGeneration(..))
+        | TurnItem::EnteredReviewMode(..)
+        | TurnItem::ExitedReviewMode(..) => TurnItemProjection::Dedicated,
+        TurnItem::HookPrompt(..) | TurnItem::Sleep(..) | TurnItem::ContextCompaction(..) => {
+            TurnItemProjection::Status
+        }
+        TurnItem::CommandExecution(..)
+        | TurnItem::DynamicToolCall(..)
+        | TurnItem::CollabAgentToolCall(..)
+        | TurnItem::SubAgentActivity(..)
+        | TurnItem::WebSearch(..)
+        | TurnItem::ImageView(..)
+        | TurnItem::Extension(ExtensionItem::WebSearch(..))
+        | TurnItem::FileChange(..)
+        | TurnItem::McpToolCall(..) => TurnItemProjection::Tool,
+    }
+}
+
+fn turn_item_tool_kind(item: &TurnItem) -> ToolKind {
+    match item {
+        TurnItem::CommandExecution(..) => ToolKind::Execute,
+        TurnItem::WebSearch(..) => ToolKind::Fetch,
+        TurnItem::ImageView(..) => ToolKind::Read,
+        TurnItem::FileChange(..) => ToolKind::Edit,
+        TurnItem::Extension(ExtensionItem::WebSearch(..)) => ToolKind::Fetch,
+        TurnItem::Extension(ExtensionItem::ImageGeneration(..))
+        | TurnItem::DynamicToolCall(..)
+        | TurnItem::CollabAgentToolCall(..)
+        | TurnItem::SubAgentActivity(..)
+        | TurnItem::McpToolCall(..)
+        | TurnItem::HookPrompt(..)
+        | TurnItem::Sleep(..)
+        | TurnItem::ContextCompaction(..)
+        | TurnItem::UserMessage(..)
+        | TurnItem::AgentMessage(..)
+        | TurnItem::Plan(..)
+        | TurnItem::Reasoning(..)
+        | TurnItem::ImageGeneration(..)
+        | TurnItem::EnteredReviewMode(..)
+        | TurnItem::ExitedReviewMode(..) => ToolKind::Other,
+    }
+}
+
+fn turn_item_call_id(item: &TurnItem, projection: TurnItemProjection) -> String {
+    match projection {
+        TurnItemProjection::Status => format!(
+            "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}",
+            turn_item_id(item)
+        ),
+        TurnItemProjection::Hidden | TurnItemProjection::Dedicated | TurnItemProjection::Tool => {
+            turn_item_id(item).to_string()
+        }
+    }
+}
+
+fn turn_item_terminal_status(item: &TurnItem) -> ToolCallStatus {
+    use codex_protocol::items::{
+        CollabAgentToolCallStatus, CommandExecutionStatus, DynamicToolCallStatus, McpToolCallStatus,
+    };
+
+    let failed = match item {
+        TurnItem::CommandExecution(item) => {
+            matches!(
+                item.status,
+                CommandExecutionStatus::Failed | CommandExecutionStatus::Declined
+            )
+        }
+        TurnItem::DynamicToolCall(item) => matches!(item.status, DynamicToolCallStatus::Failed),
+        TurnItem::CollabAgentToolCall(item) => {
+            matches!(item.status, CollabAgentToolCallStatus::Failed)
+        }
+        TurnItem::FileChange(item) => matches!(
+            item.status,
+            Some(PatchApplyStatus::Failed | PatchApplyStatus::Declined)
+        ),
+        TurnItem::McpToolCall(item) => matches!(item.status, McpToolCallStatus::Failed),
+        _ => false,
+    };
+    if failed {
+        ToolCallStatus::Failed
+    } else {
+        ToolCallStatus::Completed
+    }
+}
+
+fn is_terminal_tool_status(status: &ToolCallStatus) -> bool {
+    matches!(status, ToolCallStatus::Completed | ToolCallStatus::Failed)
+}
+
+fn append_bounded_output(buffer: &mut String, chunk: &str) {
+    let remaining = MAX_PENDING_COMMAND_OUTPUT_BYTES.saturating_sub(buffer.len());
+    if remaining == 0 {
+        return;
+    }
+    if chunk.len() <= remaining {
+        buffer.push_str(chunk);
+        return;
+    }
+    let end = chunk
+        .char_indices()
+        .take_while(|(index, _)| *index < remaining)
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
+        .unwrap_or_default();
+    buffer.push_str(&chunk[..end]);
+}
+
+fn merge_tool_call_update_fields(into: &mut ToolCallUpdateFields, fields: ToolCallUpdateFields) {
+    if fields.kind.is_some() {
+        into.kind = fields.kind;
+    }
+    if fields.status.is_some() {
+        into.status = fields.status;
+    }
+    if fields.title.is_some() {
+        into.title = fields.title;
+    }
+    if fields.content.is_some() {
+        into.content = fields.content;
+    }
+    if fields.locations.is_some() {
+        into.locations = fields.locations;
+    }
+    if fields.raw_input.is_some() {
+        into.raw_input = fields.raw_input;
+    }
+    if fields.raw_output.is_some() {
+        into.raw_output = fields.raw_output;
+    }
+}
+
+fn merge_tool_call_meta(into: &mut Option<Meta>, meta: Option<Meta>) {
+    let Some(meta) = meta else {
+        return;
+    };
+    into.get_or_insert_with(Meta::new).extend(meta);
+}
+
+fn canonical_update_can_materialize(update: &ToolCallUpdate) -> bool {
+    is_terminal_tool_status(&update.fields.status.unwrap_or(ToolCallStatus::InProgress))
+        || update.fields.title.is_some()
+        || update.fields.kind.is_some()
+        || update.fields.content.is_some()
+        || update.fields.locations.is_some()
+        || update.fields.raw_input.is_some()
+        || update.fields.raw_output.is_some()
+}
+
 fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
     match item {
         TurnItem::UserMessage(..) => ("Preparing input", None),
@@ -1091,6 +1281,16 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
                 .or_else(|| item.raw_content.first().cloned()),
         ),
         TurnItem::WebSearch(item) => ("Web search", Some(item.query.clone())),
+        TurnItem::Extension(ExtensionItem::WebSearch(item)) => {
+            ("Searching the Web", Some(item.query.clone()))
+        }
+        TurnItem::Extension(ExtensionItem::ImageGeneration(item)) => (
+            "Generating image",
+            item.saved_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .or_else(|| Some(item.result.clone())),
+        ),
         TurnItem::ImageView(item) => (
             "Viewing image",
             Some(item.path.inferred_native_path_string()),
@@ -1111,7 +1311,6 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
         }
         TurnItem::SubAgentActivity(item) => ("Subagent activity", Some(format!("{:?}", item.kind))),
         TurnItem::Sleep(item) => ("Waiting", Some(format!("{}ms", item.duration_ms))),
-        TurnItem::Extension(item) => ("Extension", Some(format!("{item:?}"))),
         TurnItem::EnteredReviewMode(..) => ("Review mode active", None),
         TurnItem::ExitedReviewMode(..) => ("Review mode complete", None),
         TurnItem::FileChange(..) => ("Editing files", None),
@@ -1460,9 +1659,11 @@ impl PromptState {
         Self {
             submission_id,
             active_commands: HashMap::new(),
+            pending_command_output: HashMap::new(),
             active_web_search: None,
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
+            projected_tool_calls: HashMap::new(),
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
@@ -1483,9 +1684,11 @@ impl PromptState {
         Self {
             submission_id,
             active_commands: HashMap::new(),
+            pending_command_output: HashMap::new(),
             active_web_search: None,
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
+            projected_tool_calls: HashMap::new(),
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
@@ -1701,47 +1904,249 @@ impl PromptState {
         Ok(())
     }
 
-    async fn send_status_tool_call(
-        &self,
-        client: &SessionClient,
-        call_id: impl Into<ToolCallId>,
-        kind: &str,
-        title: impl Into<String>,
-        detail: Option<String>,
-        emphasis: &str,
-        status: ToolCallStatus,
-    ) {
-        let mut tool_call = ToolCall::new(call_id, title)
+    async fn send_status_tool_call(&self, client: &SessionClient, status_call: StatusToolCall) {
+        let mut tool_call = ToolCall::new(status_call.call_id, status_call.title)
             .kind(ToolKind::Other)
-            .status(status)
-            .meta(neverwrite_status_meta(kind, emphasis));
+            .status(status_call.status)
+            .meta(neverwrite_status_meta(
+                status_call.kind,
+                status_call.emphasis,
+            ));
 
-        if let Some(detail) = detail {
+        if let Some(detail) = status_call.detail {
             tool_call = tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
         }
 
         client.send_tool_call(tool_call).await;
     }
 
-    async fn send_status_tool_call_update(
-        &self,
-        client: &SessionClient,
-        call_id: impl Into<ToolCallId>,
-        title: impl Into<String>,
-        detail: Option<String>,
-        status: ToolCallStatus,
-    ) {
-        let mut fields = ToolCallUpdateFields::new()
-            .title(title.into())
-            .status(status);
-
-        if let Some(detail) = detail {
-            fields = fields.content(vec![ToolCallContent::Content(Content::new(detail))]);
+    async fn start_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+        let projection = turn_item_projection(item);
+        if matches!(
+            projection,
+            TurnItemProjection::Hidden | TurnItemProjection::Dedicated
+        ) {
+            return;
         }
 
+        let call_id = turn_item_call_id(item, projection);
+        let state = self
+            .projected_tool_calls
+            .entry(call_id.clone())
+            .or_default();
+        if state.emitted || state.terminal.is_some() {
+            return;
+        }
+        state.emitted = true;
+        let pending_fields = state.pending_canonical_fields.take();
+        let pending_meta = state.pending_canonical_meta.take();
+
+        let (title, detail) = describe_turn_item(item);
+        let mut tool_call = ToolCall::new(call_id, title)
+            .kind(if projection == TurnItemProjection::Status {
+                ToolKind::Other
+            } else {
+                turn_item_tool_kind(item)
+            })
+            .status(ToolCallStatus::InProgress)
+            .raw_input(serde_json::json!(item));
+        if let Some(detail) = detail {
+            tool_call = tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
+        }
+        if projection == TurnItemProjection::Status {
+            tool_call = tool_call.meta(neverwrite_status_meta("item_activity", "neutral"));
+        }
+        if let Some(fields) = pending_fields {
+            tool_call.update(fields);
+        }
+        merge_tool_call_meta(&mut tool_call.meta, pending_meta);
+        client.send_tool_call(tool_call).await;
+    }
+
+    async fn complete_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+        let projection = turn_item_projection(item);
+        if matches!(
+            projection,
+            TurnItemProjection::Hidden | TurnItemProjection::Dedicated
+        ) {
+            return;
+        }
+
+        let call_id = turn_item_call_id(item, projection);
+        let terminal = turn_item_terminal_status(item);
+        let state = self
+            .projected_tool_calls
+            .entry(call_id.clone())
+            .or_default();
+        if state.canonical_terminal_seen || state.terminal.is_some() {
+            return;
+        }
+        state.terminal = Some(terminal);
+        let emitted = state.emitted;
+        let canonical_seen = state.canonical_seen;
+        state.emitted = true;
+
+        let (title, detail) = describe_turn_item(item);
+        if emitted {
+            let mut fields = ToolCallUpdateFields::new().status(terminal);
+            if !canonical_seen {
+                fields = fields
+                    .title(title.to_string())
+                    .raw_output(serde_json::json!(item));
+                if let Some(detail) = detail {
+                    fields = fields.content(vec![ToolCallContent::Content(Content::new(detail))]);
+                }
+            }
+            client
+                .send_tool_call_update(ToolCallUpdate::new(call_id, fields))
+                .await;
+        } else {
+            let mut tool_call = ToolCall::new(call_id, title)
+                .kind(if projection == TurnItemProjection::Status {
+                    ToolKind::Other
+                } else {
+                    turn_item_tool_kind(item)
+                })
+                .status(terminal)
+                .raw_input(serde_json::json!(item));
+            if let Some(detail) = detail {
+                tool_call = tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
+            }
+            if projection == TurnItemProjection::Status {
+                tool_call = tool_call.meta(neverwrite_status_meta("item_activity", "neutral"));
+            }
+            client.send_tool_call(tool_call).await;
+        }
+    }
+
+    async fn send_canonical_tool_call(&mut self, client: &SessionClient, mut tool_call: ToolCall) {
+        let call_id = tool_call.tool_call_id.to_string();
+        let terminal = is_terminal_tool_status(&tool_call.status);
+        let (emitted, preserve_terminal, pending_fields, pending_meta) = {
+            let state = self
+                .projected_tool_calls
+                .entry(call_id.clone())
+                .or_default();
+            state.canonical_seen = true;
+            let preserve_terminal = state.terminal.is_some() && !terminal;
+            if terminal {
+                if state.canonical_terminal_seen {
+                    return;
+                }
+                state.canonical_terminal_seen = true;
+                state.terminal = Some(tool_call.status);
+            }
+            let emitted = state.emitted;
+            state.emitted = true;
+            (
+                emitted,
+                preserve_terminal,
+                state.pending_canonical_fields.take(),
+                state.pending_canonical_meta.take(),
+            )
+        };
+
+        if let Some(fields) = pending_fields {
+            tool_call.update(fields);
+        }
+        merge_tool_call_meta(&mut tool_call.meta, pending_meta);
+
+        if !emitted {
+            client.send_tool_call(tool_call).await;
+            return;
+        }
+
+        let mut fields = ToolCallUpdateFields::new()
+            .kind(tool_call.kind)
+            .title(tool_call.title)
+            .raw_input(tool_call.raw_input)
+            .raw_output(tool_call.raw_output);
+        if !tool_call.content.is_empty() {
+            fields = fields.content(tool_call.content);
+        }
+        if !tool_call.locations.is_empty() {
+            fields = fields.locations(tool_call.locations);
+        }
+        if !preserve_terminal {
+            fields = fields.status(tool_call.status);
+        }
         client
-            .send_tool_call_update(ToolCallUpdate::new(call_id, fields))
+            .send_tool_call_update(ToolCallUpdate::new(call_id, fields).meta(tool_call.meta))
             .await;
+    }
+
+    async fn send_canonical_tool_update(
+        &mut self,
+        client: &SessionClient,
+        mut update: ToolCallUpdate,
+        title_if_unmaterialized: impl Into<String>,
+        kind_if_unmaterialized: ToolKind,
+    ) {
+        let call_id = update.tool_call_id.to_string();
+        if !canonical_update_can_materialize(&update)
+            && !self
+                .projected_tool_calls
+                .get(&call_id)
+                .is_some_and(|state| state.emitted)
+        {
+            let state = self.projected_tool_calls.entry(call_id).or_default();
+            state.canonical_seen = true;
+            let pending_fields = state.pending_canonical_fields.get_or_insert_default();
+            merge_tool_call_update_fields(pending_fields, update.fields);
+            merge_tool_call_meta(&mut state.pending_canonical_meta, update.meta);
+            return;
+        }
+
+        let terminal = update
+            .fields
+            .status
+            .as_ref()
+            .is_some_and(is_terminal_tool_status);
+        let (emitted, preserve_terminal, pending_fields, pending_meta) = {
+            let state = self
+                .projected_tool_calls
+                .entry(call_id.clone())
+                .or_default();
+            state.canonical_seen = true;
+            if terminal {
+                if state.canonical_terminal_seen {
+                    return;
+                }
+                state.canonical_terminal_seen = true;
+                state.terminal = update.fields.status;
+            }
+            let preserve_terminal = state.terminal.is_some() && !terminal;
+            let emitted = state.emitted;
+            state.emitted = true;
+            (
+                emitted,
+                preserve_terminal,
+                state.pending_canonical_fields.take(),
+                state.pending_canonical_meta.take(),
+            )
+        };
+
+        if let Some(pending_fields) = pending_fields {
+            let mut merged = pending_fields;
+            merge_tool_call_update_fields(&mut merged, update.fields);
+            update.fields = merged;
+        }
+        merge_tool_call_meta(&mut update.meta, pending_meta);
+
+        if !emitted {
+            let mut tool_call = ToolCall::new(call_id, title_if_unmaterialized)
+                .kind(kind_if_unmaterialized)
+                .status(update.fields.status.unwrap_or(ToolCallStatus::InProgress));
+            tool_call.update(update.fields);
+            tool_call.meta = update.meta;
+            client.send_tool_call(tool_call).await;
+            return;
+        }
+
+        if preserve_terminal {
+            update.fields.status = None;
+        }
+        client.send_tool_call_update(update).await;
     }
 
     async fn send_image_generation_started(
@@ -1855,15 +2260,14 @@ impl PromptState {
                     .send_turn_lifecycle(CODEX_ACP_TURN_STARTED_EVENT_TYPE, Some(&turn_id))
                     .await;
                 let detail = model_context_window.map(|size| format!("Context window: {size}"));
-                self.send_status_tool_call(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}turn:{turn_id}"),
-                    "turn_started",
-                    "New turn",
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}turn:{turn_id}").into(),
+                    kind: "turn_started",
+                    title: "New turn".to_string(),
                     detail,
-                    "neutral",
-                    ToolCallStatus::Completed,
-                )
+                    emphasis: "neutral",
+                    status: ToolCallStatus::Completed,
+                })
                 .await;
             }
             EventMsg::TokenCount(TokenCountEvent { info, .. }) => {
@@ -1895,30 +2299,16 @@ impl PromptState {
                         )
                         .await;
                     }
-                    TurnItem::CommandExecution(..)
-                    | TurnItem::DynamicToolCall(..)
-                    | TurnItem::CollabAgentToolCall(..)
-                    | TurnItem::SubAgentActivity(..)
-                    | TurnItem::Sleep(..)
-                    | TurnItem::Extension(..)
-                    | TurnItem::EnteredReviewMode(..)
-                    | TurnItem::ExitedReviewMode(..) => {}
-                    other_item => {
-                        let (title, detail) = describe_turn_item(&other_item);
-                        self.send_status_tool_call(
+                    TurnItem::Extension(ExtensionItem::ImageGeneration(image_item)) => {
+                        self.send_image_generation_started(
                             client,
-                            format!(
-                                "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}",
-                                turn_item_id(&other_item)
-                            ),
-                            "item_activity",
-                            title,
-                            detail,
-                            "neutral",
-                            ToolCallStatus::InProgress,
+                            ImageGenerationBeginEvent {
+                                call_id: image_item.id,
+                            },
                         )
                         .await;
                     }
+                    other_item => self.start_turn_item(client, &other_item).await,
                 }
             }
             EventMsg::UserMessage(UserMessageEvent {
@@ -2152,6 +2542,14 @@ impl PromptState {
                 );
                 self.start_patch_apply(client, event).await;
             }
+            EventMsg::PatchApplyUpdated(event) => {
+                info!(
+                    "Patch apply updated: call_id={}, changed_files={}",
+                    event.call_id,
+                    event.changes.len()
+                );
+                self.update_patch_apply(client, event).await;
+            }
             EventMsg::PatchApplyEnd(event) => {
                 info!(
                     "Patch apply end: call_id={}, success={}",
@@ -2189,27 +2587,21 @@ impl PromptState {
                         )
                         .await;
                     }
-                    TurnItem::CommandExecution(..)
-                    | TurnItem::DynamicToolCall(..)
-                    | TurnItem::CollabAgentToolCall(..)
-                    | TurnItem::SubAgentActivity(..)
-                    | TurnItem::Sleep(..)
-                    | TurnItem::Extension(..)
-                    | TurnItem::EnteredReviewMode(..)
-                    | TurnItem::ExitedReviewMode(..) => {}
-                    other_item => {
-                        let (title, detail) = describe_turn_item(&other_item);
-                        self.send_status_tool_call_update(
+                    TurnItem::Extension(ExtensionItem::ImageGeneration(image_item)) => {
+                        self.send_image_generation_completed(
                             client,
-                            format!(
-                                "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}",
-                                turn_item_id(&other_item)
-                            ),
-                            title,
-                            detail,
-                            ToolCallStatus::Completed,
+                            ImageGenerationEndEvent {
+                                call_id: image_item.id,
+                                status: image_item.status,
+                                revised_prompt: image_item.revised_prompt,
+                                result: image_item.result,
+                                saved_path: image_item.saved_path,
+                            },
                         )
                         .await;
+                    }
+                    other_item => {
+                        self.complete_turn_item(client, &other_item).await;
                         // Notify the client when context compaction completes so users see
                         // a status message rather than silence during /compact.
                         if matches!(other_item, TurnItem::ContextCompaction(..)) {
@@ -2246,15 +2638,14 @@ impl PromptState {
                 let detail = additional_details
                     .filter(|details| !details.trim().is_empty())
                     .unwrap_or_else(|| message.clone());
-                self.send_status_tool_call(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}stream_error:{}", self.event_count),
-                    "stream_error",
-                    "Streaming interrupted",
-                    Some(detail),
-                    "error",
-                    ToolCallStatus::Failed,
-                )
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}stream_error:{}", self.event_count).into(),
+                    kind: "stream_error",
+                    title: "Streaming interrupted".to_string(),
+                    detail: Some(detail),
+                    emphasis: "error",
+                    status: ToolCallStatus::Failed,
+                })
                 .await;
             }
             EventMsg::Error(ErrorEvent {
@@ -2311,15 +2702,14 @@ impl PromptState {
             }
             EventMsg::EnteredReviewMode(review_request) => {
                 info!("Review begin: request={review_request:?}");
-                self.send_status_tool_call(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}review:{}", self.event_count),
-                    "review_mode",
-                    "Review mode active",
-                    Some(format_review_target(&review_request.target)),
-                    "info",
-                    ToolCallStatus::Completed,
-                )
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}review:{}", self.event_count).into(),
+                    kind: "review_mode",
+                    title: "Review mode active".to_string(),
+                    detail: Some(format_review_target(&review_request.target)),
+                    emphasis: "info",
+                    status: ToolCallStatus::Completed,
+                })
                 .await;
             }
             EventMsg::ExitedReviewMode(event) => {
@@ -2371,15 +2761,14 @@ impl PromptState {
                 let detail = reason
                     .map(|reason| format!("{from_model} -> {to_model}. {reason}"))
                     .or_else(|| Some(format!("{from_model} -> {to_model}")));
-                self.send_status_tool_call(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}model_reroute:{}", self.event_count),
-                    "model_reroute",
-                    format!("Switched to {to_model}"),
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}model_reroute:{}", self.event_count).into(),
+                    kind: "model_reroute",
+                    title: format!("Switched to {to_model}"),
                     detail,
-                    "info",
-                    ToolCallStatus::Completed,
-                )
+                    emphasis: "info",
+                    status: ToolCallStatus::Completed,
+                })
                 .await;
             }
             EventMsg::RequestUserInput(event) => {
@@ -2459,8 +2848,7 @@ impl PromptState {
             | EventMsg::ModelVerification(..)
             | EventMsg::GuardianWarning(..)
             | EventMsg::HookStarted(..)
-            | EventMsg::HookCompleted(..)
-            | EventMsg::PatchApplyUpdated(..) => {}
+            | EventMsg::HookCompleted(..) => {}
             e @ (EventMsg::RealtimeConversationListVoicesResponse(..)
             | EventMsg::DeprecationNotice(..)) => {
                 warn!("Unexpected event: {:?}", e);
@@ -2558,7 +2946,7 @@ impl PromptState {
             permissions_request_key(&call_id),
             PendingPermissionRequest::RequestPermissions {
                 call_id: call_id.clone(),
-                permissions: permissions.into(),
+                permissions,
             },
             ToolCallUpdate::new(
                 call_id,
@@ -2702,6 +3090,20 @@ impl PromptState {
             ..
         } = event;
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
+        let mut content = content.collect::<Vec<_>>();
+        if let Some(reason) = reason.as_ref() {
+            content.push(reason.clone().into());
+        }
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id.clone(), title.clone())
+                .kind(ToolKind::Edit)
+                .status(ToolCallStatus::Pending)
+                .locations(locations.clone())
+                .content(content.clone())
+                .raw_input(raw_input.clone()),
+        )
+        .await;
         let request_key = patch_request_key(&call_id);
         let options = vec![
             PermissionOption::new("approved", "Yes", PermissionOptionKind::AllowOnce),
@@ -2728,7 +3130,7 @@ impl PromptState {
                     .status(ToolCallStatus::Pending)
                     .title(title)
                     .locations(locations)
-                    .content(content.chain(reason.map(|r| r.into())).collect::<Vec<_>>())
+                    .content(content)
                     .raw_input(raw_input),
             ),
             options,
@@ -2736,7 +3138,7 @@ impl PromptState {
         Ok(())
     }
 
-    async fn start_patch_apply(&self, client: &SessionClient, event: PatchApplyBeginEvent) {
+    async fn start_patch_apply(&mut self, client: &SessionClient, event: PatchApplyBeginEvent) {
         let raw_input = serde_json::json!(&event);
         let PatchApplyBeginEvent {
             call_id,
@@ -2747,19 +3149,43 @@ impl PromptState {
 
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
 
-        client
-            .send_tool_call(
-                ToolCall::new(call_id, title)
-                    .kind(ToolKind::Edit)
-                    .status(ToolCallStatus::InProgress)
-                    .locations(locations)
-                    .content(content.collect())
-                    .raw_input(raw_input),
-            )
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id, title)
+                .kind(ToolKind::Edit)
+                .status(ToolCallStatus::InProgress)
+                .locations(locations)
+                .content(content.collect())
+                .raw_input(raw_input),
+        )
+        .await;
     }
 
-    async fn end_patch_apply(&self, client: &SessionClient, event: PatchApplyEndEvent) {
+    async fn update_patch_apply(&mut self, client: &SessionClient, event: PatchApplyUpdatedEvent) {
+        let raw_input = serde_json::json!(&event);
+        let PatchApplyUpdatedEvent { call_id, changes } = event;
+        if changes.is_empty() {
+            return;
+        }
+
+        let (title, locations, content) = extract_tool_call_content_from_changes(changes);
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
+                call_id,
+                ToolCallUpdateFields::new()
+                    .title(title)
+                    .locations(locations)
+                    .content(content.collect::<Vec<_>>())
+                    .raw_input(raw_input),
+            ),
+            "Updating files",
+            ToolKind::Edit,
+        )
+        .await;
+    }
+
+    async fn end_patch_apply(&mut self, client: &SessionClient, event: PatchApplyEndEvent) {
         let raw_output = serde_json::json!(&event);
         let PatchApplyEndEvent {
             call_id,
@@ -2784,8 +3210,9 @@ impl PromptState {
             PatchApplyStatus::Failed | PatchApplyStatus::Declined => ToolCallStatus::Failed,
         };
 
-        client
-            .send_tool_call_update(ToolCallUpdate::new(
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
                 call_id,
                 ToolCallUpdateFields::new()
                     .status(status)
@@ -2793,44 +3220,47 @@ impl PromptState {
                     .title(title)
                     .locations(locations)
                     .content(content),
-            ))
-            .await;
+            ),
+            "Updating files",
+            ToolKind::Edit,
+        )
+        .await;
     }
 
     async fn start_dynamic_tool_call(
-        &self,
+        &mut self,
         client: &SessionClient,
         call_id: String,
         tool: String,
         arguments: serde_json::Value,
     ) {
-        client
-            .send_tool_call(
-                ToolCall::new(call_id, format!("Tool: {tool}"))
-                    .status(ToolCallStatus::InProgress)
-                    .raw_input(serde_json::json!(&arguments)),
-            )
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id, format!("Tool: {tool}"))
+                .status(ToolCallStatus::InProgress)
+                .raw_input(serde_json::json!(&arguments)),
+        )
+        .await;
     }
 
     async fn start_mcp_tool_call(
-        &self,
+        &mut self,
         client: &SessionClient,
         call_id: String,
         invocation: McpInvocation,
     ) {
         let title = format!("Tool: {}/{}", invocation.server, invocation.tool);
-        client
-            .send_tool_call(
-                ToolCall::new(call_id, title)
-                    .status(ToolCallStatus::InProgress)
-                    .raw_input(serde_json::json!(&invocation)),
-            )
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id, title)
+                .status(ToolCallStatus::InProgress)
+                .raw_input(serde_json::json!(&invocation)),
+        )
+        .await;
     }
 
     async fn end_dynamic_tool_call(
-        &self,
+        &mut self,
         client: &SessionClient,
         event: DynamicToolCallResponseEvent,
     ) {
@@ -2847,8 +3277,9 @@ impl PromptState {
             ..
         } = event;
 
-        client
-            .send_tool_call_update(ToolCallUpdate::new(
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
                 call_id,
                 ToolCallUpdateFields::new()
                     .status(if success {
@@ -2876,12 +3307,15 @@ impl PromptState {
                             .chain(error.map(|e| ToolCallContent::Content(Content::new(e))))
                             .collect::<Vec<_>>(),
                     ),
-            ))
-            .await;
+            ),
+            "Tool call",
+            ToolKind::Other,
+        )
+        .await;
     }
 
     async fn end_mcp_tool_call(
-        &self,
+        &mut self,
         client: &SessionClient,
         call_id: String,
         result: Result<CallToolResult, String>,
@@ -2895,8 +3329,9 @@ impl PromptState {
             Err(err) => serde_json::json!(err),
         };
 
-        client
-            .send_tool_call_update(ToolCallUpdate::new(
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
                 call_id,
                 ToolCallUpdateFields::new()
                     .status(if is_error {
@@ -2917,8 +3352,11 @@ impl PromptState {
                                 .collect()
                         },
                     )),
-            ))
-            .await;
+            ),
+            "MCP tool call",
+            ToolKind::Other,
+        )
+        .await;
     }
 
     async fn exec_approval(
@@ -3010,6 +3448,17 @@ impl PromptState {
             additional_permissions.as_ref(),
         );
 
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(tool_call_id.clone(), title.clone())
+                .kind(kind)
+                .status(ToolCallStatus::Pending)
+                .raw_input(raw_input.clone())
+                .content(content.clone().unwrap_or_default())
+                .locations(locations.clone()),
+        )
+        .await;
+
         self.spawn_permission_request(
             client,
             exec_request_key(&call_id),
@@ -3057,6 +3506,17 @@ impl PromptState {
             process_id: _,
             ..
         } = event;
+        // Events can arrive out of order. Once an end event has made this
+        // command terminal, a late begin must not recreate active state.
+        if self
+            .projected_tool_calls
+            .get(&call_id)
+            .is_some_and(|state| state.terminal.is_some())
+        {
+            self.pending_command_output.remove(&call_id);
+            return;
+        }
+
         // Create a new tool call for the command execution
         let tool_call_id = ToolCallId::new(call_id.clone());
         let ParseCommandToolCall {
@@ -3074,14 +3534,25 @@ impl PromptState {
             file_snapshots.insert(path.clone(), read_text_snapshot(&path));
         }
 
-        let active_command = ActiveCommand {
+        let pending_output = self
+            .pending_command_output
+            .remove(&call_id)
+            .unwrap_or_default();
+        let mut active_command = ActiveCommand {
             tool_call_id: tool_call_id.clone(),
-            output: String::new(),
+            output: pending_output,
             file_extension,
             terminal_output,
             file_snapshots,
         };
-        let (content, meta) = if client.supports_terminal_output(&active_command) {
+        let supports_terminal_output = client.supports_terminal_output(&active_command);
+        // Output can arrive before the command begin event. A terminal client
+        // needs that buffered output replayed as a terminal update, not kept in
+        // the fallback content buffer.
+        let pending_terminal_output = supports_terminal_output
+            .then(|| std::mem::take(&mut active_command.output))
+            .filter(|output| !output.is_empty());
+        let (content, meta) = if supports_terminal_output {
             let content = vec![ToolCallContent::Terminal(Terminal::new(call_id.clone()))];
             let meta = Some(Meta::from_iter([(
                 "terminal_info".to_owned(),
@@ -3097,17 +3568,33 @@ impl PromptState {
 
         self.active_commands.insert(call_id.clone(), active_command);
 
-        client
-            .send_tool_call(
-                ToolCall::new(tool_call_id, title)
-                    .kind(kind)
-                    .status(ToolCallStatus::InProgress)
-                    .locations(locations)
-                    .raw_input(raw_input)
-                    .content(content)
-                    .meta(meta),
-            )
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(tool_call_id.clone(), title)
+                .kind(kind)
+                .status(ToolCallStatus::InProgress)
+                .locations(locations)
+                .raw_input(raw_input)
+                .content(content)
+                .meta(meta),
+        )
+        .await;
+
+        if let Some(data) = pending_terminal_output {
+            client
+                .send_tool_call_update(
+                    ToolCallUpdate::new(tool_call_id, ToolCallUpdateFields::new()).meta(
+                        Meta::from_iter([(
+                            "terminal_output".to_owned(),
+                            serde_json::json!({
+                                "terminal_id": call_id,
+                                "data": data,
+                            }),
+                        )]),
+                    ),
+                )
+                .await;
+        }
     }
 
     async fn exec_command_output_delta(
@@ -3121,9 +3608,8 @@ impl PromptState {
             stream: _,
         } = event;
         // Stream output bytes to the display-only terminal via ToolCallUpdate meta.
+        let data_str = String::from_utf8_lossy(&chunk).to_string();
         if let Some(active_command) = self.active_commands.get_mut(&call_id) {
-            let data_str = String::from_utf8_lossy(&chunk).to_string();
-
             if client.supports_terminal_output(active_command) {
                 let update = ToolCallUpdate::new(
                     active_command.tool_call_id.clone(),
@@ -3143,6 +3629,18 @@ impl PromptState {
                 // and can exhaust memory for commands with long output.
                 active_command.output.push_str(&data_str);
             }
+        } else {
+            // Codex can race an output delta ahead of its begin event. Keep it
+            // scoped to the call ID so it can never attach to another command.
+            if self
+                .projected_tool_calls
+                .get(&call_id)
+                .is_some_and(|state| state.terminal.is_some())
+            {
+                return;
+            }
+            let buffer = self.pending_command_output.entry(call_id).or_default();
+            append_bounded_output(buffer, &data_str);
         }
     }
 
@@ -3218,22 +3716,44 @@ impl PromptState {
                 .raw_output(raw_output)
                 .content(content);
 
-            client
-                .send_tool_call_update(
-                    ToolCallUpdate::new(active_command.tool_call_id.clone(), fields).meta(
-                        client.supports_terminal_output(&active_command).then(|| {
-                            Meta::from_iter([(
-                                "terminal_exit".into(),
-                                serde_json::json!({
-                                    "terminal_id": call_id,
-                                    "exit_code": exit_code,
-                                    "signal": null
-                                }),
-                            )])
-                        }),
-                    ),
-                )
-                .await;
+            self.send_canonical_tool_update(
+                client,
+                ToolCallUpdate::new(active_command.tool_call_id.clone(), fields).meta(
+                    client.supports_terminal_output(&active_command).then(|| {
+                        Meta::from_iter([(
+                            "terminal_exit".into(),
+                            serde_json::json!({
+                                "terminal_id": call_id,
+                                "exit_code": exit_code,
+                                "signal": null
+                            }),
+                        )])
+                    }),
+                ),
+                "Running command",
+                ToolKind::Execute,
+            )
+            .await;
+        } else {
+            // No later event can consume this buffer once the command has ended.
+            self.pending_command_output.remove(&call_id);
+            let status = match status {
+                ExecCommandStatus::Completed if exit_code == 0 => ToolCallStatus::Completed,
+                ExecCommandStatus::Completed => ToolCallStatus::Failed,
+                ExecCommandStatus::Failed | ExecCommandStatus::Declined => ToolCallStatus::Failed,
+            };
+            self.send_canonical_tool_update(
+                client,
+                ToolCallUpdate::new(
+                    call_id,
+                    ToolCallUpdateFields::new()
+                        .status(status)
+                        .raw_output(raw_output),
+                ),
+                "Running command",
+                ToolKind::Execute,
+            )
+            .await;
         }
     }
 
@@ -3274,13 +3794,17 @@ impl PromptState {
 
     async fn start_web_search(&mut self, client: &SessionClient, call_id: String) {
         self.active_web_search = Some(call_id.clone());
-        client
-            .send_tool_call(ToolCall::new(call_id, "Searching the Web").kind(ToolKind::Fetch))
-            .await;
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id, "Searching the Web")
+                .kind(ToolKind::Fetch)
+                .status(ToolCallStatus::InProgress),
+        )
+        .await;
     }
 
     async fn update_web_search_query(
-        &self,
+        &mut self,
         client: &SessionClient,
         call_id: String,
         query: String,
@@ -3305,8 +3829,9 @@ impl PromptState {
             WebSearchAction::Other => "Web search".to_string(),
         };
 
-        client
-            .send_tool_call_update(ToolCallUpdate::new(
+        self.send_canonical_tool_update(
+            client,
+            ToolCallUpdate::new(
                 call_id,
                 ToolCallUpdateFields::new()
                     .status(ToolCallStatus::InProgress)
@@ -3315,18 +3840,25 @@ impl PromptState {
                         "query": query,
                         "action": action
                     })),
-            ))
-            .await;
+            ),
+            "Searching the Web",
+            ToolKind::Fetch,
+        )
+        .await;
     }
 
     async fn complete_web_search(&mut self, client: &SessionClient) {
         if let Some(call_id) = self.active_web_search.take() {
-            client
-                .send_tool_call_update(ToolCallUpdate::new(
+            self.send_canonical_tool_update(
+                client,
+                ToolCallUpdate::new(
                     call_id,
                     ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
-                ))
-                .await;
+                ),
+                "Searching the Web",
+                ToolKind::Fetch,
+            )
+            .await;
         }
     }
 }
@@ -3774,6 +4306,10 @@ struct ThreadActor<A> {
     submissions: HashMap<String, SubmissionState>,
     /// Drain-only projections for Codex turns created outside ACP prompt calls.
     event_projections: HashMap<String, PromptState>,
+    /// Recently closed external turns. This lifecycle-only tombstone prevents
+    /// late events from recreating activities after their projection ended.
+    closed_event_projections: HashSet<String>,
+    closed_event_projection_order: VecDeque<String>,
     /// A receiver for incoming thread messages.
     message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
     /// A receiver for spawned interaction results.
@@ -3804,6 +4340,8 @@ impl<A: Auth> ThreadActor<A> {
             resolution_tx,
             submissions: HashMap::new(),
             event_projections: HashMap::new(),
+            closed_event_projections: HashSet::new(),
+            closed_event_projection_order: VecDeque::new(),
             message_rx,
             resolution_rx,
             last_sent_config_options: None,
@@ -5044,6 +5582,9 @@ impl<A: Auth> ThreadActor<A> {
         if let Some(submission) = self.submissions.get_mut(&id) {
             submission.handle_event(&self.client, msg).await;
         } else {
+            if self.closed_event_projections.contains(&id) {
+                return;
+            }
             let is_terminal = is_projection_terminal_event(&msg);
             let thread = self.thread.clone();
             let resolution_tx = self.resolution_tx.clone();
@@ -5054,6 +5595,18 @@ impl<A: Auth> ThreadActor<A> {
             projection.handle_event(&self.client, msg).await;
             if is_terminal {
                 self.event_projections.remove(&id);
+                self.remember_closed_event_projection(id);
+            }
+        }
+    }
+
+    fn remember_closed_event_projection(&mut self, id: String) {
+        if self.closed_event_projections.insert(id.clone()) {
+            self.closed_event_projection_order.push_back(id);
+        }
+        while self.closed_event_projection_order.len() > MAX_CLOSED_EVENT_PROJECTIONS {
+            if let Some(expired) = self.closed_event_projection_order.pop_front() {
+                self.closed_event_projections.remove(&expired);
             }
         }
     }
@@ -6735,6 +7288,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_metadata_waits_for_a_materializing_turn_item() {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new("submission-1".into(), thread, resolution_tx, response_tx);
+
+        state
+            .send_canonical_tool_update(
+                &session_client,
+                ToolCallUpdate::new("web-1", ToolCallUpdateFields::new()).meta(Meta::from_iter([
+                    ("query_source".into(), json!("canonical")),
+                ])),
+                "Searching the Web",
+                ToolKind::Fetch,
+            )
+            .await;
+        assert!(client.notifications.lock().unwrap().is_empty());
+
+        state
+            .start_turn_item(
+                &session_client,
+                &TurnItem::WebSearch(codex_protocol::items::WebSearchItem {
+                    id: "web-1".into(),
+                    query: "Rust ACP".into(),
+                    action: WebSearchAction::Other,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let calls = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool_call_id.0.as_ref(), "web-1");
+        assert_eq!(
+            calls[0]
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("query_source")),
+            Some(&json!("canonical"))
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_and_canonical_turn_item_share_one_tool_call() {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new("submission-1".into(), thread, resolution_tx, response_tx);
+        let item = TurnItem::WebSearch(codex_protocol::items::WebSearchItem {
+            id: "web-1".into(),
+            query: "Rust ACP".into(),
+            action: WebSearchAction::Other,
+        });
+
+        state.start_turn_item(&session_client, &item).await;
+        state
+            .send_canonical_tool_call(
+                &session_client,
+                ToolCall::new("web-1", "Searching the Web")
+                    .kind(ToolKind::Fetch)
+                    .status(ToolCallStatus::InProgress)
+                    .content(vec![ToolCallContent::Content(Content::new("Rust ACP"))]),
+            )
+            .await;
+        state.complete_turn_item(&session_client, &item).await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let call_count = notifications
+            .iter()
+            .filter(|notification| matches!(notification.update, SessionUpdate::ToolCall(_)))
+            .count();
+        let updates = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => Some(update),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(call_count, 1);
+        assert_eq!(updates.len(), 2);
+        assert!(
+            updates
+                .iter()
+                .all(|update| update.tool_call_id.0.as_ref() == "web-1")
+        );
+        assert_eq!(updates[0].fields.content.as_ref().map(Vec::len), Some(1));
+        assert_eq!(updates[1].fields.status, Some(ToolCallStatus::Completed));
+        assert!(updates[1].fields.content.is_none());
+    }
+
+    #[tokio::test]
     async fn test_plan_delta_emits_plan_updates() -> anyhow::Result<()> {
         let session_id = SessionId::new("test");
         let client = Arc::new(StubClient::new());
@@ -7080,6 +7736,29 @@ mod tests {
             .await;
         assert!(!actor.event_projections.contains_key(&submission_id));
 
+        let notification_count_after_close = client.notifications.lock().unwrap().len();
+        actor
+            .handle_event(Event {
+                id: submission_id.clone(),
+                msg: EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id: codex_protocol::ThreadId::new(),
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 0,
+                    item: TurnItem::WebSearch(codex_protocol::items::WebSearchItem {
+                        id: "late-web-1".to_string(),
+                        query: "late event".to_string(),
+                        action: WebSearchAction::Other,
+                    }),
+                }),
+            })
+            .await;
+        assert!(!actor.event_projections.contains_key(&submission_id));
+        assert_eq!(
+            client.notifications.lock().unwrap().len(),
+            notification_count_after_close,
+            "late events must not recreate a closed external projection"
+        );
+
         let notifications = client.notifications.lock().unwrap();
         assert!(matches!(
             notifications.first().map(|notification| &notification.update),
@@ -7092,6 +7771,48 @@ mod tests {
                     == Some("subagent_breadcrumb")
         ));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closed_event_projection_tombstones_are_bounded() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client, Arc::default());
+        let conversation = Arc::new(StubCodexThread::new());
+        let models_manager = Arc::new(StubModelsManager);
+        let config = Config::load_with_cli_overrides_and_harness_overrides(
+            vec![],
+            ConfigOverrides::default(),
+        )
+        .await?;
+        let (_message_tx, message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (resolution_tx, resolution_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut actor = ThreadActor::new(
+            StubAuth,
+            session_client,
+            conversation,
+            models_manager,
+            config,
+            message_rx,
+            resolution_tx,
+            resolution_rx,
+        );
+
+        for index in 0..=MAX_CLOSED_EVENT_PROJECTIONS {
+            actor.remember_closed_event_projection(format!("submission-{index}"));
+        }
+
+        assert_eq!(
+            actor.closed_event_projections.len(),
+            MAX_CLOSED_EVENT_PROJECTIONS
+        );
+        assert!(!actor.closed_event_projections.contains("submission-0"));
+        assert!(
+            actor
+                .closed_event_projections
+                .contains(&format!("submission-{MAX_CLOSED_EVENT_PROJECTIONS}"))
+        );
         Ok(())
     }
 
@@ -7519,6 +8240,161 @@ mod tests {
         assert!(text.contains("typed input"));
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn early_command_output_is_replayed_to_terminal_clients() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let capabilities = Arc::new(std::sync::Mutex::new(ClientCapabilities::new().meta(
+            Meta::from_iter([("terminal_output".to_string(), json!(true))]),
+        )));
+        let session_client = SessionClient::with_client(session_id, client.clone(), capabilities);
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+        let cwd = std::env::current_dir().expect("current dir should be available");
+
+        state
+            .exec_command_output_delta(
+                &session_client,
+                ExecCommandOutputDeltaEvent {
+                    call_id: "exec-1".to_string(),
+                    stream: codex_protocol::protocol::ExecOutputStream::Stdout,
+                    chunk: b"output before begin".to_vec(),
+                },
+            )
+            .await;
+        state
+            .exec_command_begin(
+                &session_client,
+                ExecCommandBeginEvent {
+                    call_id: "exec-1".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 0,
+                    command: vec!["sh".to_string(), "-c".to_string(), "echo".to_string()],
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                        .expect("current dir should be representable as a path URI"),
+                    parsed_cmd: vec![ParsedCommand::Unknown {
+                        cmd: "sh".to_string(),
+                    }],
+                    source: Default::default(),
+                    interaction_input: None,
+                },
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let replay = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => update
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("terminal_output")),
+                _ => None,
+            })
+            .expect("early output should be replayed to the terminal");
+        assert_eq!(replay.get("terminal_id"), Some(&json!("exec-1")));
+        assert_eq!(replay.get("data"), Some(&json!("output before begin")));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn command_end_discards_output_without_a_begin_event() {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client, Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+        let cwd = std::env::current_dir().expect("current dir should be available");
+
+        state
+            .exec_command_output_delta(
+                &session_client,
+                ExecCommandOutputDeltaEvent {
+                    call_id: "exec-1".to_string(),
+                    stream: codex_protocol::protocol::ExecOutputStream::Stdout,
+                    chunk: b"orphaned output".to_vec(),
+                },
+            )
+            .await;
+        assert!(state.pending_command_output.contains_key("exec-1"));
+
+        state
+            .exec_command_end(
+                &session_client,
+                ExecCommandEndEvent {
+                    call_id: "exec-1".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    completed_at_ms: 0,
+                    command: vec!["sh".to_string(), "-c".to_string(), "echo".to_string()],
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                        .expect("current dir should be representable as a path URI"),
+                    parsed_cmd: vec![],
+                    source: Default::default(),
+                    interaction_input: None,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    aggregated_output: String::new(),
+                    exit_code: 0,
+                    duration: std::time::Duration::from_millis(1),
+                    formatted_output: String::new(),
+                    status: ExecCommandStatus::Completed,
+                },
+            )
+            .await;
+
+        assert!(!state.pending_command_output.contains_key("exec-1"));
+
+        state
+            .exec_command_begin(
+                &session_client,
+                ExecCommandBeginEvent {
+                    call_id: "exec-1".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 0,
+                    command: vec!["sh".to_string(), "-c".to_string(), "echo".to_string()],
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                        .expect("current dir should be representable as a path URI"),
+                    parsed_cmd: vec![ParsedCommand::Unknown {
+                        cmd: "sh".to_string(),
+                    }],
+                    source: Default::default(),
+                    interaction_input: None,
+                },
+            )
+            .await;
+        assert!(!state.active_commands.contains_key("exec-1"));
+
+        state
+            .exec_command_output_delta(
+                &session_client,
+                ExecCommandOutputDeltaEvent {
+                    call_id: "exec-1".to_string(),
+                    stream: codex_protocol::protocol::ExecOutputStream::Stdout,
+                    chunk: b"late output".to_vec(),
+                },
+            )
+            .await;
+        assert!(!state.pending_command_output.contains_key("exec-1"));
     }
 
     async fn setup(

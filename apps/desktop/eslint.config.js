@@ -9,6 +9,7 @@ export default defineConfig([
     globalIgnores([
         "dist",
         "dist-electron/**",
+        "dist-electron-testing/**",
         "out/**",
         "embedded/**",
         "src/features/ai/store/wasm/*.d.ts",

@@ -1800,6 +1800,7 @@ dependencies = [
  "codex-core",
  "codex-exec-server",
  "codex-extension-api",
+ "codex-extension-items",
  "codex-features",
  "codex-http-client",
  "codex-login",
