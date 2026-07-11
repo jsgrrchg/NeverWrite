@@ -1252,7 +1252,7 @@ describe("AIChatMessageItem tool diffs", () => {
         ).toHaveLength(1);
         expect(screen.queryByText("Previous:")).toBeNull();
         expect(screen.getByText("Updated:")).toBeInTheDocument();
-        expect(screen.getByText("1")).toBeInTheDocument();
+        expect(screen.queryByText("1")).toBeNull();
 
         fireEvent.click(
             screen.getByRole("button", { name: "Show source diff" }),

@@ -38,7 +38,6 @@ interface OpenFileContextMenuPayload {
 
 type MarkdownPreviewBlock = {
     content: string;
-    lineNumbers: number[];
 };
 
 const DIFF_PREVIEW_PILL_METRICS: ChatPillMetrics = {
@@ -76,12 +75,6 @@ function getMarkdownPreviewBlocks(diff: AIFileDiff): MarkdownPreviewBlock[] {
         if (displayLines.length > 0) {
             blocks.push({
                 content: displayLines.map((line) => line.text).join("\n"),
-                lineNumbers: displayLines.map(
-                    (line) =>
-                        (hasAdditions
-                            ? line.newLineNumber
-                            : line.oldLineNumber) ?? 0,
-                ),
             });
         }
 
@@ -118,31 +111,9 @@ function MarkdownChangePreview({
             {blocks.map((block, index) => {
                 return (
                     <section
-                        key={`${block.lineNumbers[0] ?? "block"}:${index}`}
+                        key={`${block.content.length}:${index}`}
                         data-markdown-preview-block="true"
-                        style={{
-                            display: "grid",
-                            gridTemplateColumns: "44px minmax(0, 1fr)",
-                        }}
                     >
-                        <div
-                            style={{
-                                padding: "0 6px 0 4px",
-                                borderRight:
-                                    "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
-                                color: "var(--text-secondary)",
-                                fontSize: "0.85em",
-                                opacity: 0.55,
-                                textAlign: "right",
-                                userSelect: "none",
-                            }}
-                        >
-                            {block.lineNumbers.map((lineNumber, lineIndex) => (
-                                <div key={`${lineNumber}:${lineIndex}`}>
-                                    {lineNumber || ""}
-                                </div>
-                            ))}
-                        </div>
                         <MarkdownContent
                             blockQuoteAppearance="plain"
                             className="min-w-0 px-2"
