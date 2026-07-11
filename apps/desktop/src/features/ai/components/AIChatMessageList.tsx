@@ -37,6 +37,7 @@ import {
     useChatRowUiStore,
 } from "../store/chatRowUiStore";
 import { useChatStore } from "../store/chatStore";
+import { isTurnStartedStatusMessage } from "../transcriptModel";
 import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
 import { ChatFindBar } from "./find/ChatFindBar";
 import { useChatFind } from "./find/useChatFind";
@@ -514,15 +515,14 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     const visiblePinnedPlanId = visiblePinnedPlan?.id ?? null;
     const timelineRows = useMemo(() => {
         const rows: TimelineRow[] = [];
-        const timelineMessages = visiblePinnedPlanId
-            ? messages.filter(
-                  (message) =>
-                      !(
-                          message.kind === "plan" &&
-                          message.id === visiblePinnedPlanId
-                      ),
-              )
-            : messages;
+        const timelineMessages = messages.filter(
+            (message) =>
+                !isTurnStartedStatusMessage(message) &&
+                !(
+                    message.kind === "plan" &&
+                    message.id === visiblePinnedPlanId
+                ),
+        );
         const presentationRows = buildActivityTimelineRows(timelineMessages);
         const trailingPresentationRow = presentationRows.at(-1);
 

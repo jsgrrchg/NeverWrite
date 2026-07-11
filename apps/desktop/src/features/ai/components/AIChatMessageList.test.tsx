@@ -219,7 +219,7 @@ describe("AIChatMessageList streaming run indicator", () => {
         ).not.toBeInTheDocument();
     });
 
-    it("shows elapsed time on the turn_started divider when elapsed_ms is stamped", () => {
+    it("does not render turn-start markers after a run completes", () => {
         const messages: AIChatMessage[] = [
             {
                 id: "status:turn-1",
@@ -248,8 +248,9 @@ describe("AIChatMessageList streaming run indicator", () => {
             <AIChatMessageList messages={messages} status="idle" />,
         );
 
-        // The elapsed time appears inline in the turn divider
-        expect(screen.getByText("45s")).toBeInTheDocument();
+        expect(screen.queryByText("New turn")).not.toBeInTheDocument();
+        expect(screen.queryByText("45s")).not.toBeInTheDocument();
+        expect(screen.getByText("Done")).toBeInTheDocument();
     });
 
     it("falls back to the latest user message when the turn-start event is missing", () => {

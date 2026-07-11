@@ -878,16 +878,6 @@ export function PlanMessage({
     );
 }
 
-function formatElapsedMs(ms: number) {
-    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-    if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
-    if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-    return `${seconds}s`;
-}
-
 function messageMetaString(message: AIChatMessage, key: string): string | null {
     const value = message.meta?.[key];
     return typeof value === "string" && value.trim() ? value : null;
@@ -1190,54 +1180,6 @@ function StatusMessage({ message }: { message: AIChatMessage }) {
     const title = message.title ?? message.content;
     const detail =
         message.content && message.content !== title ? message.content : null;
-
-    if (statusKind === "turn_started") {
-        const elapsedMs =
-            typeof message.meta?.elapsed_ms === "number"
-                ? message.meta.elapsed_ms
-                : null;
-        return (
-            <div className="min-w-0 max-w-full py-2">
-                <div className="flex min-w-0 max-w-full items-center gap-3">
-                    <div
-                        className="h-px flex-1"
-                        style={{
-                            backgroundColor: "var(--border)",
-                            opacity: 0.5,
-                        }}
-                    />
-                    <span
-                        className="shrink-0 uppercase tracking-[0.14em]"
-                        style={{
-                            color: "var(--text-secondary)",
-                            fontSize: "0.68em",
-                            opacity: 0.7,
-                        }}
-                    >
-                        {title}
-                    </span>
-                    {elapsedMs != null ? (
-                        <span
-                            style={{
-                                color: "var(--text-secondary)",
-                                fontSize: "0.66em",
-                                opacity: 0.55,
-                            }}
-                        >
-                            {formatElapsedMs(elapsedMs)}
-                        </span>
-                    ) : null}
-                    <div
-                        className="h-px flex-1"
-                        style={{
-                            backgroundColor: "var(--border)",
-                            opacity: 0.5,
-                        }}
-                    />
-                </div>
-            </div>
-        );
-    }
 
     if (emphasis === "error" || statusKind === "stream_error") {
         return (
