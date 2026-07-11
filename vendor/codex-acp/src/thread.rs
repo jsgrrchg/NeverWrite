@@ -61,7 +61,7 @@ use codex_protocol::{
     mcp::CallToolResult,
     models::{
         ActivePermissionProfile, AdditionalPermissionProfile, PermissionProfile, ResponseItem,
-        WebSearchAction,
+        WebSearchAction, plaintext_agent_message_content,
     },
     openai_models::{ModelPreset, ReasoningEffort},
     parse_command::ParsedCommand,
@@ -942,6 +942,13 @@ fn codex_turn_lifecycle_meta(event_type: &str, turn_id: Option<&str>) -> Meta {
         meta.insert(CODEX_ACP_TURN_ID_KEY.to_string(), json!(turn_id));
     }
     meta
+}
+
+fn plaintext_inter_agent_message_payload(item: &ResponseItem) -> Option<(Option<String>, String)> {
+    let ResponseItem::AgentMessage { id, content, .. } = item else {
+        return None;
+    };
+    Some((id.clone(), plaintext_agent_message_content(content)?))
 }
 
 fn image_generation_tool_call_id(call_id: &str) -> String {
@@ -2375,6 +2382,15 @@ impl PromptState {
                     client.send_user_message(message).await;
                 }
             }
+            EventMsg::RawResponseItem(event) => {
+                if let Some((message_id, payload)) =
+                    plaintext_inter_agent_message_payload(&event.item)
+                {
+                    client
+                        .send_user_message_with_id(payload, message_id.as_deref())
+                        .await;
+                }
+            }
             EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
                 thread_id,
                 turn_id,
@@ -2891,7 +2907,6 @@ impl PromptState {
             // we already have a way to diff the turn, so ignore
             | EventMsg::TurnDiff(..)
             | EventMsg::ThreadSettingsApplied(..)
-            | EventMsg::RawResponseItem(..)
             | EventMsg::SessionConfigured(..)
             | EventMsg::RealtimeConversationStarted(..)
             | EventMsg::RealtimeConversationSdp(..)
@@ -4255,10 +4270,16 @@ impl SessionClient {
     }
 
     async fn send_user_message(&self, text: impl Into<String>) {
-        self.send_notification(SessionUpdate::UserMessageChunk(ContentChunk::new(
-            text.into().into(),
-        )))
-        .await;
+        self.send_user_message_with_id(text, None).await;
+    }
+
+    async fn send_user_message_with_id(&self, text: impl Into<String>, message_id: Option<&str>) {
+        let mut chunk = ContentChunk::new(text.into().into());
+        if let Some(message_id) = message_id {
+            chunk = chunk.message_id(message_id);
+        }
+        self.send_notification(SessionUpdate::UserMessageChunk(chunk))
+            .await;
     }
 
     async fn send_agent_text(&self, text: impl Into<String>) {
@@ -5466,6 +5487,13 @@ impl<A: Auth> ThreadActor<A> {
     /// Only handles tool calls - messages/reasoning are handled via EventMsg.
     async fn replay_response_item(&self, item: &ResponseItem) {
         match item {
+            ResponseItem::AgentMessage { .. } => {
+                if let Some((message_id, payload)) = plaintext_inter_agent_message_payload(item) {
+                    self.client
+                        .send_user_message_with_id(payload, message_id.as_deref())
+                        .await;
+                }
+            }
             // Skip Message and Reasoning - these are handled via EventMsg
             ResponseItem::Message { .. } | ResponseItem::Reasoning { .. } => {}
             ResponseItem::FunctionCall {
@@ -6399,6 +6427,7 @@ mod tests {
     use codex_core::{config::ConfigOverrides, test_support::all_model_presets};
     use codex_features::Feature;
     use codex_protocol::config_types::ModeKind;
+    use codex_protocol::models::AgentMessageInputContent;
     use tokio::sync::{Mutex, mpsc::UnboundedSender};
 
     use super::*;
@@ -7937,6 +7966,226 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inter_agent_messages_stay_in_the_receiving_actor_transcript() {
+        let root_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let root_session_id = SessionId::new("root-runtime-session-id");
+        let child_session_id = SessionId::new("child-runtime-session-id");
+        let (mut root_state, root_client, root_notifications) =
+            prompt_state_for_session_projection(root_session_id.clone(), root_thread_id);
+        let (mut child_state, child_client, child_notifications) =
+            prompt_state_for_session_projection(child_session_id.clone(), child_thread_id);
+
+        child_state
+            .handle_event(
+                &child_client,
+                EventMsg::RawResponseItem(codex_protocol::protocol::RawResponseItemEvent {
+                    item: inter_agent_message(
+                        Some("root-to-child"),
+                        "not-a-thread-id",
+                        "also-not-a-thread-id",
+                        vec![AgentMessageInputContent::InputText {
+                            text: "task for child".to_string(),
+                        }],
+                    ),
+                }),
+            )
+            .await;
+        root_state
+            .handle_event(
+                &root_client,
+                EventMsg::RawResponseItem(codex_protocol::protocol::RawResponseItemEvent {
+                    item: inter_agent_message(
+                        Some("child-to-root"),
+                        "not-a-thread-id",
+                        "also-not-a-thread-id",
+                        vec![AgentMessageInputContent::InputText {
+                            text: "answer for root".to_string(),
+                        }],
+                    ),
+                }),
+            )
+            .await;
+
+        let root_updates = root_notifications.notifications.lock().unwrap();
+        assert!(
+            root_updates
+                .iter()
+                .all(|notification| notification.session_id == root_session_id)
+        );
+        assert!(root_updates.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::UserMessageChunk(ContentChunk {
+                content: ContentBlock::Text(TextContent { text, .. }),
+                message_id: Some(message_id),
+                ..
+            }) if text == "answer for root" && message_id.0.as_ref() == "child-to-root"
+        )));
+        assert!(!root_updates.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::UserMessageChunk(ContentChunk {
+                content: ContentBlock::Text(TextContent { text, .. }),
+                ..
+            }) if text == "task for child"
+        )));
+
+        let child_updates = child_notifications.notifications.lock().unwrap();
+        assert!(
+            child_updates
+                .iter()
+                .all(|notification| notification.session_id == child_session_id)
+        );
+        assert!(child_updates.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::UserMessageChunk(ContentChunk {
+                content: ContentBlock::Text(TextContent { text, .. }),
+                message_id: Some(message_id),
+                ..
+            }) if text == "task for child" && message_id.0.as_ref() == "root-to-child"
+        )));
+        assert!(!child_updates.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::UserMessageChunk(ContentChunk {
+                content: ContentBlock::Text(TextContent { text, .. }),
+                ..
+            }) if text == "answer for root"
+        )));
+    }
+
+    #[tokio::test]
+    async fn inter_agent_messages_match_between_live_and_replay() -> anyhow::Result<()> {
+        let recipient_thread_id = ThreadId::new();
+        let (mut live_state, live_client, live_notifications) =
+            prompt_state_for_projection(recipient_thread_id);
+        let item = inter_agent_message(
+            Some("inter-agent-message-id"),
+            "author-is-descriptive-only",
+            "recipient-is-descriptive-only",
+            vec![AgentMessageInputContent::InputText {
+                text: "plaintext payload".to_string(),
+            }],
+        );
+        live_state
+            .handle_event(
+                &live_client,
+                EventMsg::RawResponseItem(codex_protocol::protocol::RawResponseItemEvent {
+                    item: item.clone(),
+                }),
+            )
+            .await;
+
+        let (_session_id, replay_notifications, _thread, message_tx, actor_handle) =
+            setup(vec![]).await?;
+        let (response_tx, response_rx) = oneshot::channel();
+        message_tx.send(ThreadMessage::ReplayHistory {
+            history: vec![RolloutItem::ResponseItem(item)],
+            response_tx,
+        })?;
+        response_rx.await??;
+        drop(message_tx);
+        actor_handle.await?;
+
+        let extract_user_chunk = |notifications: &[SessionNotification]| {
+            notifications
+                .iter()
+                .find_map(|notification| match &notification.update {
+                    SessionUpdate::UserMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        message_id,
+                        ..
+                    }) => Some((text.clone(), message_id.clone())),
+                    _ => None,
+                })
+        };
+        let live = extract_user_chunk(&live_notifications.notifications.lock().unwrap())
+            .expect("live projection should contain a user message");
+        let replay = extract_user_chunk(&replay_notifications.notifications.lock().unwrap())
+            .expect("replay projection should contain a user message");
+        assert_eq!(live.0, "plaintext payload");
+        assert_eq!(
+            live.1.as_ref().map(|message_id| message_id.0.as_ref()),
+            Some("inter-agent-message-id")
+        );
+        assert_eq!(live, replay);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn encrypted_inter_agent_messages_are_not_projected() {
+        let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::RawResponseItem(codex_protocol::protocol::RawResponseItemEvent {
+                    item: inter_agent_message(
+                        Some("encrypted"),
+                        "/root",
+                        "/root/child",
+                        vec![AgentMessageInputContent::EncryptedContent {
+                            encrypted_content: "opaque".to_string(),
+                        }],
+                    ),
+                }),
+            )
+            .await;
+        assert!(client.notifications.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn child_lifecycle_events_keep_the_child_session_id() {
+        let child_thread_id = ThreadId::new();
+        let child_session_id = SessionId::new("child-runtime-session-id");
+        let (mut state, session_client, client) =
+            prompt_state_for_session_projection(child_session_id.clone(), child_thread_id);
+
+        for event in [
+            EventMsg::TurnStarted(TurnStartedEvent {
+                model_context_window: None,
+                collaboration_mode_kind: ModeKind::default(),
+                turn_id: "turn-1".to_string(),
+                trace_id: None,
+                started_at: None,
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                last_agent_message: None,
+                turn_id: "turn-1".to_string(),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+            EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id: Some("turn-2".to_string()),
+                reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
+            }),
+            EventMsg::ShutdownComplete,
+        ] {
+            state.handle_event(&session_client, event).await;
+        }
+
+        let lifecycle_events = client
+            .notifications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|notification| {
+                notification.session_id == child_session_id
+                    && matches!(
+                        &notification.update,
+                        SessionUpdate::SessionInfoUpdate(update)
+                            if update.meta.as_ref().is_some_and(|meta| {
+                                meta.get(CODEX_ACP_EVENT_TYPE_KEY)
+                                    .and_then(|value| value.as_str())
+                                    == Some(CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE)
+                            })
+                    )
+            })
+            .count();
+        assert_eq!(lifecycle_events, 4);
+    }
+
+    #[tokio::test]
     async fn unknown_submission_events_use_drain_only_projection() -> anyhow::Result<()> {
         let session_id = SessionId::new("test");
         let client = Arc::new(StubClient::new());
@@ -8656,12 +8905,13 @@ mod tests {
         assert!(!state.pending_command_output.contains_key("exec-1"));
     }
 
-    fn prompt_state_for_projection(
+    fn prompt_state_for_session_projection(
+        session_id: SessionId,
         current_thread_id: ThreadId,
     ) -> (PromptState, SessionClient, Arc<StubClient>) {
         let client = Arc::new(StubClient::new());
         let session_client = SessionClient::with_client_for_thread(
-            SessionId::new("parent-runtime-session-id"),
+            session_id,
             current_thread_id,
             client.clone(),
             Arc::default(),
@@ -8674,6 +8924,30 @@ mod tests {
             session_client,
             client,
         )
+    }
+
+    fn prompt_state_for_projection(
+        current_thread_id: ThreadId,
+    ) -> (PromptState, SessionClient, Arc<StubClient>) {
+        prompt_state_for_session_projection(
+            SessionId::new("parent-runtime-session-id"),
+            current_thread_id,
+        )
+    }
+
+    fn inter_agent_message(
+        id: Option<&str>,
+        author: &str,
+        recipient: &str,
+        content: Vec<AgentMessageInputContent>,
+    ) -> ResponseItem {
+        ResponseItem::AgentMessage {
+            id: id.map(str::to_string),
+            author: author.to_string(),
+            recipient: recipient.to_string(),
+            content,
+            internal_chat_message_metadata_passthrough: None,
+        }
     }
 
     async fn setup(
