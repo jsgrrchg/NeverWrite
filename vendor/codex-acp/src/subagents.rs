@@ -53,6 +53,7 @@ pub(crate) enum SubagentProjection {
 pub(crate) struct SubagentProjectionState {
     wait_tool_call_ids_by_group: HashMap<String, String>,
     wait_tool_call_ids_by_call: HashMap<String, String>,
+    wait_group_keys_by_call: HashMap<String, String>,
 }
 
 impl SubagentProjectionState {
@@ -66,18 +67,30 @@ impl SubagentProjectionState {
                 let group_key = waiting_group_key(event);
                 let stable_tool_call_id = self
                     .wait_tool_call_ids_by_group
-                    .entry(group_key)
+                    .entry(group_key.clone())
                     .or_insert_with(|| subagent_tool_call_id(&event.call_id))
                     .clone();
                 self.wait_tool_call_ids_by_call
                     .insert(event.call_id.clone(), stable_tool_call_id.clone());
+                self.wait_group_keys_by_call
+                    .insert(event.call_id.clone(), group_key);
                 stable_tool_call_id
             }
-            EventMsg::CollabWaitingEnd(event) => self
-                .wait_tool_call_ids_by_call
-                .get(&event.call_id)
-                .cloned()
-                .unwrap_or_else(|| subagent_tool_call_id(&event.call_id)),
+            EventMsg::CollabWaitingEnd(event) => {
+                let stable_tool_call_id = self
+                    .wait_tool_call_ids_by_call
+                    .remove(&event.call_id)
+                    .unwrap_or_else(|| subagent_tool_call_id(&event.call_id));
+                if let Some(group_key) = self.wait_group_keys_by_call.remove(&event.call_id)
+                    && !self
+                        .wait_group_keys_by_call
+                        .values()
+                        .any(|active_group_key| active_group_key == &group_key)
+                {
+                    self.wait_tool_call_ids_by_group.remove(&group_key);
+                }
+                stable_tool_call_id
+            }
             _ => return,
         };
 
@@ -1268,7 +1281,10 @@ mod tests {
         let parent_session_id = SessionId::new(parent_thread_id.to_string());
         let mut state = SubagentProjectionState::default();
 
-        let mut project_begin = |sender_thread_id, call_id: &str, receiver_thread_ids| {
+        let project_begin = |state: &mut SubagentProjectionState,
+                             sender_thread_id,
+                             call_id: &str,
+                             receiver_thread_ids| {
             let event =
                 EventMsg::CollabWaitingBegin(codex_protocol::protocol::CollabWaitingBeginEvent {
                     sender_thread_id,
@@ -1287,11 +1303,13 @@ mod tests {
         };
 
         let first = project_begin(
+            &mut state,
             parent_thread_id,
             "wait-1",
             vec![first_child_thread_id, second_child_thread_id],
         );
         let repeated = project_begin(
+            &mut state,
             parent_thread_id,
             "wait-2",
             vec![
@@ -1300,9 +1318,14 @@ mod tests {
                 first_child_thread_id,
             ],
         );
-        let different_group =
-            project_begin(parent_thread_id, "wait-3", vec![first_child_thread_id]);
+        let different_group = project_begin(
+            &mut state,
+            parent_thread_id,
+            "wait-3",
+            vec![first_child_thread_id],
+        );
         let different_parent = project_begin(
+            &mut state,
             other_parent_thread_id,
             "wait-4",
             vec![first_child_thread_id, second_child_thread_id],
@@ -1334,6 +1357,26 @@ mod tests {
         };
         assert_eq!(update.tool_call_id.0.as_ref(), first);
         assert_eq!(update.fields.status, Some(ToolCallStatus::Completed));
+
+        let first_end =
+            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id: parent_thread_id,
+                call_id: "wait-1".to_string(),
+                agent_statuses: Vec::new(),
+                statuses: HashMap::new(),
+                completed_at_ms: 0,
+            });
+        let mut projection = projection_for_event(&first_end, parent_thread_id, &parent_session_id)
+            .expect("waiting end should project");
+        state.coalesce_wait_projection(&first_end, &mut projection);
+
+        let next_cycle = project_begin(
+            &mut state,
+            parent_thread_id,
+            "wait-next-cycle",
+            vec![first_child_thread_id, second_child_thread_id],
+        );
+        assert_ne!(next_cycle, first, "a completed wait group must be reusable");
 
         let end_without_begin =
             EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {

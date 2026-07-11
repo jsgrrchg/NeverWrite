@@ -1189,6 +1189,13 @@ fn turn_item_call_id(item: &TurnItem, projection: TurnItemProjection) -> String 
     }
 }
 
+fn is_self_referential_subagent_activity(item: &TurnItem, current_thread_id: ThreadId) -> bool {
+    matches!(
+        item,
+        TurnItem::SubAgentActivity(activity) if activity.agent_thread_id == current_thread_id
+    )
+}
+
 fn turn_item_terminal_status(item: &TurnItem) -> ToolCallStatus {
     use codex_protocol::items::{
         CollabAgentToolCallStatus, CommandExecutionStatus, DynamicToolCallStatus, McpToolCallStatus,
@@ -1938,6 +1945,9 @@ impl PromptState {
     }
 
     async fn start_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+        if is_self_referential_subagent_activity(item, client.thread_id) {
+            return;
+        }
         let projection = turn_item_projection(item);
         if matches!(
             projection,
@@ -1982,6 +1992,9 @@ impl PromptState {
     }
 
     async fn complete_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+        if is_self_referential_subagent_activity(item, client.thread_id) {
+            return;
+        }
         let projection = turn_item_projection(item);
         if matches!(
             projection,
@@ -7905,6 +7918,44 @@ mod tests {
             "notifications={notifications:?}"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn self_referential_turn_item_subagent_activity_is_not_projected() {
+        let current_thread_id = ThreadId::new();
+        let (mut prompt_state, session_client, client) =
+            prompt_state_for_projection(current_thread_id);
+        let item = TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
+            id: "self-activity".to_string(),
+            kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+            agent_thread_id: current_thread_id,
+            agent_path: "/root".try_into().expect("root path should be valid"),
+        });
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id: current_thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: item.clone(),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: current_thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item,
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+
+        assert!(client.notifications.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
