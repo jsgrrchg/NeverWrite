@@ -9,6 +9,7 @@ import {
     formatDiffStat,
     getFileNameFromPath,
 } from "../diff/reviewDiff";
+import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import { DiffZoomControls } from "./DiffZoomControls";
 import { EditedFileDiffPreview } from "./editedFilesPresentation";
 import { ResizableDiffContainer } from "./ResizableDiffContainer";
@@ -17,7 +18,6 @@ import {
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
 import { useChatRowUiEntry } from "./chatRowUiPresentation";
-import { ToolIcon } from "./ToolActivityItem";
 import type { AIChatMessage, AIFileDiff } from "../types";
 
 interface ChangeReviewToolRailProps {
@@ -147,13 +147,6 @@ function ChangeReviewToolRailRow({
         : false;
     const isFailed = status === "failed" || status === "error";
     const isInProgress = status === "in_progress" || status === "pending";
-    const operationIconKind =
-        toolKind === "edit" ||
-        toolKind === "update" ||
-        toolKind === "write" ||
-        toolKind === "create"
-            ? "edit"
-            : toolKind;
 
     return (
         <div
@@ -166,17 +159,20 @@ function ChangeReviewToolRailRow({
                 fontSize: "0.82em",
             }}
         >
-            <div className="flex min-h-7 w-full min-w-0 items-center gap-2">
+            <div className="flex min-h-7 w-full min-w-0 items-center gap-2 px-2">
                 <span
                     aria-hidden="true"
-                    className="shrink-0"
+                    className="flex w-3.5 shrink-0 items-center justify-center"
                     data-change-review-operation-icon="true"
                     style={{
                         color: isFailed ? accent : "var(--text-secondary)",
-                        display: "inline-flex",
                     }}
                 >
-                    {isFailed ? <WarningIcon /> : <ToolIcon kind={operationIconKind} />}
+                    {isFailed ? (
+                        <WarningIcon />
+                    ) : (
+                        <FileTypeIcon fileName={fileName} size={13} opacity={0.86} />
+                    )}
                 </span>
                 <span className="shrink-0 opacity-70">{actionLabel}</span>
                 {canOpen && openPath ? (
