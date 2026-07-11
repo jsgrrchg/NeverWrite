@@ -51,6 +51,19 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
     );
 }
 
+function WorkingTerminalIndicator() {
+    return (
+        <span
+            aria-hidden="true"
+            className="activity-rail-working-indicator"
+            data-activity-rail-working-indicator="true"
+        >
+            <span>{">"}</span>
+            <span className="activity-rail-working-cursor">_</span>
+        </span>
+    );
+}
+
 function getChatOutlineStyle(isActive: boolean): CSSProperties | undefined {
     return isActive
         ? {
@@ -140,19 +153,22 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 }}
                 type="button"
             >
-                <span className="min-w-0 flex-1">
-                    <span
-                        className="block truncate text-[11px] font-medium leading-4"
-                        title={headline}
-                    >
-                        {headline}
-                    </span>
-                    <span
-                        className="block truncate text-[10px] leading-3.5 text-text-secondary"
-                        data-activity-rail-current="true"
-                        title={latestLabel}
-                    >
-                        {isCurrentTurnTail ? "Current" : "Latest"}: {latestLabel}
+                <span className="flex min-w-0 flex-1 items-start gap-1.5">
+                    {isCurrentTurnTail ? <WorkingTerminalIndicator /> : null}
+                    <span className="min-w-0 flex-1">
+                        <span
+                            className="block truncate text-[11px] font-medium leading-4"
+                            title={headline}
+                        >
+                            {headline}
+                        </span>
+                        <span
+                            className="block truncate text-[10px] leading-3.5 text-text-secondary"
+                            data-activity-rail-current="true"
+                            title={latestLabel}
+                        >
+                            {isCurrentTurnTail ? "Current" : "Latest"}: {latestLabel}
+                        </span>
                     </span>
                 </span>
                 {hasChanges ? (

@@ -163,6 +163,27 @@ describe("ToolActivitySegment", () => {
         expect(
             view.container.querySelector("[data-tool-activity-segment]"),
         ).toHaveAttribute("aria-busy", "true");
+        expect(
+            view.container.querySelector(
+                "[data-activity-rail-working-indicator]",
+            ),
+        ).toBeInTheDocument();
+    });
+
+    it("only shows the terminal indicator while a rail is active", () => {
+        const view = renderComponent(
+            <ToolActivitySegment
+                renderEntry={(message) => <div>{message.title}</div>}
+                segment={createSegment([createTool("tool-1")])}
+                sessionId="session-1"
+            />,
+        );
+
+        expect(
+            view.container.querySelector(
+                "[data-activity-rail-working-indicator]",
+            ),
+        ).toBeNull();
     });
 
     it("expands when navigation targets one of its hidden tool messages", () => {

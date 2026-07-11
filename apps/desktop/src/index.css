@@ -646,6 +646,28 @@ body.dragging-tab * {
     }
 }
 
+.activity-rail-working-indicator {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: baseline;
+    gap: 1px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+}
+
+.activity-rail-working-cursor {
+    animation: devtools-terminal-cursor 850ms steps(1, end) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .activity-rail-working-cursor {
+        animation: none;
+    }
+}
+
 .terminal-surface {
     height: 100%;
     min-height: 0;
