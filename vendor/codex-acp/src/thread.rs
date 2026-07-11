@@ -29,6 +29,7 @@ use codex_core::{
     config::{Config, PermissionProfileSnapshot, set_project_trust_level},
     review_prompts::user_facing_hint,
 };
+use codex_extension_items::ExtensionItem;
 use codex_features::Feature;
 use codex_http_client::{HttpClientFactory, OutboundProxyPolicy};
 use codex_login::auth::AuthManager;
@@ -1104,6 +1105,7 @@ fn turn_item_projection(item: &TurnItem) -> TurnItemProjection {
         }
         TurnItem::Plan(..)
         | TurnItem::ImageGeneration(..)
+        | TurnItem::Extension(ExtensionItem::ImageGeneration(..))
         | TurnItem::EnteredReviewMode(..)
         | TurnItem::ExitedReviewMode(..) => TurnItemProjection::Dedicated,
         TurnItem::HookPrompt(..) | TurnItem::Sleep(..) | TurnItem::ContextCompaction(..) => {
@@ -1115,7 +1117,7 @@ fn turn_item_projection(item: &TurnItem) -> TurnItemProjection {
         | TurnItem::SubAgentActivity(..)
         | TurnItem::WebSearch(..)
         | TurnItem::ImageView(..)
-        | TurnItem::Extension(..)
+        | TurnItem::Extension(ExtensionItem::WebSearch(..))
         | TurnItem::FileChange(..)
         | TurnItem::McpToolCall(..) => TurnItemProjection::Tool,
     }
@@ -1127,9 +1129,8 @@ fn turn_item_tool_kind(item: &TurnItem) -> ToolKind {
         TurnItem::WebSearch(..) => ToolKind::Fetch,
         TurnItem::ImageView(..) => ToolKind::Read,
         TurnItem::FileChange(..) => ToolKind::Edit,
-        // Extension items are deliberately kept explicit at their handler
-        // boundary; their generic fallback is safe but cannot assume a kind.
-        TurnItem::Extension(..)
+        TurnItem::Extension(ExtensionItem::WebSearch(..)) => ToolKind::Fetch,
+        TurnItem::Extension(ExtensionItem::ImageGeneration(..))
         | TurnItem::DynamicToolCall(..)
         | TurnItem::CollabAgentToolCall(..)
         | TurnItem::SubAgentActivity(..)
@@ -1207,6 +1208,16 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
                 .or_else(|| item.raw_content.first().cloned()),
         ),
         TurnItem::WebSearch(item) => ("Web search", Some(item.query.clone())),
+        TurnItem::Extension(ExtensionItem::WebSearch(item)) => {
+            ("Searching the Web", Some(item.query.clone()))
+        }
+        TurnItem::Extension(ExtensionItem::ImageGeneration(item)) => (
+            "Generating image",
+            item.saved_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .or_else(|| Some(item.result.clone())),
+        ),
         TurnItem::ImageView(item) => (
             "Viewing image",
             Some(item.path.inferred_native_path_string()),
@@ -1227,7 +1238,6 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
         }
         TurnItem::SubAgentActivity(item) => ("Subagent activity", Some(format!("{:?}", item.kind))),
         TurnItem::Sleep(item) => ("Waiting", Some(format!("{}ms", item.duration_ms))),
-        TurnItem::Extension(item) => ("Extension", Some(format!("{item:?}"))),
         TurnItem::EnteredReviewMode(..) => ("Review mode active", None),
         TurnItem::ExitedReviewMode(..) => ("Review mode complete", None),
         TurnItem::FileChange(..) => ("Editing files", None),
@@ -1898,7 +1908,7 @@ impl PromptState {
         if state.canonical_terminal_seen || state.terminal.is_some() {
             return;
         }
-        state.terminal = Some(terminal.clone());
+        state.terminal = Some(terminal);
         let emitted = state.emitted;
         let canonical_seen = state.canonical_seen;
         state.emitted = true;
@@ -1951,7 +1961,7 @@ impl PromptState {
                     return;
                 }
                 state.canonical_terminal_seen = true;
-                state.terminal = Some(tool_call.status.clone());
+                state.terminal = Some(tool_call.status);
             }
             let emitted = state.emitted;
             state.emitted = true;
@@ -2006,7 +2016,7 @@ impl PromptState {
                     return;
                 }
                 state.canonical_terminal_seen = true;
-                state.terminal = update.fields.status.clone();
+                state.terminal = update.fields.status;
             }
             let preserve_terminal = state.terminal.is_some() && !terminal;
             let emitted = state.emitted;
@@ -2017,13 +2027,7 @@ impl PromptState {
         if !emitted {
             let mut tool_call = ToolCall::new(call_id, title_if_unmaterialized)
                 .kind(kind_if_unmaterialized)
-                .status(
-                    update
-                        .fields
-                        .status
-                        .clone()
-                        .unwrap_or(ToolCallStatus::InProgress),
-                );
+                .status(update.fields.status.unwrap_or(ToolCallStatus::InProgress));
             tool_call.update(update.fields);
             tool_call.meta = update.meta;
             client.send_tool_call(tool_call).await;
@@ -2180,6 +2184,15 @@ impl PromptState {
                 info!("Item started with thread_id: {thread_id}, turn_id: {turn_id}, item: {item:?}");
                 match item {
                     TurnItem::ImageGeneration(image_item) => {
+                        self.send_image_generation_started(
+                            client,
+                            ImageGenerationBeginEvent {
+                                call_id: image_item.id,
+                            },
+                        )
+                        .await;
+                    }
+                    TurnItem::Extension(ExtensionItem::ImageGeneration(image_item)) => {
                         self.send_image_generation_started(
                             client,
                             ImageGenerationBeginEvent {
@@ -2447,6 +2460,19 @@ impl PromptState {
                 }
                 match item {
                     TurnItem::ImageGeneration(image_item) => {
+                        self.send_image_generation_completed(
+                            client,
+                            ImageGenerationEndEvent {
+                                call_id: image_item.id,
+                                status: image_item.status,
+                                revised_prompt: image_item.revised_prompt,
+                                result: image_item.result,
+                                saved_path: image_item.saved_path,
+                            },
+                        )
+                        .await;
+                    }
+                    TurnItem::Extension(ExtensionItem::ImageGeneration(image_item)) => {
                         self.send_image_generation_completed(
                             client,
                             ImageGenerationEndEvent {
@@ -3290,7 +3316,7 @@ impl PromptState {
         self.send_canonical_tool_call(
             client,
             ToolCall::new(tool_call_id.clone(), title.clone())
-                .kind(kind.clone())
+                .kind(kind)
                 .status(ToolCallStatus::Pending)
                 .raw_input(raw_input.clone())
                 .content(content.clone().unwrap_or_default())
