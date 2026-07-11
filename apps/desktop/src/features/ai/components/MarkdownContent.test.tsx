@@ -34,7 +34,7 @@ describe("MarkdownContent", () => {
         );
 
         const pill = screen.getByRole("button", { name: longLabel });
-        const label = pill.querySelector("span");
+        const label = pill.querySelector("span > span");
 
         expect(pill).toBeInTheDocument();
         expect(label).toHaveTextContent(longLabel);
@@ -69,6 +69,83 @@ describe("MarkdownContent", () => {
         expect(
             screen.queryByRole("link", { name: "README" }),
         ).not.toBeInTheDocument();
+    });
+
+    it("renders chat file references as icon-led links", () => {
+        setVaultEntries([
+            {
+                id: "src/main.ts",
+                path: "/vault/src/main.ts",
+                relative_path: "src/main.ts",
+                title: "main.ts",
+                file_name: "main.ts",
+                extension: "ts",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/typescript",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="Read [main.ts](src/main.ts)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const reference = screen.getByRole("button", { name: "main.ts" });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+    });
+
+    it("renders indexed folders as non-interactive icon links in every supported syntax", () => {
+        setVaultEntries([
+            {
+                id: "docs",
+                path: "/vault/docs",
+                relative_path: "docs",
+                title: "docs",
+                file_name: "docs",
+                extension: "",
+                kind: "folder",
+                modified_at: 0,
+                created_at: 0,
+                size: 0,
+                mime_type: null,
+            },
+        ]);
+
+        const { container } = renderComponent(
+            <MarkdownContent
+                content="Inline `/vault/docs`, [docs](docs), and /vault/docs"
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const folders = container.querySelectorAll<HTMLElement>(
+            '[title="docs"], [title="/vault/docs"]',
+        );
+        expect(folders).toHaveLength(3);
+        expect(container.querySelectorAll('button[title="docs"]')).toHaveLength(
+            0,
+        );
+        expect(
+            container.querySelectorAll('button[title="/vault/docs"]'),
+        ).toHaveLength(0);
+        for (const folder of folders) {
+            expect(folder).toHaveStyle({
+                background: "transparent",
+                padding: "0px",
+            });
+            expect(folder.querySelector("svg")).not.toBeNull();
+        }
     });
 
     it("renders raw http and https URLs as external links", () => {
@@ -125,6 +202,7 @@ describe("MarkdownContent", () => {
         renderComponent(
             <MarkdownContent
                 content="Coincide con [apps/web-clipper/package.json](apps/web-clipper/package.json)."
+                fileReferenceAppearance="link"
                 pillMetrics={pillMetrics}
             />,
         );
@@ -428,18 +506,19 @@ describe("MarkdownContent", () => {
         expect(preview.querySelector("ol")).toHaveTextContent(
             "First itemSecond item",
         );
-        expect(screen.getByRole("button", { name: "Preview" })).toHaveAttribute(
-            "aria-pressed",
-            "true",
-        );
+        const toggle = screen.getByRole("button", {
+            name: "Toggle markdown display mode",
+        });
+        expect(toggle).toHaveAttribute("title", "Show source");
 
-        fireEvent.click(screen.getByRole("button", { name: "Source" }));
+        fireEvent.click(toggle);
 
         expect(screen.queryByTestId("chat-markdown-preview")).toBeNull();
-        expect(screen.getByRole("button", { name: "Source" })).toHaveAttribute(
-            "aria-pressed",
-            "true",
-        );
+        expect(
+            screen.getByRole("button", {
+                name: "Toggle markdown display mode",
+            }),
+        ).toHaveAttribute("title", "Show preview");
         expect(screen.getByText((_text, node) => node?.tagName === "CODE")).toHaveTextContent(
             /# Rendered heading.*1\. First item.*2\. Second item/s,
         );

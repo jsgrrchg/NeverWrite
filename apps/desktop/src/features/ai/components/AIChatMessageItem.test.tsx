@@ -135,6 +135,41 @@ describe("AIChatMessageItem errors", () => {
     });
 });
 
+describe("AIChatMessageItem assistant references", () => {
+    it("uses the icon-led link appearance for assistant file references", () => {
+        setVaultEntries([
+            {
+                id: "src/main.ts",
+                path: "/vault/src/main.ts",
+                relative_path: "src/main.ts",
+                title: "main.ts",
+                file_name: "main.ts",
+                extension: "ts",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/typescript",
+            },
+        ]);
+
+        renderMessage({
+            content: "Read [main.ts](src/main.ts).",
+            id: "assistant:file-reference",
+            kind: "text",
+            role: "assistant",
+            timestamp: Date.now(),
+        });
+
+        const reference = screen.getByRole("button", { name: "main.ts" });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+    });
+});
+
 describe("AIChatMessageItem reasoning", () => {
     it("renders reasoning with the same compact activity language", () => {
         renderMessage({

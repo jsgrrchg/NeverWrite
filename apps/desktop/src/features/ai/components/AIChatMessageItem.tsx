@@ -884,6 +884,7 @@ export function PlanMessage({
                             content={detail}
                             pillMetrics={pillMetrics}
                             chatFontSize={chatFontSize}
+                            fileReferenceAppearance="link"
                         />
                     </div>
                 </div>
@@ -2484,6 +2485,7 @@ function PermissionMessage({
                                 content={expanded ? details : preview}
                                 pillMetrics={pillMetrics}
                                 chatFontSize={chatFontSize}
+                                fileReferenceAppearance="link"
                             />
                             {isLong && (
                                 <button
@@ -3309,6 +3311,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
                 content={message.content}
                 pillMetrics={pillMetrics}
                 chatFontSize={chatFontSize}
+                fileReferenceAppearance="link"
             />
         </div>
     );

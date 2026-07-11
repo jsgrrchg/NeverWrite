@@ -3,6 +3,7 @@ import {
     useMemo,
     useState,
     type MouseEvent,
+    type MouseEventHandler,
     type ReactElement,
     type ReactNode,
 } from "react";
@@ -17,6 +18,9 @@ import {
 } from "../../../app/utils/vaultEntries";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { resolveVaultAbsolutePath } from "../../../app/utils/vaultPaths";
+import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
+import { FolderTypeIcon } from "../../../components/icons/FolderTypeIcon";
+import type { ChatPillVariant } from "./chatPillPalette";
 import {
     DIFF_PANEL_MAX_HEIGHT,
     computeUnifiedDiffLines,
@@ -45,6 +49,11 @@ interface MarkdownContentProps {
     className?: string;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
+    /**
+     * Visual treatment for inline vault references. Chat surfaces pass "link"
+     * for the accent-colored, icon-led appearance; other surfaces keep "pill".
+     */
+    fileReferenceAppearance?: FileReferenceAppearance;
 }
 
 function safeDecodeUriComponent(value: string) {
@@ -188,6 +197,97 @@ function parseRelativeTextFileReference(value: string) {
         path: resolvedPath,
         fileName: resolvedPath.split("/").pop() ?? resolvedPath,
     };
+}
+
+/**
+ * Resolves a vault folder reference. Unlike file references, folders are only
+ * recognized when the vault index actually knows the path as a directory, so
+ * extension-less prose never masquerades as a folder link.
+ */
+function parseVaultFolderReference(
+    value: string,
+    options?: { allowRelative?: boolean },
+) {
+    const trimmed = value.trim();
+    const resolvedPath = resolveVaultLocalPath(trimmed, options);
+    if (!resolvedPath) return null;
+    if (
+        parseVaultReference(resolvedPath) ||
+        parseExcalidrawReference(trimmed) ||
+        parsePdfReference(trimmed)
+    ) {
+        return null;
+    }
+    const entry = useVaultStore
+        .getState()
+        .entries.find((candidate) => candidate.path === resolvedPath);
+    if (!entry || entry.kind !== "folder") return null;
+
+    return {
+        path: resolvedPath,
+        folderName: resolvedPath.split("/").pop() ?? resolvedPath,
+    };
+}
+
+type FileReferenceAppearance = "link" | "pill";
+
+function referenceIconSize(metrics: ChatPillMetrics) {
+    return Math.max(11, Math.min(14, metrics.fontSize));
+}
+
+/**
+ * Single owner for inline vault references (notes, files, PDFs, drawings and
+ * folders). Every parser branch funnels through here so the link appearance and
+ * leading icon stay consistent; folders stay non-interactive per Comando.
+ */
+function renderReferencePill(params: {
+    key: number;
+    label: string;
+    title: string;
+    variant: ChatPillVariant;
+    metrics: ChatPillMetrics;
+    appearance: FileReferenceAppearance;
+    iconPath: string;
+    isFolder?: boolean;
+    onClick?: () => void;
+    onContextMenu?: MouseEventHandler<HTMLElement>;
+}): ReactElement {
+    const leadingVisual =
+        params.appearance === "link" ? (
+            params.isFolder ? (
+                <FolderTypeIcon
+                    folderName={params.iconPath}
+                    opacity={1}
+                    open={false}
+                    size={referenceIconSize(params.metrics)}
+                />
+            ) : (
+                <FileTypeIcon
+                    fileName={params.iconPath}
+                    opacity={1}
+                    size={referenceIconSize(params.metrics)}
+                />
+            )
+        ) : undefined;
+
+    return (
+        <ChatInlinePill
+            appearance={params.appearance}
+            interactive={params.onClick != null}
+            key={params.key}
+            label={params.label}
+            leadingVisual={leadingVisual}
+            metrics={params.metrics}
+            onClick={params.onClick}
+            onContextMenu={params.onContextMenu}
+            title={params.title}
+            variant={params.variant}
+        />
+    );
+}
+
+function noteIconPath(reference: string) {
+    return /\.md$/i.test(reference) ? reference : `${reference}.md`;
 }
 
 interface Block {
@@ -363,6 +463,7 @@ function renderInlineMarkdown(
     onMapContextMenu?: InlineContextMenuHandler,
     onPdfContextMenu?: InlineContextMenuHandler,
     onFileContextMenu?: InlineContextMenuHandler,
+    appearance: FileReferenceAppearance = "pill",
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
     // Process: wikilinks, inline code, bold, italic, links, raw URLs, and absolute vault file paths.
@@ -386,17 +487,19 @@ function renderInlineMarkdown(
             const [target, alias] = inner.split("|");
             const label = alias ?? target;
             parts.push(
-                <ChatInlinePill
-                    key={key}
-                    label={label.trim()}
-                    metrics={pillMetrics}
-                    interactive
-                    onClick={() => void openChatNoteByReference(target.trim())}
-                    onContextMenu={(event) =>
-                        onNoteContextMenu(event, target.trim())
-                    }
-                    title={target.trim()}
-                />,
+                renderReferencePill({
+                    key,
+                    label: label.trim(),
+                    title: target.trim(),
+                    variant: "accent",
+                    metrics: pillMetrics,
+                    appearance,
+                    iconPath: noteIconPath(target.trim()),
+                    onClick: () =>
+                        void openChatNoteByReference(target.trim()),
+                    onContextMenu: (event) =>
+                        onNoteContextMenu(event, target.trim()),
+                }),
             );
         } else if (match[2]) {
             // inline code — render vault files as pills
@@ -409,6 +512,10 @@ function renderInlineMarkdown(
                 !parsedReference && !pdfRef
                     ? parseTextFileReference(codeText)
                     : null;
+            const folderRef =
+                !parsedReference && !pdfRef && !textFileRef
+                    ? parseVaultFolderReference(codeText)
+                    : null;
             if (parsedReference) {
                 const fileName =
                     parsedReference.path
@@ -417,60 +524,68 @@ function renderInlineMarkdown(
                         ?.replace(/\.md$/i, "") ??
                     parsedReference.path.replace(/\.md$/i, "");
                 parts.push(
-                    <ChatInlinePill
-                        key={key}
-                        label={fileName}
-                        metrics={pillMetrics}
-                        interactive
-                        variant="accent"
-                        onClick={() =>
-                            void openChatNoteByReference(parsedReference.path)
-                        }
-                        onContextMenu={(event) =>
-                            onNoteContextMenu(event, parsedReference.path)
-                        }
-                        title={codeText}
-                    />,
+                    renderReferencePill({
+                        key,
+                        label: fileName,
+                        title: codeText,
+                        variant: "accent",
+                        metrics: pillMetrics,
+                        appearance,
+                        iconPath: parsedReference.path,
+                        onClick: () =>
+                            void openChatNoteByReference(parsedReference.path),
+                        onContextMenu: (event) =>
+                            onNoteContextMenu(event, parsedReference.path),
+                    }),
                 );
             } else if (pdfRef) {
                 parts.push(
-                    <ChatInlinePill
-                        key={key}
-                        label={pdfRef.fileName}
-                        metrics={pillMetrics}
-                        interactive
-                        variant="file"
-                        onClick={() => void openChatPdfByReference(pdfRef.path)}
-                        onContextMenu={
-                            onPdfContextMenu
-                                ? (event) =>
-                                      onPdfContextMenu(event, pdfRef.path)
-                                : undefined
-                        }
-                        title={codeText}
-                    />,
+                    renderReferencePill({
+                        key,
+                        label: pdfRef.fileName,
+                        title: codeText,
+                        variant: "file",
+                        metrics: pillMetrics,
+                        appearance,
+                        iconPath: pdfRef.path,
+                        onClick: () => void openChatPdfByReference(pdfRef.path),
+                        onContextMenu: onPdfContextMenu
+                            ? (event) => onPdfContextMenu(event, pdfRef.path)
+                            : undefined,
+                    }),
                 );
             } else if (textFileRef) {
                 parts.push(
-                    <ChatInlinePill
-                        key={key}
-                        label={textFileRef.fileName}
-                        metrics={pillMetrics}
-                        interactive
-                        variant="file"
-                        onClick={() =>
+                    renderReferencePill({
+                        key,
+                        label: textFileRef.fileName,
+                        title: codeText,
+                        variant: "file",
+                        metrics: pillMetrics,
+                        appearance,
+                        iconPath: textFileRef.path,
+                        onClick: () =>
                             void openAiEditedFileByAbsolutePath(
                                 textFileRef.path,
-                            )
-                        }
-                        onContextMenu={
-                            onFileContextMenu
-                                ? (event) =>
-                                      onFileContextMenu(event, textFileRef.path)
-                                : undefined
-                        }
-                        title={codeText}
-                    />,
+                            ),
+                        onContextMenu: onFileContextMenu
+                            ? (event) =>
+                                  onFileContextMenu(event, textFileRef.path)
+                            : undefined,
+                    }),
+                );
+            } else if (folderRef) {
+                parts.push(
+                    renderReferencePill({
+                        key,
+                        label: folderRef.folderName,
+                        title: codeText,
+                        variant: "folder",
+                        metrics: pillMetrics,
+                        appearance,
+                        iconPath: folderRef.path,
+                        isFolder: true,
+                    }),
                 );
             } else {
                 parts.push(
@@ -517,76 +632,83 @@ function renderInlineMarkdown(
                 const textFileRef =
                     parseRelativeTextFileReference(decoded) ??
                     parseRelativeTextFileReference(linkMatch[1]);
+                const folderRef =
+                    !excalidrawRef && !pdfLinkRef && !textFileRef
+                        ? (parseVaultFolderReference(decoded, {
+                              allowRelative: true,
+                          }) ??
+                          parseVaultFolderReference(linkMatch[1], {
+                              allowRelative: true,
+                          }))
+                        : null;
                 if (excalidrawRef) {
                     parts.push(
-                        <ChatInlinePill
-                            key={key}
-                            label={excalidrawRef.fileName}
-                            metrics={pillMetrics}
-                            interactive
-                            variant="file"
-                            onClick={() =>
-                                void openChatMapByReference(excalidrawRef.path)
-                            }
-                            onContextMenu={
-                                onMapContextMenu
-                                    ? (event) =>
-                                          onMapContextMenu(
-                                              event,
-                                              excalidrawRef.path,
-                                          )
-                                    : undefined
-                            }
-                            title={decoded}
-                        />,
+                        renderReferencePill({
+                            key,
+                            label: excalidrawRef.fileName,
+                            title: decoded,
+                            variant: "file",
+                            metrics: pillMetrics,
+                            appearance,
+                            iconPath: excalidrawRef.path,
+                            onClick: () =>
+                                void openChatMapByReference(excalidrawRef.path),
+                            onContextMenu: onMapContextMenu
+                                ? (event) =>
+                                      onMapContextMenu(event, excalidrawRef.path)
+                                : undefined,
+                        }),
                     );
                 } else if (pdfLinkRef) {
                     parts.push(
-                        <ChatInlinePill
-                            key={key}
-                            label={pdfLinkRef.fileName}
-                            metrics={pillMetrics}
-                            interactive
-                            variant="file"
-                            onClick={() =>
-                                void openChatPdfByReference(pdfLinkRef.path)
-                            }
-                            onContextMenu={
-                                onPdfContextMenu
-                                    ? (event) =>
-                                          onPdfContextMenu(
-                                              event,
-                                              pdfLinkRef.path,
-                                          )
-                                    : undefined
-                            }
-                            title={decoded}
-                        />,
+                        renderReferencePill({
+                            key,
+                            label: pdfLinkRef.fileName,
+                            title: decoded,
+                            variant: "file",
+                            metrics: pillMetrics,
+                            appearance,
+                            iconPath: pdfLinkRef.path,
+                            onClick: () =>
+                                void openChatPdfByReference(pdfLinkRef.path),
+                            onContextMenu: onPdfContextMenu
+                                ? (event) =>
+                                      onPdfContextMenu(event, pdfLinkRef.path)
+                                : undefined,
+                        }),
                     );
                 } else if (textFileRef) {
                     parts.push(
-                        <ChatInlinePill
-                            key={key}
-                            label={textFileRef.fileName}
-                            metrics={pillMetrics}
-                            interactive
-                            variant="file"
-                            onClick={() =>
+                        renderReferencePill({
+                            key,
+                            label: textFileRef.fileName,
+                            title: decoded,
+                            variant: "file",
+                            metrics: pillMetrics,
+                            appearance,
+                            iconPath: textFileRef.path,
+                            onClick: () =>
                                 void openAiEditedFileByAbsolutePath(
                                     textFileRef.path,
-                                )
-                            }
-                            onContextMenu={
-                                onFileContextMenu
-                                    ? (event) =>
-                                          onFileContextMenu(
-                                              event,
-                                              textFileRef.path,
-                                          )
-                                    : undefined
-                            }
-                            title={decoded}
-                        />,
+                                ),
+                            onContextMenu: onFileContextMenu
+                                ? (event) =>
+                                      onFileContextMenu(event, textFileRef.path)
+                                : undefined,
+                        }),
+                    );
+                } else if (folderRef) {
+                    parts.push(
+                        renderReferencePill({
+                            key,
+                            label: folderRef.folderName,
+                            title: decoded,
+                            variant: "folder",
+                            metrics: pillMetrics,
+                            appearance,
+                            iconPath: folderRef.path,
+                            isFolder: true,
+                        }),
                     );
                 } else if (parsedReference) {
                     const fileName =
@@ -595,22 +717,21 @@ function renderInlineMarkdown(
                             .pop()
                             ?.replace(/\.md$/, "") ?? linkMatch[1];
                     parts.push(
-                        <ChatInlinePill
-                            key={key}
-                            label={fileName}
-                            metrics={pillMetrics}
-                            interactive
-                            variant="accent"
-                            onClick={() =>
+                        renderReferencePill({
+                            key,
+                            label: fileName,
+                            title: decoded,
+                            variant: "accent",
+                            metrics: pillMetrics,
+                            appearance,
+                            iconPath: parsedReference.path,
+                            onClick: () =>
                                 void openChatNoteByReference(
                                     parsedReference.path,
-                                )
-                            }
-                            onContextMenu={(event) =>
-                                onNoteContextMenu(event, parsedReference.path)
-                            }
-                            title={decoded}
-                        />,
+                                ),
+                            onContextMenu: (event) =>
+                                onNoteContextMenu(event, parsedReference.path),
+                        }),
                     );
                 } else {
                     parts.push(renderExternalLink(key, url, linkMatch[1]));
@@ -628,70 +749,77 @@ function renderInlineMarkdown(
             const excalidrawRef = parseExcalidrawReference(filePath);
             const pdfPathRef = parsePdfReference(filePath);
             const textFileRef = parseTextFileReference(filePath);
+            const folderRef =
+                !excalidrawRef && !pdfPathRef && !textFileRef
+                    ? parseVaultFolderReference(filePath)
+                    : null;
             if (excalidrawRef) {
                 parts.push(
-                    <ChatInlinePill
-                        key={key}
-                        label={excalidrawRef.fileName}
-                        metrics={pillMetrics}
-                        interactive
-                        variant="file"
-                        onClick={() =>
-                            void openChatMapByReference(excalidrawRef.path)
-                        }
-                        onContextMenu={
-                            onMapContextMenu
-                                ? (event) =>
-                                      onMapContextMenu(
-                                          event,
-                                          excalidrawRef.path,
-                                      )
-                                : undefined
-                        }
-                        title={filePath}
-                    />,
+                    renderReferencePill({
+                        key,
+                        label: excalidrawRef.fileName,
+                        title: filePath,
+                        variant: "file",
+                        metrics: pillMetrics,
+                        appearance,
+                        iconPath: excalidrawRef.path,
+                        onClick: () =>
+                            void openChatMapByReference(excalidrawRef.path),
+                        onContextMenu: onMapContextMenu
+                            ? (event) =>
+                                  onMapContextMenu(event, excalidrawRef.path)
+                            : undefined,
+                    }),
                 );
             } else if (pdfPathRef) {
                 parts.push(
-                    <ChatInlinePill
-                        key={key}
-                        label={pdfPathRef.fileName}
-                        metrics={pillMetrics}
-                        interactive
-                        variant="file"
-                        onClick={() =>
-                            void openChatPdfByReference(pdfPathRef.path)
-                        }
-                        onContextMenu={
-                            onPdfContextMenu
-                                ? (event) =>
-                                      onPdfContextMenu(event, pdfPathRef.path)
-                                : undefined
-                        }
-                        title={filePath}
-                    />,
+                    renderReferencePill({
+                        key,
+                        label: pdfPathRef.fileName,
+                        title: filePath,
+                        variant: "file",
+                        metrics: pillMetrics,
+                        appearance,
+                        iconPath: pdfPathRef.path,
+                        onClick: () =>
+                            void openChatPdfByReference(pdfPathRef.path),
+                        onContextMenu: onPdfContextMenu
+                            ? (event) => onPdfContextMenu(event, pdfPathRef.path)
+                            : undefined,
+                    }),
                 );
             } else if (textFileRef) {
                 parts.push(
-                    <ChatInlinePill
-                        key={key}
-                        label={textFileRef.fileName}
-                        metrics={pillMetrics}
-                        interactive
-                        variant="file"
-                        onClick={() =>
+                    renderReferencePill({
+                        key,
+                        label: textFileRef.fileName,
+                        title: filePath,
+                        variant: "file",
+                        metrics: pillMetrics,
+                        appearance,
+                        iconPath: textFileRef.path,
+                        onClick: () =>
                             void openAiEditedFileByAbsolutePath(
                                 textFileRef.path,
-                            )
-                        }
-                        onContextMenu={
-                            onFileContextMenu
-                                ? (event) =>
-                                      onFileContextMenu(event, textFileRef.path)
-                                : undefined
-                        }
-                        title={filePath}
-                    />,
+                            ),
+                        onContextMenu: onFileContextMenu
+                            ? (event) =>
+                                  onFileContextMenu(event, textFileRef.path)
+                            : undefined,
+                    }),
+                );
+            } else if (folderRef) {
+                parts.push(
+                    renderReferencePill({
+                        key,
+                        label: folderRef.folderName,
+                        title: filePath,
+                        variant: "folder",
+                        metrics: pillMetrics,
+                        appearance,
+                        iconPath: folderRef.path,
+                        isFolder: true,
+                    }),
                 );
             } else {
                 const parsedReference = parseVaultReference(filePath);
@@ -702,20 +830,21 @@ function renderInlineMarkdown(
                             .pop()
                             ?.replace(/\.md$/, "") ?? filePath;
                     parts.push(
-                        <ChatInlinePill
-                            key={key}
-                            label={fileName}
-                            metrics={pillMetrics}
-                            interactive
-                            variant="accent"
-                            onClick={() =>
-                                void openChatNoteByReference(parsedReference.path)
-                            }
-                            onContextMenu={(event) =>
-                                onNoteContextMenu(event, parsedReference.path)
-                            }
-                            title={filePath}
-                        />,
+                        renderReferencePill({
+                            key,
+                            label: fileName,
+                            title: filePath,
+                            variant: "accent",
+                            metrics: pillMetrics,
+                            appearance,
+                            iconPath: parsedReference.path,
+                            onClick: () =>
+                                void openChatNoteByReference(
+                                    parsedReference.path,
+                                ),
+                            onContextMenu: (event) =>
+                                onNoteContextMenu(event, parsedReference.path),
+                        }),
                     );
                 } else {
                     parts.push(full);
@@ -736,9 +865,11 @@ function renderInlineMarkdown(
 function TextBlock({
     content,
     pillMetrics,
+    fileReferenceAppearance = "pill",
 }: {
     content: string;
     pillMetrics: ChatPillMetrics;
+    fileReferenceAppearance?: FileReferenceAppearance;
 }) {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<MarkdownPillContextMenuPayload> | null>(null);
@@ -831,6 +962,7 @@ function TextBlock({
                             handleMapContextMenu,
                             handlePdfContextMenu,
                             handleFileContextMenu,
+                            fileReferenceAppearance,
                         )}
                     </li>
                 ))}
@@ -884,6 +1016,7 @@ function TextBlock({
                                             handleMapContextMenu,
                                             handlePdfContextMenu,
                                             handleFileContextMenu,
+                                            fileReferenceAppearance,
                                         )}
                                     </th>
                                 ))}
@@ -915,6 +1048,7 @@ function TextBlock({
                                                 handleMapContextMenu,
                                                 handlePdfContextMenu,
                                                 handleFileContextMenu,
+                                                fileReferenceAppearance,
                                             )}
                                         </td>
                                     ))}
@@ -1012,6 +1146,7 @@ function TextBlock({
                         handleMapContextMenu,
                         handlePdfContextMenu,
                         handleFileContextMenu,
+                        fileReferenceAppearance,
                     )}
                 </div>,
             );
@@ -1078,6 +1213,7 @@ function TextBlock({
                         handleMapContextMenu,
                         handlePdfContextMenu,
                         handleFileContextMenu,
+                        fileReferenceAppearance,
                     )}
                 </blockquote>,
             );
@@ -1109,6 +1245,7 @@ function TextBlock({
                     handleMapContextMenu,
                     handlePdfContextMenu,
                     handleFileContextMenu,
+                    fileReferenceAppearance,
                 )}
             </div>,
         );
@@ -1269,11 +1406,13 @@ function CodeBlock({
     info,
     pillMetrics,
     chatFontSize = 14,
+    fileReferenceAppearance = "pill",
 }: {
     content: string;
     info?: string;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
+    fileReferenceAppearance?: FileReferenceAppearance;
 }) {
     const [copied, setCopied] = useState(false);
     const [showMarkdownSource, setShowMarkdownSource] = useState(false);
@@ -1369,7 +1508,11 @@ function CodeBlock({
                     data-testid="chat-markdown-preview"
                     style={{ fontSize: chatFontSize }}
                 >
-                    <TextBlock content={content} pillMetrics={pillMetrics} />
+                    <TextBlock
+                        content={content}
+                        pillMetrics={pillMetrics}
+                        fileReferenceAppearance={fileReferenceAppearance}
+                    />
                 </div>
             ) : diffLines.length > 0 ? (
                 <div
@@ -1420,6 +1563,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     className,
     pillMetrics,
     chatFontSize = 14,
+    fileReferenceAppearance = "pill",
 }: MarkdownContentProps) {
     const blocks = useMemo(() => parseBlocks(content), [content]);
 
@@ -1441,12 +1585,14 @@ export const MarkdownContent = memo(function MarkdownContent({
                         info={block.info}
                         pillMetrics={pillMetrics}
                         chatFontSize={chatFontSize}
+                        fileReferenceAppearance={fileReferenceAppearance}
                     />
                 ) : (
                     <TextBlock
                         key={i}
                         content={block.content}
                         pillMetrics={pillMetrics}
+                        fileReferenceAppearance={fileReferenceAppearance}
                     />
                 ),
             )}
