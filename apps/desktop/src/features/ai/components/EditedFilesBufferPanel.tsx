@@ -44,16 +44,25 @@ function CollapseToggle({
                 cursor: "pointer",
             }}
         >
-            <span
+            <svg
+                width="9"
+                height="9"
+                viewBox="0 0 10 10"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
                 aria-hidden="true"
                 style={{
-                    display: "inline-flex",
-                    transition: "transform 140ms ease",
-                    transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+                    transform: expanded
+                        ? "rotate(0deg)"
+                        : "rotate(-90deg)",
+                    transition: "transform 0.15s ease",
                 }}
             >
-                &gt;
-            </span>
+                <path d="M2.5 4L5 6.5L7.5 4" />
+            </svg>
         </button>
     );
 }
