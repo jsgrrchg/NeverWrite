@@ -17,6 +17,7 @@ import {
     MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "../imageAttachments";
+import { getMentionSuggestions } from "../chatMentionSearch";
 import { AIChatComposer } from "./AIChatComposer";
 import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
@@ -137,6 +138,54 @@ function setCaret(node: Node, offset: number) {
 }
 
 describe("AIChatComposer mention picker", () => {
+    it("finds files through path segments and fuzzy file-name matches", () => {
+        const files = [
+            {
+                id: "composer",
+                title: "Composer",
+                path: "/vault/src/features/ai/AIChatComposer.tsx",
+                relativePath: "src/features/ai/AIChatComposer.tsx",
+                fileName: "AIChatComposer.tsx",
+                mimeType: "text/typescript",
+            },
+            {
+                id: "panel",
+                title: "Panel",
+                path: "/vault/src/features/ai/ReviewPanel.tsx",
+                relativePath: "src/features/ai/ReviewPanel.tsx",
+                fileName: "ReviewPanel.tsx",
+                mimeType: "text/typescript",
+            },
+        ];
+
+        const fuzzyMatches = getMentionSuggestions(
+            [],
+            files,
+            [],
+            "aichcmp",
+            true,
+            true,
+            true,
+        );
+        const pathMatches = getMentionSuggestions(
+            [],
+            files,
+            [],
+            "features",
+            true,
+            true,
+            true,
+        );
+
+        expect(fuzzyMatches).toEqual([
+            expect.objectContaining({
+                kind: "file",
+                label: "AIChatComposer.tsx",
+            }),
+        ]);
+        expect(pathMatches.map((item) => item.kind)).toEqual(["file", "file"]);
+    });
+
     it("uses the shared icon-led reference style for notes, files, folders, and selections", () => {
         const { composer } = renderComposer({
             parts: [

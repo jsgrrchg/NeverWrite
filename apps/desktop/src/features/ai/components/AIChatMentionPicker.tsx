@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
+import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import type { AIMentionSuggestion } from "../types";
+import { useComposerPickerPosition } from "./useComposerPickerPosition";
 
 function suggestionKey(item: AIMentionSuggestion) {
     if (item.kind === "fetch") return "fetch";
@@ -9,6 +10,23 @@ function suggestionKey(item: AIMentionSuggestion) {
     if (item.kind === "note") return `note:${item.note.id}`;
     if (item.kind === "file") return `file:${item.file.path}`;
     return `folder:${item.folderPath}`;
+}
+
+function getSuggestionSecondary(item: AIMentionSuggestion) {
+    if (item.kind === "fetch") return "Web search";
+    if (item.kind === "plan") return "Planning";
+    if (item.kind === "file") {
+        return getParentDirectoryLabel(item.file.relativePath);
+    }
+    if (item.kind === "note") {
+        return getParentDirectoryLabel(item.note.id || item.note.path);
+    }
+    return getParentDirectoryLabel(item.folderPath);
+}
+
+function getParentDirectoryLabel(path: string) {
+    const lastSlashIndex = path.lastIndexOf("/");
+    return lastSlashIndex < 0 ? "" : path.slice(0, lastSlashIndex);
 }
 
 function FolderIcon() {
@@ -29,33 +47,6 @@ function FolderIcon() {
     );
 }
 
-function NoteIcon({ color = "var(--text-secondary)" }: { color?: string }) {
-    return (
-        <svg
-            width="13"
-            height="13"
-            viewBox="0 0 14 14"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="shrink-0"
-            style={{
-                color,
-                opacity: color === "var(--text-secondary)" ? 0.6 : 1,
-            }}
-        >
-            <path d="M8 1.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5L8 1.5z" />
-            <path d="M8 1.5V5h3.5" />
-        </svg>
-    );
-}
-
-function FileIcon() {
-    return <NoteIcon color="var(--accent)" />;
-}
-
 function FetchIcon() {
     return (
         <svg
@@ -68,7 +59,7 @@ function FetchIcon() {
             strokeLinecap="round"
             strokeLinejoin="round"
             className="shrink-0"
-            style={{ color: "#10b981" }}
+            style={{ color: "var(--text-secondary)", opacity: 0.72 }}
         >
             <circle cx="7" cy="7" r="5.5" />
             <path d="M1.5 7h11M7 1.5a8.5 8.5 0 0 1 2 5.5 8.5 8.5 0 0 1-2 5.5M7 1.5a8.5 8.5 0 0 0-2 5.5 8.5 8.5 0 0 0 2 5.5" />
@@ -118,9 +109,6 @@ function PlanIcon() {
 
 interface AIChatMentionPickerProps {
     open: boolean;
-    x: number;
-    y: number;
-    query: string;
     selectedIndex: number;
     items: AIMentionSuggestion[];
     anchorElement: HTMLElement | null;
@@ -131,8 +119,6 @@ interface AIChatMentionPickerProps {
 
 export function AIChatMentionPicker({
     open,
-    x,
-    y,
     selectedIndex,
     items,
     anchorElement,
@@ -142,23 +128,12 @@ export function AIChatMentionPicker({
 }: AIChatMentionPickerProps) {
     const ref = useRef<HTMLDivElement>(null);
     const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-    const [position, setPosition] = useState({ x, y });
-
-    useLayoutEffect(() => {
-        if (!open) return;
-        const element = ref.current;
-        if (!element) return;
-
-        const rect = element.getBoundingClientRect();
-        setPosition(
-            getViewportSafeMenuPosition(
-                x,
-                y - rect.height - 8,
-                rect.width,
-                rect.height,
-            ),
-        );
-    }, [open, x, y, items.length]);
+    const position = useComposerPickerPosition(
+        anchorElement,
+        ref.current,
+        open,
+        items.length,
+    );
 
     useEffect(() => {
         if (!open) return;
@@ -187,18 +162,18 @@ export function AIChatMentionPicker({
             ref={ref}
             style={{
                 position: "fixed",
-                top: position.y,
-                left: position.x,
+                top: position?.y ?? 8,
+                left: position?.x ?? 8,
                 zIndex: 10010,
-                width: 340,
-                maxWidth: "min(340px, calc(100vw - 24px))",
-                maxHeight: 280,
+                width: position?.width ?? 320,
+                maxHeight: position?.maxHeight ?? 360,
                 overflow: "hidden",
                 borderRadius: 10,
                 border: "1px solid color-mix(in srgb, var(--border) 86%, transparent)",
                 background:
                     "color-mix(in srgb, var(--bg-elevated) 97%, transparent)",
-                boxShadow: "0 8px 24px rgba(15, 23, 42, 0.12)",
+                boxShadow:
+                    "0 12px 32px rgba(15, 23, 42, 0.16), 0 0 0 1px color-mix(in srgb, var(--border) 40%, transparent)",
                 backdropFilter: "blur(10px)",
             }}
         >
@@ -209,7 +184,7 @@ export function AIChatMentionPicker({
                     display: "flex",
                     flexDirection: "column",
                     gap: 1,
-                    maxHeight: 280,
+                    maxHeight: position?.maxHeight ?? 360,
                 }}
             >
                 {items.length ? (
@@ -217,8 +192,7 @@ export function AIChatMentionPicker({
                         const isActive = index === selectedIndex;
                         const isFetch = item.kind === "fetch";
                         const isPlan = item.kind === "plan";
-                        const isNote = item.kind === "note";
-                        const isFile = item.kind === "file";
+                        const secondary = getSuggestionSecondary(item);
                         return (
                             <button
                                 key={suggestionKey(item)}
@@ -238,19 +212,12 @@ export function AIChatMentionPicker({
                                     border: "none",
                                     borderRadius: 7,
                                     background: isActive
-                                        ? isFetch
-                                            ? "color-mix(in srgb, #10b981 10%, var(--bg-secondary))"
-                                            : isPlan
-                                              ? "color-mix(in srgb, var(--accent) 12%, var(--bg-secondary))"
-                                              : isNote
-                                                ? "color-mix(in srgb, #d97706 10%, var(--bg-secondary))"
-                                                : isFile
-                                                  ? "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
-                                                  : "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
+                                        ? "color-mix(in srgb, var(--accent) 14%, var(--bg-primary))"
                                         : "transparent",
-                                    padding: "6px 10px",
+                                    padding: "5px 10px",
                                     textAlign: "left",
                                     cursor: "pointer",
+                                    width: "100%",
                                     minWidth: 0,
                                     transition: "background-color 80ms ease",
                                 }}
@@ -262,29 +229,28 @@ export function AIChatMentionPicker({
                                 ) : item.kind === "folder" ? (
                                     <FolderIcon />
                                 ) : item.kind === "file" ? (
-                                    <FileIcon />
+                                    <FileTypeIcon
+                                        fileName={item.file.fileName}
+                                        mimeType={item.file.mimeType}
+                                        opacity={isActive ? 0.92 : 0.6}
+                                        size={14}
+                                    />
                                 ) : (
-                                    <NoteIcon color="#d97706" />
+                                    <FileTypeIcon
+                                        fileName={
+                                            item.note.path.split("/").pop() ??
+                                            item.note.title
+                                        }
+                                        mimeType="text/markdown"
+                                        opacity={isActive ? 0.92 : 0.6}
+                                        size={14}
+                                    />
                                 )}
                                 <span
                                     style={{
-                                        color: isFetch
-                                            ? "#10b981"
-                                            : isPlan
-                                              ? "var(--accent)"
-                                              : isNote
-                                                ? "#d97706"
-                                                : isFile
-                                                  ? "var(--accent)"
-                                                  : "var(--text-primary)",
+                                        color: "var(--text-primary)",
                                         fontSize: 13,
-                                        fontWeight:
-                                            isFetch ||
-                                            isPlan ||
-                                            isNote ||
-                                            isFile
-                                                ? 600
-                                                : 500,
+                                        fontWeight: 400,
                                         whiteSpace: "nowrap",
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
@@ -302,18 +268,24 @@ export function AIChatMentionPicker({
                                               ? item.label
                                               : item.name}
                                 </span>
-                                {(isFetch || isPlan) && (
+                                {secondary ? (
                                     <span
                                         style={{
                                             fontSize: 11,
                                             color: "var(--text-secondary)",
                                             opacity: 0.6,
-                                            flexShrink: 0,
+                                            fontFamily:
+                                                "var(--font-mono, monospace)",
+                                            flex: "0 1 48%",
+                                            minWidth: 0,
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                            whiteSpace: "nowrap",
                                         }}
                                     >
-                                        {isFetch ? "web search" : "planning"}
+                                        {secondary}
                                     </span>
-                                )}
+                                ) : null}
                             </button>
                         );
                     })
