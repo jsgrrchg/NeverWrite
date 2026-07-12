@@ -204,6 +204,37 @@ describe("EditorPaneBar", () => {
         expect(screen.getByTitle("Go forward")).toBeInTheDocument();
     });
 
+    it("enables back navigation for a chat with session history", () => {
+        useSettingsStore.getState().setSetting("tabOpenBehavior", "history");
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "chat-history",
+                            kind: "ai-chat",
+                            sessionId: "session-b",
+                            title: "Second",
+                            history: [
+                                { sessionId: "session-a", title: "First" },
+                                { sessionId: "session-b", title: "Second" },
+                            ],
+                            historyIndex: 1,
+                        },
+                    ],
+                    activeTabId: "chat-history",
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        expect(screen.getByTitle("Go back")).toBeEnabled();
+        expect(screen.getByTitle("Go forward")).toBeDisabled();
+    });
+
     it("hides pane history navigation buttons when open behavior creates new tabs", () => {
         useSettingsStore.getState().setSetting("tabOpenBehavior", "new_tab");
 

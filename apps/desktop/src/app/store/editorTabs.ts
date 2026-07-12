@@ -170,12 +170,20 @@ export interface ReviewTab {
     title: string;
 }
 
+export interface ChatHistoryEntry {
+    sessionId: string;
+    historySessionId?: string;
+    title: string;
+}
+
 export interface ChatTab {
     id: string;
     kind: "ai-chat";
     sessionId: string;
     historySessionId?: string;
     title: string;
+    history?: ChatHistoryEntry[];
+    historyIndex?: number;
 }
 
 export interface ChatHistoryTab {
@@ -381,7 +389,9 @@ export function isReviewTab(
 }
 
 export function isChatTab(tab: Tab | null | undefined): tab is ChatTab;
-export function isChatTab(tab: TabInput | null | undefined): tab is ChatTab;
+export function isChatTab(
+    tab: TabInput | null | undefined,
+): tab is ChatTab;
 export function isChatTab(
     tab: Tab | TabInput | null | undefined,
 ): tab is ChatTab {
@@ -866,12 +876,63 @@ export function createChatTab(
     title: string,
     historySessionId?: string | null,
 ): ChatTab {
-    return {
-        id: crypto.randomUUID(),
-        kind: "ai-chat",
+    const entry: ChatHistoryEntry = {
         sessionId,
         ...(historySessionId ? { historySessionId } : {}),
         title,
+    };
+    return {
+        id: crypto.randomUUID(),
+        kind: "ai-chat",
+        ...entry,
+        history: [entry],
+        historyIndex: 0,
+    };
+}
+
+export function ensureChatTabHistory(tab: ChatTab): Required<
+    Pick<ChatTab, "history" | "historyIndex">
+> &
+    ChatTab {
+    const currentEntry: ChatHistoryEntry = {
+        sessionId: tab.sessionId,
+        ...(tab.historySessionId
+            ? { historySessionId: tab.historySessionId }
+            : {}),
+        title: tab.title,
+    };
+    const history = Array.isArray(tab.history)
+        ? tab.history.filter(
+              (entry) =>
+                  entry &&
+                  typeof entry.sessionId === "string" &&
+                  typeof entry.title === "string",
+          )
+        : [];
+    if (history.length === 0) {
+        return { ...tab, history: [currentEntry], historyIndex: 0 };
+    }
+    const historyIndex = Math.max(
+        0,
+        Math.min(tab.historyIndex ?? history.length - 1, history.length - 1),
+    );
+    history[historyIndex] = currentEntry;
+    return { ...tab, history, historyIndex };
+}
+
+export function buildChatTabFromHistory(
+    id: string,
+    history: ChatHistoryEntry[],
+    historyIndex: number,
+): ChatTab {
+    const safeIndex = Math.max(0, Math.min(historyIndex, history.length - 1));
+    const entry = history[safeIndex];
+    return {
+        id,
+        kind: "ai-chat",
+        ...entry,
+        history,
+        historyIndex: safeIndex,
     };
 }
 

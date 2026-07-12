@@ -1,6 +1,7 @@
 import type { StoreApi } from "zustand";
 import type { EditorTarget } from "../../features/editor/editorTargetResolver";
 import {
+    buildChatTabFromHistory,
     buildTabFromHistory,
     createChatHistoryTab,
     createChatTab,
@@ -8,6 +9,7 @@ import {
     createGraphTab,
     createMapTab,
     createTerminalTab,
+    ensureChatTabHistory,
     ensureFileTabDefaults,
     ensureTerminalTabDefaults,
     isChatTab,
@@ -898,22 +900,29 @@ function replaceAiSessionTabReference(
         };
     }
 
-    if (isChatTab(tab) && tab.sessionId === fromSessionId) {
-        const nextHistorySessionId = historySessionId ?? tab.historySessionId;
-        if (
-            toSessionId === fromSessionId &&
-            nextHistorySessionId === tab.historySessionId
-        ) {
-            return tab;
-        }
-
-        return {
-            ...tab,
-            sessionId: toSessionId,
-            ...(nextHistorySessionId
-                ? { historySessionId: nextHistorySessionId }
-                : {}),
-        };
+    if (isChatTab(tab)) {
+        const normalized = ensureChatTabHistory(tab);
+        let changed = false;
+        const history = normalized.history.map((entry) => {
+            if (entry.sessionId !== fromSessionId) return entry;
+            changed = true;
+            const nextHistorySessionId =
+                historySessionId ?? entry.historySessionId;
+            return {
+                ...entry,
+                sessionId: toSessionId,
+                ...(nextHistorySessionId
+                    ? { historySessionId: nextHistorySessionId }
+                    : {}),
+            };
+        });
+        return changed
+            ? buildChatTabFromHistory(
+                  normalized.id,
+                  history,
+                  normalized.historyIndex,
+              )
+            : tab;
     }
 
     return tab;
@@ -1061,7 +1070,10 @@ function normalizeHydratedTab(tab: TabInput): Tab | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
-    if (isChatTab(tab) || isChatHistoryTab(tab)) {
+    if (isChatTab(tab)) {
+        return ensureChatTabHistory(tab);
+    }
+    if (isChatHistoryTab(tab)) {
         return tab;
     }
     if (isGraphTab(tab)) {
@@ -1092,7 +1104,7 @@ function normalizeExternalTab(tab: TabInput): Tab | null {
         isChatHistoryTab(tab) ||
         isGraphTab(tab)
     ) {
-        return tab;
+        return isChatTab(tab) ? ensureChatTabHistory(tab) : tab;
     }
     if (isTerminalTab(tab)) {
         return ensureTerminalTabDefaults(tab);
@@ -1626,11 +1638,28 @@ function updateTabTitleInTabs(
             return tab;
         }
 
-        const nextTab = !isHistoryTab(tab)
-            ? tab.title === title
-                ? tab
-                : { ...tab, title }
-            : updateTabHistoryTitle(tab, title);
+        let nextTab: Tab;
+        if (isHistoryTab(tab)) {
+            nextTab = updateTabHistoryTitle(tab, title);
+        } else if (isChatTab(tab)) {
+            const normalized = ensureChatTabHistory(tab);
+            if (normalized.title === title) {
+                nextTab = tab;
+            } else {
+                const history = [...normalized.history];
+                history[normalized.historyIndex] = {
+                    ...history[normalized.historyIndex],
+                    title,
+                };
+                nextTab = buildChatTabFromHistory(
+                    normalized.id,
+                    history,
+                    normalized.historyIndex,
+                );
+            }
+        } else {
+            nextTab = tab.title === title ? tab : { ...tab, title };
+        }
 
         didChange ||= nextTab !== tab;
         return nextTab;
@@ -2502,12 +2531,6 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                     );
                 }
 
-                const newTab: ChatTab = createChatTab(
-                    sessionId,
-                    options?.title ?? "Chat",
-                    requestedHistorySessionId,
-                );
-
                 const targetPaneId =
                     options?.paneId ?? workspace.focusedPaneId ?? null;
                 const targetPane = targetPaneId
@@ -2516,6 +2539,62 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                     : null;
                 const focusedPane =
                     targetPane ?? selectEditorPaneState(workspace);
+
+                if (
+                    getTabOpenBehavior() === "history" &&
+                    !options?.background &&
+                    options?.insertIndex === undefined
+                ) {
+                    const activeChat = focusedPane.tabs.find(
+                        (tab): tab is ChatTab =>
+                            tab.id === focusedPane.activeTabId &&
+                            isChatTab(tab),
+                    );
+                    if (activeChat) {
+                        const normalized = ensureChatTabHistory(activeChat);
+                        const history = normalized.history.slice(
+                            0,
+                            normalized.historyIndex + 1,
+                        );
+                        history.push({
+                            sessionId,
+                            ...(requestedHistorySessionId
+                                ? {
+                                      historySessionId:
+                                          requestedHistorySessionId,
+                                  }
+                                : {}),
+                            title: options?.title ?? "Chat",
+                        });
+                        const nextTab = buildChatTabFromHistory(
+                            normalized.id,
+                            history,
+                            history.length - 1,
+                        );
+                        return buildWorkspaceSnapshot({
+                            panes: workspace.panes.map((pane) =>
+                                pane.id === focusedPane.id
+                                    ? createEditorPaneState(pane.id, {
+                                          ...pane,
+                                          tabs: replaceTab(
+                                              pane.tabs,
+                                              normalized.id,
+                                              nextTab,
+                                          ),
+                                      })
+                                    : pane,
+                            ),
+                            focusedPaneId: focusedPane.id,
+                            layoutTree: workspace.layoutTree,
+                        });
+                    }
+                }
+
+                const newTab: ChatTab = createChatTab(
+                    sessionId,
+                    options?.title ?? "Chat",
+                    requestedHistorySessionId,
+                );
 
                 const nextPane = options?.background
                     ? createEditorPaneState(focusedPane.id, {
@@ -2688,6 +2767,14 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             const focusedPane = selectEditorPaneState(workspace);
 
             if (getTabOpenBehavior() === "history") {
+                const active = focusedPane.tabs.find(
+                    (tab) => tab.id === focusedPane.activeTabId,
+                );
+                if (active && isChatTab(active)) {
+                    const chat = ensureChatTabHistory(active);
+                    get().navigateToHistoryIndex(chat.historyIndex - 1);
+                    return;
+                }
                 const tab = getReusableHistoryTab(focusedPane);
                 if (!tab) return;
                 get().navigateToHistoryIndex(tab.historyIndex - 1);
@@ -2725,6 +2812,14 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             const focusedPane = selectEditorPaneState(workspace);
 
             if (getTabOpenBehavior() === "history") {
+                const active = focusedPane.tabs.find(
+                    (tab) => tab.id === focusedPane.activeTabId,
+                );
+                if (active && isChatTab(active)) {
+                    const chat = ensureChatTabHistory(active);
+                    get().navigateToHistoryIndex(chat.historyIndex + 1);
+                    return;
+                }
                 const tab = getReusableHistoryTab(focusedPane);
                 if (!tab) return;
                 get().navigateToHistoryIndex(tab.historyIndex + 1);
@@ -2766,6 +2861,31 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             );
             if (tabIdx === -1) return;
             const raw = focusedPane.tabs[tabIdx];
+            if (isChatTab(raw)) {
+                const chat = ensureChatTabHistory(raw);
+                if (
+                    targetIndex < 0 ||
+                    targetIndex >= chat.history.length ||
+                    targetIndex === chat.historyIndex
+                ) {
+                    return;
+                }
+                const tabs = [...focusedPane.tabs];
+                tabs[tabIdx] = buildChatTabFromHistory(
+                    chat.id,
+                    chat.history,
+                    targetIndex,
+                );
+                set(
+                    (currentState) =>
+                        mutatePaneWorkspace(
+                            currentState,
+                            focusedPane.id,
+                            () => ({ tabs }),
+                        ) ?? currentState,
+                );
+                return;
+            }
             if (!isNavigableHistoryTab(raw)) return;
             const tab = normalizeHistoryTab(raw) as NavigableHistoryTab;
             if (targetIndex < 0 || targetIndex >= tab.history.length) return;

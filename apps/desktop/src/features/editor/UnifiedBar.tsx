@@ -177,7 +177,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         const pane = selectEditorPaneState(s);
         if (tabOpenBehavior === "history") {
             const tab = pane.tabs.find((t) => t.id === pane.activeTabId);
-            return tab && (isNoteTab(tab) || isFileTab(tab) || isPdfTab(tab))
+            if (tab && isChatTab(tab)) {
+                return (tab.historyIndex ?? 0) > 0;
+            }
+            return tab &&
+                (isNoteTab(tab) ||
+                    isFileTab(tab) ||
+                    isPdfTab(tab))
                 ? tab.historyIndex > 0
                 : false;
         }
@@ -190,7 +196,16 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         const pane = selectEditorPaneState(s);
         if (tabOpenBehavior === "history") {
             const tab = pane.tabs.find((t) => t.id === pane.activeTabId);
-            return tab && (isNoteTab(tab) || isFileTab(tab) || isPdfTab(tab))
+            if (tab && isChatTab(tab)) {
+                return (
+                    Boolean(tab.history) &&
+                    (tab.historyIndex ?? 0) < (tab.history?.length ?? 0) - 1
+                );
+            }
+            return tab &&
+                (isNoteTab(tab) ||
+                    isFileTab(tab) ||
+                    isPdfTab(tab))
                 ? tab.historyIndex < tab.history.length - 1
                 : false;
         }

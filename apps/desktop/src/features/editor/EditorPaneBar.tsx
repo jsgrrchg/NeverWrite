@@ -171,23 +171,36 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const activePaneTab =
         pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? null;
     const showHistoryNavigationButtons = tabOpenBehavior === "history";
+    const chatCanGoBack =
+        activePaneTab &&
+        isChatTab(activePaneTab) &&
+        (activePaneTab.historyIndex ?? 0) > 0;
+    const chatCanGoForward =
+        activePaneTab &&
+        isChatTab(activePaneTab) &&
+        Boolean(activePaneTab.history) &&
+        (activePaneTab.historyIndex ?? 0) <
+            (activePaneTab.history?.length ?? 0) - 1;
     const canGoBack =
         tabOpenBehavior === "history"
-            ? activePaneTab &&
+            ? chatCanGoBack ||
+              (activePaneTab &&
               (isNoteTab(activePaneTab) ||
                   isFileTab(activePaneTab) ||
                   isPdfTab(activePaneTab))
-                ? activePaneTab.historyIndex > 0
-                : false
+                  ? activePaneTab.historyIndex > 0
+                  : false)
             : pane.tabNavigationIndex > 0;
     const canGoForward =
         tabOpenBehavior === "history"
-            ? activePaneTab &&
+            ? chatCanGoForward ||
+              (activePaneTab &&
               (isNoteTab(activePaneTab) ||
                   isFileTab(activePaneTab) ||
                   isPdfTab(activePaneTab))
-                ? activePaneTab.historyIndex < activePaneTab.history.length - 1
-                : false
+                  ? activePaneTab.historyIndex <
+                    activePaneTab.history.length - 1
+                  : false)
             : pane.tabNavigationIndex < pane.tabNavigationHistory.length - 1;
     const detachedTabWindowDrop = useDetachedTabWindowDrop({
         vaultPath,

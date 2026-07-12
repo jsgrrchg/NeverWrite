@@ -1184,6 +1184,19 @@ describe("editorStore navigation history", () => {
         useSettingsStore.getState().setSetting("tabOpenBehavior", "new_tab");
     });
 
+    it("opens AI sessions in separate tabs", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+
+        expect(useEditorStore.getState().tabs).toHaveLength(2);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.filter(isChatTab)
+                .map((tab) => tab.sessionId),
+        ).toEqual(["session-a", "session-b"]);
+    });
+
     it("openNote always creates a new tab", () => {
         useEditorStore.setState({
             tabs: [
@@ -1503,6 +1516,51 @@ describe("editorStore navigation history", () => {
 });
 
 describe("editorStore tab history mode", () => {
+    it("reuses the focused chat tab and navigates between AI sessions", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        const tabId = useEditorStore.getState().activeTabId;
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+
+        expect(useEditorStore.getState().tabs).toHaveLength(1);
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            id: tabId,
+            sessionId: "session-b",
+            historyIndex: 1,
+        });
+
+        useEditorStore.getState().goBack();
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            id: tabId,
+            sessionId: "session-a",
+            historyIndex: 0,
+        });
+
+        useEditorStore.getState().goForward();
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            id: tabId,
+            sessionId: "session-b",
+            historyIndex: 1,
+        });
+    });
+
+    it("truncates forward chat history after opening another AI session", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+        useEditorStore.getState().goBack();
+        useEditorStore.getState().openChat("session-c", { title: "Third" });
+
+        const tab = useEditorStore.getState().tabs[0];
+        expect(isChatTab(tab) ? tab.history : []).toEqual([
+            { sessionId: "session-a", title: "First" },
+            { sessionId: "session-c", title: "Third" },
+        ]);
+        useEditorStore.getState().goForward();
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            sessionId: "session-c",
+            historyIndex: 1,
+        });
+    });
+
     it("openNote reuses the active tab and pushes note history by default", () => {
         useEditorStore.setState({
             tabs: [
