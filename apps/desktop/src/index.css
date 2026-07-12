@@ -632,6 +632,9 @@ html[data-desktop-platform="windows"].dark {
 
 /* Chat fences share Comando's compact, single-surface code frame. */
 .chat-code-frame {
+    /* Keep fenced content at a readable measure without overflowing narrow chat panes. */
+    inline-size: min(100%, 68ch);
+    margin-inline: auto;
     border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
     border-radius: 6px;
     background: color-mix(in srgb, var(--bg-tertiary) 68%, transparent);
