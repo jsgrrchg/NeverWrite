@@ -174,6 +174,14 @@ describe("AIChatComposer mention picker", () => {
                     startLine: 66,
                     endLine: 66,
                 },
+                { id: "space-4", type: "text", text: " " },
+                {
+                    id: "file-attachment-reference",
+                    type: "file_attachment",
+                    label: "vision-semanal-2026-06-22.html",
+                    filePath: "/vault/vision-semanal-2026-06-22.html",
+                    mimeType: "text/html",
+                },
             ],
         });
 
@@ -182,6 +190,7 @@ describe("AIChatComposer mention picker", () => {
             "file_mention",
             "folder_mention",
             "selection_mention",
+            "file_attachment",
         ]) {
             const reference = composer.querySelector<HTMLElement>(
                 `[data-kind="${kind}"]`,
@@ -194,6 +203,9 @@ describe("AIChatComposer mention picker", () => {
             expect(reference?.querySelector("svg")).not.toBeNull();
         }
         expect(screen.getByText("CHANGELOG.md (line 66)")).toBeInTheDocument();
+        expect(
+            screen.getByText("vision-semanal-2026-06-22.html"),
+        ).toBeInTheDocument();
     });
 
     it("opens composer selection references at their line in a new tab", async () => {

@@ -1547,6 +1547,55 @@ describe("AIChatMessageItem user mention pills", () => {
         });
     });
 
+    it("renders sent file attachments with the shared icon-led style", () => {
+        setVaultEntries([
+            {
+                id: "vision-semanal-2026-06-22.html",
+                path: "/vault/vision-semanal-2026-06-22.html",
+                relative_path: "vision-semanal-2026-06-22.html",
+                title: "vision-semanal-2026-06-22.html",
+                file_name: "vision-semanal-2026-06-22.html",
+                extension: "html",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/html",
+            },
+        ]);
+        // Sent composer attachments use the compact [📎 label] transcript token.
+        renderMessage({
+            id: "user:file-attachment-reference-serialized",
+            role: "user",
+            kind: "text",
+            content: "[📎 vision-semanal-2026-06-22.html] actualiza esto",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:file-serialized",
+                    type: "file",
+                    noteId: null,
+                    label: "vision-semanal-2026-06-22.html",
+                    path: null,
+                    filePath: "/vault/vision-semanal-2026-06-22.html",
+                    mimeType: "text/html",
+                },
+            ],
+        });
+
+        const reference = screen.getByRole("button", {
+            name: "vision-semanal-2026-06-22.html",
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+        expect(
+            screen.queryByText("📎 vision-semanal-2026-06-22.html"),
+        ).not.toBeInTheDocument();
+    });
+
     it("opens the mention context menu in a new tab", async () => {
         setVaultNotes([
             {

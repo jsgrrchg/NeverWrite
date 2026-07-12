@@ -45,7 +45,10 @@ import type {
     ReactNode,
 } from "react";
 import { openChatNoteById } from "../chatNoteNavigation";
-import { openAiEditedFileByAbsolutePath } from "../chatFileNavigation";
+import {
+    canOpenAiEditedFileByAbsolutePath,
+    openAiEditedFileByAbsolutePath,
+} from "../chatFileNavigation";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
 import {
     useVaultStore,
@@ -376,8 +379,14 @@ function createFileAttachmentNode(
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
+    presentComposerVaultReference(element, {
+        interactive: canOpenAiEditedFileByAbsolutePath(part.filePath),
+        kind: "file",
+        label: part.label,
+        metrics,
+        mimeType: part.mimeType,
+        path: part.filePath,
+    });
     return element;
 }
 
@@ -789,7 +798,7 @@ function getComposerPillElementFromNode(node: EventTarget | null) {
               : null;
     return (
         element?.closest<HTMLElement>(
-            "[data-kind='mention'], [data-kind='file_mention'], [data-kind='selection_mention']",
+            "[data-kind='mention'], [data-kind='file_mention'], [data-kind='selection_mention'], [data-kind='file_attachment']",
         ) ?? null
     );
 }
@@ -797,6 +806,9 @@ function getComposerPillElementFromNode(node: EventTarget | null) {
 function getComposerPillFileReference(element: HTMLElement | null) {
     if (element?.dataset.kind === "file_mention") {
         return element.dataset.path ?? null;
+    }
+    if (element?.dataset.kind === "file_attachment") {
+        return element.dataset.filePath ?? null;
     }
     if (
         element?.dataset.kind === "selection_mention" &&

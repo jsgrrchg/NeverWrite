@@ -246,8 +246,20 @@ function renderUserContent(
         event: MouseEvent<HTMLElement>,
         payload: UserMentionContextMenuPayload,
     ) => void,
+    attachments: AIChatAttachment[] = [],
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
+    const unmatchedFileAttachments = attachments.filter(
+        (attachment) =>
+            attachment.type === "file" && Boolean(attachment.filePath),
+    );
+    const takeFileAttachment = (label: string) => {
+        const index = unmatchedFileAttachments.findIndex(
+            (attachment) => attachment.label === label,
+        );
+        if (index < 0) return null;
+        return unmatchedFileAttachments.splice(index, 1)[0] ?? null;
+    };
     // New bracketed format: [@note], [@📄 /path/file.ts], [@📁 folder], [Screenshot ...], [📎 file]
     // Escaped variants use a pipe plus URL-encoded payload, e.g. [@|%5B%20%5D].
     // Legacy format (backward compat): @fetch, /plan, @📁word, @word
@@ -264,23 +276,58 @@ function renderUserContent(
 
         const token = match[0];
 
-        if (
-            token.startsWith("[Screenshot ") ||
-            token.startsWith("[Screenshot|") ||
-            token.startsWith("[📎 ") ||
-            token.startsWith("[📎|")
-        ) {
+        if (token.startsWith("[Screenshot ") || token.startsWith("[Screenshot|")) {
             const pillLabel = token.startsWith("[Screenshot|")
                 ? decodeSerializedPillValue(token.slice(12, -1))
-                : token.startsWith("[📎|")
-                  ? decodeSerializedPillValue(token.slice(4, -1))
-                  : token.slice(1, -1); // strip [ ]
+                : token.slice(1, -1); // strip [ ]
             parts.push(
                 <ChatInlinePill
                     key={key++}
                     label={pillLabel}
                     metrics={pillMetrics}
                     variant="file"
+                />,
+            );
+            lastIndex = match.index + token.length;
+            continue;
+        }
+
+        if (token.startsWith("[📎 ") || token.startsWith("[📎|")) {
+            const fileLabel = token.startsWith("[📎|")
+                ? decodeSerializedPillValue(token.slice(4, -1))
+                : token.slice(4, -1);
+            const attachment = takeFileAttachment(fileLabel);
+            const filePath = attachment?.filePath ?? fileLabel;
+            const canOpen = Boolean(
+                attachment?.filePath &&
+                    canOpenAiEditedFileByAbsolutePath(attachment.filePath),
+            );
+            parts.push(
+                <ChatVaultReference
+                    key={key++}
+                    kind="file"
+                    label={fileLabel}
+                    metrics={pillMetrics}
+                    mimeType={attachment?.mimeType}
+                    interactive={canOpen}
+                    path={filePath}
+                    onClick={
+                        canOpen
+                            ? () => {
+                                  void openAiEditedFileByAbsolutePath(filePath);
+                              }
+                            : undefined
+                    }
+                    onContextMenu={
+                        canOpen
+                            ? (event) =>
+                                  onMentionContextMenu(event, {
+                                      kind: "file",
+                                      label: fileLabel,
+                                      path: filePath,
+                                  })
+                            : undefined
+                    }
                 />,
             );
             lastIndex = match.index + token.length;
@@ -486,6 +533,7 @@ function UserTextMessage({
                             payload,
                         });
                     },
+                    message.attachments,
                 )}
                 <UserMessageAttachments attachments={message.attachments} />
             </div>
