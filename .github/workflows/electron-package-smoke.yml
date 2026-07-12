@@ -60,8 +60,8 @@ jobs:
               run: |
                   cargo build -p neverwrite-native-backend --quiet --release --target aarch64-apple-darwin
                   cargo build -p neverwrite-native-backend --quiet --release --target x86_64-apple-darwin
-                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin --bins
-                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin --bins
+                  cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin --bins
+                  cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin --bins
 
             - name: Download embedded Node runtimes
               shell: bash
@@ -140,10 +140,22 @@ jobs:
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-code-mode-host"
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/embedded/node/bin/node"
 
-    windows-x64:
-        name: Windows x64
-        runs-on: windows-latest
+    windows:
+        name: Windows ${{ matrix.arch }}
+        runs-on: ${{ matrix.runner }}
         timeout-minutes: 120
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - arch: x64
+                      runner: windows-latest
+                      target: x86_64-pc-windows-msvc
+                      node_dist: win-x64
+                    - arch: arm64
+                      runner: windows-11-arm
+                      target: aarch64-pc-windows-msvc
+                      node_dist: win-arm64
 
         steps:
             - name: Checkout repository
@@ -159,7 +171,7 @@ jobs:
             - name: Setup Rust toolchain
               uses: ./.github/actions/setup-rust
               with:
-                  targets: x86_64-pc-windows-msvc
+                  targets: ${{ matrix.target }}
 
             - name: Cache Rust build outputs
               uses: Swatinem/rust-cache@v2
@@ -171,14 +183,14 @@ jobs:
             - name: Build target-specific sidecars
               shell: bash
               run: |
-                  cargo build -p neverwrite-native-backend --quiet --release --target x86_64-pc-windows-msvc
-                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-pc-windows-msvc --bins
+                  cargo build -p neverwrite-native-backend --quiet --release --target ${{ matrix.target }}
+                  cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
 
             - name: Download embedded Node runtime
               shell: bash
               run: |
                   NODE_VERSION="$(node -p "process.version.replace(/^v/, '')")"
-                  DIST="node-v${NODE_VERSION}-win-x64"
+                  DIST="node-v${NODE_VERSION}-${{ matrix.node_dist }}"
                   DEST="$RUNNER_TEMP/node-dist"
                   mkdir -p "$DEST"
                   curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.zip" -o "$RUNNER_TEMP/node.zip"
@@ -189,9 +201,9 @@ jobs:
             - name: Export sidecar environment
               shell: bash
               run: |
-                  NATIVE_BACKEND_BIN="$GITHUB_WORKSPACE/target/x86_64-pc-windows-msvc/release/neverwrite-native-backend.exe"
-                  CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-pc-windows-msvc/release/codex-acp.exe"
-                  CODEX_CODE_MODE_HOST_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-pc-windows-msvc/release/codex-code-mode-host.exe"
+                  NATIVE_BACKEND_BIN="$GITHUB_WORKSPACE/target/${{ matrix.target }}/release/neverwrite-native-backend.exe"
+                  CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp.exe"
+                  CODEX_CODE_MODE_HOST_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-code-mode-host.exe"
                   echo "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN=$NATIVE_BACKEND_BIN" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN=$CODEX_CODE_MODE_HOST_BIN" >> "$GITHUB_ENV"
@@ -200,12 +212,12 @@ jobs:
               working-directory: apps/desktop
               env:
                   CSC_IDENTITY_AUTO_DISCOVERY: "false"
-              run: npm run electron:package:unsigned -- --platform win --arch x64
+              run: npm run electron:package:unsigned -- --platform win --arch ${{ matrix.arch }}
 
             - name: Smoke packaged sidecar
               working-directory: apps/desktop
               env:
-                  NEVERWRITE_ELECTRON_DIST_ARCH: x64
+                  NEVERWRITE_ELECTRON_DIST_ARCH: ${{ matrix.arch }}
               run: npm run electron:sidecar:smoke:packaged
 
             - name: Verify packaged Codex runtime files
@@ -297,7 +309,7 @@ jobs:
               shell: bash
               run: |
                   cargo build -p neverwrite-native-backend --quiet --release --target ${{ matrix.target }}
-                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
+                  cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
 
             - name: Export sidecar environment
               shell: bash

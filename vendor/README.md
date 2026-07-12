@@ -44,7 +44,7 @@ That means the directory is intentionally reproducible, but not yet minimal.
 ## Current Baselines
 
 - `codex-acp/`
-  - upstream baseline: `zed-industries/codex-acp` `0.15.0`
+  - upstream baseline: `zed-industries/codex-acp` `0.16.0`
   - synced against upstream commit `863d433fc91855d0b5427372bf635c894bf68cb6`
   - latest upstream sync from `0.14.0` brought in 5 commits:
     `d9bf1c1`, `0c2d828`, `8aef91b`, `f67ca5f`, `863d433`
@@ -121,14 +121,15 @@ ACP tool call, while distinct IDs remain separate rather than being correlated
 by descriptive metadata. Child `ThreadId` values remain authoritative; paths,
 nicknames, and roles are display metadata only.
 
-The deferred work is:
+The remaining deferred work is:
 
-- `codex-code-mode-host` and release packaging in PR 2
 - `ItemStarted`/`ItemCompleted` activity projection for new `TurnItem` variants in PR 3
 - native image generation outside this PR series
 
-The current bundle must not be treated as self-contained until the companion
-host and packaging work lands.
+The desktop release pipeline packages `codex-acp` and its `codex-code-mode-host`
+companion for macOS universal, Windows x64/ARM64, and Linux x64/ARM64. Each
+release build is lockfile-pinned; runnable targets initialize the packaged ACP
+runtime in their platform smoke test before release assets are published.
 
 When updating Codex again, treat upstream ACP commit
 `863d433fc91855d0b5427372bf635c894bf68cb6`, OpenAI Codex tag
@@ -187,7 +188,7 @@ When updating a vendored dependency:
 3. Re-apply only the bounded local product delta that NeverWrite still needs.
 4. Remove any local byproducts before committing.
 5. Re-run the relevant validation:
-   - `cd vendor/codex-acp && cargo test -q`
+   - `cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml -q`
    - `cargo test -p neverwrite-native-backend`
    - `cd apps/desktop && npm test -- src/features/ai/store/chatStore.test.ts src/features/ai/components/AIReviewView.test.tsx src/features/ai/components/EditedFilesBufferPanel.test.tsx src/features/ai/components/reviewMultiSessionIntegration.test.tsx src/features/ai/components/AIChatMessageList.test.tsx src/features/ai/components/AIChatMessageItem.test.tsx src/features/editor/mergeViewSync.test.ts src/features/editor/extensions/mergeViewDiff.test.ts`
 
