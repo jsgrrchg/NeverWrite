@@ -12,6 +12,7 @@ import {
 import { useVaultStore } from "./vaultStore";
 
 export {
+    ensureChatTabHistory,
     fileViewerNeedsTextContent,
     isChatTab,
     isChatHistoryTab,
@@ -28,6 +29,7 @@ export {
     isTransientTab,
 } from "./editorTabs";
 export type {
+    ChatHistoryEntry,
     ChatTab,
     ChatHistoryTab,
     FileHistoryEntry,

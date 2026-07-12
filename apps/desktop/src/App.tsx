@@ -14,6 +14,7 @@ import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
 import { createNewChatInWorkspace } from "./features/ai/chatPaneMovement";
+import { listChatWorkspaceHistoryReferences } from "./features/ai/chatWorkspaceRestoration";
 import { CLAUDE_TERMINAL_RUNTIME_ID } from "./features/ai/utils/runtimeMetadata";
 import { openClaudeCodeTerminalWithContext } from "./features/terminal/claudeCodeTerminal";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
@@ -1742,14 +1743,17 @@ export default function App() {
                         ? sessionId.slice("persisted:".length)
                         : null);
 
-                const initialEditorState = useEditorStore.getState();
-                for (const tab of selectEditorWorkspaceTabs(
-                    initialEditorState,
-                ).filter(isChatTab)) {
+                const initialChatHistoryReferences =
+                    listChatWorkspaceHistoryReferences(
+                        selectEditorWorkspaceTabs(useEditorStore.getState()).filter(
+                            isChatTab,
+                        ),
+                    );
+                for (const entry of initialChatHistoryReferences) {
                     const resolvedHistorySessionId =
                         resolveEditorChatHistorySessionId(
-                            tab.sessionId,
-                            tab.historySessionId,
+                            entry.sessionId,
+                            entry.historySessionId,
                         );
                     if (!resolvedHistorySessionId) {
                         continue;
@@ -1759,15 +1763,14 @@ export default function App() {
                         sessionIdByHistoryId.get(resolvedHistorySessionId) ??
                         restoredChatMetadataByHistoryId.get(
                             resolvedHistorySessionId,
-                        )?.sessionId ??
-                        tab.sessionId;
+                        )?.sessionId ?? entry.sessionId;
 
                     if (
-                        resolvedSessionId !== tab.sessionId ||
-                        resolvedHistorySessionId !== tab.historySessionId
+                        resolvedSessionId !== entry.sessionId ||
+                        resolvedHistorySessionId !== entry.historySessionId
                     ) {
                         useEditorStore.getState().replaceAiSessionId(
-                            tab.sessionId,
+                            entry.sessionId,
                             resolvedSessionId,
                             resolvedHistorySessionId,
                         );
@@ -1776,36 +1779,37 @@ export default function App() {
 
                 const editorState = useEditorStore.getState();
                 const focusedEditorTab = selectFocusedEditorTab(editorState);
+                const restoredChatHistoryReferences =
+                    listChatWorkspaceHistoryReferences(
+                        selectEditorWorkspaceTabs(editorState).filter(isChatTab),
+                );
                 await useChatStore.getState().reconcileRestoredWorkspaceTabs(
-                    selectEditorWorkspaceTabs(editorState)
-                        .filter((tab) => isChatTab(tab))
-                        .map((tab) => {
-                            const resolvedHistorySessionId =
-                                resolveEditorChatHistorySessionId(
-                                    tab.sessionId,
-                                    tab.historySessionId,
-                                );
-                            const metadata =
-                                restoredChatMetadataBySessionId.get(
-                                    tab.sessionId,
-                                ) ??
-                                (resolvedHistorySessionId
-                                    ? restoredChatMetadataByHistoryId.get(
-                                          resolvedHistorySessionId,
-                                      )
-                                    : undefined);
-                            return {
-                                id: tab.id,
-                                sessionId: tab.sessionId,
-                                historySessionId:
-                                    resolvedHistorySessionId ?? null,
-                                runtimeId:
-                                    metadata?.runtimeId ??
-                                    chatState.sessionsById[tab.sessionId]
-                                        ?.runtimeId ??
-                                    null,
-                            };
-                        }),
+                    restoredChatHistoryReferences.map((entry) => {
+                        const resolvedHistorySessionId =
+                            resolveEditorChatHistorySessionId(
+                                entry.sessionId,
+                                entry.historySessionId,
+                            );
+                        const metadata =
+                            restoredChatMetadataBySessionId.get(
+                                entry.sessionId,
+                            ) ??
+                            (resolvedHistorySessionId
+                                ? restoredChatMetadataByHistoryId.get(
+                                      resolvedHistorySessionId,
+                                  )
+                                : undefined);
+                        return {
+                            id: entry.id,
+                            sessionId: entry.sessionId,
+                            historySessionId: resolvedHistorySessionId ?? null,
+                            runtimeId:
+                                metadata?.runtimeId ??
+                                chatState.sessionsById[entry.sessionId]
+                                    ?.runtimeId ??
+                                null,
+                        };
+                    }),
                     isChatTab(focusedEditorTab) ? focusedEditorTab.id : null,
                 );
             } catch (error) {
