@@ -353,7 +353,7 @@ describe("AgentsSidebarPanel", () => {
                 clientY: 10,
             });
             expect(
-                screen.getByText("Drag to open in pane · Codex"),
+                screen.getByTestId("agent-sidebar-drag-preview"),
             ).toBeInTheDocument();
             firePointer(window, "pointerup", {
                 pointerId: 1,
@@ -361,7 +361,7 @@ describe("AgentsSidebarPanel", () => {
                 clientY: 12,
             });
             expect(
-                screen.queryByText("Drag to open in pane · Codex"),
+                screen.queryByTestId("agent-sidebar-drag-preview"),
             ).toBeNull();
 
             expect(dragEvents.map((event) => event.phase)).toEqual([
@@ -421,7 +421,7 @@ describe("AgentsSidebarPanel", () => {
                 clientY: 10,
             });
             expect(
-                screen.getByText("Drag to open in pane · Codex"),
+                screen.getByTestId("agent-sidebar-drag-preview"),
             ).toBeInTheDocument();
 
             firePointer(window, "pointercancel", {
@@ -431,7 +431,7 @@ describe("AgentsSidebarPanel", () => {
             });
 
             expect(
-                screen.queryByText("Drag to open in pane · Codex"),
+                screen.queryByTestId("agent-sidebar-drag-preview"),
             ).toBeNull();
             expect(dragEvents.map((event) => event.phase)).toEqual([
                 "start",
@@ -486,7 +486,7 @@ describe("AgentsSidebarPanel", () => {
             });
 
             expect(
-                screen.queryByText("Drag to open in pane · Codex"),
+                screen.queryByTestId("agent-sidebar-drag-preview"),
             ).toBeNull();
             expect(dragEvents.map((event) => event.phase)).toEqual([
                 "start",
@@ -538,7 +538,7 @@ describe("AgentsSidebarPanel", () => {
                 clientY: 10,
             });
             expect(
-                screen.getByText("Drag to open in pane · Codex"),
+                screen.getByTestId("agent-sidebar-drag-preview"),
             ).toBeInTheDocument();
 
             unmount();
@@ -547,7 +547,7 @@ describe("AgentsSidebarPanel", () => {
                 dragEvents.map((event) => event.phase),
             ).toContain("cancel");
             expect(
-                screen.queryByText("Drag to open in pane · Codex"),
+                screen.queryByTestId("agent-sidebar-drag-preview"),
             ).toBeNull();
         } finally {
             window.removeEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
