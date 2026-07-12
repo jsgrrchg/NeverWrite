@@ -860,7 +860,7 @@ function GeneralSettings({
     const showTabs = sectionHasSettingsSearchMatches(searchQuery, "Tabs", [
         [
             "Open behavior",
-            "Choose whether opening notes and files reuses the current tab history or creates a new tab.",
+            "Choose whether opening notes, files, and AI chats reuses the current tab history or creates a new tab.",
             "History",
             "New tab",
         ],
@@ -891,7 +891,7 @@ function GeneralSettings({
                 searchQuery={searchQuery}
                 section="Tabs"
                 label="Open behavior"
-                description="Choose whether opening notes and files reuses the current tab history or creates a new tab."
+                description="Choose whether opening notes, files, and AI chats reuses the current tab history or creates a new tab."
                 keywords={["History", "New tab"]}
                 control={
                     <SegmentedControl

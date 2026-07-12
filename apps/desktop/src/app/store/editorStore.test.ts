@@ -1184,6 +1184,19 @@ describe("editorStore navigation history", () => {
         useSettingsStore.getState().setSetting("tabOpenBehavior", "new_tab");
     });
 
+    it("opens AI sessions in separate tabs", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+
+        expect(useEditorStore.getState().tabs).toHaveLength(2);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.filter(isChatTab)
+                .map((tab) => tab.sessionId),
+        ).toEqual(["session-a", "session-b"]);
+    });
+
     it("openNote always creates a new tab", () => {
         useEditorStore.setState({
             tabs: [
@@ -1503,6 +1516,216 @@ describe("editorStore navigation history", () => {
 });
 
 describe("editorStore tab history mode", () => {
+    it("reuses the focused chat tab and navigates between AI sessions", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        const tabId = useEditorStore.getState().activeTabId;
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+
+        expect(useEditorStore.getState().tabs).toHaveLength(1);
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            id: tabId,
+            sessionId: "session-b",
+            historyIndex: 1,
+        });
+
+        useEditorStore.getState().goBack();
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            id: tabId,
+            sessionId: "session-a",
+            historyIndex: 0,
+        });
+
+        useEditorStore.getState().goForward();
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            id: tabId,
+            sessionId: "session-b",
+            historyIndex: 1,
+        });
+    });
+
+    it("opens a separate chat tab when explicitly requested", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-a", {
+            forceNewTab: true,
+            title: "First",
+        });
+
+        expect(useEditorStore.getState().tabs).toHaveLength(2);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.filter(isChatTab)
+                .map((tab) => tab.sessionId),
+        ).toEqual(["session-a", "session-a"]);
+    });
+
+    it("closes every physical chat tab for a deleted session", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-a", {
+            forceNewTab: true,
+            title: "First",
+        });
+        useEditorStore.getState().openChat("session-b", {
+            forceNewTab: true,
+            title: "Second",
+        });
+
+        useEditorStore.getState().closeChat("session-a");
+
+        expect(
+            useEditorStore.getState().tabs.filter(isChatTab).map((tab) => ({
+                id: tab.id,
+                sessionId: tab.sessionId,
+            })),
+        ).toHaveLength(1);
+        expect(
+            useEditorStore.getState().tabs.filter(isChatTab)[0]?.sessionId,
+        ).toBe("session-b");
+    });
+
+    it("does not reopen a chat tab after its session is deleted", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        const tabId = useEditorStore.getState().activeTabId;
+        expect(tabId).not.toBeNull();
+
+        useEditorStore.getState().closeTab(tabId!);
+        expect(useEditorStore.getState().recentlyClosedTabs).toHaveLength(1);
+
+        useEditorStore.getState().closeChat("session-a");
+        useEditorStore.getState().reopenLastClosedTab();
+
+        expect(useEditorStore.getState().recentlyClosedTabs).toHaveLength(0);
+        expect(useEditorStore.getState().tabs).toHaveLength(0);
+    });
+
+    it("prunes deleted sessions from recently closed chat histories", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+        const tabId = useEditorStore.getState().activeTabId;
+        expect(tabId).not.toBeNull();
+
+        useEditorStore.getState().closeTab(tabId!);
+        useEditorStore.getState().closeChat("session-a");
+        useEditorStore.getState().reopenLastClosedTab();
+
+        expect(useEditorStore.getState().tabs.find(isChatTab)).toMatchObject({
+            sessionId: "session-b",
+            historyIndex: 0,
+            history: [{ sessionId: "session-b", title: "Second" }],
+        });
+    });
+
+    it("prunes a deleted session from other chat tab histories", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+        useEditorStore.getState().openChat("session-c", { title: "Third" });
+
+        useEditorStore.getState().closeChat("session-b");
+
+        const tab = useEditorStore.getState().tabs.find(isChatTab);
+        expect(tab).toMatchObject({
+            sessionId: "session-c",
+            historyIndex: 1,
+            history: [
+                { sessionId: "session-a", title: "First" },
+                { sessionId: "session-c", title: "Third" },
+            ],
+        });
+
+        useEditorStore.getState().goBack();
+        expect(useEditorStore.getState().tabs.find(isChatTab)?.sessionId).toBe(
+            "session-a",
+        );
+    });
+
+    it("prunes deleted chat history entries in every pane without changing focus", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "chat-primary",
+                            kind: "ai-chat",
+                            sessionId: "session-b",
+                            title: "Second",
+                            history: [
+                                { sessionId: "session-a", title: "First" },
+                                { sessionId: "session-b", title: "Second" },
+                            ],
+                            historyIndex: 1,
+                        },
+                    ],
+                    activeTabId: "chat-primary",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "chat-secondary",
+                            kind: "ai-chat",
+                            sessionId: "session-c",
+                            title: "Third",
+                            history: [
+                                { sessionId: "session-a", title: "First" },
+                                { sessionId: "session-c", title: "Third" },
+                            ],
+                            historyIndex: 1,
+                        },
+                    ],
+                    activeTabId: "chat-secondary",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().closeChat("session-a");
+
+        expect(useEditorStore.getState().focusedPaneId).toBe("primary");
+        expect(useEditorStore.getState().panes).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    id: "primary",
+                    tabs: [
+                        expect.objectContaining({
+                            sessionId: "session-b",
+                            history: [{ sessionId: "session-b", title: "Second" }],
+                            historyIndex: 0,
+                        }),
+                    ],
+                }),
+                expect.objectContaining({
+                    id: "secondary",
+                    tabs: [
+                        expect.objectContaining({
+                            sessionId: "session-c",
+                            history: [{ sessionId: "session-c", title: "Third" }],
+                            historyIndex: 0,
+                        }),
+                    ],
+                }),
+            ]),
+        );
+    });
+
+    it("truncates forward chat history after opening another AI session", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+        useEditorStore.getState().goBack();
+        useEditorStore.getState().openChat("session-c", { title: "Third" });
+
+        const tab = useEditorStore.getState().tabs[0];
+        expect(isChatTab(tab) ? tab.history : []).toEqual([
+            { sessionId: "session-a", title: "First" },
+            { sessionId: "session-c", title: "Third" },
+        ]);
+        useEditorStore.getState().goForward();
+        expect(useEditorStore.getState().tabs[0]).toMatchObject({
+            sessionId: "session-c",
+            historyIndex: 1,
+        });
+    });
+
     it("openNote reuses the active tab and pushes note history by default", () => {
         useEditorStore.setState({
             tabs: [

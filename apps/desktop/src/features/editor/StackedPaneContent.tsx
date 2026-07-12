@@ -8,7 +8,6 @@ import React, {
     type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { confirm } from "@neverwrite/runtime";
 import {
     useEditorStore,
     selectEditorPaneState,
@@ -20,10 +19,6 @@ import {
 import { getWindowMode } from "../../app/detachedWindows";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
-import {
-    findActiveSessionsAffectedByClose,
-    getCloseTabsConfirmationMessage,
-} from "./tabClosePolicy";
 import { canUseExcalidrawRuntime } from "../../app/utils/safeBrowser";
 import { Editor } from "./Editor";
 import { FileTabView } from "./FileTabView";
@@ -328,26 +323,12 @@ export function StackedPaneContent({
         [consumeSuppressedClick, switchTab],
     );
 
-    // Same close flow as the normal tab strip: warn before closing tabs tied to
-    // active chat sessions, then close.
     const requestCloseTab = useCallback(
-        async (tabId: string) => {
+        (tabId: string) => {
             const tab = selectEditorWorkspaceTabs(
                 useEditorStore.getState(),
             ).find((candidate) => candidate.id === tabId);
             if (!tab) return;
-            const affected = findActiveSessionsAffectedByClose(
-                [tab],
-                useChatStore.getState().sessionsById,
-            );
-            const confirmationMessage =
-                getCloseTabsConfirmationMessage(affected);
-            if (
-                confirmationMessage !== null &&
-                !(await confirm(confirmationMessage))
-            ) {
-                return;
-            }
             closeTab(tab.id);
         },
         [closeTab],

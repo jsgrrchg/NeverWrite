@@ -1,7 +1,6 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import {
     getCurrentWindow,
-    confirm,
     invoke,
     listen,
     type UnlistenFn,
@@ -420,8 +419,7 @@ describe("App web clipper routing", () => {
         expect(useCommandStore.getState().activeModal).toBe("command-palette");
     });
 
-    it("confirms before the global close-tab command closes an active agent tab", async () => {
-        vi.mocked(confirm).mockResolvedValue(false);
+    it("closes an active agent tab from the global close-tab command", async () => {
         renderComponent(<App />);
         await flushPromises();
         await waitFor(() => {
@@ -477,11 +475,7 @@ describe("App web clipper routing", () => {
         });
         await flushPromises();
 
-        expect(confirm).toHaveBeenCalledWith(
-            "The AI agent is still running. Are you sure you want to close this tab?",
-        );
         expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
-            "tab-chat",
             "tab-note",
         ]);
     });

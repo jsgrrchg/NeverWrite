@@ -1,6 +1,7 @@
 import {
     fileViewerNeedsTextContent,
     ensureTerminalTabDefaults,
+    ensureChatTabHistory,
     isFileTab,
     isGraphTab,
     isHistoryTab,
@@ -139,6 +140,12 @@ type PersistedChatWorkspaceTab = {
     sessionId: string;
     historySessionId?: string;
     title: string;
+    history?: Array<{
+        sessionId: string;
+        historySessionId?: string;
+        title: string;
+    }>;
+    historyIndex?: number;
 };
 
 type PersistedChatHistoryWorkspaceTab = {
@@ -389,14 +396,17 @@ function serializeWorkspaceTabForSession(
     }
 
     if (isChatTab(tab)) {
+        const normalized = ensureChatTabHistory(tab);
         return {
-            id: tab.id,
+            id: normalized.id,
             kind: "ai-chat",
-            sessionId: tab.sessionId,
-            ...(tab.historySessionId
-                ? { historySessionId: tab.historySessionId }
+            sessionId: normalized.sessionId,
+            ...(normalized.historySessionId
+                ? { historySessionId: normalized.historySessionId }
                 : {}),
-            title: tab.title,
+            title: normalized.title,
+            history: normalized.history,
+            historyIndex: normalized.historyIndex,
         };
     }
 
@@ -739,6 +749,8 @@ async function restorePersistedWorkspaceTabsById(
                     ? { historySessionId: tab.historySessionId }
                     : {}),
                 title: tab.title,
+                history: tab.history,
+                historyIndex: tab.historyIndex,
             };
             continue;
         }
@@ -1276,7 +1288,10 @@ function normalizeHydratedSessionTab(tab: TabInput): Tab | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
-    if (isChatTab(tab) || isChatHistoryTab(tab) || isGraphTab(tab)) {
+    if (isChatTab(tab)) {
+        return ensureChatTabHistory(tab);
+    }
+    if (isChatHistoryTab(tab) || isGraphTab(tab)) {
         return tab;
     }
     if (isTerminalTab(tab)) {

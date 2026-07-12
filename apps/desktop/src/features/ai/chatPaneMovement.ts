@@ -25,6 +25,7 @@ interface OpenChatInWorkspaceOptions {
     insertIndex?: number;
     background?: boolean;
     skipLoad?: boolean;
+    forceNewTab?: boolean;
 }
 
 type ChatWorkspaceDropTarget = Extract<
@@ -294,6 +295,7 @@ export function openChatSessionInWorkspace(
         insertIndex: options?.insertIndex,
         background: options?.background,
         historySessionId,
+        forceNewTab: options?.forceNewTab,
     });
     finalizeChatSessionWorkspaceOpen(sessionId, options);
     return sessionId;

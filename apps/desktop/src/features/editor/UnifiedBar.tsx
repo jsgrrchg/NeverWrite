@@ -50,10 +50,6 @@ import {
 } from "../ai/dragEvents";
 import { useChatStore } from "../ai/store/chatStore";
 import {
-    findActiveSessionsAffectedByClose,
-    getCloseTabsConfirmationMessage,
-} from "./tabClosePolicy";
-import {
     buildTabFileDragDetail,
     resolveComposerDropTarget,
 } from "./tabDragAttachments";
@@ -177,7 +173,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         const pane = selectEditorPaneState(s);
         if (tabOpenBehavior === "history") {
             const tab = pane.tabs.find((t) => t.id === pane.activeTabId);
-            return tab && (isNoteTab(tab) || isFileTab(tab) || isPdfTab(tab))
+            if (tab && isChatTab(tab)) {
+                return (tab.historyIndex ?? 0) > 0;
+            }
+            return tab &&
+                (isNoteTab(tab) ||
+                    isFileTab(tab) ||
+                    isPdfTab(tab))
                 ? tab.historyIndex > 0
                 : false;
         }
@@ -190,7 +192,16 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         const pane = selectEditorPaneState(s);
         if (tabOpenBehavior === "history") {
             const tab = pane.tabs.find((t) => t.id === pane.activeTabId);
-            return tab && (isNoteTab(tab) || isFileTab(tab) || isPdfTab(tab))
+            if (tab && isChatTab(tab)) {
+                return (
+                    Boolean(tab.history) &&
+                    (tab.historyIndex ?? 0) < (tab.history?.length ?? 0) - 1
+                );
+            }
+            return tab &&
+                (isNoteTab(tab) ||
+                    isFileTab(tab) ||
+                    isPdfTab(tab))
                 ? tab.historyIndex < tab.history.length - 1
                 : false;
         }
@@ -442,19 +453,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 return;
             }
 
-            const affected = findActiveSessionsAffectedByClose(
-                [targetTab],
-                useChatStore.getState().sessionsById,
-            );
-            const confirmationMessage =
-                getCloseTabsConfirmationMessage(affected);
-            if (
-                confirmationMessage !== null &&
-                !(await confirm(confirmationMessage))
-            ) {
-                return;
-            }
-
             if (windowMode === "note" && currentTabs.length === 1) {
                 const appWindow = getAppWindow();
                 await appWindow.close().catch((error) => {
@@ -500,19 +498,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 .filter((tab): tab is (typeof currentTabs)[number] => tab !== null);
 
             if (tabsToClose.length === 0) {
-                return false;
-            }
-
-            const affected = findActiveSessionsAffectedByClose(
-                tabsToClose,
-                useChatStore.getState().sessionsById,
-            );
-            const confirmationMessage =
-                getCloseTabsConfirmationMessage(affected);
-            if (
-                confirmationMessage !== null &&
-                !(await confirm(confirmationMessage))
-            ) {
                 return false;
             }
 

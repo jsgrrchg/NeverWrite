@@ -5,42 +5,80 @@ import {
     selectEditorWorkspaceTabs,
     type NoteTab,
 } from "../../app/store/editorStore";
-import { useVaultStore } from "../../app/store/vaultStore";
+import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
 import { toVaultRelativePath } from "../../app/utils/vaultPaths";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 
-function findNoteByReference(reference: string) {
-    const trimmed = reference.trim();
-    if (!trimmed) return null;
+function normalizeReferencePath(value: string) {
+    return value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+}
 
-    const normalized = trimmed.toLowerCase();
-    const slug = normalized.replace(/ /g, "-");
+function withoutMarkdownExtension(value: string) {
+    return value.replace(/\.md$/i, "");
+}
+
+function getReferenceBasename(value: string) {
+    return withoutMarkdownExtension(normalizeReferencePath(value))
+        .split("/")
+        .at(-1) ?? "";
+}
+
+function getCanonicalReference(value: string) {
+    return withoutMarkdownExtension(normalizeReferencePath(value))
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLocaleLowerCase()
+        .replace(/[\s_-]+/g, "-");
+}
+
+function getNoteReferenceValues(note: NoteDto) {
+    return [note.id, note.path, note.title];
+}
+
+function getUniqueMatch(
+    notes: NoteDto[],
+    predicate: (note: NoteDto) => boolean,
+) {
+    const matches = notes.filter(predicate);
+    return matches.length === 1 ? matches[0] : null;
+}
+
+// Chat output often contains a note title rather than its full relative path.
+// Resolve that form deliberately, but never choose an arbitrary note when a
+// basename is shared by multiple folders.
+export function findChatNoteByReference(reference: string) {
+    const rawReference = normalizeReferencePath(reference);
+    if (!rawReference) return null;
+    const canonicalReference = getCanonicalReference(rawReference);
+    const canonicalBasename = getCanonicalReference(
+        getReferenceBasename(rawReference),
+    );
     const { notes } = useVaultStore.getState();
 
     return (
-        notes.find(
-            (note) =>
-                note.id === trimmed ||
-                note.path === trimmed ||
-                note.title === trimmed,
+        getUniqueMatch(notes, (note) =>
+            getNoteReferenceValues(note).some(
+                (value) => normalizeReferencePath(value) === rawReference,
+            ),
         ) ??
-        notes.find(
-            (note) =>
-                note.id.toLowerCase() === normalized ||
-                note.path.toLowerCase() === normalized ||
-                note.title.toLowerCase() === normalized,
+        getUniqueMatch(notes, (note) =>
+            getNoteReferenceValues(note).some(
+                (value) => getCanonicalReference(value) === canonicalReference,
+            ),
         ) ??
-        notes.find((note) => {
-            const noteId = note.id.toLowerCase();
-            const notePath = note.path.toLowerCase();
-            return (
-                noteId.endsWith(normalized) ||
-                noteId.endsWith(slug) ||
-                notePath.endsWith(normalized) ||
-                notePath.endsWith(`${slug}.md`)
-            );
-        }) ??
-        null
+        getUniqueMatch(notes, (note) =>
+            getNoteReferenceValues(note).some(
+                (value) =>
+                    getCanonicalReference(getReferenceBasename(value)) ===
+                    canonicalBasename,
+            ),
+        ) ??
+        getUniqueMatch(notes, (note) =>
+            [note.id, note.path].some((value) => {
+                const canonicalPath = getCanonicalReference(value);
+                return canonicalPath.endsWith(`/${canonicalReference}`);
+            }),
+        )
     );
 }
 
@@ -109,7 +147,7 @@ export async function openChatNoteByReference(
     reference: string,
     options?: { newTab?: boolean },
 ) {
-    const note = findNoteByReference(reference);
+    const note = findChatNoteByReference(reference);
     if (!note) return false;
 
     return openChatResolvedNote(note.id, note.title, options);

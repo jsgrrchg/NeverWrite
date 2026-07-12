@@ -1,5 +1,4 @@
 import { act, fireEvent, screen } from "@testing-library/react";
-import { confirm } from "@neverwrite/runtime";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorSelection } from "@codemirror/state";
@@ -2899,10 +2898,7 @@ describe("Editor", () => {
         expect(useEditorStore.getState().activeTabId).toBe("tab-1");
     });
 
-    it("confirms Cmd+W before closing an active agent tab", async () => {
-        vi.mocked(confirm).mockReset();
-        vi.mocked(confirm).mockResolvedValue(false);
-
+    it("closes an active agent tab on Cmd+W without interrupting its session", async () => {
         setEditorTabs(
             [
                 {
@@ -2950,14 +2946,12 @@ describe("Editor", () => {
                 }),
             );
         });
-        await flushPromises();
-
-        expect(confirm).toHaveBeenCalledTimes(1);
         expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
-            "tab-chat",
             "tab-note",
         ]);
-        vi.mocked(confirm).mockResolvedValue(true);
+        expect(useChatStore.getState().sessionsById["session-busy"]?.status).toBe(
+            "streaming",
+        );
     });
 
     it("saves the active note before handling a global close-tab request", async () => {
