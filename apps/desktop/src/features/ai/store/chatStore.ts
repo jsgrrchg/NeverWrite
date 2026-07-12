@@ -1377,6 +1377,7 @@ interface ChatStore {
     defaultRuntimeId: string | null;
     selectedRuntimeId: string | null;
     isInitializing: boolean;
+    sessionInventoryLoaded: boolean;
     notePickerOpen: boolean;
     autoContextEnabled: boolean;
     requireCmdEnterToSend: boolean;
@@ -7555,6 +7556,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         defaultRuntimeId: null,
         selectedRuntimeId: null,
         isInitializing: false,
+        sessionInventoryLoaded: false,
         notePickerOpen: false,
         autoContextEnabled: false,
         requireCmdEnterToSend: DEFAULT_AI_PREFERENCES.requireCmdEnterToSend,
@@ -7628,7 +7630,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const defaultRuntimePreferenceVersionAtStart =
                 _defaultRuntimePreferenceVersion;
 
-            set({ isInitializing: true });
+            set({ isInitializing: true, sessionInventoryLoaded: false });
 
             try {
                 const backendRuntimes = hydrateRuntimesFromCache(
@@ -7909,6 +7911,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             hydratedActiveSessionId,
                         );
                     }
+                    set({ sessionInventoryLoaded: true });
                     return { sessionInventoryLoaded: true };
                 }
 
@@ -7920,6 +7923,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     if (runtimeId) {
                         if (setupStatus?.onboardingRequired) {
+                            set({ sessionInventoryLoaded: true });
                             return { sessionInventoryLoaded: true };
                         }
                         await get().newSession(runtimeId);
@@ -7952,6 +7956,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 set({ isInitializing: false });
             }
 
+            set({ sessionInventoryLoaded: true });
             return { sessionInventoryLoaded: true };
         },
 
@@ -13112,6 +13117,7 @@ export function resetChatStore() {
         defaultRuntimeId: null,
         selectedRuntimeId: null,
         isInitializing: false,
+        sessionInventoryLoaded: false,
         notePickerOpen: false,
         autoContextEnabled: loadAutoContextPreference(
             useVaultStore.getState().vaultPath,

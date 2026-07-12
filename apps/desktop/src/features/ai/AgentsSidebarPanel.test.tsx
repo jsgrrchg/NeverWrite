@@ -135,6 +135,29 @@ describe("AgentsSidebarPanel", () => {
                 },
             ],
             selectedRuntimeId: "codex-acp",
+            sessionInventoryLoaded: true,
+        });
+    });
+
+    it("does not prune persisted folder assignments while cold-start inventory is loading", () => {
+        useChatFoldersStore.setState({
+            folders: {
+                research: { id: "research", name: "Research", createdAt: 1 },
+            },
+            folderOrder: ["research"],
+            sessionFolderIds: { "saved-session": "research" },
+            collapsedFolderIds: [],
+        });
+        useChatStore.setState({
+            sessionsById: {},
+            sessionOrder: [],
+            sessionInventoryLoaded: false,
+        });
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
+            "saved-session": "research",
         });
     });
 

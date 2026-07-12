@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatFoldersStore } from "./chatFoldersStore";
 
-const CHAT_FOLDERS_KEY = "neverwrite.chats.folders";
+const LEGACY_CHAT_FOLDERS_KEY = "neverwrite.chats.folders";
+const VAULT_PATH = "/vault/research";
+const CHAT_FOLDERS_KEY = `${LEGACY_CHAT_FOLDERS_KEY}:${encodeURIComponent(VAULT_PATH)}`;
 
 function resetFoldersStore() {
     useChatFoldersStore.setState({
+        vaultPath: null,
         folders: {},
         folderOrder: [],
         sessionFolderIds: {},
@@ -16,6 +19,7 @@ describe("chatFoldersStore", () => {
     beforeEach(() => {
         localStorage.clear();
         resetFoldersStore();
+        useChatFoldersStore.getState().setVaultPath(VAULT_PATH);
     });
 
     afterEach(() => {
@@ -101,6 +105,23 @@ describe("chatFoldersStore", () => {
         });
     });
 
+    it("keeps assignments when a cold-start chat has a persisted identity", () => {
+        useChatFoldersStore.setState({
+            folders: {
+                research: { id: "research", name: "Research", createdAt: 1 },
+            },
+            folderOrder: ["research"],
+            sessionFolderIds: { "history-1": "research" },
+            collapsedFolderIds: [],
+        });
+
+        useChatFoldersStore.getState().reconcile(["persisted:history-1"]);
+
+        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
+            "persisted:history-1": "research",
+        });
+    });
+
     it("persists a manual folder order", () => {
         useChatFoldersStore.setState({
             folders: {
@@ -145,6 +166,7 @@ describe("chatFoldersStore", () => {
         const { useChatFoldersStore: hydratedStore } = await import(
             "./chatFoldersStore"
         );
+        hydratedStore.getState().setVaultPath(VAULT_PATH);
 
         expect(hydratedStore.getState()).toMatchObject({
             folders: {
@@ -154,5 +176,48 @@ describe("chatFoldersStore", () => {
             sessionFolderIds: { "session-a": "valid" },
             collapsedFolderIds: ["valid"],
         });
+    });
+
+    it("keeps folder assignments isolated per vault", () => {
+        const folderId = useChatFoldersStore.getState().createFolder("Research");
+        expect(folderId).toBeTruthy();
+        useChatFoldersStore.getState().moveSession("session-a", folderId);
+
+        useChatFoldersStore.getState().setVaultPath("/vault/other");
+        expect(useChatFoldersStore.getState()).toMatchObject({
+            folders: {},
+            sessionFolderIds: {},
+        });
+
+        useChatFoldersStore.getState().setVaultPath(VAULT_PATH);
+        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
+            "session-a": folderId,
+        });
+    });
+
+    it("migrates the legacy global catalog into the first opened vault", async () => {
+        localStorage.clear();
+        localStorage.setItem(
+            LEGACY_CHAT_FOLDERS_KEY,
+            JSON.stringify({
+                folders: {
+                    research: { id: "research", name: "Research", createdAt: 1 },
+                },
+                folderOrder: ["research"],
+                sessionFolderIds: { "session-a": "research" },
+                collapsedFolderIds: [],
+            }),
+        );
+        vi.resetModules();
+
+        const { useChatFoldersStore: migratedStore } = await import(
+            "./chatFoldersStore"
+        );
+        migratedStore.getState().setVaultPath(VAULT_PATH);
+
+        expect(migratedStore.getState().sessionFolderIds).toEqual({
+            "session-a": "research",
+        });
+        expect(localStorage.getItem(CHAT_FOLDERS_KEY)).toBeTruthy();
     });
 });

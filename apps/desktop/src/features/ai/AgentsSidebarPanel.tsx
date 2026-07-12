@@ -312,6 +312,9 @@ export function AgentsSidebarPanel() {
     const sessionOrder = useChatStore((state) => state.sessionOrder);
     const runtimes = useChatStore((state) => state.runtimes);
     const selectedRuntimeId = useChatStore((state) => state.selectedRuntimeId);
+    const sessionInventoryLoaded = useChatStore(
+        (state) => state.sessionInventoryLoaded,
+    );
     const deleteSession = useChatStore((state) => state.deleteSession);
     const renameSession = useChatStore((state) => state.renameSession);
 
@@ -459,8 +462,9 @@ export function AgentsSidebarPanel() {
         reconcilePinned(hierarchy.rootSessionIds);
     }, [hierarchy.rootSessionIds, reconcilePinned]);
     useEffect(() => {
+        if (!sessionInventoryLoaded) return;
         reconcileFolders(hierarchy.rootSessionIds);
-    }, [hierarchy.rootSessionIds, reconcileFolders]);
+    }, [hierarchy.rootSessionIds, reconcileFolders, sessionInventoryLoaded]);
 
     // Shortcut sections are mutually exclusive with each other. They are not
     // a partition of folder navigation: a foldered chat may intentionally
