@@ -30,6 +30,8 @@ import {
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
+import { useChatFoldersStore } from "./chatFoldersStore";
+import { usePinnedChatsStore } from "./pinnedChatsStore";
 import {
     disposeChatStoreRuntime,
     flushDeltasSync,
@@ -536,6 +538,12 @@ describe("chatStore", () => {
         resetClaudeCodeInstalledCacheForTests();
         resetChatStore();
         resetChatTabsStore();
+        usePinnedChatsStore.setState({ entries: {} });
+        useChatFoldersStore.setState({
+            folders: {},
+            sessionFolderIds: {},
+            collapsedFolderIds: [],
+        });
         resetExternalReloadBaselinesForTests();
         vi.clearAllMocks();
         delete (globalThis as Record<string, unknown>)
@@ -1236,6 +1244,53 @@ describe("chatStore", () => {
                 }),
             }),
         );
+    });
+
+    it("keeps sidebar pins and folders when a provisional session becomes live", async () => {
+        const provisionalSessionId = "pending-session";
+        const liveSessionId = sessionPayload.session_id;
+        const folderId = useChatFoldersStore
+            .getState()
+            .createFolder("Research");
+        expect(folderId).toBeTruthy();
+        useChatFoldersStore
+            .getState()
+            .moveSession(provisionalSessionId, folderId);
+        usePinnedChatsStore.getState().pin(provisionalSessionId);
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [provisionalSessionId]: {
+                    ...createSessionWithTrackedFiles(provisionalSessionId, []),
+                    isPendingSessionCreation: true,
+                },
+            },
+            sessionOrder: [provisionalSessionId],
+            activeSessionId: provisionalSessionId,
+            selectedRuntimeId: "codex-acp",
+        }));
+
+        const createdSessionId = await useChatStore
+            .getState()
+            .newSession("codex-acp", provisionalSessionId);
+
+        expect(createdSessionId).toBe(liveSessionId);
+        expect(usePinnedChatsStore.getState().entries).toEqual({
+            [liveSessionId]: expect.objectContaining({
+                pinnedAt: expect.any(Number),
+            }),
+        });
+        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
+            [liveSessionId]: folderId,
+        });
     });
 
     it("selects the first configured runtime on fresh boot", async () => {

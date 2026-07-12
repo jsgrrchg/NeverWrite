@@ -27,6 +27,7 @@ interface ChatFoldersStore extends PersistedChatFolders {
     renameFolder: (folderId: string, name: string) => void;
     deleteFolder: (folderId: string) => void;
     moveSession: (sessionId: string, folderId: string | null) => void;
+    replaceSessionId: (fromSessionId: string, toSessionId: string) => void;
     toggleFolderCollapsed: (folderId: string) => void;
     reconcile: (existingRootSessionIds: Iterable<string>) => void;
 }
@@ -159,6 +160,23 @@ export const useChatFoldersStore = create<ChatFoldersStore>((set) => ({
             const sessionFolderIds = { ...state.sessionFolderIds };
             if (folderId) sessionFolderIds[sessionId] = folderId;
             else delete sessionFolderIds[sessionId];
+            const next = { ...getPersistedState(state), sessionFolderIds };
+            persistState(next);
+            return next;
+        }),
+    replaceSessionId: (fromSessionId, toSessionId) =>
+        set((state) => {
+            if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) {
+                return state;
+            }
+            const folderId = state.sessionFolderIds[fromSessionId];
+            if (!folderId || !state.folders[folderId]) return state;
+
+            const sessionFolderIds = { ...state.sessionFolderIds };
+            delete sessionFolderIds[fromSessionId];
+            // The destination is the same logical chat after an ACP identity
+            // transition, so the source assignment intentionally wins.
+            sessionFolderIds[toSessionId] = folderId;
             const next = { ...getPersistedState(state), sessionFolderIds };
             persistState(next);
             return next;
