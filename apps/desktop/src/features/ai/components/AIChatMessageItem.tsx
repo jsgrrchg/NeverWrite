@@ -20,6 +20,7 @@ import type {
     AIUserInputAction,
 } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
+import { ChatVaultReference } from "./ChatVaultReference";
 import { MarkdownContent } from "./MarkdownContent";
 import type { ChatPillMetrics } from "./chatPillMetrics";
 import type { ChatPillVariant } from "./chatPillPalette";
@@ -40,6 +41,10 @@ import {
     canOpenAiEditedFileByAbsolutePath,
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
+import {
+    getChatVaultReferenceBasename,
+    parseChatVaultReferenceTarget,
+} from "../chatVaultReferenceTarget";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -241,8 +246,20 @@ function renderUserContent(
         event: MouseEvent<HTMLElement>,
         payload: UserMentionContextMenuPayload,
     ) => void,
+    attachments: AIChatAttachment[] = [],
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
+    const unmatchedFileAttachments = attachments.filter(
+        (attachment) =>
+            attachment.type === "file" && Boolean(attachment.filePath),
+    );
+    const takeFileAttachment = (label: string) => {
+        const index = unmatchedFileAttachments.findIndex(
+            (attachment) => attachment.label === label,
+        );
+        if (index < 0) return null;
+        return unmatchedFileAttachments.splice(index, 1)[0] ?? null;
+    };
     // New bracketed format: [@note], [@📄 /path/file.ts], [@📁 folder], [Screenshot ...], [📎 file]
     // Escaped variants use a pipe plus URL-encoded payload, e.g. [@|%5B%20%5D].
     // Legacy format (backward compat): @fetch, /plan, @📁word, @word
@@ -259,23 +276,58 @@ function renderUserContent(
 
         const token = match[0];
 
-        if (
-            token.startsWith("[Screenshot ") ||
-            token.startsWith("[Screenshot|") ||
-            token.startsWith("[📎 ") ||
-            token.startsWith("[📎|")
-        ) {
+        if (token.startsWith("[Screenshot ") || token.startsWith("[Screenshot|")) {
             const pillLabel = token.startsWith("[Screenshot|")
                 ? decodeSerializedPillValue(token.slice(12, -1))
-                : token.startsWith("[📎|")
-                  ? decodeSerializedPillValue(token.slice(4, -1))
-                  : token.slice(1, -1); // strip [ ]
+                : token.slice(1, -1); // strip [ ]
             parts.push(
                 <ChatInlinePill
                     key={key++}
                     label={pillLabel}
                     metrics={pillMetrics}
                     variant="file"
+                />,
+            );
+            lastIndex = match.index + token.length;
+            continue;
+        }
+
+        if (token.startsWith("[📎 ") || token.startsWith("[📎|")) {
+            const fileLabel = token.startsWith("[📎|")
+                ? decodeSerializedPillValue(token.slice(4, -1))
+                : token.slice(4, -1);
+            const attachment = takeFileAttachment(fileLabel);
+            const filePath = attachment?.filePath ?? fileLabel;
+            const canOpen = Boolean(
+                attachment?.filePath &&
+                    canOpenAiEditedFileByAbsolutePath(attachment.filePath),
+            );
+            parts.push(
+                <ChatVaultReference
+                    key={key++}
+                    kind="file"
+                    label={fileLabel}
+                    metrics={pillMetrics}
+                    mimeType={attachment?.mimeType}
+                    interactive={canOpen}
+                    path={filePath}
+                    onClick={
+                        canOpen
+                            ? () => {
+                                  void openAiEditedFileByAbsolutePath(filePath);
+                              }
+                            : undefined
+                    }
+                    onContextMenu={
+                        canOpen
+                            ? (event) =>
+                                  onMentionContextMenu(event, {
+                                      kind: "file",
+                                      label: fileLabel,
+                                      path: filePath,
+                                  })
+                            : undefined
+                    }
                 />,
             );
             lastIndex = match.index + token.length;
@@ -309,13 +361,14 @@ function renderUserContent(
         }
 
         if (token.startsWith("[@📁 ")) {
-            const folderLabel = token.slice(4, -1); // strip [@📁 and ]
+            const folderLabel = token.slice(5, -1); // strip [@📁 and ]
             parts.push(
-                <ChatInlinePill
+                <ChatVaultReference
                     key={key++}
+                    kind="folder"
                     label={folderLabel}
                     metrics={pillMetrics}
-                    variant="folder"
+                    path={folderLabel}
                 />,
             );
             lastIndex = match.index + token.length;
@@ -325,11 +378,12 @@ function renderUserContent(
         if (token.startsWith("[@📁|")) {
             const folderLabel = decodeSerializedPillValue(token.slice(5, -1));
             parts.push(
-                <ChatInlinePill
+                <ChatVaultReference
                     key={key++}
+                    kind="folder"
                     label={folderLabel}
                     metrics={pillMetrics}
-                    variant="folder"
+                    path={folderLabel}
                 />,
             );
             lastIndex = match.index + token.length;
@@ -341,15 +395,19 @@ function renderUserContent(
                 token.startsWith("[@📄|")
                     ? decodeSerializedPillValue(token.slice(5, -1))
                     : token.slice(4, -1)
-            ).trim();
-            const fileLabel = filePath.split("/").pop() || filePath;
+                ).trim();
+            const target = parseChatVaultReferenceTarget(filePath);
+            const fileLabel = getChatVaultReferenceBasename(target.path);
             parts.push(
-                <ChatInlinePill
+                <ChatVaultReference
                     key={key++}
+                    kind="file"
                     label={fileLabel}
+                    line={target.line}
+                    endLine={target.endLine}
                     metrics={pillMetrics}
                     interactive
-                    variant="file"
+                    path={filePath}
                     onClick={() => {
                         void openAiEditedFileByAbsolutePath(filePath);
                     }}
@@ -379,14 +437,22 @@ function renderUserContent(
         } else {
             noteLabel = token.slice(1); // strip @
         }
+        const target = parseChatVaultReferenceTarget(noteLabel);
         const isNote = variant === "accent";
         parts.push(
-            <ChatInlinePill
+            <ChatVaultReference
                 key={key++}
-                label={noteLabel}
+                kind={isNote ? "note" : "folder"}
+                label={
+                    target.line
+                        ? getChatVaultReferenceBasename(target.path)
+                        : noteLabel
+                }
+                line={target.line}
+                endLine={target.endLine}
                 metrics={pillMetrics}
                 interactive={isNote}
-                variant={variant}
+                path={target.path}
                 onClick={
                     isNote
                         ? () => {
@@ -467,6 +533,7 @@ function UserTextMessage({
                             payload,
                         });
                     },
+                    message.attachments,
                 )}
                 <UserMessageAttachments attachments={message.attachments} />
             </div>

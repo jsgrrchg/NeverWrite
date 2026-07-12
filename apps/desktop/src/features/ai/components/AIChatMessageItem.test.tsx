@@ -111,6 +111,7 @@ beforeEach(() => {
     useEditorStore.setState({
         tabs: [],
         activeTabId: null,
+        pendingLineReveal: null,
     });
 });
 
@@ -1475,6 +1476,126 @@ describe("AIChatMessageItem tool diffs", () => {
 });
 
 describe("AIChatMessageItem user mention pills", () => {
+    it("uses the shared icon-led reference style for notes, files, and folders", () => {
+        renderMessage({
+            id: "user:references",
+            role: "user",
+            kind: "text",
+            content:
+                "Use [@Alpha], [@📄 /vault/src/watcher.rs], and [@📁 Clips]",
+            timestamp: Date.now(),
+        });
+
+        const references = [
+            screen.getByRole("button", { name: "Alpha" }),
+            screen.getByRole("button", { name: "watcher.rs" }),
+            document.querySelector<HTMLElement>('[title="Clips"]'),
+        ];
+
+        for (const reference of references) {
+            expect(reference).not.toBeNull();
+            expect(reference).toHaveStyle({
+                background: "transparent",
+                padding: "0px",
+            });
+            expect(reference?.querySelector("svg")).not.toBeNull();
+        }
+    });
+
+    it("renders and opens sent line references with the shared style", async () => {
+        setVaultNotes([
+            {
+                id: "CHANGELOG.md",
+                title: "CHANGELOG",
+                path: "/vault/CHANGELOG.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "changelog-tab",
+                noteId: "CHANGELOG.md",
+                title: "CHANGELOG",
+                content: "# Changelog",
+            },
+        ]);
+        renderMessage({
+            id: "user:line-reference",
+            role: "user",
+            kind: "text",
+            content: "Check [@📄 /vault/CHANGELOG.md#L66]",
+            timestamp: Date.now(),
+        });
+
+        const reference = screen.getByRole("button", {
+            name: "CHANGELOG.md (line 66)",
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+        fireEvent.click(reference);
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().pendingLineReveal).toEqual({
+                noteId: "CHANGELOG.md",
+                line: 66,
+                endLine: null,
+            });
+        });
+    });
+
+    it("renders sent file attachments with the shared icon-led style", () => {
+        setVaultEntries([
+            {
+                id: "vision-semanal-2026-06-22.html",
+                path: "/vault/vision-semanal-2026-06-22.html",
+                relative_path: "vision-semanal-2026-06-22.html",
+                title: "vision-semanal-2026-06-22.html",
+                file_name: "vision-semanal-2026-06-22.html",
+                extension: "html",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/html",
+            },
+        ]);
+        // Sent composer attachments use the compact [📎 label] transcript token.
+        renderMessage({
+            id: "user:file-attachment-reference-serialized",
+            role: "user",
+            kind: "text",
+            content: "[📎 vision-semanal-2026-06-22.html] actualiza esto",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:file-serialized",
+                    type: "file",
+                    noteId: null,
+                    label: "vision-semanal-2026-06-22.html",
+                    path: null,
+                    filePath: "/vault/vision-semanal-2026-06-22.html",
+                    mimeType: "text/html",
+                },
+            ],
+        });
+
+        const reference = screen.getByRole("button", {
+            name: "vision-semanal-2026-06-22.html",
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+        expect(
+            screen.queryByText("📎 vision-semanal-2026-06-22.html"),
+        ).not.toBeInTheDocument();
+    });
+
     it("opens the mention context menu in a new tab", async () => {
         setVaultNotes([
             {

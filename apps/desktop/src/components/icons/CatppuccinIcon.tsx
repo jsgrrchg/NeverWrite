@@ -1,15 +1,9 @@
 import {
-    FALLBACK_CATPPUCCIN_ICON,
-    getCatppuccinIcon,
     getCatppuccinViewBox,
     getThemedCatppuccinIconBody,
-    resolveAvailableCatppuccinIcon,
     type CatppuccinIconName,
 } from "./catppuccin-icons";
-
-function scaleIconSize(value: number): string {
-    return `calc(${value}px * var(--file-tree-scale, 1))`;
-}
+import { resolveCatppuccinIconPresentation } from "./catppuccinIconPresentation";
 
 export function CatppuccinIcon({
     className,
@@ -24,32 +18,25 @@ export function CatppuccinIcon({
     readonly scaled?: boolean;
     readonly size?: number | string;
 }) {
-    const resolvedIconName = resolveAvailableCatppuccinIcon(
+    const { dimension, icon } = resolveCatppuccinIconPresentation(
         iconName,
-        FALLBACK_CATPPUCCIN_ICON,
+        size,
+        scaled,
     );
-    const icon = getCatppuccinIcon(resolvedIconName);
 
     if (!icon) {
         return null;
     }
-
-    const dim =
-        typeof size === "number"
-            ? scaled
-                ? scaleIconSize(size)
-                : `${size}px`
-            : size;
 
     return (
         <svg
             aria-hidden="true"
             className={className}
             focusable="false"
-            height={dim}
+            height={dimension}
             style={{ display: "block", flexShrink: 0, opacity }}
             viewBox={getCatppuccinViewBox(icon)}
-            width={dim}
+            width={dimension}
             xmlns="http://www.w3.org/2000/svg"
             dangerouslySetInnerHTML={{
                 __html: getThemedCatppuccinIconBody(icon.body),

@@ -46,7 +46,7 @@ describe("serializeComposerPartsForAI", () => {
         ];
 
         expect(serializeComposerParts(parts)).toBe(
-            "Review [@Spec] and [@📁 docs] plus [@Lines 10-12] with [📎 guide.md]",
+            "Review [@Spec] and [@📁 docs] plus [@📄 /vault/notes/spec.md#L10-12] with [📎 guide.md]",
         );
         expect(serializeComposerPartsForAI(parts)).toBe(
             "Review /vault/notes/spec.md and /vault/docs plus /vault/notes/spec.md:10-12 with /vault/docs/guide.md",

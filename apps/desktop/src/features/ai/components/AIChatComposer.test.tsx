@@ -31,6 +31,7 @@ afterEach(() => {
         });
     });
     setEditorTabs([], null);
+    useEditorStore.setState({ pendingLineReveal: null });
     setVaultNotes([]);
     setVaultEntries([]);
     vi.restoreAllMocks();
@@ -136,6 +137,126 @@ function setCaret(node: Node, offset: number) {
 }
 
 describe("AIChatComposer mention picker", () => {
+    it("uses the shared icon-led reference style for notes, files, folders, and selections", () => {
+        const { composer } = renderComposer({
+            parts: [
+                {
+                    id: "note-reference",
+                    type: "mention",
+                    noteId: "notes/alpha.md",
+                    label: "Alpha",
+                    path: "/vault/notes/alpha.md",
+                },
+                { id: "space-1", type: "text", text: " " },
+                {
+                    id: "file-reference",
+                    type: "file_mention",
+                    label: "watcher.rs",
+                    path: "/vault/src/watcher.rs",
+                    relativePath: "src/watcher.rs",
+                    mimeType: "text/rust",
+                },
+                { id: "space-2", type: "text", text: " " },
+                {
+                    id: "folder-reference",
+                    type: "folder_mention",
+                    label: "Clips",
+                    folderPath: "/vault/Clips",
+                },
+                { id: "space-3", type: "text", text: " " },
+                {
+                    id: "selection-reference",
+                    type: "selection_mention",
+                    noteId: "CHANGELOG.md",
+                    label: "Selected changelog line",
+                    path: "/vault/CHANGELOG.md",
+                    selectedText: "Changed behavior",
+                    startLine: 66,
+                    endLine: 66,
+                },
+                { id: "space-4", type: "text", text: " " },
+                {
+                    id: "file-attachment-reference",
+                    type: "file_attachment",
+                    label: "vision-semanal-2026-06-22.html",
+                    filePath: "/vault/vision-semanal-2026-06-22.html",
+                    mimeType: "text/html",
+                },
+            ],
+        });
+
+        for (const kind of [
+            "mention",
+            "file_mention",
+            "folder_mention",
+            "selection_mention",
+            "file_attachment",
+        ]) {
+            const reference = composer.querySelector<HTMLElement>(
+                `[data-kind="${kind}"]`,
+            );
+            expect(reference).not.toBeNull();
+            expect(reference).toHaveStyle({
+                background: "transparent",
+                padding: "0px",
+            });
+            expect(reference?.querySelector("svg")).not.toBeNull();
+        }
+        expect(screen.getByText("CHANGELOG.md (line 66)")).toBeInTheDocument();
+        expect(
+            screen.getByText("vision-semanal-2026-06-22.html"),
+        ).toBeInTheDocument();
+    });
+
+    it("opens composer selection references at their line in a new tab", async () => {
+        setVaultNotes([
+            {
+                id: "CHANGELOG.md",
+                title: "CHANGELOG",
+                path: "/vault/CHANGELOG.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "existing-changelog",
+                noteId: "CHANGELOG.md",
+                title: "CHANGELOG",
+                content: "# Changelog",
+            },
+        ]);
+        renderComposer({
+            parts: [
+                {
+                    id: "selection-reference",
+                    type: "selection_mention",
+                    noteId: "CHANGELOG.md",
+                    label: "Selected changelog line",
+                    path: "/vault/CHANGELOG.md",
+                    selectedText: "Changed behavior",
+                    startLine: 66,
+                    endLine: 66,
+                },
+            ],
+        });
+
+        fireEvent.contextMenu(screen.getByText("CHANGELOG.md (line 66)"), {
+            clientX: 40,
+            clientY: 60,
+        });
+        fireEvent.click(screen.getByText("Open in New Tab"));
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().tabs).toHaveLength(2);
+            expect(useEditorStore.getState().pendingLineReveal).toEqual({
+                noteId: "CHANGELOG.md",
+                line: 66,
+                endLine: null,
+            });
+        });
+    });
+
     it("keeps the composer shell full-width while capping the inner content", () => {
         renderComposer();
 

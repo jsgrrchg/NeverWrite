@@ -24,6 +24,11 @@ import {
     type AIChatSlashCommand,
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
+import { presentComposerVaultReference } from "./chatVaultReferenceDom";
+import {
+    getChatVaultReferenceBasename,
+    serializeChatVaultReferenceTarget,
+} from "../chatVaultReferenceTarget";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
@@ -40,7 +45,10 @@ import type {
     ReactNode,
 } from "react";
 import { openChatNoteById } from "../chatNoteNavigation";
-import { openAiEditedFileByAbsolutePath } from "../chatFileNavigation";
+import {
+    canOpenAiEditedFileByAbsolutePath,
+    openAiEditedFileByAbsolutePath,
+} from "../chatFileNavigation";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
 import {
     useVaultStore,
@@ -246,8 +254,13 @@ function createMentionNode(
     element.dataset.label = part.label;
     element.dataset.path = part.path;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent);
+    presentComposerVaultReference(element, {
+        interactive: true,
+        kind: "note",
+        label: part.label,
+        metrics,
+        path: part.path,
+    });
     return element;
 }
 
@@ -264,8 +277,14 @@ function createFileMentionNode(
         element.dataset.mimeType = part.mimeType;
     }
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
+    presentComposerVaultReference(element, {
+        interactive: true,
+        kind: "file",
+        label: part.label,
+        metrics,
+        mimeType: part.mimeType,
+        path: part.path,
+    });
     return element;
 }
 
@@ -278,8 +297,12 @@ function createFolderMentionNode(
     element.dataset.folderPath = part.folderPath;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.folder);
+    presentComposerVaultReference(element, {
+        kind: "folder",
+        label: part.label,
+        metrics,
+        path: part.folderPath,
+    });
     return element;
 }
 
@@ -316,9 +339,14 @@ function createSelectionMentionNode(
     element.dataset.startLine = String(part.startLine);
     element.dataset.endLine = String(part.endLine);
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent, {
-        compact: true,
+    presentComposerVaultReference(element, {
+        interactive: true,
+        kind: part.noteId ? "note" : "file",
+        label: getChatVaultReferenceBasename(part.path),
+        line: part.startLine,
+        endLine: part.endLine,
+        metrics,
+        path: part.path,
     });
     return element;
 }
@@ -351,8 +379,14 @@ function createFileAttachmentNode(
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
+    presentComposerVaultReference(element, {
+        interactive: canOpenAiEditedFileByAbsolutePath(part.filePath),
+        kind: "file",
+        label: part.label,
+        metrics,
+        mimeType: part.mimeType,
+        path: part.filePath,
+    });
     return element;
 }
 
@@ -764,9 +798,32 @@ function getComposerPillElementFromNode(node: EventTarget | null) {
               : null;
     return (
         element?.closest<HTMLElement>(
-            "[data-kind='mention'], [data-kind='file_mention']",
+            "[data-kind='mention'], [data-kind='file_mention'], [data-kind='selection_mention'], [data-kind='file_attachment']",
         ) ?? null
     );
+}
+
+function getComposerPillFileReference(element: HTMLElement | null) {
+    if (element?.dataset.kind === "file_mention") {
+        return element.dataset.path ?? null;
+    }
+    if (element?.dataset.kind === "file_attachment") {
+        return element.dataset.filePath ?? null;
+    }
+    if (
+        element?.dataset.kind === "selection_mention" &&
+        element.dataset.path &&
+        element.dataset.startLine
+    ) {
+        return serializeChatVaultReferenceTarget({
+            path: element.dataset.path,
+            line: Number(element.dataset.startLine),
+            endLine: element.dataset.endLine
+                ? Number(element.dataset.endLine)
+                : null,
+        });
+    }
+    return null;
 }
 
 function getComposerPillTargetFromContextMenuEvent(
@@ -777,11 +834,11 @@ function getComposerPillTargetFromContextMenuEvent(
         const mention = getComposerPillElementFromNode(node);
         if (mention) {
             return {
-                noteId: mention.dataset.noteId ?? null,
-                filePath:
-                    mention.dataset.kind === "file_mention"
-                        ? (mention.dataset.path ?? null)
+                noteId:
+                    mention.dataset.kind === "mention"
+                        ? (mention.dataset.noteId ?? null)
                         : null,
+                filePath: getComposerPillFileReference(mention),
             };
         }
     }
@@ -789,11 +846,11 @@ function getComposerPillTargetFromContextMenuEvent(
     const hovered = document.elementFromPoint(event.clientX, event.clientY);
     const mention = getComposerPillElementFromNode(hovered);
     return {
-        noteId: mention?.dataset.noteId ?? null,
-        filePath:
-            mention?.dataset.kind === "file_mention"
-                ? (mention.dataset.path ?? null)
+        noteId:
+            mention?.dataset.kind === "mention"
+                ? (mention.dataset.noteId ?? null)
                 : null,
+        filePath: getComposerPillFileReference(mention),
     };
 }
 

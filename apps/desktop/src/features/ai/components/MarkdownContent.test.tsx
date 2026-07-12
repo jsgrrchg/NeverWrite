@@ -71,6 +71,117 @@ describe("MarkdownContent", () => {
         ).not.toBeInTheDocument();
     });
 
+    it("resolves unique extensionless note links and preserves line targets", async () => {
+        const title = "Petróleo - Ficha de análisis";
+        setVaultNotes([
+            {
+                id: "Análisis/Petróleo - Ficha de análisis.md",
+                title,
+                path: "/vault/Análisis/Petróleo - Ficha de análisis.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "petroleo-tab",
+                noteId: "Análisis/Petróleo - Ficha de análisis.md",
+                title,
+                content: "# Petróleo",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content={`Revisa [${title}](${encodeURIComponent(title)}#L66).`}
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const reference = screen.getByRole("button", {
+            name: `${title} (line 66)`,
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+
+        fireEvent.click(reference);
+        await waitFor(() => {
+            expect(useEditorStore.getState().pendingLineReveal).toEqual({
+                noteId: "Análisis/Petróleo - Ficha de análisis.md",
+                line: 66,
+                endLine: null,
+            });
+        });
+    });
+
+    it("does not choose an arbitrary extensionless note when titles are ambiguous", () => {
+        setVaultNotes([
+            {
+                id: "research/Brief.md",
+                title: "Brief",
+                path: "/vault/research/Brief.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+            {
+                id: "archive/Brief.md",
+                title: "Brief",
+                path: "/vault/archive/Brief.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See [Brief](Brief)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(document.body).toHaveTextContent("See Brief.");
+        expect(screen.queryByRole("button", { name: "Brief" })).toBeNull();
+        expect(screen.queryByRole("link", { name: "Brief" })).toBeNull();
+    });
+
+    it("keeps unresolved relative markdown links non-interactive", () => {
+        setVaultNotes([]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See [missing note](missing-note)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(document.body).toHaveTextContent("See missing note.");
+        expect(
+            screen.queryByRole("link", { name: "missing note" }),
+        ).toBeNull();
+    });
+
+    it("does not reinterpret external file-like URLs as vault references", () => {
+        renderComponent(
+            <MarkdownContent
+                content="Read [PDF docs](https://example.com/guide.pdf)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(screen.getByRole("link", { name: "PDF docs" })).toHaveAttribute(
+            "href",
+            "https://example.com/guide.pdf",
+        );
+        expect(screen.queryByRole("button", { name: "PDF docs" })).toBeNull();
+    });
+
     it("renders chat file references as icon-led links", () => {
         setVaultEntries([
             {
@@ -102,6 +213,82 @@ describe("MarkdownContent", () => {
             padding: "0px",
         });
         expect(reference.querySelector("svg")).not.toBeNull();
+    });
+
+    it("renders line fragments in the shared style and reveals note lines", async () => {
+        setVaultNotes([
+            {
+                id: "CHANGELOG.md",
+                title: "CHANGELOG",
+                path: "/vault/CHANGELOG.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "changelog-tab",
+                noteId: "CHANGELOG.md",
+                title: "CHANGELOG",
+                content: "# Changelog",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See [CHANGELOG.md](CHANGELOG.md#L66)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const reference = screen.getByRole("button", {
+            name: "CHANGELOG.md (line 66)",
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+
+        fireEvent.click(reference);
+        await waitFor(() => {
+            expect(useEditorStore.getState().pendingLineReveal).toEqual({
+                noteId: "CHANGELOG.md",
+                line: 66,
+                endLine: null,
+            });
+        });
+    });
+
+    it("renders line ranges for absolute text file references", () => {
+        setVaultEntries([
+            {
+                id: "src/main.ts",
+                path: "/vault/src/main.ts",
+                relative_path: "src/main.ts",
+                title: "main.ts",
+                file_name: "main.ts",
+                extension: "ts",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/typescript",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See `/vault/src/main.ts#L10-L12`."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "main.ts (lines 10–12)" }),
+        ).toBeInTheDocument();
     });
 
     it("renders indexed folders as non-interactive icon links in every supported syntax", () => {
