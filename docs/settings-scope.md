@@ -87,6 +87,7 @@ the same Settings stores.
 | AI / Context | `autoContextEnabled` | Per-vault, global fallback | `false` | `neverwrite.ai.auto-context:<vault-path>` | Legacy `neverwrite.ai.preferences.autoContextEnabled` is still read as fallback. |
 | AI / Chat | `chatFontFamily` | Global | `system` | `neverwrite.ai.preferences` | Validated with editor font-family normalization. |
 | AI / Chat | `chatFontSize` | Global | `14` | `neverwrite.ai.preferences` | Chat transcript font size. |
+| AI / Chat | `toolActivityDisplayMode` | Global | `collapsed` | `neverwrite.ai.preferences` | Controls whether tool activity is expanded, collapsed, or hidden. Hidden activity is temporarily revealed for search results and explicit message navigation. |
 | AI / Chat | `historyRetentionDays` | Global preference, applied to current vault histories | `0` | `neverwrite.ai.preferences` | `0` means forever; pruning operates on the currently open vault's `.neverwrite/sessions/`. |
 | AI / Composer | `requireCmdEnterToSend` | Global | `false` | `neverwrite.ai.preferences` | Changes Enter behavior in the AI composer. |
 | AI / Composer | `contextUsageBarEnabled` | Global | `true` | `neverwrite.ai.preferences` | Shows or hides composer context usage. |
