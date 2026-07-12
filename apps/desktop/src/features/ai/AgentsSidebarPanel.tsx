@@ -94,6 +94,11 @@ type EditingFolder = {
     name: string;
 };
 
+type ChatSidebarDropTarget =
+    | { kind: "folder"; folderId: string }
+    | { kind: "unfiled" }
+    | null;
+
 function deriveActivityIndicator(
     session: ActivitySession,
 ): AgentsSidebarActivityIndicator {
@@ -228,7 +233,10 @@ function scaleMetric(base: number, scale: number, min: number) {
     return Math.max(min, Math.round(base * scale * 10) / 10);
 }
 
-function getFolderIdAtPoint(clientX: number, clientY: number) {
+function getChatSidebarDropTargetAtPoint(
+    clientX: number,
+    clientY: number,
+): ChatSidebarDropTarget {
     if (
         typeof document === "undefined" ||
         typeof document.elementFromPoint !== "function"
@@ -237,10 +245,12 @@ function getFolderIdAtPoint(clientX: number, clientY: number) {
     }
     const target = document.elementFromPoint(clientX, clientY);
     if (!(target instanceof Element)) return null;
-    return (
-        target.closest<HTMLElement>("[data-chat-folder-id]")?.dataset
-            .chatFolderId ?? null
-    );
+    const folderId = target.closest<HTMLElement>("[data-chat-folder-id]")
+        ?.dataset.chatFolderId;
+    if (folderId) return { kind: "folder", folderId };
+    return target.closest("[data-chat-unfiled-drop-zone]")
+        ? { kind: "unfiled" }
+        : null;
 }
 
 function buildAgentsSidebarMetrics(scalePercent: number): {
@@ -596,6 +606,7 @@ export function AgentsSidebarPanel() {
     const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(
         null,
     );
+    const [isDraggingOverUnfiled, setIsDraggingOverUnfiled] = useState(false);
 
     const newChatMenuEntries = useMemo<ContextMenuEntry[]>(() => {
         const sortedRuntimes = [...runtimes].sort((left, right) => {
@@ -729,6 +740,15 @@ export function AgentsSidebarPanel() {
                 runtimeId: session.runtimeId,
             });
         };
+        const updateFolderDropTarget = (clientX: number, clientY: number) => {
+            const target = canPin
+                ? getChatSidebarDropTargetAtPoint(clientX, clientY)
+                : null;
+            setDragOverFolderId(
+                target?.kind === "folder" ? target.folderId : null,
+            );
+            setIsDraggingOverUnfiled(target?.kind === "unfiled");
+        };
 
         return (
             <AgentsSidebarItem
@@ -767,9 +787,7 @@ export function AgentsSidebarPanel() {
                 onContextMenu={(event) => handleContextMenu(event, session)}
                 onDragStart={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
-                    setDragOverFolderId(
-                        canPin ? getFolderIdAtPoint(clientX, clientY) : null,
-                    );
+                    updateFolderDropTarget(clientX, clientY);
                     emitAgentSidebarDrag({
                         phase: "start",
                         x: clientX,
@@ -780,9 +798,7 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragMove={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
-                    setDragOverFolderId(
-                        canPin ? getFolderIdAtPoint(clientX, clientY) : null,
-                    );
+                    updateFolderDropTarget(clientX, clientY);
                     emitAgentSidebarDrag({
                         phase: "move",
                         x: clientX,
@@ -793,18 +809,21 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragEnd={({ clientX, clientY }) => {
                     setDragPreview(null);
-                    const folderId = canPin
-                        ? getFolderIdAtPoint(clientX, clientY)
+                    const target = canPin
+                        ? getChatSidebarDropTargetAtPoint(clientX, clientY)
                         : null;
-                    const movedToFolder = Boolean(folderId);
-                    if (folderId) {
-                        moveSessionToFolder(session.sessionId, folderId);
+                    const movedWithinSidebar = target !== null;
+                    if (target?.kind === "folder") {
+                        moveSessionToFolder(session.sessionId, target.folderId);
+                    } else if (target?.kind === "unfiled") {
+                        moveSessionToFolder(session.sessionId, null);
                     }
                     setDragOverFolderId(null);
+                    setIsDraggingOverUnfiled(false);
                     emitAgentSidebarDrag({
-                        // Folder drops belong to the sidebar; prevent the
+                        // Sidebar drops belong to the sidebar; prevent the
                         // workspace pane drop handler from acting as well.
-                        phase: movedToFolder ? "cancel" : "end",
+                        phase: movedWithinSidebar ? "cancel" : "end",
                         x: clientX,
                         y: clientY,
                         sessionId: session.sessionId,
@@ -814,6 +833,7 @@ export function AgentsSidebarPanel() {
                 onDragCancel={() => {
                     setDragPreview(null);
                     setDragOverFolderId(null);
+                    setIsDraggingOverUnfiled(false);
                     emitAgentSidebarDrag({
                         phase: "cancel",
                         x: 0,
@@ -1131,7 +1151,10 @@ export function AgentsSidebarPanel() {
                         <AgentsSidebarSection
                             title="All"
                             count={unfiledGroups.length}
-                            showHeader={showOpenAllHeaders}
+                            showHeader={showOpenAllHeaders || orderedFolders.length > 0}
+                            showWhenEmpty={orderedFolders.length > 0}
+                            dropTarget="all"
+                            isDropTarget={isDraggingOverUnfiled}
                             headerMetrics={metrics.header}
                         >
                             {unfiledGroups.map(renderGroup)}

@@ -416,6 +416,58 @@ describe("AgentsSidebarPanel", () => {
         }
     });
 
+    it("removes a root chat from its folder when it is dropped on All", () => {
+        const alpha = createSession("session-alpha", "Alpha task");
+        const folderId = useChatFoldersStore
+            .getState()
+            .createFolder("Research");
+        expect(folderId).toBeTruthy();
+        useChatFoldersStore
+            .getState()
+            .moveSession(alpha.sessionId, folderId);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [alpha.sessionId]: alpha },
+            sessionOrder: [alpha.sessionId],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+        const allDropZone = document.querySelector(
+            "[data-chat-unfiled-drop-zone]",
+        );
+        expect(allDropZone).not.toBeNull();
+        Object.defineProperty(document, "elementFromPoint", {
+            configurable: true,
+            value: vi.fn(() => allDropZone),
+        });
+
+        try {
+            const row = screen.getByTestId("agent-sidebar-item");
+            firePointer(row, "pointerdown", {
+                button: 0,
+                buttons: 1,
+                pointerId: 10,
+                clientX: 10,
+                clientY: 10,
+            });
+            firePointer(window, "pointermove", {
+                pointerId: 10,
+                buttons: 1,
+                clientX: 20,
+                clientY: 10,
+            });
+            firePointer(window, "pointerup", {
+                pointerId: 10,
+                clientX: 20,
+                clientY: 10,
+            });
+
+            expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({});
+        } finally {
+            delete (document as Partial<Document>).elementFromPoint;
+        }
+    });
+
     it("completes an agent row drag when pointerup is received on window", () => {
         const alpha = createSession("session-alpha", "Alpha task");
         useChatStore.setState((state) => ({

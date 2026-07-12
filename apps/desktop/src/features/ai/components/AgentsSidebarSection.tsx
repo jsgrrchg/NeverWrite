@@ -4,6 +4,9 @@ interface AgentsSidebarSectionProps {
     title: string;
     count: number;
     showHeader?: boolean;
+    showWhenEmpty?: boolean;
+    isDropTarget?: boolean;
+    dropTarget?: "all";
     children: ReactNode;
     headerMetrics: {
         fontSize: number;
@@ -20,12 +23,26 @@ export function AgentsSidebarSection({
     title,
     count,
     showHeader = true,
+    showWhenEmpty = false,
+    isDropTarget = false,
+    dropTarget,
     children,
     headerMetrics,
 }: AgentsSidebarSectionProps) {
-    if (count === 0) return null;
+    if (count === 0 && !showWhenEmpty) return null;
     return (
-        <section className="mt-3 flex flex-col first:mt-0">
+        <section
+            className="mt-3 flex flex-col rounded first:mt-0"
+            data-chat-unfiled-drop-zone={dropTarget === "all" || undefined}
+            style={{
+                backgroundColor: isDropTarget
+                    ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                    : "transparent",
+                outline: isDropTarget
+                    ? "1px solid color-mix(in srgb, var(--accent) 55%, transparent)"
+                    : "1px solid transparent",
+            }}
+        >
             {showHeader ? (
                 <div
                     className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.09em]"
