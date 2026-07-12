@@ -929,6 +929,77 @@ function replaceAiSessionTabReference(
     return tab;
 }
 
+function removeDeletedSessionFromChatTab(
+    tab: ChatTab,
+    sessionId: string,
+): ChatTab | null {
+    const normalized = ensureChatTabHistory(tab);
+    if (normalized.sessionId === sessionId) {
+        // This physical tab is currently presenting the deleted session, so
+        // closing it is clearer than leaving an empty chat view behind.
+        return null;
+    }
+
+    const history = normalized.history.filter(
+        (entry) => entry.sessionId !== sessionId,
+    );
+    if (history.length === normalized.history.length) {
+        return tab;
+    }
+
+    // The current entry was retained. Its new position is exactly the number
+    // of retained entries that preceded it, so Back/Forward stay on the same
+    // visible session after the deleted entry is pruned.
+    const historyIndex = normalized.history
+        .slice(0, normalized.historyIndex)
+        .filter((entry) => entry.sessionId !== sessionId).length;
+    return buildChatTabFromHistory(normalized.id, history, historyIndex);
+}
+
+function removeDeletedSessionFromWorkspace(
+    workspace: Pick<
+        EditorWorkspaceState,
+        "panes" | "focusedPaneId" | "layoutTree"
+    >,
+    sessionId: string,
+) {
+    let changed = false;
+    const panes = workspace.panes.map((pane) => {
+        let nextPane = pane;
+        for (const tab of pane.tabs) {
+            if (isChatTab(tab) && tab.sessionId === sessionId) {
+                nextPane = createEditorPaneState(
+                    pane.id,
+                    removeTabFromWorkspaceState(nextPane, tab.id),
+                );
+                changed = true;
+            }
+        }
+
+        const tabs = nextPane.tabs.map((tab) => {
+            if (!isChatTab(tab)) return tab;
+            const nextTab = removeDeletedSessionFromChatTab(tab, sessionId);
+            // A matching current session was already closed in the first pass.
+            // This guard makes the invariant explicit if a malformed tab slips
+            // through with its current session absent from pane.tabs.
+            if (!nextTab) return tab;
+            if (nextTab !== tab) changed = true;
+            return nextTab;
+        });
+
+        return tabs === nextPane.tabs || tabs.every((tab, index) => tab === nextPane.tabs[index])
+            ? nextPane
+            : createEditorPaneState(nextPane.id, { ...nextPane, tabs });
+    });
+
+    if (!changed) return null;
+    return removeEmptyPanesFromWorkspace({
+        panes,
+        focusedPaneId: workspace.focusedPaneId,
+        layoutTree: workspace.layoutTree,
+    });
+}
+
 export function selectEditorWorkspaceTabs<
     TState extends EditorWorkspaceReadableState,
 >(state: TState) {
@@ -2633,10 +2704,19 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         closeChat: (sessionId) => {
-            const tab = selectEditorWorkspaceTabs(get()).find(
-                (t) => isChatTab(t) && t.sessionId === sessionId,
-            );
-            if (tab) get().closeTab(tab.id);
+            set((state) => {
+                const workspace = getEffectivePaneWorkspace(state);
+                const cleaned = removeDeletedSessionFromWorkspace(
+                    workspace,
+                    sessionId,
+                );
+                if (!cleaned) return state;
+
+                return {
+                    ...state,
+                    ...buildWorkspaceSnapshot(cleaned),
+                };
+            });
         },
 
         openTerminal: (options) => {

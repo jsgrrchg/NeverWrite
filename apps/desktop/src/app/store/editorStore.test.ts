@@ -1559,6 +1559,53 @@ describe("editorStore tab history mode", () => {
         ).toEqual(["session-a", "session-a"]);
     });
 
+    it("closes every physical chat tab for a deleted session", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-a", {
+            forceNewTab: true,
+            title: "First",
+        });
+        useEditorStore.getState().openChat("session-b", {
+            forceNewTab: true,
+            title: "Second",
+        });
+
+        useEditorStore.getState().closeChat("session-a");
+
+        expect(
+            useEditorStore.getState().tabs.filter(isChatTab).map((tab) => ({
+                id: tab.id,
+                sessionId: tab.sessionId,
+            })),
+        ).toHaveLength(1);
+        expect(
+            useEditorStore.getState().tabs.filter(isChatTab)[0]?.sessionId,
+        ).toBe("session-b");
+    });
+
+    it("prunes a deleted session from other chat tab histories", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+        useEditorStore.getState().openChat("session-c", { title: "Third" });
+
+        useEditorStore.getState().closeChat("session-b");
+
+        const tab = useEditorStore.getState().tabs.find(isChatTab);
+        expect(tab).toMatchObject({
+            sessionId: "session-c",
+            historyIndex: 1,
+            history: [
+                { sessionId: "session-a", title: "First" },
+                { sessionId: "session-c", title: "Third" },
+            ],
+        });
+
+        useEditorStore.getState().goBack();
+        expect(useEditorStore.getState().tabs.find(isChatTab)?.sessionId).toBe(
+            "session-a",
+        );
+    });
+
     it("truncates forward chat history after opening another AI session", () => {
         useEditorStore.getState().openChat("session-a", { title: "First" });
         useEditorStore.getState().openChat("session-b", { title: "Second" });
