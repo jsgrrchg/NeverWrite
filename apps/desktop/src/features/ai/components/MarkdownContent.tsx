@@ -27,6 +27,7 @@ import { ChatInlinePill } from "./ChatInlinePill";
 import { ChatVaultReference } from "./ChatVaultReference";
 import type { ChatPillMetrics } from "./chatPillMetrics";
 import {
+    findChatNoteByReference,
     openChatNoteByReference,
     openChatMapByReference,
 } from "../chatNoteNavigation";
@@ -113,6 +114,31 @@ function resolveVaultNoteReference(
         ...parsed,
         path: resolvedPath,
     };
+}
+
+function resolveIndexedVaultNoteReference(
+    value: string,
+    options?: { allowRelative?: boolean },
+) {
+    const explicitReference = resolveVaultNoteReference(value, options);
+    if (explicitReference) return explicitReference;
+
+    const target = parseChatVaultReferenceTarget(value);
+    if (!target.path || isExternalReference(target.path)) return null;
+    if (!options?.allowRelative && !target.path.startsWith("/")) return null;
+
+    const note = findChatNoteByReference(target.path);
+    if (!note) return null;
+    return {
+        ...target,
+        path: note.path,
+        kind: "note" as const,
+    };
+}
+
+function isOpenableExternalReference(value: string) {
+    const trimmed = value.trim();
+    return /^(?:https?:|mailto:)/i.test(trimmed) || trimmed.startsWith("//");
 }
 
 function parseExcalidrawReference(value: string) {
@@ -643,28 +669,36 @@ function renderInlineMarkdown(
                 // Assistant output may include literal "%" characters in links.
                 // Keep rendering resilient when the URL is not valid URI-encoded text.
                 const decoded = safeDecodeUriComponent(url);
-                const parsedUrlReference = resolveVaultNoteReference(decoded, {
-                    allowRelative: true,
-                });
-                const parsedLabelReference = resolveVaultNoteReference(
-                    linkMatch[1],
-                    {
-                        allowRelative: true,
-                    },
-                );
+                const isExternalTarget = isExternalReference(decoded);
+                const parsedUrlReference = !isExternalTarget
+                    ? resolveIndexedVaultNoteReference(decoded, {
+                          allowRelative: true,
+                      })
+                    : null;
+                const parsedLabelReference = !isExternalTarget
+                    ? resolveIndexedVaultNoteReference(linkMatch[1], {
+                          allowRelative: true,
+                      })
+                    : null;
                 const parsedReference =
                     parsedUrlReference ?? parsedLabelReference;
-                const excalidrawRef =
-                    parseExcalidrawReference(decoded) ??
-                    parseExcalidrawReference(linkMatch[1]);
-                const pdfLinkRef =
-                    parsePdfReference(decoded) ??
-                    parsePdfReference(linkMatch[1]);
-                const textFileRef =
-                    parseRelativeTextFileReference(decoded) ??
-                    parseRelativeTextFileReference(linkMatch[1]);
+                const excalidrawRef = !isExternalTarget
+                    ? (parseExcalidrawReference(decoded) ??
+                      parseExcalidrawReference(linkMatch[1]))
+                    : null;
+                const pdfLinkRef = !isExternalTarget
+                    ? (parsePdfReference(decoded) ??
+                      parsePdfReference(linkMatch[1]))
+                    : null;
+                const textFileRef = !isExternalTarget
+                    ? (parseRelativeTextFileReference(decoded) ??
+                      parseRelativeTextFileReference(linkMatch[1]))
+                    : null;
                 const folderRef =
-                    !excalidrawRef && !pdfLinkRef && !textFileRef
+                    !isExternalTarget &&
+                    !excalidrawRef &&
+                    !pdfLinkRef &&
+                    !textFileRef
                         ? (parseVaultFolderReference(decoded, {
                               allowRelative: true,
                           }) ??
@@ -751,7 +785,7 @@ function renderInlineMarkdown(
                     parts.push(
                         renderReferencePill({
                             key,
-                            label: noteReferenceLabel(parsedReference),
+                            label: linkMatch[1].trim(),
                             title: decoded,
                             variant: "accent",
                             metrics: pillMetrics,
@@ -766,7 +800,11 @@ function renderInlineMarkdown(
                         }),
                     );
                 } else {
-                    parts.push(renderExternalLink(key, url, linkMatch[1]));
+                    parts.push(
+                        isOpenableExternalReference(url)
+                            ? renderExternalLink(key, url, linkMatch[1])
+                            : linkMatch[1],
+                    );
                 }
             }
         } else if (match[6]) {
