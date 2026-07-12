@@ -1000,6 +1000,23 @@ function removeDeletedSessionFromWorkspace(
     });
 }
 
+function removeDeletedSessionFromRecentlyClosedTabs(
+    entries: RecentlyClosedTab[],
+    sessionId: string,
+): RecentlyClosedTab[] {
+    let changed = false;
+    const nextEntries = entries.flatMap((entry) => {
+        if (!isChatTab(entry.tab)) return [entry];
+
+        const nextTab = removeDeletedSessionFromChatTab(entry.tab, sessionId);
+        if (nextTab === entry.tab) return [entry];
+
+        changed = true;
+        return nextTab ? [{ ...entry, tab: nextTab }] : [];
+    });
+    return changed ? nextEntries : entries;
+}
+
 export function selectEditorWorkspaceTabs<
     TState extends EditorWorkspaceReadableState,
 >(state: TState) {
@@ -2710,11 +2727,19 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                     workspace,
                     sessionId,
                 );
-                if (!cleaned) return state;
+                const recentlyClosedTabs =
+                    removeDeletedSessionFromRecentlyClosedTabs(
+                        state.recentlyClosedTabs,
+                        sessionId,
+                    );
+                if (!cleaned && recentlyClosedTabs === state.recentlyClosedTabs) {
+                    return state;
+                }
 
                 return {
                     ...state,
-                    ...buildWorkspaceSnapshot(cleaned),
+                    ...(cleaned ? buildWorkspaceSnapshot(cleaned) : {}),
+                    recentlyClosedTabs,
                 };
             });
         },

@@ -1583,6 +1583,38 @@ describe("editorStore tab history mode", () => {
         ).toBe("session-b");
     });
 
+    it("does not reopen a chat tab after its session is deleted", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        const tabId = useEditorStore.getState().activeTabId;
+        expect(tabId).not.toBeNull();
+
+        useEditorStore.getState().closeTab(tabId!);
+        expect(useEditorStore.getState().recentlyClosedTabs).toHaveLength(1);
+
+        useEditorStore.getState().closeChat("session-a");
+        useEditorStore.getState().reopenLastClosedTab();
+
+        expect(useEditorStore.getState().recentlyClosedTabs).toHaveLength(0);
+        expect(useEditorStore.getState().tabs).toHaveLength(0);
+    });
+
+    it("prunes deleted sessions from recently closed chat histories", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-b", { title: "Second" });
+        const tabId = useEditorStore.getState().activeTabId;
+        expect(tabId).not.toBeNull();
+
+        useEditorStore.getState().closeTab(tabId!);
+        useEditorStore.getState().closeChat("session-a");
+        useEditorStore.getState().reopenLastClosedTab();
+
+        expect(useEditorStore.getState().tabs.find(isChatTab)).toMatchObject({
+            sessionId: "session-b",
+            historyIndex: 0,
+            history: [{ sessionId: "session-b", title: "Second" }],
+        });
+    });
+
     it("prunes a deleted session from other chat tab histories", () => {
         useEditorStore.getState().openChat("session-a", { title: "First" });
         useEditorStore.getState().openChat("session-b", { title: "Second" });
