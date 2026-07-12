@@ -24,24 +24,25 @@ describe("chatFoldersStore", () => {
     });
 
     it("normalizes names and persists a created folder", () => {
-        vi.spyOn(crypto, "randomUUID").mockReturnValue("folder-research");
+        const folderId = "00000000-0000-4000-8000-000000000001";
+        vi.spyOn(crypto, "randomUUID").mockReturnValue(folderId);
 
         expect(useChatFoldersStore.getState().createFolder("   \t ")).toBeNull();
         expect(
             useChatFoldersStore
                 .getState()
                 .createFolder("  Research   and   planning  "),
-        ).toBe("folder-research");
+        ).toBe(folderId);
         expect(useChatFoldersStore.getState().folders).toEqual({
-            "folder-research": expect.objectContaining({
-                id: "folder-research",
+            [folderId]: expect.objectContaining({
+                id: folderId,
                 name: "Research and planning",
             }),
         });
         expect(JSON.parse(localStorage.getItem(CHAT_FOLDERS_KEY) ?? "{}")).toEqual(
             expect.objectContaining({
                 folders: expect.objectContaining({
-                    "folder-research": expect.objectContaining({
+                    [folderId]: expect.objectContaining({
                         name: "Research and planning",
                     }),
                 }),
