@@ -1064,7 +1064,7 @@ export function AgentsSidebarPanel() {
             <section
                 key={folder.id}
                 data-chat-folder-id={folder.id}
-                className="mt-3 flex flex-col rounded"
+                className="mt-1 flex flex-col rounded"
                 style={{
                     backgroundColor:
                         dragOverFolderId === folder.id
@@ -1096,7 +1096,7 @@ export function AgentsSidebarPanel() {
                         color: "var(--text-secondary)",
                         opacity: 0.8,
                         fontSize: metrics.header.fontSize,
-                        padding: `${metrics.header.paddingTop}px ${metrics.header.paddingX}px ${metrics.header.paddingBottom}px`,
+                        padding: `${scaleMetric(4, agentsSidebarScale / 100, 3)}px ${metrics.header.paddingX}px ${scaleMetric(3, agentsSidebarScale / 100, 2)}px`,
                     }}
                     title={collapsed ? "Expand folder" : "Collapse folder"}
                     onClick={() => {
@@ -1117,8 +1117,8 @@ export function AgentsSidebarPanel() {
                     }}
                 >
                     <svg
-                        width="11"
-                        height="11"
+                        width="9"
+                        height="9"
                         viewBox="0 0 16 16"
                         fill="none"
                         stroke="currentColor"
@@ -1133,6 +1133,21 @@ export function AgentsSidebarPanel() {
                         }}
                     >
                         <path d="m4 6 4 4 4-4" />
+                    </svg>
+                    <svg
+                        data-chat-folder-icon
+                        aria-hidden="true"
+                        width="12"
+                        height="12"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="shrink-0"
+                    >
+                        <path d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h3l1.4 1.75h5.1a1.5 1.5 0 0 1 1.5 1.5v5.25a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5Z" />
                     </svg>
                     {isRenaming ? (
                         <input
@@ -1174,7 +1189,17 @@ export function AgentsSidebarPanel() {
                     <span style={{ opacity: 0.7 }}>{groups.length}</span>
                 </div>
                 {!collapsed ? (
-                    <div className="flex flex-col gap-0.5">
+                    <div
+                        data-chat-folder-contents={folder.id}
+                        className="flex min-w-0 flex-col gap-0.5"
+                        style={{
+                            marginLeft: scaleMetric(
+                                8,
+                                agentsSidebarScale / 100,
+                                7,
+                            ),
+                        }}
+                    >
                         {groups.length > 0 ? (
                             groups.map(renderGroup)
                         ) : (

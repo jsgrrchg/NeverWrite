@@ -240,6 +240,15 @@ describe("AgentsSidebarPanel", () => {
 
         renderComponent(<AgentsSidebarPanel />);
 
+        expect(
+            document.querySelector('[data-chat-folder-icon]'),
+        ).toBeInTheDocument();
+        expect(
+            document.querySelector<HTMLElement>(
+                `[data-chat-folder-contents="${folderId}"]`,
+            ),
+        ).toHaveStyle({ marginLeft: "8px" });
+
         fireEvent.click(screen.getByTitle("Collapse folder"));
         expect(screen.queryByTestId("agent-sidebar-item")).toBeNull();
 
