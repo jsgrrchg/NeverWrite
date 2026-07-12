@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatFoldersStore } from "./chatFoldersStore";
 
-const CHAT_FOLDERS_KEY = "neverwrite.chats.folders";
+const LEGACY_CHAT_FOLDERS_KEY = "neverwrite.chats.folders";
+const VAULT_PATH = "/vault/research";
+const CHAT_FOLDERS_KEY = `${LEGACY_CHAT_FOLDERS_KEY}:${encodeURIComponent(VAULT_PATH)}`;
 
 function resetFoldersStore() {
     useChatFoldersStore.setState({
+        vaultPath: null,
         folders: {},
+        folderOrder: [],
         sessionFolderIds: {},
         collapsedFolderIds: [],
     });
@@ -15,6 +19,7 @@ describe("chatFoldersStore", () => {
     beforeEach(() => {
         localStorage.clear();
         resetFoldersStore();
+        useChatFoldersStore.getState().setVaultPath(VAULT_PATH);
     });
 
     afterEach(() => {
@@ -56,6 +61,7 @@ describe("chatFoldersStore", () => {
                 research: { id: "research", name: "Research", createdAt: 1 },
                 archive: { id: "archive", name: "Archive", createdAt: 2 },
             },
+            folderOrder: ["research", "archive"],
             sessionFolderIds: {
                 "session-a": "research",
                 "session-b": "archive",
@@ -69,6 +75,7 @@ describe("chatFoldersStore", () => {
             folders: {
                 archive: { id: "archive", name: "Archive", createdAt: 2 },
             },
+            folderOrder: ["archive"],
             sessionFolderIds: { "session-b": "archive" },
             collapsedFolderIds: ["archive"],
         });
@@ -80,6 +87,7 @@ describe("chatFoldersStore", () => {
                 research: { id: "research", name: "Research", createdAt: 1 },
                 archive: { id: "archive", name: "Archive", createdAt: 2 },
             },
+            folderOrder: ["research", "archive"],
             sessionFolderIds: {
                 pending: "research",
                 live: "archive",
@@ -95,6 +103,47 @@ describe("chatFoldersStore", () => {
         expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
             live: "research",
         });
+    });
+
+    it("keeps assignments when a cold-start chat has a persisted identity", () => {
+        useChatFoldersStore.setState({
+            folders: {
+                research: { id: "research", name: "Research", createdAt: 1 },
+            },
+            folderOrder: ["research"],
+            sessionFolderIds: { "history-1": "research" },
+            collapsedFolderIds: [],
+        });
+
+        useChatFoldersStore.getState().reconcile(["persisted:history-1"]);
+
+        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
+            "persisted:history-1": "research",
+        });
+    });
+
+    it("persists a manual folder order", () => {
+        useChatFoldersStore.setState({
+            folders: {
+                research: { id: "research", name: "Research", createdAt: 1 },
+                archive: { id: "archive", name: "Archive", createdAt: 2 },
+                later: { id: "later", name: "Later", createdAt: 3 },
+            },
+            folderOrder: ["research", "archive", "later"],
+        });
+
+        useChatFoldersStore.getState().reorderFolder("later", 0);
+
+        expect(useChatFoldersStore.getState().folderOrder).toEqual([
+            "later",
+            "research",
+            "archive",
+        ]);
+        expect(JSON.parse(localStorage.getItem(CHAT_FOLDERS_KEY) ?? "{}")).toEqual(
+            expect.objectContaining({
+                folderOrder: ["later", "research", "archive"],
+            }),
+        );
     });
 
     it("hydrates only valid folders, assignments, and collapse state", async () => {
@@ -117,13 +166,58 @@ describe("chatFoldersStore", () => {
         const { useChatFoldersStore: hydratedStore } = await import(
             "./chatFoldersStore"
         );
+        hydratedStore.getState().setVaultPath(VAULT_PATH);
 
         expect(hydratedStore.getState()).toMatchObject({
             folders: {
                 valid: { id: "valid", name: "Research", createdAt: 4 },
             },
+            folderOrder: ["valid"],
             sessionFolderIds: { "session-a": "valid" },
             collapsedFolderIds: ["valid"],
         });
+    });
+
+    it("keeps folder assignments isolated per vault", () => {
+        const folderId = useChatFoldersStore.getState().createFolder("Research");
+        expect(folderId).toBeTruthy();
+        useChatFoldersStore.getState().moveSession("session-a", folderId);
+
+        useChatFoldersStore.getState().setVaultPath("/vault/other");
+        expect(useChatFoldersStore.getState()).toMatchObject({
+            folders: {},
+            sessionFolderIds: {},
+        });
+
+        useChatFoldersStore.getState().setVaultPath(VAULT_PATH);
+        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
+            "session-a": folderId,
+        });
+    });
+
+    it("migrates the legacy global catalog into the first opened vault", async () => {
+        localStorage.clear();
+        localStorage.setItem(
+            LEGACY_CHAT_FOLDERS_KEY,
+            JSON.stringify({
+                folders: {
+                    research: { id: "research", name: "Research", createdAt: 1 },
+                },
+                folderOrder: ["research"],
+                sessionFolderIds: { "session-a": "research" },
+                collapsedFolderIds: [],
+            }),
+        );
+        vi.resetModules();
+
+        const { useChatFoldersStore: migratedStore } = await import(
+            "./chatFoldersStore"
+        );
+        migratedStore.getState().setVaultPath(VAULT_PATH);
+
+        expect(migratedStore.getState().sessionFolderIds).toEqual({
+            "session-a": "research",
+        });
+        expect(localStorage.getItem(CHAT_FOLDERS_KEY)).toBeTruthy();
     });
 });

@@ -14,6 +14,23 @@ export function getViewportSafeMenuPosition(
     };
 }
 
+export const CHAT_COMPOSER_PICKER_MAX_HEIGHT = 360;
+
+/**
+ * Keeps composer pickers aligned with the chat column while reserving a small
+ * viewport gutter for narrow windows and detached panes.
+ */
+export function getComposerAnchoredPickerWidth(
+    anchorWidth: number,
+    viewportWidth: number,
+    fallbackWidth = 320,
+    padding = 8,
+): number {
+    const safeViewportWidth = Math.max(0, viewportWidth - padding * 2);
+    const requestedWidth = Math.ceil(anchorWidth) || fallbackWidth;
+    return Math.min(requestedWidth, safeViewportWidth);
+}
+
 export function getViewportSafeCenteredPosition({
     centerX,
     topY,
