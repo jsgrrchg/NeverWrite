@@ -408,6 +408,26 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
+    it("does not open a thread from a nested row control", () => {
+        const session = createSession("session-alpha", "Alpha task");
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.keyDown(
+            screen.getByRole("button", { name: "Pin to sidebar" }),
+            { key: "Enter" },
+        );
+
+        expect(
+            chatPaneMovementMock.openChatSessionInWorkspace,
+        ).not.toHaveBeenCalled();
+    });
+
     it("moves a root chat into a folder when it is dropped on that folder", () => {
         const alpha = createSession("session-alpha", "Alpha task");
         const folderId = useChatFoldersStore
