@@ -103,6 +103,7 @@ describe("AgentsSidebarPanel", () => {
         usePinnedChatsStore.setState({ entries: {} });
         useChatFoldersStore.setState({
             folders: {},
+            folderOrder: [],
             sessionFolderIds: {},
             collapsedFolderIds: [],
         });
@@ -134,6 +135,29 @@ describe("AgentsSidebarPanel", () => {
                 },
             ],
             selectedRuntimeId: "codex-acp",
+            sessionInventoryLoaded: true,
+        });
+    });
+
+    it("does not prune persisted folder assignments while cold-start inventory is loading", () => {
+        useChatFoldersStore.setState({
+            folders: {
+                research: { id: "research", name: "Research", createdAt: 1 },
+            },
+            folderOrder: ["research"],
+            sessionFolderIds: { "saved-session": "research" },
+            collapsedFolderIds: [],
+        });
+        useChatStore.setState({
+            sessionsById: {},
+            sessionOrder: [],
+            sessionInventoryLoaded: false,
+        });
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
+            "saved-session": "research",
         });
     });
 
@@ -216,6 +240,15 @@ describe("AgentsSidebarPanel", () => {
 
         renderComponent(<AgentsSidebarPanel />);
 
+        expect(
+            document.querySelector('[data-chat-folder-icon]'),
+        ).toBeInTheDocument();
+        expect(
+            document.querySelector<HTMLElement>(
+                `[data-chat-folder-contents="${folderId}"]`,
+            ),
+        ).toHaveStyle({ marginLeft: "8px" });
+
         fireEvent.click(screen.getByTitle("Collapse folder"));
         expect(screen.queryByTestId("agent-sidebar-item")).toBeNull();
 
@@ -246,6 +279,59 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.getByTestId("agent-sidebar-item")).toHaveTextContent(
             "Alpha task",
         );
+    });
+
+    it("reorders folders by dragging their headers", () => {
+        const first = useChatFoldersStore.getState().createFolder("First");
+        const second = useChatFoldersStore.getState().createFolder("Second");
+        expect(first).toBeTruthy();
+        expect(second).toBeTruthy();
+        const session = createSession("session-alpha", "Alpha task");
+        useChatFoldersStore.getState().moveSession(session.sessionId, first);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+        renderComponent(<AgentsSidebarPanel />);
+
+        const firstHeader = document.querySelector<HTMLElement>(
+            `[data-chat-folder-header="${first}"]`,
+        );
+        const secondHeader = document.querySelector<HTMLElement>(
+            `[data-chat-folder-header="${second}"]`,
+        );
+        expect(firstHeader).not.toBeNull();
+        expect(secondHeader).not.toBeNull();
+        Object.defineProperty(document, "elementFromPoint", {
+            configurable: true,
+            value: vi.fn(() => secondHeader),
+        });
+        vi.spyOn(secondHeader!, "getBoundingClientRect").mockReturnValue({
+            top: 100,
+            height: 20,
+        } as DOMRect);
+
+        firePointer(firstHeader!, "pointerdown", {
+            clientX: 10,
+            clientY: 10,
+            pointerId: 7,
+        });
+        firePointer(window, "pointermove", {
+            clientX: 10,
+            clientY: 115,
+            pointerId: 7,
+        });
+        firePointer(window, "pointerup", {
+            clientX: 10,
+            clientY: 115,
+            pointerId: 7,
+        });
+
+        expect(useChatFoldersStore.getState().folderOrder).toEqual([
+            second,
+            first,
+        ]);
     });
 
     it("opens Claude Code from the plus menu as a terminal runtime", async () => {

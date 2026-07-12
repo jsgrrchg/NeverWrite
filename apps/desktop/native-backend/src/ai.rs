@@ -2930,6 +2930,19 @@ impl NativeAcpClient {
             .unwrap_or(false)
     }
 
+    fn is_root_session(&self, session_id: &str) -> bool {
+        self.session_state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .sessions
+                    .get(session_id)
+                    .map(|managed| managed.session.parent_session_id.is_none())
+            })
+            .unwrap_or(false)
+    }
+
     fn resolve_app_session_id(&self, runtime_session_id: &str, meta: Option<&Meta>) -> String {
         if let Some(session_id) = self.find_app_session_id(runtime_session_id) {
             return session_id;
@@ -3464,6 +3477,13 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                // The composer owns user messages in root sessions. Some runtimes echo the
+                // expanded prompt here, which can contain internal attachment context and local
+                // paths. User chunks remain meaningful for subagents, whose prompts are not
+                // created by the local composer.
+                if self.is_root_session(&session_id) {
+                    return Ok(());
+                }
                 if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
                     return Ok(());
                 }
@@ -10638,6 +10658,27 @@ mod tests {
         assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
         assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
         assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn root_user_message_chunks_do_not_echo_expanded_runtime_prompts() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, GROK_RUNTIME_ID, "grok-session");
+        let client = test_client_with_state(event_tx, session_state);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "grok-session",
+            SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::from(
+                "<attached_folder name=\"Daily note\" path=\"Analysis/June 2026\" />\n\n/private/vault/Analysis/June 2026",
+            ))),
+        )))
+        .unwrap();
+
+        assert!(event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .is_err());
+        assert!(!client.has_active_text_message("grok-session", MessageRole::User));
     }
 
     #[test]

@@ -42,20 +42,12 @@ function StripIconButton({
     onClick: () => void;
     children: React.ReactElement;
 }) {
-    const [hovered, setHovered] = useState(false);
-    const interactive = !disabled;
-    const accent =
+    const color =
         variant === "danger"
             ? "var(--diff-remove)"
             : variant === "accent"
               ? "var(--accent)"
               : "var(--text-secondary)";
-
-    const baseColor = interactive
-        ? variant === "neutral"
-            ? "var(--text-secondary)"
-            : accent
-        : "var(--text-secondary)";
 
     return (
         <button
@@ -64,18 +56,11 @@ function StripIconButton({
             aria-label={ariaLabel ?? title}
             disabled={disabled}
             onClick={onClick}
-            onMouseEnter={() => interactive && setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
-            className="flex h-6 w-6 items-center justify-center rounded-sm transition-colors"
+            className="nw-strip-icon-btn flex h-6 w-6 items-center justify-center rounded-sm border-0 bg-transparent"
             style={{
-                color: baseColor,
-                opacity: interactive ? (hovered ? 1 : 0.75) : 0.35,
-                backgroundColor:
-                    hovered && interactive
-                        ? `color-mix(in srgb, ${accent} 14%, transparent)`
-                        : "transparent",
-                border: "none",
-                cursor: interactive ? "pointer" : "not-allowed",
+                color,
+                opacity: disabled ? 0.35 : 0.75,
+                cursor: disabled ? "not-allowed" : "pointer",
             }}
         >
             {children}
@@ -91,7 +76,6 @@ const STRIP_PANEL_STYLE: React.CSSProperties = {
 };
 
 const STRIP_HEADER_LABEL_STYLE: React.CSSProperties = {
-    color: "var(--text-secondary)",
     fontSize: "0.68em",
     letterSpacing: "0.12em",
     fontWeight: 600,
@@ -127,8 +111,7 @@ export function QueuedMessagesPanel({
                     <button
                         type="button"
                         onClick={() => setCollapsed((value) => !value)}
-                        className="inline-flex items-center gap-1.5 bg-transparent p-0"
-                        style={{ border: "none", cursor: "pointer" }}
+                        className="nw-strip-text-btn inline-flex items-center gap-1.5 border-0 bg-transparent p-0"
                         aria-label={
                             effectiveCollapsed
                                 ? "Expand queue"
@@ -147,7 +130,6 @@ export function QueuedMessagesPanel({
                             strokeLinejoin="round"
                             aria-hidden="true"
                             style={{
-                                color: "var(--text-secondary)",
                                 transform: effectiveCollapsed
                                     ? "rotate(-90deg)"
                                     : "rotate(0deg)",
@@ -166,16 +148,11 @@ export function QueuedMessagesPanel({
                     <button
                         type="button"
                         onClick={onClearAll}
-                        className="rounded-sm px-1.5 py-0.5 uppercase"
+                        className="nw-strip-text-btn rounded-sm border-0 bg-transparent px-1.5 py-0.5 uppercase"
                         style={{
-                            color: "var(--text-secondary)",
-                            backgroundColor: "transparent",
-                            border: "none",
-                            cursor: "pointer",
                             fontSize: "0.62em",
                             letterSpacing: "0.1em",
                             fontWeight: 600,
-                            opacity: 0.85,
                         }}
                     >
                         Clear All
@@ -216,12 +193,8 @@ export function QueuedMessagesPanel({
                     <button
                         type="button"
                         onClick={onCancelEdit}
-                        className="shrink-0 rounded-sm px-1.5 py-0.5 uppercase"
+                        className="nw-strip-text-btn shrink-0 rounded-sm border-0 bg-transparent px-1.5 py-0.5 uppercase"
                         style={{
-                            color: "var(--text-secondary)",
-                            backgroundColor: "transparent",
-                            border: "none",
-                            cursor: "pointer",
                             fontSize: "0.62em",
                             letterSpacing: "0.1em",
                             fontWeight: 600,
@@ -234,20 +207,14 @@ export function QueuedMessagesPanel({
 
             {!effectiveCollapsed && (
                 <div className="flex flex-col">
-                    {items.map((item, index) => {
+                    {items.map((item) => {
                         const sending = item.status === "sending";
                         const summary = summarizeContent(item.content);
 
                         return (
                             <div
                                 key={item.id}
-                                className="flex items-center gap-2 px-3 py-1"
-                                style={{
-                                    borderTop:
-                                        index === 0 && !editingItem
-                                            ? "none"
-                                            : "1px solid color-mix(in srgb, var(--border) 25%, transparent)",
-                                }}
+                                className="nw-strip-row nw-queue-tree-branch flex items-center gap-2 py-1 pr-3 pl-4"
                             >
                                 <span
                                     aria-hidden="true"

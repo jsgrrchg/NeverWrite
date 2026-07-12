@@ -838,13 +838,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 />
             )}
             {visiblePinnedPlan && (
-                <div
-                    className="shrink-0 px-3 pt-2 pb-1"
-                    style={{
-                        borderBottom:
-                            "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
-                    }}
-                >
+                <div className="shrink-0 px-3 pt-2 pb-1">
                     <div
                         className="min-w-0"
                         data-testid="chat-pinned-plan-column"

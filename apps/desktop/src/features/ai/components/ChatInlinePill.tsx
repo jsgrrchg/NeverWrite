@@ -1,7 +1,10 @@
 import type { MouseEventHandler, ReactNode } from "react";
 import { type ChatPillMetrics } from "./chatPillMetrics";
 import type { ChatPillVariant } from "./chatPillPalette";
-import { getChatInlinePillStyle } from "./chatInlinePillStyle";
+import {
+    getChatInlineLeadingVisualStyle,
+    getChatInlinePillStyle,
+} from "./chatInlinePillStyle";
 
 interface ChatInlinePillProps {
     appearance?: "link" | "pill";
@@ -37,7 +40,7 @@ export function ChatInlinePill({
     const content = (
         <span
             style={{
-                alignItems: "center",
+                alignItems: "flex-start",
                 display: "inline-flex",
                 gap: leadingVisual ? 4 : 0,
                 minWidth: 0,
@@ -47,7 +50,7 @@ export function ChatInlinePill({
             {leadingVisual ? (
                 <span
                     aria-hidden="true"
-                    style={{ display: "inline-flex", flexShrink: 0 }}
+                    style={getChatInlineLeadingVisualStyle(metrics)}
                 >
                     {leadingVisual}
                 </span>

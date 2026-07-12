@@ -206,11 +206,36 @@ function DropdownField({
                 >
                     {searchable && (
                         <div
-                            className="px-1.5 pb-1"
+                            className="mx-1 mb-1 flex items-center gap-1.5 rounded-md"
                             style={{
-                                borderBottom: "1px solid var(--border)",
+                                backgroundColor: "var(--bg-primary)",
+                                border: "1px solid var(--border)",
+                                height: 24,
+                                padding: "0 7px",
                             }}
                         >
+                            <svg
+                                width="10"
+                                height="10"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                style={{ opacity: 0.4, flexShrink: 0 }}
+                                aria-hidden="true"
+                            >
+                                <circle
+                                    cx="7"
+                                    cy="7"
+                                    r="5"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                />
+                                <path
+                                    d="m13 13-2.5-2.5"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                />
+                            </svg>
                             <input
                                 ref={searchInputRef}
                                 type="text"
@@ -223,17 +248,28 @@ function DropdownField({
                                 }}
                                 placeholder={searchPlaceholder}
                                 aria-label={`${label} search`}
-                                className="mt-0.5 w-full rounded px-1 py-0 text-[7px]"
+                                className="min-w-0 flex-1 bg-transparent text-xs outline-none"
                                 style={{
                                     color: "var(--text-primary)",
-                                    backgroundColor: "var(--bg-primary)",
-                                    border: "1px solid var(--border)",
-                                    height: 16,
-                                    outline: "none",
-                                    minHeight: 16,
-                                    lineHeight: "12px",
+                                    border: "none",
+                                    fontFamily: "inherit",
+                                    // The global `input { font: inherit }` reset in
+                                    // index.css lives outside Tailwind's cascade
+                                    // layers, so it always wins over the `text-xs`
+                                    // utility here regardless of specificity. Pin
+                                    // the size/line-height inline to match the
+                                    // option rows, which aren't affected (buttons
+                                    // aren't targeted by that reset).
+                                    fontSize: "0.75rem",
+                                    lineHeight: "calc(1 / 0.75)",
                                 }}
                             />
+                            <span
+                                className="shrink-0 font-mono text-[9px]"
+                                style={{ color: "var(--text-secondary)" }}
+                            >
+                                {filteredOptions.length}/{options.length}
+                            </span>
                         </div>
                     )}
                     <div

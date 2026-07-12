@@ -2,7 +2,10 @@ import { createCatppuccinIconElement } from "../../../components/icons/catppucci
 import { resolveCatppuccinFileIcon } from "../../../components/icons/fileTypeIcons";
 import { resolveCatppuccinFolderIcon } from "../../../components/icons/folderTypeIcons";
 import type { ChatVaultReferenceKind } from "./ChatVaultReference";
-import { getChatInlinePillStyle } from "./chatInlinePillStyle";
+import {
+    getChatInlineLeadingVisualStyle,
+    getChatInlinePillStyle,
+} from "./chatInlinePillStyle";
 import type { ChatPillMetrics } from "./chatPillMetrics";
 import {
     getChatVaultReferenceLabel,
@@ -69,12 +72,20 @@ export function presentComposerVaultReference(
         size: referenceIconSize(metrics),
     });
     const content = document.createElement("span");
-    content.style.alignItems = "center";
+    content.style.alignItems = "flex-start";
     content.style.display = "inline-flex";
     content.style.gap = "4px";
     content.style.maxWidth = "100%";
     content.style.minWidth = "0";
-    if (icon) content.append(icon);
+    if (icon) {
+        const iconContainer = document.createElement("span");
+        Object.assign(
+            iconContainer.style,
+            getChatInlineLeadingVisualStyle(metrics),
+        );
+        iconContainer.append(icon);
+        content.append(iconContainer);
+    }
 
     const labelElement = document.createElement("span");
     labelElement.textContent = getChatVaultReferenceLabel(label, target);

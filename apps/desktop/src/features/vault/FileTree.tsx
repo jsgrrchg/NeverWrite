@@ -5660,10 +5660,7 @@ export function FileTree() {
             {/* Persistent filter. Wrapper styling matches the other
                 left-sidebar panels so the bar reads identical across the
                 whole sidebar. */}
-            <div
-                className="shrink-0 px-2 pt-2 pb-2"
-                style={{ borderBottom: "1px solid var(--border)" }}
-            >
+            <div className="shrink-0 px-2 pt-2 pb-2">
                 <SidebarFilterInput
                     value={filterText}
                     onChange={setFilterText}
