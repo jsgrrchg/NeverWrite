@@ -136,6 +136,48 @@ function setCaret(node: Node, offset: number) {
 }
 
 describe("AIChatComposer mention picker", () => {
+    it("uses the shared icon-led reference style for notes, files, and folders", () => {
+        const { composer } = renderComposer({
+            parts: [
+                {
+                    id: "note-reference",
+                    type: "mention",
+                    noteId: "notes/alpha.md",
+                    label: "Alpha",
+                    path: "/vault/notes/alpha.md",
+                },
+                { id: "space-1", type: "text", text: " " },
+                {
+                    id: "file-reference",
+                    type: "file_mention",
+                    label: "watcher.rs",
+                    path: "/vault/src/watcher.rs",
+                    relativePath: "src/watcher.rs",
+                    mimeType: "text/rust",
+                },
+                { id: "space-2", type: "text", text: " " },
+                {
+                    id: "folder-reference",
+                    type: "folder_mention",
+                    label: "Clips",
+                    folderPath: "/vault/Clips",
+                },
+            ],
+        });
+
+        for (const kind of ["mention", "file_mention", "folder_mention"]) {
+            const reference = composer.querySelector<HTMLElement>(
+                `[data-kind="${kind}"]`,
+            );
+            expect(reference).not.toBeNull();
+            expect(reference).toHaveStyle({
+                background: "transparent",
+                padding: "0px",
+            });
+            expect(reference?.querySelector("svg")).not.toBeNull();
+        }
+    });
+
     it("keeps the composer shell full-width while capping the inner content", () => {
         renderComposer();
 

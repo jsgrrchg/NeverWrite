@@ -18,14 +18,13 @@ import {
 } from "../../../app/utils/vaultEntries";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { resolveVaultAbsolutePath } from "../../../app/utils/vaultPaths";
-import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
-import { FolderTypeIcon } from "../../../components/icons/FolderTypeIcon";
 import type { ChatPillVariant } from "./chatPillPalette";
 import {
     DIFF_PANEL_MAX_HEIGHT,
     computeUnifiedDiffLines,
 } from "../diff/reviewDiff";
 import { ChatInlinePill } from "./ChatInlinePill";
+import { ChatVaultReference } from "./ChatVaultReference";
 import type { ChatPillMetrics } from "./chatPillMetrics";
 import {
     openChatNoteByReference,
@@ -232,10 +231,6 @@ function parseVaultFolderReference(
 
 type FileReferenceAppearance = "link" | "pill";
 
-function referenceIconSize(metrics: ChatPillMetrics) {
-    return Math.max(11, Math.min(14, metrics.fontSize));
-}
-
 /**
  * Single owner for inline vault references (notes, files, PDFs, drawings and
  * folders). Every parser branch funnels through here so the link appearance and
@@ -253,31 +248,33 @@ function renderReferencePill(params: {
     onClick?: () => void;
     onContextMenu?: MouseEventHandler<HTMLElement>;
 }): ReactElement {
-    const leadingVisual =
-        params.appearance === "link" ? (
-            params.isFolder ? (
-                <FolderTypeIcon
-                    folderName={params.iconPath}
-                    opacity={1}
-                    open={false}
-                    size={referenceIconSize(params.metrics)}
-                />
-            ) : (
-                <FileTypeIcon
-                    fileName={params.iconPath}
-                    opacity={1}
-                    size={referenceIconSize(params.metrics)}
-                />
-            )
-        ) : undefined;
+    if (params.appearance === "link") {
+        return (
+            <ChatVaultReference
+                interactive={params.onClick != null}
+                key={params.key}
+                kind={
+                    params.isFolder
+                        ? "folder"
+                        : params.variant === "accent"
+                          ? "note"
+                          : "file"
+                }
+                label={params.label}
+                metrics={params.metrics}
+                onClick={params.onClick}
+                onContextMenu={params.onContextMenu}
+                path={params.iconPath}
+                title={params.title}
+            />
+        );
+    }
 
     return (
         <ChatInlinePill
-            appearance={params.appearance}
             interactive={params.onClick != null}
             key={params.key}
             label={params.label}
-            leadingVisual={leadingVisual}
             metrics={params.metrics}
             onClick={params.onClick}
             onContextMenu={params.onContextMenu}

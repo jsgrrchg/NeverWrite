@@ -1475,6 +1475,32 @@ describe("AIChatMessageItem tool diffs", () => {
 });
 
 describe("AIChatMessageItem user mention pills", () => {
+    it("uses the shared icon-led reference style for notes, files, and folders", () => {
+        renderMessage({
+            id: "user:references",
+            role: "user",
+            kind: "text",
+            content:
+                "Use [@Alpha], [@📄 /vault/src/watcher.rs], and [@📁 Clips]",
+            timestamp: Date.now(),
+        });
+
+        const references = [
+            screen.getByRole("button", { name: "Alpha" }),
+            screen.getByRole("button", { name: "watcher.rs" }),
+            document.querySelector<HTMLElement>('[title="Clips"]'),
+        ];
+
+        for (const reference of references) {
+            expect(reference).not.toBeNull();
+            expect(reference).toHaveStyle({
+                background: "transparent",
+                padding: "0px",
+            });
+            expect(reference?.querySelector("svg")).not.toBeNull();
+        }
+    });
+
     it("opens the mention context menu in a new tab", async () => {
         setVaultNotes([
             {

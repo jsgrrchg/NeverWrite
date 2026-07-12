@@ -20,6 +20,7 @@ import type {
     AIUserInputAction,
 } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
+import { ChatVaultReference } from "./ChatVaultReference";
 import { MarkdownContent } from "./MarkdownContent";
 import type { ChatPillMetrics } from "./chatPillMetrics";
 import type { ChatPillVariant } from "./chatPillPalette";
@@ -309,13 +310,14 @@ function renderUserContent(
         }
 
         if (token.startsWith("[@📁 ")) {
-            const folderLabel = token.slice(4, -1); // strip [@📁 and ]
+            const folderLabel = token.slice(5, -1); // strip [@📁 and ]
             parts.push(
-                <ChatInlinePill
+                <ChatVaultReference
                     key={key++}
+                    kind="folder"
                     label={folderLabel}
                     metrics={pillMetrics}
-                    variant="folder"
+                    path={folderLabel}
                 />,
             );
             lastIndex = match.index + token.length;
@@ -325,11 +327,12 @@ function renderUserContent(
         if (token.startsWith("[@📁|")) {
             const folderLabel = decodeSerializedPillValue(token.slice(5, -1));
             parts.push(
-                <ChatInlinePill
+                <ChatVaultReference
                     key={key++}
+                    kind="folder"
                     label={folderLabel}
                     metrics={pillMetrics}
-                    variant="folder"
+                    path={folderLabel}
                 />,
             );
             lastIndex = match.index + token.length;
@@ -344,12 +347,13 @@ function renderUserContent(
             ).trim();
             const fileLabel = filePath.split("/").pop() || filePath;
             parts.push(
-                <ChatInlinePill
+                <ChatVaultReference
                     key={key++}
+                    kind="file"
                     label={fileLabel}
                     metrics={pillMetrics}
                     interactive
-                    variant="file"
+                    path={filePath}
                     onClick={() => {
                         void openAiEditedFileByAbsolutePath(filePath);
                     }}
@@ -381,12 +385,13 @@ function renderUserContent(
         }
         const isNote = variant === "accent";
         parts.push(
-            <ChatInlinePill
+            <ChatVaultReference
                 key={key++}
+                kind={isNote ? "note" : "folder"}
                 label={noteLabel}
                 metrics={pillMetrics}
                 interactive={isNote}
-                variant={variant}
+                path={noteLabel}
                 onClick={
                     isNote
                         ? () => {

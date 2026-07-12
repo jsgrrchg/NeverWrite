@@ -24,6 +24,7 @@ import {
     type AIChatSlashCommand,
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
+import { presentComposerVaultReference } from "./chatVaultReferenceDom";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
@@ -246,8 +247,13 @@ function createMentionNode(
     element.dataset.label = part.label;
     element.dataset.path = part.path;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent);
+    presentComposerVaultReference(element, {
+        interactive: true,
+        kind: "note",
+        label: part.label,
+        metrics,
+        path: part.path,
+    });
     return element;
 }
 
@@ -264,8 +270,14 @@ function createFileMentionNode(
         element.dataset.mimeType = part.mimeType;
     }
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
+    presentComposerVaultReference(element, {
+        interactive: true,
+        kind: "file",
+        label: part.label,
+        metrics,
+        mimeType: part.mimeType,
+        path: part.path,
+    });
     return element;
 }
 
@@ -278,8 +290,12 @@ function createFolderMentionNode(
     element.dataset.folderPath = part.folderPath;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.folder);
+    presentComposerVaultReference(element, {
+        kind: "folder",
+        label: part.label,
+        metrics,
+        path: part.folderPath,
+    });
     return element;
 }
 

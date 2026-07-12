@@ -1,6 +1,7 @@
-import type { CSSProperties, MouseEventHandler, ReactNode } from "react";
+import type { MouseEventHandler, ReactNode } from "react";
 import { type ChatPillMetrics } from "./chatPillMetrics";
-import { CHAT_PILL_VARIANTS, type ChatPillVariant } from "./chatPillPalette";
+import type { ChatPillVariant } from "./chatPillPalette";
+import { getChatInlinePillStyle } from "./chatInlinePillStyle";
 
 interface ChatInlinePillProps {
     appearance?: "link" | "pill";
@@ -25,32 +26,13 @@ export function ChatInlinePill({
     onClick,
     onContextMenu,
 }: ChatInlinePillProps) {
-    const palette = CHAT_PILL_VARIANTS[variant];
     const clickable = interactive || typeof onClick === "function";
-    const isLink = appearance === "link";
-    const style: CSSProperties = {
-        display: "inline-flex",
-        alignItems: "center",
-        margin: `0 ${metrics.gapX}px`,
-        padding: isLink ? 0 : `${metrics.paddingY}px ${metrics.paddingX}px`,
-        maxInlineSize: "100%",
-        borderRadius: isLink ? 2 : metrics.radius,
-        background: isLink ? "transparent" : palette.background,
-        color: isLink ? "var(--accent)" : palette.color,
-        fontSize: metrics.fontSize,
-        lineHeight: metrics.lineHeight,
-        border: "none",
-        cursor: clickable ? "pointer" : "default",
-        fontFamily: "inherit",
-        verticalAlign: "baseline",
-        overflowWrap: "anywhere",
-        transform: `translateY(${isLink ? 2 : metrics.offsetY}px)`,
-        filter: "brightness(1)",
-        opacity: clickable ? 0.85 : 1,
-        transition: clickable
-            ? "opacity 80ms ease, filter 80ms ease"
-            : undefined,
-    };
+    const style = getChatInlinePillStyle({
+        appearance,
+        clickable,
+        metrics,
+        variant,
+    });
 
     const content = (
         <span
