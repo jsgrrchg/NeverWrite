@@ -856,20 +856,16 @@ export function PlanMessage({
 
     return (
         <div
-            className="min-w-0 max-w-full overflow-hidden rounded-xl"
-            style={{
-                border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
-                backgroundColor:
-                    "color-mix(in srgb, var(--bg-tertiary) 84%, transparent)",
-            }}
+            className="chat-plan-frame min-w-0 max-w-full overflow-hidden"
+            data-plan-surface="true"
         >
-            <div className="flex items-center gap-1 px-1 py-1">
+            <div className="flex items-center gap-1 px-2.5 py-2">
                 <button
                     type="button"
                     onClick={() => {
                         if (canExpand) setExpanded((value) => !value);
                     }}
-                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1.5 py-0.5 text-left"
+                    className="flex min-w-0 flex-1 items-baseline gap-2 rounded-sm text-left"
                     aria-expanded={expanded}
                     style={{
                         backgroundColor: "transparent",
@@ -878,22 +874,22 @@ export function PlanMessage({
                     }}
                 >
                     <span
-                        className="inline-flex shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-xs"
+                        className="inline-block w-3 shrink-0 text-center"
                         style={{
                             color: "var(--text-secondary)",
-                            backgroundColor:
-                                "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
-                            border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                            fontSize: "0.78em",
                             fontWeight: 500,
+                            lineHeight: 1.5,
                         }}
                     >
-                        {canExpand ? (expanded ? "▾" : "▸") : "•"}
+                        {canExpand ? (expanded ? "⌄" : ">") : "·"}
                     </span>
                     <span
                         className="min-w-0 flex-1 font-medium"
                         style={{
                             color: "var(--text-secondary)",
-                            fontSize: "0.875rem",
+                            fontSize: "0.78em",
+                            lineHeight: 1.5,
                         }}
                     >
                         {message.title ?? "Plan"}
@@ -901,7 +897,7 @@ export function PlanMessage({
                     <span
                         style={{
                             color: "var(--text-secondary)",
-                            fontSize: "0.76em",
+                            fontSize: "0.72em",
                         }}
                     >
                         {statusLabel}
@@ -933,12 +929,7 @@ export function PlanMessage({
 
             {expanded && detail ? (
                 <div
-                    className="mx-2.5 mb-1.5 rounded-md px-2 py-1.5"
-                    style={{
-                        backgroundColor:
-                            "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
-                        border: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                    }}
+                    className="px-7 pb-2"
                 >
                     <div
                         style={{
@@ -959,11 +950,9 @@ export function PlanMessage({
 
             {expanded && entries.length > 0 ? (
                 <div
-                    className="flex flex-col"
-                    style={{
-                        borderTop:
-                            "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                    }}
+                    className="activity-tree flex min-w-0 flex-col gap-1.5 px-2.5 pb-2.5"
+                    data-plan-tree="true"
+                    role="list"
                 >
                     {entries.map((entry, index) => {
                         const isCompleted = entry.status === "completed";
@@ -971,33 +960,38 @@ export function PlanMessage({
                         return (
                             <div
                                 key={`${entry.content}:${index}`}
-                                className="flex min-w-0 items-start gap-2.5 px-2.5 py-1.5"
+                                className="activity-tree-branch min-w-0 pl-10"
+                                data-activity-rail-decoration="branch"
+                                data-plan-entry-status={entry.status}
+                                role="listitem"
                                 style={{
-                                    borderTop:
-                                        index === 0
-                                            ? "none"
-                                            : "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
                                     color: isCompleted
                                         ? "var(--text-secondary)"
                                         : "var(--text-primary)",
                                     opacity: isCompleted ? 0.74 : 1,
                                 }}
                             >
-                                <span
-                                    className="mt-0.75 inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
-                                    style={{
-                                        backgroundColor: isCompleted
-                                            ? "#84cc16"
-                                            : isActive
-                                              ? "var(--accent)"
-                                              : "var(--text-secondary)",
-                                        opacity: isCompleted ? 0.9 : 0.8,
-                                    }}
-                                />
-                                <div className="min-w-0 flex-1">
-                                    <div
+                                <div className="flex min-w-0 items-start gap-2 py-0.5">
+                                    <span
+                                        aria-hidden="true"
+                                        className="mt-1 inline-flex h-2 w-2 shrink-0 rounded-full"
                                         style={{
-                                            fontSize: "0.8em",
+                                            backgroundColor: isCompleted
+                                                ? "#84cc16"
+                                                : isActive
+                                                  ? "var(--accent)"
+                                                  : "transparent",
+                                            border: isCompleted || isActive
+                                                ? "none"
+                                                : "1px solid color-mix(in srgb, var(--text-secondary) 58%, transparent)",
+                                            opacity: isCompleted ? 0.9 : 0.8,
+                                        }}
+                                    />
+                                    <div
+                                        className="min-w-0 flex-1"
+                                        style={{
+                                            fontSize: "0.76em",
+                                            lineHeight: 1.5,
                                             overflowWrap: "anywhere",
                                             wordBreak: "break-word",
                                             textDecoration: isCompleted

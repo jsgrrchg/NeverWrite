@@ -577,6 +577,12 @@ describe("AIChatMessageItem plan message", () => {
         expect(screen.getByText("Review state")).toHaveStyle(
             "text-decoration: line-through",
         );
+        expect(document.querySelector('[data-plan-surface="true"]')).toHaveClass(
+            "chat-plan-frame",
+        );
+        expect(
+            document.querySelectorAll('[data-activity-rail-decoration="branch"]'),
+        ).toHaveLength(2);
     });
 
     it("collapses and expands the plan body", () => {

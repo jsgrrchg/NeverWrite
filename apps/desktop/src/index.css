@@ -630,14 +630,19 @@ html[data-desktop-platform="windows"].dark {
     overflow-wrap: anywhere;
 }
 
-/* Chat fences share Comando's compact, single-surface code frame. */
-.chat-code-frame {
+/* Code fences and streamed plans share one compact terminal-like surface. */
+.chat-code-frame,
+.chat-plan-frame {
     /* Keep fenced content at a readable measure without overflowing narrow chat panes. */
     inline-size: min(100%, 68ch);
     margin-inline: auto;
     border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
     border-radius: 6px;
     background: color-mix(in srgb, var(--bg-tertiary) 68%, transparent);
+}
+
+.chat-plan-frame {
+    font-family: var(--font-mono), ui-monospace, monospace;
 }
 
 .chat-code-header {
