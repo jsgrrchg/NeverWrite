@@ -27,15 +27,6 @@ const FULL_ROW_ACTION_BUTTON_STYLE: React.CSSProperties = {
     textTransform: "uppercase",
 };
 
-const COMPACT_ACTION_BUTTON_STYLE: React.CSSProperties = {
-    width: 24,
-    height: 24,
-    padding: 0,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-};
-
 function FullRowActionButton({
     title,
     variant,
@@ -331,7 +322,7 @@ function CompactRow({
     return (
         <div
             data-testid="edited-files-buffer-row"
-            className="overflow-hidden"
+            className="nw-strip-row overflow-hidden"
             style={{
                 borderTop:
                     "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
@@ -344,7 +335,7 @@ function CompactRow({
             <div
                 style={{
                     display: "grid",
-                    gridTemplateColumns: "6px 14px minmax(0, 1fr) auto auto",
+                    gridTemplateColumns: "14px minmax(0, 1fr) auto auto",
                     columnGap: 8,
                     alignItems: "center",
                     height: "100%",
@@ -352,10 +343,6 @@ function CompactRow({
                     minWidth: 0,
                 }}
             >
-                <div
-                    className="h-1.5 w-1.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: tone.accent }}
-                />
                 <FileTypeIcon fileName={file.path} opacity={0.74} size={12} />
                 <span
                     className="min-w-0 truncate"
@@ -425,15 +412,14 @@ function CompactRow({
                             void openAiEditedFileByAbsolutePath(file.path);
                         }}
                         disabled={!canOpen}
-                        className="review-action-btn shrink-0 rounded-md"
+                        className="nw-strip-icon-btn flex shrink-0 items-center justify-center rounded-sm border-0 bg-transparent"
                         style={{
-                            ...getAccentButtonStyle(
-                                canOpen
-                                    ? tone.accent
-                                    : "var(--text-secondary)",
-                            ),
-                            ...COMPACT_ACTION_BUTTON_STYLE,
-                            opacity: canOpen ? 1 : 0.45,
+                            width: 24,
+                            height: 24,
+                            color: canOpen
+                                ? tone.accent
+                                : "var(--text-secondary)",
+                            opacity: canOpen ? 0.75 : 0.35,
                             cursor: canOpen ? "pointer" : "not-allowed",
                         }}
                     >
@@ -458,10 +444,13 @@ function CompactRow({
                             type="button"
                             title="Reject"
                             onClick={onReject}
-                            className="review-action-btn shrink-0 rounded-md"
+                            className="nw-strip-icon-btn flex shrink-0 items-center justify-center rounded-sm border-0 bg-transparent"
                             style={{
-                                ...getDangerButtonStyle(),
-                                ...COMPACT_ACTION_BUTTON_STYLE,
+                                width: 24,
+                                height: 24,
+                                color: "var(--diff-remove)",
+                                opacity: 0.75,
+                                cursor: "pointer",
                             }}
                         >
                             <svg
@@ -484,10 +473,13 @@ function CompactRow({
                         type="button"
                         title="Keep"
                         onClick={onKeep}
-                        className="review-action-btn shrink-0 rounded-md"
+                        className="nw-strip-icon-btn flex shrink-0 items-center justify-center rounded-sm border-0 bg-transparent"
                         style={{
-                            ...getAccentButtonStyle(),
-                            ...COMPACT_ACTION_BUTTON_STYLE,
+                            width: 24,
+                            height: 24,
+                            color: "var(--accent)",
+                            opacity: 0.75,
+                            cursor: "pointer",
                         }}
                     >
                         <svg

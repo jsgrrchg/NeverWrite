@@ -10,12 +10,7 @@ import {
     selectVisibleTrackedFiles,
 } from "../store/editedFilesBufferModel";
 import { EditedFilesReviewList } from "./EditedFilesReviewList";
-import {
-    COMPACT_REVIEW_MAX_LIST_HEIGHT_PX,
-    getAccentButtonStyle,
-    getDangerButtonStyle,
-    getNeutralButtonStyle,
-} from "./editedFilesReviewStyles";
+import { COMPACT_REVIEW_MAX_LIST_HEIGHT_PX } from "./editedFilesReviewStyles";
 import {
     deriveReviewItems,
     deriveReviewSummary,
@@ -38,25 +33,27 @@ function CollapseToggle({
             aria-label={expanded ? "Collapse edits" : "Expand edits"}
             title={expanded ? "Collapse edits" : "Expand edits"}
             onClick={onToggle}
-            className="shrink-0"
+            className="nw-strip-icon-btn flex shrink-0 items-center justify-center rounded-sm border-0 bg-transparent p-0"
             style={{
                 width: 16,
                 height: 16,
-                border: "none",
-                padding: 0,
-                cursor: "pointer",
-                background: "transparent",
                 color: "var(--text-secondary)",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
+                opacity: 0.75,
                 fontSize: 12,
                 lineHeight: 1,
-                transition: "transform 140ms ease, color 140ms ease",
-                transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+                cursor: "pointer",
             }}
         >
-            <span aria-hidden="true">&gt;</span>
+            <span
+                aria-hidden="true"
+                style={{
+                    display: "inline-flex",
+                    transition: "transform 140ms ease",
+                    transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+                }}
+            >
+                &gt;
+            </span>
         </button>
     );
 }
@@ -181,8 +178,12 @@ export function EditedFilesBufferPanel({
                         type="button"
                         title="Undo last reject"
                         onClick={() => void undoLastReject(activeSessionId)}
-                        className="review-action-btn rounded-sm p-1"
-                        style={getNeutralButtonStyle()}
+                        className="nw-strip-icon-btn flex items-center justify-center rounded-sm border-0 bg-transparent p-1"
+                        style={{
+                            color: "var(--text-secondary)",
+                            opacity: 0.75,
+                            cursor: "pointer",
+                        }}
                     >
                         <svg
                             width="13"
@@ -304,8 +305,12 @@ export function EditedFilesBufferPanel({
                             type="button"
                             title="Undo last reject"
                             onClick={() => void undoLastReject(activeSessionId)}
-                            className="rounded-sm p-1"
-                            style={getNeutralButtonStyle()}
+                            className="nw-strip-icon-btn flex items-center justify-center rounded-sm border-0 bg-transparent p-1"
+                            style={{
+                                color: "var(--text-secondary)",
+                                opacity: 0.75,
+                                cursor: "pointer",
+                            }}
                         >
                             <svg
                                 width="13"
@@ -334,14 +339,11 @@ export function EditedFilesBufferPanel({
                                 ),
                             })
                         }
-                        className="review-action-btn rounded-sm px-2 py-0.5"
+                        className="nw-strip-text-btn rounded-sm border-0 bg-transparent px-1.5 py-0.5 uppercase"
                         style={{
-                            ...getNeutralButtonStyle(),
-                            fontSize: "10.5px",
+                            fontSize: "0.62em",
                             fontWeight: 600,
-                            lineHeight: "16px",
-                            letterSpacing: "0.04em",
-                            textTransform: "uppercase",
+                            letterSpacing: "0.1em",
                         }}
                     >
                         Review
@@ -354,8 +356,15 @@ export function EditedFilesBufferPanel({
                             void rejectAllEditedFiles(activeSessionId)
                         }
                         disabled={rejectableCount === 0}
-                        className="review-action-btn rounded-sm p-1"
-                        style={getDangerButtonStyle(rejectableCount === 0)}
+                        className="nw-strip-icon-btn flex items-center justify-center rounded-sm border-0 bg-transparent p-1"
+                        style={{
+                            color: "var(--diff-remove)",
+                            opacity: rejectableCount === 0 ? 0.35 : 0.75,
+                            cursor:
+                                rejectableCount === 0
+                                    ? "not-allowed"
+                                    : "pointer",
+                        }}
                     >
                         <svg
                             width="13"
@@ -376,8 +385,12 @@ export function EditedFilesBufferPanel({
                         type="button"
                         title="Keep All"
                         onClick={() => keepAllEditedFiles(activeSessionId)}
-                        className="review-action-btn rounded-sm p-1"
-                        style={getAccentButtonStyle()}
+                        className="nw-strip-icon-btn flex items-center justify-center rounded-sm border-0 bg-transparent p-1"
+                        style={{
+                            color: "var(--accent)",
+                            opacity: 0.75,
+                            cursor: "pointer",
+                        }}
                     >
                         <svg
                             width="13"
