@@ -454,6 +454,9 @@ export function AgentsSidebarPanel() {
         reconcileFolders(hierarchy.rootSessionIds);
     }, [hierarchy.rootSessionIds, reconcileFolders]);
 
+    // Shortcut sections are mutually exclusive with each other. They are not
+    // a partition of folder navigation: a foldered chat may intentionally
+    // also appear in Pinned or Open for quick access.
     const { pinnedGroups, openGroups, otherGroups } = useMemo(() => {
         const pinned: AiSessionHierarchyGroup[] = [];
         const open: AiSessionHierarchyGroup[] = [];
@@ -492,6 +495,10 @@ export function AgentsSidebarPanel() {
             ),
         [chatFolders],
     );
+    // Folders are the chat's organizational home. Keep every group eligible
+    // here (including pinned/open groups) so the folder projection remains
+    // visible alongside those status-based shortcuts. All is the only section
+    // limited to unfiled groups, avoiding a redundant third copy.
     const folderGroups = useMemo(() => {
         const groups = new Map<string, AiSessionHierarchyGroup[]>();
         for (const folder of orderedFolders) groups.set(folder.id, []);
