@@ -54,6 +54,10 @@ import {
 } from "./claudeTerminalAgentSession";
 import { useChatStore } from "./store/chatStore";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
+import {
+    useChatFoldersStore,
+    type ChatFolder,
+} from "./store/chatFoldersStore";
 import type { AIChatSession } from "./types";
 import {
     CLAUDE_TERMINAL_RUNTIME_ID,
@@ -83,6 +87,11 @@ type AgentDragPreview = {
     y: number;
     title: string;
     runtimeId: string;
+};
+
+type EditingFolder = {
+    folderId: string;
+    name: string;
 };
 
 function deriveActivityIndicator(
@@ -219,6 +228,21 @@ function scaleMetric(base: number, scale: number, min: number) {
     return Math.max(min, Math.round(base * scale * 10) / 10);
 }
 
+function getFolderIdAtPoint(clientX: number, clientY: number) {
+    if (
+        typeof document === "undefined" ||
+        typeof document.elementFromPoint !== "function"
+    ) {
+        return null;
+    }
+    const target = document.elementFromPoint(clientX, clientY);
+    if (!(target instanceof Element)) return null;
+    return (
+        target.closest<HTMLElement>("[data-chat-folder-id]")?.dataset
+            .chatFolderId ?? null
+    );
+}
+
 function buildAgentsSidebarMetrics(scalePercent: number): {
     item: AgentsSidebarItemMetrics;
     header: {
@@ -279,6 +303,23 @@ export function AgentsSidebarPanel() {
     const togglePinnedChat = usePinnedChatsStore((state) => state.togglePin);
     const unpinChat = usePinnedChatsStore((state) => state.unpin);
     const reconcilePinned = usePinnedChatsStore((state) => state.reconcile);
+    const chatFolders = useChatFoldersStore((state) => state.folders);
+    const sessionFolderIds = useChatFoldersStore(
+        (state) => state.sessionFolderIds,
+    );
+    const collapsedFolderIds = useChatFoldersStore(
+        (state) => state.collapsedFolderIds,
+    );
+    const createFolder = useChatFoldersStore((state) => state.createFolder);
+    const renameFolder = useChatFoldersStore((state) => state.renameFolder);
+    const deleteFolder = useChatFoldersStore((state) => state.deleteFolder);
+    const moveSessionToFolder = useChatFoldersStore(
+        (state) => state.moveSession,
+    );
+    const toggleFolderCollapsed = useChatFoldersStore(
+        (state) => state.toggleFolderCollapsed,
+    );
+    const reconcileFolders = useChatFoldersStore((state) => state.reconcile);
 
     // Sessions currently open as editor tabs across any pane. Drives the
     // "Open" section — mirrors Comando's behaviour of bubbling live tabs to
@@ -399,6 +440,9 @@ export function AgentsSidebarPanel() {
     useEffect(() => {
         reconcilePinned(hierarchy.rootSessionIds);
     }, [hierarchy.rootSessionIds, reconcilePinned]);
+    useEffect(() => {
+        reconcileFolders(hierarchy.rootSessionIds);
+    }, [hierarchy.rootSessionIds, reconcileFolders]);
 
     const { pinnedGroups, openGroups, otherGroups } = useMemo(() => {
         const pinned: AiSessionHierarchyGroup[] = [];
@@ -431,6 +475,31 @@ export function AgentsSidebarPanel() {
         // workingOrderRevision keeps this memo in sync with the ref-backed map.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [hierarchy.groups, pinnedEntries, workingOrderRevision]);
+    const orderedFolders = useMemo(
+        () =>
+            Object.values(chatFolders).sort(
+                (left, right) => left.createdAt - right.createdAt,
+            ),
+        [chatFolders],
+    );
+    const folderGroups = useMemo(() => {
+        const groups = new Map<string, AiSessionHierarchyGroup[]>();
+        for (const folder of orderedFolders) groups.set(folder.id, []);
+        for (const group of hierarchy.groups) {
+            const folderId = sessionFolderIds[group.root.sessionId];
+            if (folderId && groups.has(folderId)) {
+                groups.get(folderId)?.push(group);
+            }
+        }
+        return groups;
+    }, [hierarchy.groups, orderedFolders, sessionFolderIds]);
+    const unfiledGroups = useMemo(
+        () =>
+            otherGroups.filter(
+                (group) => !sessionFolderIds[group.root.sessionId],
+            ),
+        [otherGroups, sessionFolderIds],
+    );
 
     const totalCount = sessions.length;
     const filteredCount = hierarchy.groups.reduce(
@@ -515,7 +584,16 @@ export function AgentsSidebarPanel() {
     >(null);
     const [newChatMenu, setNewChatMenu] =
         useState<ContextMenuState<void> | null>(null);
+    const [folderMenu, setFolderMenu] = useState<
+        ContextMenuState<ChatFolder> | null
+    >(null);
+    const [editingFolder, setEditingFolder] = useState<EditingFolder | null>(
+        null,
+    );
     const [dragPreview, setDragPreview] = useState<AgentDragPreview | null>(
+        null,
+    );
+    const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(
         null,
     );
 
@@ -552,6 +630,45 @@ export function AgentsSidebarPanel() {
                 x: event.clientX,
                 y: event.clientY,
                 payload: session,
+            });
+        },
+        [],
+    );
+
+    const handleCreateFolder = useCallback(() => {
+        const folderId = createFolder("New Folder");
+        if (folderId) {
+            setEditingFolder({
+                folderId,
+                name: "New Folder",
+            });
+        }
+    }, [createFolder]);
+
+    const commitFolderRename = useCallback(() => {
+        if (!editingFolder) return;
+        const name = editingFolder.name.trim();
+        if (name) renameFolder(editingFolder.folderId, name);
+        setEditingFolder(null);
+    }, [editingFolder, renameFolder]);
+
+    const startFolderRename = useCallback((folder: ChatFolder) => {
+        setEditingFolder({
+            folderId: folder.id,
+            name: folder.name,
+        });
+    }, []);
+
+    const handleFolderContextMenu = useCallback(
+        (event: ReactMouseEvent<HTMLElement>, folder: ChatFolder) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setContextMenu(null);
+            setNewChatMenu(null);
+            setFolderMenu({
+                x: event.clientX,
+                y: event.clientY,
+                payload: folder,
             });
         },
         [],
@@ -650,6 +767,9 @@ export function AgentsSidebarPanel() {
                 onContextMenu={(event) => handleContextMenu(event, session)}
                 onDragStart={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
+                    setDragOverFolderId(
+                        canPin ? getFolderIdAtPoint(clientX, clientY) : null,
+                    );
                     emitAgentSidebarDrag({
                         phase: "start",
                         x: clientX,
@@ -660,6 +780,9 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragMove={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
+                    setDragOverFolderId(
+                        canPin ? getFolderIdAtPoint(clientX, clientY) : null,
+                    );
                     emitAgentSidebarDrag({
                         phase: "move",
                         x: clientX,
@@ -670,8 +793,18 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragEnd={({ clientX, clientY }) => {
                     setDragPreview(null);
+                    const folderId = canPin
+                        ? getFolderIdAtPoint(clientX, clientY)
+                        : null;
+                    const movedToFolder = Boolean(folderId);
+                    if (folderId) {
+                        moveSessionToFolder(session.sessionId, folderId);
+                    }
+                    setDragOverFolderId(null);
                     emitAgentSidebarDrag({
-                        phase: "end",
+                        // Folder drops belong to the sidebar; prevent the
+                        // workspace pane drop handler from acting as well.
+                        phase: movedToFolder ? "cancel" : "end",
                         x: clientX,
                         y: clientY,
                         sessionId: session.sessionId,
@@ -680,6 +813,7 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragCancel={() => {
                     setDragPreview(null);
+                    setDragOverFolderId(null);
                     emitAgentSidebarDrag({
                         phase: "cancel",
                         x: 0,
@@ -731,6 +865,123 @@ export function AgentsSidebarPanel() {
         );
     };
 
+    const renderFolder = (folder: ChatFolder) => {
+        const groups = folderGroups.get(folder.id) ?? [];
+        const collapsed = collapsedFolderIds.includes(folder.id);
+        const isRenaming = editingFolder?.folderId === folder.id;
+        return (
+            <section
+                key={folder.id}
+                data-chat-folder-id={folder.id}
+                className="mt-3 flex flex-col rounded"
+                style={{
+                    backgroundColor:
+                        dragOverFolderId === folder.id
+                            ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                            : "transparent",
+                    outline:
+                        dragOverFolderId === folder.id
+                            ? "1px solid color-mix(in srgb, var(--accent) 55%, transparent)"
+                            : "1px solid transparent",
+                }}
+            >
+                <div
+                    role="button"
+                    tabIndex={0}
+                    className="flex items-center gap-1.5 px-2 text-left text-[10px] font-semibold uppercase tracking-[0.09em]"
+                    style={{
+                        color: "var(--text-secondary)",
+                        opacity: 0.8,
+                        fontSize: metrics.header.fontSize,
+                        padding: `${metrics.header.paddingTop}px ${metrics.header.paddingX}px ${metrics.header.paddingBottom}px`,
+                    }}
+                    title={collapsed ? "Expand folder" : "Collapse folder"}
+                    onClick={() => toggleFolderCollapsed(folder.id)}
+                    onContextMenu={(event) =>
+                        handleFolderContextMenu(event, folder)
+                    }
+                    onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleFolderCollapsed(folder.id);
+                        }
+                    }}
+                >
+                    <svg
+                        width="11"
+                        height="11"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{
+                            transform: collapsed
+                                ? "rotate(-90deg)"
+                                : "rotate(0)",
+                            transition: "transform 120ms ease",
+                        }}
+                    >
+                        <path d="m4 6 4 4 4-4" />
+                    </svg>
+                    {isRenaming ? (
+                        <input
+                            autoFocus
+                            aria-label="Folder name"
+                            className="min-w-0 flex-1 rounded px-1 py-0.5 text-[10px] font-semibold normal-case tracking-normal outline-none"
+                            style={{
+                                color: "var(--text-primary)",
+                                backgroundColor: "var(--bg-primary)",
+                                border: "1px solid var(--accent)",
+                            }}
+                            value={editingFolder.name}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(event) =>
+                                setEditingFolder((current) =>
+                                    current
+                                        ? {
+                                              ...current,
+                                              name: event.target.value,
+                                          }
+                                        : current,
+                                )
+                            }
+                            onBlur={commitFolderRename}
+                            onKeyDown={(event) => {
+                                event.stopPropagation();
+                                if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    commitFolderRename();
+                                } else if (event.key === "Escape") {
+                                    event.preventDefault();
+                                    setEditingFolder(null);
+                                }
+                            }}
+                        />
+                    ) : (
+                        <span className="truncate">{folder.name}</span>
+                    )}
+                    <span style={{ opacity: 0.7 }}>{groups.length}</span>
+                </div>
+                {!collapsed ? (
+                    <div className="flex flex-col gap-0.5">
+                        {groups.length > 0 ? (
+                            groups.map(renderGroup)
+                        ) : (
+                            <p
+                                className="px-3 py-1 text-[10.5px]"
+                                style={{ color: "var(--text-secondary)" }}
+                            >
+                                Drop chats here from their menu.
+                            </p>
+                        )}
+                    </div>
+                ) : null}
+            </section>
+        );
+    };
+
     return (
         <div className="flex h-full min-h-0 flex-col">
             <div
@@ -761,6 +1012,34 @@ export function AgentsSidebarPanel() {
                           : `${totalCount} threads`}
                 </span>
                 <div className="flex items-center gap-1">
+                    <button
+                        type="button"
+                        onClick={handleCreateFolder}
+                        title="New folder"
+                        aria-label="New folder"
+                        className="ub-chrome-btn flex h-5 w-5 cursor-pointer items-center justify-center rounded"
+                        style={{
+                            width: metrics.actionButtonSize,
+                            height: metrics.actionButtonSize,
+                            color: "var(--text-secondary)",
+                            background: "transparent",
+                            border: "1px solid transparent",
+                        }}
+                    >
+                        <svg
+                            width={metrics.actionIconSize}
+                            height={metrics.actionIconSize}
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M2.5 4.5h4l1.2 1.5h5.8v6.5h-11Z" />
+                            <path d="M8 8v4M6 10h4" />
+                        </svg>
+                    </button>
                     <button
                         type="button"
                         onClick={(event) => {
@@ -848,13 +1127,14 @@ export function AgentsSidebarPanel() {
                         >
                             {openGroups.map(renderGroup)}
                         </AgentsSidebarSection>
+                        {orderedFolders.map(renderFolder)}
                         <AgentsSidebarSection
                             title="All"
-                            count={otherGroups.length}
+                            count={unfiledGroups.length}
                             showHeader={showOpenAllHeaders}
                             headerMetrics={metrics.header}
                         >
-                            {otherGroups.map(renderGroup)}
+                            {unfiledGroups.map(renderGroup)}
                         </AgentsSidebarSection>
                     </>
                 )}
@@ -878,6 +1158,51 @@ export function AgentsSidebarPanel() {
                             disabled: isSubagentSession(contextMenu.payload),
                             action: () =>
                                 handleStartRename(contextMenu.payload),
+                        },
+                        {
+                            label: "Move to Folder",
+                            disabled: isSubagentSession(contextMenu.payload),
+                            children: [
+                                {
+                                    label: "New Folder…",
+                                    action: () => {
+                                        const folderId = createFolder("New Folder");
+                                        if (!folderId) return;
+                                        moveSessionToFolder(
+                                            contextMenu.payload.sessionId,
+                                            folderId,
+                                        );
+                                        setEditingFolder({
+                                            folderId,
+                                            name: "New Folder",
+                                        });
+                                    },
+                                },
+                                { type: "separator" },
+                                {
+                                    label: "No Folder",
+                                    disabled: !sessionFolderIds[
+                                        contextMenu.payload.sessionId
+                                    ],
+                                    action: () =>
+                                        moveSessionToFolder(
+                                            contextMenu.payload.sessionId,
+                                            null,
+                                        ),
+                                },
+                                ...orderedFolders.map((folder) => ({
+                                    label: folder.name,
+                                    disabled:
+                                        sessionFolderIds[
+                                            contextMenu.payload.sessionId
+                                        ] === folder.id,
+                                    action: () =>
+                                        moveSessionToFolder(
+                                            contextMenu.payload.sessionId,
+                                            folder.id,
+                                        ),
+                                })),
+                            ],
                         },
                         ...(isClaudeTerminalAgentSession(contextMenu.payload)
                             ? []
@@ -919,6 +1244,25 @@ export function AgentsSidebarPanel() {
                     onClose={() => setNewChatMenu(null)}
                     entries={newChatMenuEntries}
                     minWidth={132}
+                />
+            )}
+            {folderMenu && (
+                <ContextMenu
+                    menu={folderMenu}
+                    onClose={() => setFolderMenu(null)}
+                    entries={[
+                        {
+                            label: "Rename Folder",
+                            action: () => startFolderRename(folderMenu.payload),
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Delete Folder",
+                            danger: true,
+                            action: () =>
+                                deleteFolder(folderMenu.payload.id),
+                        },
+                    ]}
                 />
             )}
             {dragPreview && typeof document !== "undefined"

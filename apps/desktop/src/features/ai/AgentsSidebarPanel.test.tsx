@@ -12,6 +12,7 @@ import {
 } from "../terminal/terminalRuntimeStore";
 import { EMPTY_TERMINAL_SNAPSHOT } from "../terminal/terminalTypes";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
+import { useChatFoldersStore } from "./store/chatFoldersStore";
 import { resetChatStore, useChatStore } from "./store/chatStore";
 import type { AIChatSession, AIChatSessionStatus } from "./types";
 import {
@@ -100,6 +101,11 @@ describe("AgentsSidebarPanel", () => {
             entries: [],
         });
         usePinnedChatsStore.setState({ entries: {} });
+        useChatFoldersStore.setState({
+            folders: {},
+            sessionFolderIds: {},
+            collapsedFolderIds: [],
+        });
         useEditorStore.getState().hydrateTabs([], null);
         vi.mocked(confirm).mockResolvedValue(true);
         useChatStore.setState({
@@ -155,6 +161,44 @@ describe("AgentsSidebarPanel", () => {
         expect(
             screen.queryByRole("button", { name: "Add providers" }),
         ).toBeNull();
+    });
+
+    it("keeps existing chats unfiled until the user explicitly moves one", async () => {
+        const session = createSession("session-alpha", "Alpha task", "idle", 100);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+        renderComponent(<AgentsSidebarPanel />);
+
+        expect(screen.getByText("Alpha task")).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "New folder" }));
+        fireEvent.change(screen.getByRole("textbox", { name: "Folder name" }), {
+            target: { value: "Research" },
+        });
+        fireEvent.blur(screen.getByRole("textbox", { name: "Folder name" }));
+        expect(screen.getByText("Research")).toBeInTheDocument();
+        expect(
+            useChatFoldersStore.getState().sessionFolderIds,
+        ).toEqual({});
+
+        fireEvent.contextMenu(screen.getByTestId("agent-sidebar-item"), {
+            clientX: 20,
+            clientY: 20,
+        });
+        const moveToFolder = await screen.findByRole("button", {
+            name: "Move to Folder",
+        });
+        fireEvent.mouseEnter(moveToFolder);
+        fireEvent.click(await screen.findByRole("button", { name: "Research" }));
+
+        await waitFor(() => {
+            expect(
+                useChatFoldersStore.getState().sessionFolderIds,
+            ).toEqual({ "session-alpha": expect.any(String) });
+        });
+        expect(screen.getAllByText("Alpha task").length).toBeGreaterThan(0);
     });
 
     it("opens Claude Code from the plus menu as a terminal runtime", async () => {
@@ -315,6 +359,61 @@ describe("AgentsSidebarPanel", () => {
                 chatPaneMovementMock.openChatSessionInWorkspace,
             ).toHaveBeenCalledWith(session.sessionId);
         });
+    });
+
+    it("moves a root chat into a folder when it is dropped on that folder", () => {
+        const alpha = createSession("session-alpha", "Alpha task");
+        const folderId = useChatFoldersStore
+            .getState()
+            .createFolder("Research");
+        expect(folderId).toBeTruthy();
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [alpha.sessionId]: alpha },
+            sessionOrder: [alpha.sessionId],
+        }));
+        const dragEvents: AgentSidebarDragDetail[] = [];
+        const handleDrag = (event: Event) =>
+            dragEvents.push(
+                (event as CustomEvent<AgentSidebarDragDetail>).detail,
+            );
+        window.addEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+
+        try {
+            renderComponent(<AgentsSidebarPanel />);
+            const folderLabel = screen.getByText("Research");
+            Object.defineProperty(document, "elementFromPoint", {
+                configurable: true,
+                value: vi.fn(() => folderLabel),
+            });
+            const row = screen.getByTestId("agent-sidebar-item");
+            firePointer(row, "pointerdown", {
+                button: 0,
+                buttons: 1,
+                pointerId: 9,
+                clientX: 10,
+                clientY: 10,
+            });
+            firePointer(window, "pointermove", {
+                pointerId: 9,
+                buttons: 1,
+                clientX: 20,
+                clientY: 10,
+            });
+            firePointer(window, "pointerup", {
+                pointerId: 9,
+                clientX: 20,
+                clientY: 10,
+            });
+
+            expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
+                [alpha.sessionId]: folderId,
+            });
+            expect(dragEvents.at(-1)?.phase).toBe("cancel");
+        } finally {
+            delete (document as Partial<Document>).elementFromPoint;
+            window.removeEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+        }
     });
 
     it("completes an agent row drag when pointerup is received on window", () => {
