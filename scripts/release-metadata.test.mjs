@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
     collectElectronBuildIssues,
     collectReleaseIdentityIssues,
+    collectVendoredCodexAcpIssues,
     collectVersionIssues,
     getChangelogEntry,
     normalizeReleaseTag,
@@ -84,6 +85,38 @@ test("collectVersionIssues reports stale web clipper versions", () => {
         ),
         [
             "Release versions do not match: package.json=0.2.0, package-lock.json=0.2.0, package-lock root=0.2.0, native-backend/Cargo.toml=0.2.0, web-clipper/package.json=0.1.0.",
+        ],
+    );
+});
+
+test("collectVendoredCodexAcpIssues requires a matching locked vendor package", () => {
+    assert.deepEqual(
+        collectVendoredCodexAcpIssues({
+            cargoVersion: "0.16.0",
+            cargoLock: `version = 4
+
+[[package]]
+name = "codex-acp"
+version = "0.16.0"
+`,
+        }),
+        [],
+    );
+
+    assert.deepEqual(
+        collectVendoredCodexAcpIssues({
+            cargoVersion: "0.16",
+            cargoLock: `version = 3
+
+[[package]]
+name = "codex-acp"
+version = "0.15.0"
+`,
+        }),
+        [
+            'vendor/codex-acp/Cargo.toml version "0.16" is not strict semver (X.Y.Z).',
+            "vendor/codex-acp/Cargo.lock must use lockfile format version 4.",
+            "vendor/codex-acp/Cargo.lock does not lock codex-acp at 0.16.",
         ],
     );
 });

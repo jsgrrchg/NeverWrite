@@ -624,6 +624,7 @@ async function buildCodexForTarget(targetTriple) {
             "build",
             "--manifest-path",
             path.join(workspaceRoot, "vendor", "codex-acp", "Cargo.toml"),
+            "--locked",
             "--release",
             "--target",
             targetTriple,
