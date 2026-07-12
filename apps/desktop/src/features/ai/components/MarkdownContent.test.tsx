@@ -104,6 +104,82 @@ describe("MarkdownContent", () => {
         expect(reference.querySelector("svg")).not.toBeNull();
     });
 
+    it("renders line fragments in the shared style and reveals note lines", async () => {
+        setVaultNotes([
+            {
+                id: "CHANGELOG.md",
+                title: "CHANGELOG",
+                path: "/vault/CHANGELOG.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "changelog-tab",
+                noteId: "CHANGELOG.md",
+                title: "CHANGELOG",
+                content: "# Changelog",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See [CHANGELOG.md](CHANGELOG.md#L66)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const reference = screen.getByRole("button", {
+            name: "CHANGELOG.md (line 66)",
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+
+        fireEvent.click(reference);
+        await waitFor(() => {
+            expect(useEditorStore.getState().pendingLineReveal).toEqual({
+                noteId: "CHANGELOG.md",
+                line: 66,
+                endLine: null,
+            });
+        });
+    });
+
+    it("renders line ranges for absolute text file references", () => {
+        setVaultEntries([
+            {
+                id: "src/main.ts",
+                path: "/vault/src/main.ts",
+                relative_path: "src/main.ts",
+                title: "main.ts",
+                file_name: "main.ts",
+                extension: "ts",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/typescript",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See `/vault/src/main.ts#L10-L12`."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "main.ts (lines 10–12)" }),
+        ).toBeInTheDocument();
+    });
+
     it("renders indexed folders as non-interactive icon links in every supported syntax", () => {
         setVaultEntries([
             {

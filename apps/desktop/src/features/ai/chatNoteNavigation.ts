@@ -8,6 +8,7 @@ import {
 import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
 import { toVaultRelativePath } from "../../app/utils/vaultPaths";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
+import { parseChatVaultReferenceTarget } from "./chatVaultReferenceTarget";
 
 function normalizeReferencePath(value: string) {
     return value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
@@ -47,7 +48,9 @@ function getUniqueMatch(
 // Resolve that form deliberately, but never choose an arbitrary note when a
 // basename is shared by multiple folders.
 export function findChatNoteByReference(reference: string) {
-    const rawReference = normalizeReferencePath(reference);
+    const rawReference = normalizeReferencePath(
+        parseChatVaultReferenceTarget(reference).path,
+    );
     if (!rawReference) return null;
     const canonicalReference = getCanonicalReference(rawReference);
     const canonicalBasename = getCanonicalReference(
@@ -145,24 +148,52 @@ export async function openChatNoteById(
 
 export async function openChatNoteByReference(
     reference: string,
-    options?: { newTab?: boolean },
+    options?: {
+        newTab?: boolean;
+        line?: number | null;
+        endLine?: number | null;
+    },
 ) {
+    const target = parseChatVaultReferenceTarget(reference);
     const note = findChatNoteByReference(reference);
     if (!note) return false;
 
-    return openChatResolvedNote(note.id, note.title, options);
+    const opened = await openChatResolvedNote(note.id, note.title, options);
+    const line = options?.line ?? target.line;
+    if (opened && line) {
+        useEditorStore.getState().queueLineReveal({
+            noteId: note.id,
+            line,
+            endLine: options?.endLine ?? target.endLine,
+        });
+    }
+    return opened;
 }
 
 export async function openChatNoteByAbsolutePath(
     absPath: string,
-    options?: { newTab?: boolean },
+    options?: {
+        newTab?: boolean;
+        line?: number | null;
+        endLine?: number | null;
+    },
 ) {
+    const target = parseChatVaultReferenceTarget(absPath);
     const note = useVaultStore
         .getState()
-        .notes.find((entry) => entry.path === absPath);
+        .notes.find((entry) => entry.path === target.path);
     if (!note) return false;
 
-    return openChatResolvedNote(note.id, note.title, options);
+    const opened = await openChatResolvedNote(note.id, note.title, options);
+    const line = options?.line ?? target.line;
+    if (opened && line) {
+        useEditorStore.getState().queueLineReveal({
+            noteId: note.id,
+            line,
+            endLine: options?.endLine ?? target.endLine,
+        });
+    }
+    return opened;
 }
 
 interface MapEntry {

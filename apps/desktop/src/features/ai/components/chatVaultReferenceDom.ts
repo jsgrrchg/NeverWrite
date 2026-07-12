@@ -4,6 +4,10 @@ import { resolveCatppuccinFolderIcon } from "../../../components/icons/folderTyp
 import type { ChatVaultReferenceKind } from "./ChatVaultReference";
 import { getChatInlinePillStyle } from "./chatInlinePillStyle";
 import type { ChatPillMetrics } from "./chatPillMetrics";
+import {
+    getChatVaultReferenceLabel,
+    parseChatVaultReferenceTarget,
+} from "../chatVaultReferenceTarget";
 
 function referenceIconSize(metrics: ChatPillMetrics) {
     return Math.max(11, Math.min(14, metrics.fontSize));
@@ -16,6 +20,8 @@ export function presentComposerVaultReference(
         interactive = false,
         kind,
         label,
+        line,
+        endLine,
         metrics,
         mimeType,
         path,
@@ -23,11 +29,19 @@ export function presentComposerVaultReference(
         interactive?: boolean;
         kind: ChatVaultReferenceKind;
         label: string;
+        line?: number | null;
+        endLine?: number | null;
         metrics: ChatPillMetrics;
         mimeType?: string | null;
         path: string;
     },
 ) {
+    const parsedTarget = parseChatVaultReferenceTarget(path);
+    const target = {
+        path: parsedTarget.path,
+        line: line ?? parsedTarget.line,
+        endLine: endLine ?? parsedTarget.endLine,
+    };
     const variant =
         kind === "folder" ? "folder" : kind === "file" ? "file" : "accent";
     Object.assign(
@@ -42,9 +56,11 @@ export function presentComposerVaultReference(
 
     const iconName =
         kind === "folder"
-            ? resolveCatppuccinFolderIcon(path, false).iconName
+            ? resolveCatppuccinFolderIcon(target.path, false).iconName
             : resolveCatppuccinFileIcon(
-                  kind === "note" && !/\.md$/i.test(path) ? `${path}.md` : path,
+                  kind === "note" && !/\.md$/i.test(target.path)
+                      ? `${target.path}.md`
+                      : target.path,
                   { kind: kind === "note" ? "note" : undefined, mimeType },
               ).iconName;
     const icon = createCatppuccinIconElement({
@@ -61,7 +77,7 @@ export function presentComposerVaultReference(
     if (icon) content.append(icon);
 
     const labelElement = document.createElement("span");
-    labelElement.textContent = label;
+    labelElement.textContent = getChatVaultReferenceLabel(label, target);
     labelElement.style.display = "block";
     labelElement.style.maxWidth = "100%";
     labelElement.style.minWidth = "0";

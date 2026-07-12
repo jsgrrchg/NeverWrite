@@ -25,6 +25,10 @@ import {
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
 import { presentComposerVaultReference } from "./chatVaultReferenceDom";
+import {
+    getChatVaultReferenceBasename,
+    serializeChatVaultReferenceTarget,
+} from "../chatVaultReferenceTarget";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
@@ -332,9 +336,14 @@ function createSelectionMentionNode(
     element.dataset.startLine = String(part.startLine);
     element.dataset.endLine = String(part.endLine);
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent, {
-        compact: true,
+    presentComposerVaultReference(element, {
+        interactive: true,
+        kind: part.noteId ? "note" : "file",
+        label: getChatVaultReferenceBasename(part.path),
+        line: part.startLine,
+        endLine: part.endLine,
+        metrics,
+        path: part.path,
     });
     return element;
 }
@@ -780,9 +789,29 @@ function getComposerPillElementFromNode(node: EventTarget | null) {
               : null;
     return (
         element?.closest<HTMLElement>(
-            "[data-kind='mention'], [data-kind='file_mention']",
+            "[data-kind='mention'], [data-kind='file_mention'], [data-kind='selection_mention']",
         ) ?? null
     );
+}
+
+function getComposerPillFileReference(element: HTMLElement | null) {
+    if (element?.dataset.kind === "file_mention") {
+        return element.dataset.path ?? null;
+    }
+    if (
+        element?.dataset.kind === "selection_mention" &&
+        element.dataset.path &&
+        element.dataset.startLine
+    ) {
+        return serializeChatVaultReferenceTarget({
+            path: element.dataset.path,
+            line: Number(element.dataset.startLine),
+            endLine: element.dataset.endLine
+                ? Number(element.dataset.endLine)
+                : null,
+        });
+    }
+    return null;
 }
 
 function getComposerPillTargetFromContextMenuEvent(
@@ -793,11 +822,11 @@ function getComposerPillTargetFromContextMenuEvent(
         const mention = getComposerPillElementFromNode(node);
         if (mention) {
             return {
-                noteId: mention.dataset.noteId ?? null,
-                filePath:
-                    mention.dataset.kind === "file_mention"
-                        ? (mention.dataset.path ?? null)
+                noteId:
+                    mention.dataset.kind === "mention"
+                        ? (mention.dataset.noteId ?? null)
                         : null,
+                filePath: getComposerPillFileReference(mention),
             };
         }
     }
@@ -805,11 +834,11 @@ function getComposerPillTargetFromContextMenuEvent(
     const hovered = document.elementFromPoint(event.clientX, event.clientY);
     const mention = getComposerPillElementFromNode(hovered);
     return {
-        noteId: mention?.dataset.noteId ?? null,
-        filePath:
-            mention?.dataset.kind === "file_mention"
-                ? (mention.dataset.path ?? null)
+        noteId:
+            mention?.dataset.kind === "mention"
+                ? (mention.dataset.noteId ?? null)
                 : null,
+        filePath: getComposerPillFileReference(mention),
     };
 }
 

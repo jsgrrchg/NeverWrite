@@ -111,6 +111,7 @@ beforeEach(() => {
     useEditorStore.setState({
         tabs: [],
         activeTabId: null,
+        pendingLineReveal: null,
     });
 });
 
@@ -1499,6 +1500,51 @@ describe("AIChatMessageItem user mention pills", () => {
             });
             expect(reference?.querySelector("svg")).not.toBeNull();
         }
+    });
+
+    it("renders and opens sent line references with the shared style", async () => {
+        setVaultNotes([
+            {
+                id: "CHANGELOG.md",
+                title: "CHANGELOG",
+                path: "/vault/CHANGELOG.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "changelog-tab",
+                noteId: "CHANGELOG.md",
+                title: "CHANGELOG",
+                content: "# Changelog",
+            },
+        ]);
+        renderMessage({
+            id: "user:line-reference",
+            role: "user",
+            kind: "text",
+            content: "Check [@📄 /vault/CHANGELOG.md#L66]",
+            timestamp: Date.now(),
+        });
+
+        const reference = screen.getByRole("button", {
+            name: "CHANGELOG.md (line 66)",
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+        fireEvent.click(reference);
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().pendingLineReveal).toEqual({
+                noteId: "CHANGELOG.md",
+                line: 66,
+                endLine: null,
+            });
+        });
     });
 
     it("opens the mention context menu in a new tab", async () => {

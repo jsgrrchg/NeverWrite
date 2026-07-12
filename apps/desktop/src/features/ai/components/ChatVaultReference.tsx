@@ -3,6 +3,10 @@ import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import { FolderTypeIcon } from "../../../components/icons/FolderTypeIcon";
 import { ChatInlinePill } from "./ChatInlinePill";
 import type { ChatPillMetrics } from "./chatPillMetrics";
+import {
+    getChatVaultReferenceLabel,
+    parseChatVaultReferenceTarget,
+} from "../chatVaultReferenceTarget";
 
 export type ChatVaultReferenceKind = "file" | "folder" | "note";
 
@@ -14,6 +18,8 @@ export function ChatVaultReference({
     interactive = false,
     kind,
     label,
+    line,
+    endLine,
     metrics,
     mimeType,
     onClick,
@@ -24,6 +30,8 @@ export function ChatVaultReference({
     interactive?: boolean;
     kind: ChatVaultReferenceKind;
     label: string;
+    line?: number | null;
+    endLine?: number | null;
     metrics: ChatPillMetrics;
     mimeType?: string | null;
     onClick?: () => void;
@@ -31,11 +39,17 @@ export function ChatVaultReference({
     path: string;
     title?: string;
 }) {
+    const parsedTarget = parseChatVaultReferenceTarget(path);
+    const target = {
+        path: parsedTarget.path,
+        line: line ?? parsedTarget.line,
+        endLine: endLine ?? parsedTarget.endLine,
+    };
     const size = referenceIconSize(metrics);
     const leadingVisual =
         kind === "folder" ? (
             <FolderTypeIcon
-                folderName={path}
+                folderName={target.path}
                 opacity={1}
                 open={false}
                 size={size}
@@ -43,9 +57,9 @@ export function ChatVaultReference({
         ) : (
             <FileTypeIcon
                 fileName={
-                    kind === "note" && !/\.md$/i.test(path)
-                        ? `${path}.md`
-                        : path
+                    kind === "note" && !/\.md$/i.test(target.path)
+                        ? `${target.path}.md`
+                        : target.path
                 }
                 kind={kind === "note" ? "note" : undefined}
                 mimeType={mimeType}
@@ -58,12 +72,12 @@ export function ChatVaultReference({
         <ChatInlinePill
             appearance="link"
             interactive={interactive}
-            label={label}
+            label={getChatVaultReferenceLabel(label, target)}
             leadingVisual={leadingVisual}
             metrics={metrics}
             onClick={onClick}
             onContextMenu={onContextMenu}
-            title={title ?? path}
+            title={title ?? target.path}
             variant={
                 kind === "folder"
                     ? "folder"

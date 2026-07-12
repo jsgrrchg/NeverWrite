@@ -2,9 +2,11 @@ import { invoke } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore, isMapTab } from "../../app/store/editorStore";
 import { useVaultStore, type NoteDto } from "../../app/store/vaultStore";
+import { setEditorTabs } from "../../test/test-utils";
 import {
     findChatNoteByReference,
     openChatMapByReference,
+    openChatNoteByReference,
 } from "./chatNoteNavigation";
 
 function makeNote(
@@ -113,5 +115,31 @@ describe("findChatNoteByReference", () => {
         });
 
         expect(findChatNoteByReference("Brief")).toBeNull();
+    });
+
+    it("opens line references and queues the requested range for reveal", async () => {
+        const note = makeNote("CHANGELOG.md");
+        useVaultStore.setState({ notes: [note] });
+        setEditorTabs(
+            [
+                {
+                    id: "changelog-tab",
+                    noteId: note.id,
+                    title: note.title,
+                    content: "line 1\nline 2",
+                },
+            ],
+            "changelog-tab",
+        );
+        useEditorStore.setState({ pendingLineReveal: null });
+
+        await expect(
+            openChatNoteByReference("CHANGELOG.md#L66-L70"),
+        ).resolves.toBe(true);
+        expect(useEditorStore.getState().pendingLineReveal).toEqual({
+            noteId: "CHANGELOG.md",
+            line: 66,
+            endLine: 70,
+        });
     });
 });

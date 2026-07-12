@@ -1,4 +1,10 @@
 import type { AIComposerPart } from "./types";
+import {
+    getChatVaultReferenceBasename,
+    getChatVaultReferenceLabel,
+    parseChatVaultReferenceTarget,
+    serializeChatVaultReferenceTarget,
+} from "./chatVaultReferenceTarget";
 
 const SERIALIZED_PILL_VALUE_RE = /[\]|]/;
 
@@ -53,6 +59,14 @@ function serializeScreenshotLabel(label: string) {
     return `[Screenshot|${encodeSerializedPillValue(label)}]`;
 }
 
+function cleanSerializedFileReference(value: string) {
+    const target = parseChatVaultReferenceTarget(value);
+    return getChatVaultReferenceLabel(
+        getChatVaultReferenceBasename(target.path),
+        target,
+    );
+}
+
 /**
  * Strip pill serialization markers from text, returning a clean readable string.
  * Useful for displaying content in compact UI areas (queue summaries, chat titles).
@@ -65,12 +79,10 @@ export function cleanPillMarkers(text: string): string {
         .replace(/\[@📁 ([^\]]+)\]/g, "$1")
         .replace(/\[@📄\|([^\]]+)\]/g, (_match, value: string) => {
             const decoded = decodeSerializedPillValue(value);
-            const normalized = decoded.split("/").pop();
-            return normalized || decoded;
+            return cleanSerializedFileReference(decoded);
         })
         .replace(/\[@📄 ([^\]]+)\]/g, (_match, value: string) => {
-            const normalized = String(value).split("/").pop();
-            return normalized || String(value);
+            return cleanSerializedFileReference(String(value));
         })
         .replace(/\[@\|([^\]]+)\]/g, (_match, value: string) =>
             decodeSerializedPillValue(value),
@@ -134,10 +146,22 @@ export function serializeComposerParts(parts: AIComposerPart[]): string {
                 return serializeFolderPillLabel(part.label);
             if (part.type === "file_mention")
                 return serializeFileMentionPath(part.path);
-            if (part.type === "mention")
-                return serializeNotePillLabel(part.label);
+            if (part.type === "mention") {
+                const target = parseChatVaultReferenceTarget(part.path);
+                return target.line
+                    ? serializeFileMentionPath(
+                          serializeChatVaultReferenceTarget(target),
+                      )
+                    : serializeNotePillLabel(part.label);
+            }
             if (part.type === "selection_mention")
-                return serializeNotePillLabel(part.label);
+                return serializeFileMentionPath(
+                    serializeChatVaultReferenceTarget({
+                        path: part.path,
+                        line: part.startLine,
+                        endLine: part.endLine,
+                    }),
+                );
             if (part.type === "screenshot")
                 return serializeScreenshotLabel(part.label);
             if (part.type === "file_attachment")

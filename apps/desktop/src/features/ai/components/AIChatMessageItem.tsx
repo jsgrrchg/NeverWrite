@@ -41,6 +41,10 @@ import {
     canOpenAiEditedFileByAbsolutePath,
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
+import {
+    getChatVaultReferenceBasename,
+    parseChatVaultReferenceTarget,
+} from "../chatVaultReferenceTarget";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -344,13 +348,16 @@ function renderUserContent(
                 token.startsWith("[@📄|")
                     ? decodeSerializedPillValue(token.slice(5, -1))
                     : token.slice(4, -1)
-            ).trim();
-            const fileLabel = filePath.split("/").pop() || filePath;
+                ).trim();
+            const target = parseChatVaultReferenceTarget(filePath);
+            const fileLabel = getChatVaultReferenceBasename(target.path);
             parts.push(
                 <ChatVaultReference
                     key={key++}
                     kind="file"
                     label={fileLabel}
+                    line={target.line}
+                    endLine={target.endLine}
                     metrics={pillMetrics}
                     interactive
                     path={filePath}
@@ -383,15 +390,22 @@ function renderUserContent(
         } else {
             noteLabel = token.slice(1); // strip @
         }
+        const target = parseChatVaultReferenceTarget(noteLabel);
         const isNote = variant === "accent";
         parts.push(
             <ChatVaultReference
                 key={key++}
                 kind={isNote ? "note" : "folder"}
-                label={noteLabel}
+                label={
+                    target.line
+                        ? getChatVaultReferenceBasename(target.path)
+                        : noteLabel
+                }
+                line={target.line}
+                endLine={target.endLine}
                 metrics={pillMetrics}
                 interactive={isNote}
-                path={noteLabel}
+                path={target.path}
                 onClick={
                     isNote
                         ? () => {

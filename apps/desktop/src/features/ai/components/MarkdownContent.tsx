@@ -42,6 +42,10 @@ import {
 import { extractFenceLanguageToken } from "../../editor/codeLanguage";
 import { HighlightedCodeText } from "../../editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "../../editor/useCodeLanguageSupport";
+import {
+    parseChatVaultReferenceTarget,
+    serializeChatVaultReferenceTarget,
+} from "../chatVaultReferenceTarget";
 
 interface MarkdownContentProps {
     content: string;
@@ -65,13 +69,11 @@ function safeDecodeUriComponent(value: string) {
 }
 
 function parseVaultReference(value: string) {
-    const trimmed = value.trim();
-    const match = /^(.*?\.md)(?::(\d+)|#L(\d+))?$/i.exec(trimmed);
-    if (!match) return null;
+    const target = parseChatVaultReferenceTarget(value);
+    if (!/\.md$/i.test(target.path)) return null;
 
     return {
-        path: match[1],
-        line: match[2] ?? match[3] ?? null,
+        ...target,
         kind: "note" as const,
     };
 }
@@ -114,35 +116,35 @@ function resolveVaultNoteReference(
 }
 
 function parseExcalidrawReference(value: string) {
-    const trimmed = value.trim();
-    if (!/\.excalidraw$/i.test(trimmed)) return null;
+    const target = parseChatVaultReferenceTarget(value);
+    if (!/\.excalidraw$/i.test(target.path)) return null;
     const fileName =
-        trimmed
+        target.path
             .split("/")
             .pop()
-            ?.replace(/\.excalidraw$/i, "") ?? trimmed;
-    return { path: trimmed, fileName };
+            ?.replace(/\.excalidraw$/i, "") ?? target.path;
+    return { ...target, fileName };
 }
 
 function parsePdfReference(value: string) {
-    const trimmed = value.trim();
-    if (!/\.pdf$/i.test(trimmed)) return null;
+    const target = parseChatVaultReferenceTarget(value);
+    if (!/\.pdf$/i.test(target.path)) return null;
     const fileName =
-        trimmed
+        target.path
             .split("/")
             .pop()
-            ?.replace(/\.pdf$/i, "") ?? trimmed;
-    return { path: trimmed, fileName };
+            ?.replace(/\.pdf$/i, "") ?? target.path;
+    return { ...target, fileName };
 }
 
 function parseTextFileReference(value: string) {
-    const trimmed = value.trim();
-    const resolvedPath = resolveVaultLocalPath(trimmed);
+    const target = parseChatVaultReferenceTarget(value);
+    const resolvedPath = resolveVaultLocalPath(target.path);
     if (!resolvedPath) return null;
     if (
         parseVaultReference(resolvedPath) ||
-        parseExcalidrawReference(trimmed) ||
-        parsePdfReference(trimmed)
+        parseExcalidrawReference(target.path) ||
+        parsePdfReference(target.path)
     ) {
         return null;
     }
@@ -163,19 +165,21 @@ function parseTextFileReference(value: string) {
     return {
         path: resolvedPath,
         fileName: resolvedPath.split("/").pop() ?? resolvedPath,
+        line: target.line,
+        endLine: target.endLine,
     };
 }
 
 function parseRelativeTextFileReference(value: string) {
-    const trimmed = value.trim();
-    const resolvedPath = resolveVaultLocalPath(trimmed, {
+    const target = parseChatVaultReferenceTarget(value);
+    const resolvedPath = resolveVaultLocalPath(target.path, {
         allowRelative: true,
     });
     if (!resolvedPath) return null;
     if (
         parseVaultReference(resolvedPath) ||
-        parseExcalidrawReference(trimmed) ||
-        parsePdfReference(trimmed)
+        parseExcalidrawReference(target.path) ||
+        parsePdfReference(target.path)
     ) {
         return null;
     }
@@ -196,6 +200,8 @@ function parseRelativeTextFileReference(value: string) {
     return {
         path: resolvedPath,
         fileName: resolvedPath.split("/").pop() ?? resolvedPath,
+        line: target.line,
+        endLine: target.endLine,
     };
 }
 
@@ -208,13 +214,14 @@ function parseVaultFolderReference(
     value: string,
     options?: { allowRelative?: boolean },
 ) {
-    const trimmed = value.trim();
-    const resolvedPath = resolveVaultLocalPath(trimmed, options);
+    const target = parseChatVaultReferenceTarget(value);
+    if (target.line) return null;
+    const resolvedPath = resolveVaultLocalPath(target.path, options);
     if (!resolvedPath) return null;
     if (
         parseVaultReference(resolvedPath) ||
-        parseExcalidrawReference(trimmed) ||
-        parsePdfReference(trimmed)
+        parseExcalidrawReference(target.path) ||
+        parsePdfReference(target.path)
     ) {
         return null;
     }
@@ -244,6 +251,8 @@ function renderReferencePill(params: {
     metrics: ChatPillMetrics;
     appearance: FileReferenceAppearance;
     iconPath: string;
+    line?: number | null;
+    endLine?: number | null;
     isFolder?: boolean;
     onClick?: () => void;
     onContextMenu?: MouseEventHandler<HTMLElement>;
@@ -261,6 +270,8 @@ function renderReferencePill(params: {
                           : "file"
                 }
                 label={params.label}
+                line={params.line}
+                endLine={params.endLine}
                 metrics={params.metrics}
                 onClick={params.onClick}
                 onContextMenu={params.onContextMenu}
@@ -282,6 +293,22 @@ function renderReferencePill(params: {
             variant={params.variant}
         />
     );
+}
+
+function noteReferenceLabel(reference: {
+    path: string;
+    line: number | null;
+}) {
+    const fileName = reference.path.split("/").pop() ?? reference.path;
+    return reference.line ? fileName : fileName.replace(/\.md$/i, "");
+}
+
+function serializedReference(reference: {
+    path: string;
+    line: number | null;
+    endLine: number | null;
+}) {
+    return serializeChatVaultReferenceTarget(reference);
 }
 
 function noteIconPath(reference: string) {
@@ -466,7 +493,7 @@ function renderInlineMarkdown(
     const parts: Array<string | ReactElement> = [];
     // Process: wikilinks, inline code, bold, italic, links, raw URLs, and absolute vault file paths.
     const inlineRegex =
-        /(\[\[[^\]]+\]\])|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|(\bhttps?:\/\/[^\s<>"']+)|((?<![\w\u00C0-\u024F])(?:\/)[\w\u00C0-\u024F~.()/-]+(?::\d+|#L\d+)?)/g;
+        /(\[\[[^\]]+\]\])|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|(\bhttps?:\/\/[^\s<>"']+)|((?<![\w\u00C0-\u024F])(?:\/)[\w\u00C0-\u024F~.()/-]+(?::\d+(?:-\d+)?|#L\d+(?:-L?\d+)?)?)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let keyIndex = 0;
@@ -482,21 +509,25 @@ function renderInlineMarkdown(
         if (match[1]) {
             // wikilink [[Note Name]] or [[Note Name|Alias]]
             const inner = full.slice(2, -2);
-            const [target, alias] = inner.split("|");
-            const label = alias ?? target;
+            const [rawTarget, alias] = inner.split("|");
+            const target = parseChatVaultReferenceTarget(rawTarget);
+            const reference = serializeChatVaultReferenceTarget(target);
+            const label = alias ?? noteReferenceLabel(target);
             parts.push(
                 renderReferencePill({
                     key,
                     label: label.trim(),
-                    title: target.trim(),
+                    title: reference,
                     variant: "accent",
                     metrics: pillMetrics,
                     appearance,
-                    iconPath: noteIconPath(target.trim()),
+                    iconPath: noteIconPath(target.path),
+                    line: target.line,
+                    endLine: target.endLine,
                     onClick: () =>
-                        void openChatNoteByReference(target.trim()),
+                        void openChatNoteByReference(reference),
                     onContextMenu: (event) =>
-                        onNoteContextMenu(event, target.trim()),
+                        onNoteContextMenu(event, reference),
                 }),
             );
         } else if (match[2]) {
@@ -515,25 +546,22 @@ function renderInlineMarkdown(
                     ? parseVaultFolderReference(codeText)
                     : null;
             if (parsedReference) {
-                const fileName =
-                    parsedReference.path
-                        .split("/")
-                        .pop()
-                        ?.replace(/\.md$/i, "") ??
-                    parsedReference.path.replace(/\.md$/i, "");
+                const reference = serializedReference(parsedReference);
                 parts.push(
                     renderReferencePill({
                         key,
-                        label: fileName,
+                        label: noteReferenceLabel(parsedReference),
                         title: codeText,
                         variant: "accent",
                         metrics: pillMetrics,
                         appearance,
                         iconPath: parsedReference.path,
+                        line: parsedReference.line,
+                        endLine: parsedReference.endLine,
                         onClick: () =>
-                            void openChatNoteByReference(parsedReference.path),
+                            void openChatNoteByReference(reference),
                         onContextMenu: (event) =>
-                            onNoteContextMenu(event, parsedReference.path),
+                            onNoteContextMenu(event, reference),
                     }),
                 );
             } else if (pdfRef) {
@@ -562,13 +590,18 @@ function renderInlineMarkdown(
                         metrics: pillMetrics,
                         appearance,
                         iconPath: textFileRef.path,
+                        line: textFileRef.line,
+                        endLine: textFileRef.endLine,
                         onClick: () =>
                             void openAiEditedFileByAbsolutePath(
-                                textFileRef.path,
+                                serializedReference(textFileRef),
                             ),
                         onContextMenu: onFileContextMenu
                             ? (event) =>
-                                  onFileContextMenu(event, textFileRef.path)
+                                  onFileContextMenu(
+                                      event,
+                                      serializedReference(textFileRef),
+                                  )
                             : undefined,
                     }),
                 );
@@ -685,13 +718,18 @@ function renderInlineMarkdown(
                             metrics: pillMetrics,
                             appearance,
                             iconPath: textFileRef.path,
+                            line: textFileRef.line,
+                            endLine: textFileRef.endLine,
                             onClick: () =>
                                 void openAiEditedFileByAbsolutePath(
-                                    textFileRef.path,
+                                    serializedReference(textFileRef),
                                 ),
                             onContextMenu: onFileContextMenu
                                 ? (event) =>
-                                      onFileContextMenu(event, textFileRef.path)
+                                      onFileContextMenu(
+                                          event,
+                                          serializedReference(textFileRef),
+                                      )
                                 : undefined,
                         }),
                     );
@@ -709,26 +747,22 @@ function renderInlineMarkdown(
                         }),
                     );
                 } else if (parsedReference) {
-                    const fileName =
-                        parsedReference.path
-                            .split("/")
-                            .pop()
-                            ?.replace(/\.md$/, "") ?? linkMatch[1];
+                    const reference = serializedReference(parsedReference);
                     parts.push(
                         renderReferencePill({
                             key,
-                            label: fileName,
+                            label: noteReferenceLabel(parsedReference),
                             title: decoded,
                             variant: "accent",
                             metrics: pillMetrics,
                             appearance,
                             iconPath: parsedReference.path,
+                            line: parsedReference.line,
+                            endLine: parsedReference.endLine,
                             onClick: () =>
-                                void openChatNoteByReference(
-                                    parsedReference.path,
-                                ),
+                                void openChatNoteByReference(reference),
                             onContextMenu: (event) =>
-                                onNoteContextMenu(event, parsedReference.path),
+                                onNoteContextMenu(event, reference),
                         }),
                     );
                 } else {
@@ -796,13 +830,18 @@ function renderInlineMarkdown(
                         metrics: pillMetrics,
                         appearance,
                         iconPath: textFileRef.path,
+                        line: textFileRef.line,
+                        endLine: textFileRef.endLine,
                         onClick: () =>
                             void openAiEditedFileByAbsolutePath(
-                                textFileRef.path,
+                                serializedReference(textFileRef),
                             ),
                         onContextMenu: onFileContextMenu
                             ? (event) =>
-                                  onFileContextMenu(event, textFileRef.path)
+                                  onFileContextMenu(
+                                      event,
+                                      serializedReference(textFileRef),
+                                  )
                             : undefined,
                     }),
                 );
@@ -822,26 +861,22 @@ function renderInlineMarkdown(
             } else {
                 const parsedReference = parseVaultReference(filePath);
                 if (parsedReference) {
-                    const fileName =
-                        parsedReference.path
-                            .split("/")
-                            .pop()
-                            ?.replace(/\.md$/, "") ?? filePath;
+                    const reference = serializedReference(parsedReference);
                     parts.push(
                         renderReferencePill({
                             key,
-                            label: fileName,
+                            label: noteReferenceLabel(parsedReference),
                             title: filePath,
                             variant: "accent",
                             metrics: pillMetrics,
                             appearance,
                             iconPath: parsedReference.path,
+                            line: parsedReference.line,
+                            endLine: parsedReference.endLine,
                             onClick: () =>
-                                void openChatNoteByReference(
-                                    parsedReference.path,
-                                ),
+                                void openChatNoteByReference(reference),
                             onContextMenu: (event) =>
-                                onNoteContextMenu(event, parsedReference.path),
+                                onNoteContextMenu(event, reference),
                         }),
                     );
                 } else {
