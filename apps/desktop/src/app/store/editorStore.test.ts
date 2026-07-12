@@ -1606,6 +1606,76 @@ describe("editorStore tab history mode", () => {
         );
     });
 
+    it("prunes deleted chat history entries in every pane without changing focus", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "chat-primary",
+                            kind: "ai-chat",
+                            sessionId: "session-b",
+                            title: "Second",
+                            history: [
+                                { sessionId: "session-a", title: "First" },
+                                { sessionId: "session-b", title: "Second" },
+                            ],
+                            historyIndex: 1,
+                        },
+                    ],
+                    activeTabId: "chat-primary",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "chat-secondary",
+                            kind: "ai-chat",
+                            sessionId: "session-c",
+                            title: "Third",
+                            history: [
+                                { sessionId: "session-a", title: "First" },
+                                { sessionId: "session-c", title: "Third" },
+                            ],
+                            historyIndex: 1,
+                        },
+                    ],
+                    activeTabId: "chat-secondary",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().closeChat("session-a");
+
+        expect(useEditorStore.getState().focusedPaneId).toBe("primary");
+        expect(useEditorStore.getState().panes).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    id: "primary",
+                    tabs: [
+                        expect.objectContaining({
+                            sessionId: "session-b",
+                            history: [{ sessionId: "session-b", title: "Second" }],
+                            historyIndex: 0,
+                        }),
+                    ],
+                }),
+                expect.objectContaining({
+                    id: "secondary",
+                    tabs: [
+                        expect.objectContaining({
+                            sessionId: "session-c",
+                            history: [{ sessionId: "session-c", title: "Third" }],
+                            historyIndex: 0,
+                        }),
+                    ],
+                }),
+            ]),
+        );
+    });
+
     it("truncates forward chat history after opening another AI session", () => {
         useEditorStore.getState().openChat("session-a", { title: "First" });
         useEditorStore.getState().openChat("session-b", { title: "Second" });

@@ -25,12 +25,17 @@ describe("renderEditorTabLeadingIcon", () => {
             (path) => path.getAttribute("d"),
         );
 
-        expect(svg?.getAttribute("viewBox")).toBe("0 0 16 16");
-        expect(pathData).toContain(
-            "M3.25 8a4.75 4.75 0 1 1 4.75 4.75",
-        );
-        expect(pathData).toContain("M8 3.25v4.75h4.75");
-        expect(pathData).toContain("M4.4 11.6 11.6 4.4");
+        expect(svg?.getAttribute("viewBox")).toBe("0 0 512 512");
+        expect(
+            pathData.some((path) =>
+                path?.startsWith("M210.484 312.759L343.465 210.383"),
+            ),
+        ).toBe(true);
+        expect(
+            pathData.some((path) =>
+                path?.startsWith("M183.042 337.641C136.519 291.294"),
+            ),
+        ).toBe(true);
         expect(svg?.querySelector("line")).toBeNull();
     });
 

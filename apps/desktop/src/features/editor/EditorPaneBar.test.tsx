@@ -201,7 +201,7 @@ describe("EditorPaneBar", () => {
         expect(screen.getByTitle("Go forward")).toBeInTheDocument();
     });
 
-    it("enables back navigation for a chat with session history", () => {
+    it("navigates a chat session history from the pane controls", () => {
         useSettingsStore.getState().setSetting("tabOpenBehavior", "history");
         useEditorStore.getState().hydrateWorkspace(
             [
@@ -230,6 +230,17 @@ describe("EditorPaneBar", () => {
 
         expect(screen.getByTitle("Go back")).toBeEnabled();
         expect(screen.getByTitle("Go forward")).toBeDisabled();
+
+        fireEvent.click(screen.getByTitle("Go back"));
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "chat-history"),
+        ).toMatchObject({ sessionId: "session-a", historyIndex: 0 });
+        expect(screen.getByTitle("Go forward")).toBeEnabled();
+
+        fireEvent.click(screen.getByTitle("Go forward"));
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "chat-history"),
+        ).toMatchObject({ sessionId: "session-b", historyIndex: 1 });
     });
 
     it("hides pane history navigation buttons when open behavior creates new tabs", () => {

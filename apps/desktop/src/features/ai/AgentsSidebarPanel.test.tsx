@@ -201,6 +201,53 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.getAllByText("Alpha task").length).toBeGreaterThan(0);
     });
 
+    it("renames, collapses, and deletes a folder without losing its chat", async () => {
+        const session = createSession("session-alpha", "Alpha task");
+        const folderId = useChatFoldersStore
+            .getState()
+            .createFolder("Research");
+        expect(folderId).toBeTruthy();
+        useChatFoldersStore.getState().moveSession(session.sessionId, folderId);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.click(screen.getByTitle("Collapse folder"));
+        expect(screen.queryByTestId("agent-sidebar-item")).toBeNull();
+
+        fireEvent.contextMenu(screen.getByTitle("Expand folder"));
+        fireEvent.click(
+            await screen.findByRole("button", { name: "Rename Folder" }),
+        );
+        const folderNameInput = await screen.findByRole("textbox", {
+            name: "Folder name",
+        });
+        fireEvent.change(folderNameInput, {
+            target: { value: "Archive" },
+        });
+        fireEvent.keyDown(folderNameInput, {
+            key: "Enter",
+        });
+        expect(screen.getByText("Archive")).toBeInTheDocument();
+
+        fireEvent.contextMenu(screen.getByTitle("Expand folder"));
+        fireEvent.click(
+            await screen.findByRole("button", { name: "Delete Folder" }),
+        );
+
+        await waitFor(() => {
+            expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({});
+        });
+        expect(screen.queryByText("Archive")).not.toBeInTheDocument();
+        expect(screen.getByTestId("agent-sidebar-item")).toHaveTextContent(
+            "Alpha task",
+        );
+    });
+
     it("opens Claude Code from the plus menu as a terminal runtime", async () => {
         useChatStore.setState({
             runtimes: [

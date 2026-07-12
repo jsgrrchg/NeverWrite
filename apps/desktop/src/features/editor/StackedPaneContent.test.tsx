@@ -258,6 +258,36 @@ describe("StackedPaneContent", () => {
         ).not.toBeInTheDocument();
     });
 
+    it("closes a streaming agent tab from its stacked spine without stopping the session", () => {
+        setEditorTabs(
+            [
+                {
+                    id: "chat-busy",
+                    kind: "ai-chat",
+                    sessionId: "session-busy",
+                    title: "Busy agent",
+                },
+                {
+                    id: "note-1",
+                    kind: "note",
+                    noteId: "note-1",
+                    title: "Note",
+                    content: "Body",
+                },
+            ],
+            "chat-busy",
+        );
+        enableStackedOnFocusedPane();
+
+        renderComponent(<EditorPaneContent />);
+
+        fireEvent.click(screen.getByTitle("Close Busy agent"));
+
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "note-1",
+        ]);
+    });
+
     it("keeps recently hidden stacked columns mounted as a small warm cache", async () => {
         vi.useFakeTimers();
         setEditorTabs(
