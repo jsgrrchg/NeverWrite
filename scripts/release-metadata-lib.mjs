@@ -27,6 +27,14 @@ export const WEB_CLIPPER_PACKAGE_JSON_PATH = path.join(
     REPO_ROOT,
     "apps/web-clipper/package.json",
 );
+export const CODEX_ACP_CARGO_TOML_PATH = path.join(
+    REPO_ROOT,
+    "vendor/codex-acp/Cargo.toml",
+);
+export const CODEX_ACP_CARGO_LOCK_PATH = path.join(
+    REPO_ROOT,
+    "vendor/codex-acp/Cargo.lock",
+);
 export const CHANGELOG_PATH = path.join(REPO_ROOT, "CHANGELOG.md");
 
 const STRICT_SEMVER_RE = /^\d+\.\d+\.\d+$/;
@@ -74,6 +82,16 @@ export function readDesktopVersions() {
     };
 }
 
+export function readVendoredCodexAcpMetadata() {
+    const cargoToml = readFile(CODEX_ACP_CARGO_TOML_PATH);
+    const cargoLock = readFile(CODEX_ACP_CARGO_LOCK_PATH);
+
+    return {
+        cargoVersion: readCargoPackageVersion(cargoToml, CODEX_ACP_CARGO_TOML_PATH),
+        cargoLock,
+    };
+}
+
 export async function readDesktopReleaseIdentity() {
     const electronBuilder = await readElectronBuilderConfig();
 
@@ -89,7 +107,7 @@ export async function readElectronBuilderConfig() {
     return module.default;
 }
 
-export function readCargoPackageVersion(cargoTomlText) {
+export function readCargoPackageVersion(cargoTomlText, sourcePath) {
     let currentSection = "";
 
     for (const rawLine of cargoTomlText.split(/\r?\n/)) {
@@ -115,8 +133,37 @@ export function readCargoPackageVersion(cargoTomlText) {
     }
 
     throw new Error(
-        `Could not find [package] version in ${DESKTOP_NATIVE_BACKEND_CARGO_TOML_PATH}.`,
+        `Could not find [package] version in ${sourcePath ?? DESKTOP_NATIVE_BACKEND_CARGO_TOML_PATH}.`,
     );
+}
+
+export function collectVendoredCodexAcpIssues({ cargoVersion, cargoLock }) {
+    const issues = [];
+    if (!isStrictSemver(cargoVersion)) {
+        issues.push(
+            `vendor/codex-acp/Cargo.toml version "${cargoVersion}" is not strict semver (X.Y.Z).`,
+        );
+    }
+    if (!/^version\s*=\s*4\s*$/m.test(cargoLock)) {
+        issues.push("vendor/codex-acp/Cargo.lock must use lockfile format version 4.");
+    }
+
+    const packageBlocks = cargoLock.split("[[package]]");
+    const packageIsLocked = packageBlocks.some(
+        (block) =>
+            /^name\s*=\s*"codex-acp"\s*$/m.test(block) &&
+            new RegExp(
+                `^version\\s*=\\s*"${cargoVersion.replaceAll(".", "\\.")}"\\s*$`,
+                "m",
+            ).test(block),
+    );
+    if (!packageIsLocked) {
+        issues.push(
+            `vendor/codex-acp/Cargo.lock does not lock codex-acp at ${cargoVersion}.`,
+        );
+    }
+
+    return issues;
 }
 
 export function collectVersionIssues(

@@ -2,6 +2,7 @@ import {
     CHANGELOG_PATH,
     collectElectronBuildIssues,
     collectReleaseIdentityIssues,
+    collectVendoredCodexAcpIssues,
     collectVersionIssues,
     getChangelogEntry,
     normalizeReleaseTag,
@@ -9,6 +10,7 @@ import {
     readDesktopReleaseIdentity,
     readDesktopVersions,
     readFile,
+    readVendoredCodexAcpMetadata,
 } from "./release-metadata-lib.mjs";
 
 function parseArgs(argv) {
@@ -36,10 +38,12 @@ async function main() {
     const versions = readDesktopVersions();
     const releaseIdentity = await readDesktopReleaseIdentity();
     const electronBuilderConfig = await readElectronBuilderConfig();
+    const vendoredCodexAcp = readVendoredCodexAcpMetadata();
     const issues = [
         ...collectVersionIssues(versions, tagVersion),
         ...collectReleaseIdentityIssues(releaseIdentity),
         ...collectElectronBuildIssues(electronBuilderConfig),
+        ...collectVendoredCodexAcpIssues(vendoredCodexAcp),
     ];
     const changelog = readFile(CHANGELOG_PATH);
     const expectedVersion = tagVersion ?? versions.packageJson;

@@ -185,10 +185,10 @@ jobs:
               shell: bash
               run: |
                   if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
-                    cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin --bins
-                    cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin --bins
+                    cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin --bins
+                    cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin --bins
                   else
-                    cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
+                    cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
                   fi
 
             - name: Download embedded Node runtime
