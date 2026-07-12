@@ -5,7 +5,6 @@ import { listen } from "@neverwrite/runtime";
 import { getCurrentWebview } from "@neverwrite/runtime";
 import { open } from "@neverwrite/runtime";
 import { invoke } from "@neverwrite/runtime";
-import { confirm } from "@neverwrite/runtime";
 import { resolveDeferredUnlisten } from "./app/utils/deferredUnlisten";
 import { vaultInvoke } from "./app/utils/vaultInvoke";
 import { AppLayout } from "./components/layout/AppLayout";
@@ -21,10 +20,6 @@ import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost
 import { migrateLegacyTerminalTabsToWorkspace } from "./features/terminal/legacyTerminalMigration";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
-import {
-    findActiveSessionsAffectedByClose,
-    getCloseTabsConfirmationMessage,
-} from "./features/editor/tabClosePolicy";
 import { EditorPaneContent } from "./features/editor/EditorPaneContent";
 import { MultiPaneWorkspace } from "./features/editor/MultiPaneWorkspace";
 import { EditorChromeBar } from "./features/editor/EditorChromeBar";
@@ -739,24 +734,7 @@ function useRegisterCommands(
                     return;
                 }
 
-                const affected = findActiveSessionsAffectedByClose(
-                    [activeTab],
-                    useChatStore.getState().sessionsById,
-                );
-                const confirmationMessage =
-                    getCloseTabsConfirmationMessage(affected);
-                if (confirmationMessage === null) {
-                    state.closeTab(activeTab.id, { reason: "user" });
-                    return;
-                }
-
-                void (async () => {
-                    if (await confirm(confirmationMessage)) {
-                        useEditorStore
-                            .getState()
-                            .closeTab(activeTab.id, { reason: "user" });
-                    }
-                })();
+                state.closeTab(activeTab.id, { reason: "user" });
             },
         });
 

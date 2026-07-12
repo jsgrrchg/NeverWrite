@@ -8,7 +8,6 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
-import { confirm } from "@neverwrite/runtime";
 import {
     type Tab,
     type TerminalTab,
@@ -45,10 +44,6 @@ import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
 import { useActiveTabStripReveal } from "./tabStrip";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
-import {
-    findActiveSessionsAffectedByClose,
-    getCloseTabsConfirmationMessage,
-} from "./tabClosePolicy";
 import {
     chromeControlsGroupStyle,
     getChromeIconButtonStyle,
@@ -378,7 +373,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         [renameChatSession],
     );
     const requestCloseTab = useCallback(
-        async (tabId: string) => {
+        (tabId: string) => {
             const tab = selectEditorWorkspaceTabs(
                 useEditorStore.getState(),
             ).find((candidate) => candidate.id === tabId);
@@ -386,24 +381,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 return;
             }
 
-            const affected = findActiveSessionsAffectedByClose(
-                [tab],
-                useChatStore.getState().sessionsById,
-            );
-            const confirmationMessage =
-                getCloseTabsConfirmationMessage(affected);
-            if (
-                confirmationMessage !== null &&
-                !(await confirm(confirmationMessage))
-            ) {
-                return;
-            }
-
             closeTab(tab.id);
         },
         [closeTab],
     );
-    const closeTabIdsWithProtection = useCallback(async (tabIds: string[]) => {
+    const closeTabIds = useCallback((tabIds: string[]) => {
         const currentTabs = selectEditorWorkspaceTabs(useEditorStore.getState());
         const tabsToClose = tabIds
             .map(
@@ -414,19 +396,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
             .filter((tab): tab is (typeof currentTabs)[number] => tab !== null);
 
         if (tabsToClose.length === 0) {
-            return;
-        }
-
-        const affected = findActiveSessionsAffectedByClose(
-            tabsToClose,
-            useChatStore.getState().sessionsById,
-        );
-        const confirmationMessage =
-            getCloseTabsConfirmationMessage(affected);
-        if (
-            confirmationMessage !== null &&
-            !(await confirm(confirmationMessage))
-        ) {
             return;
         }
 
@@ -446,9 +415,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 .filter((tab) => tab.id !== tabId)
                 .map((tab) => tab.id);
 
-            await closeTabIdsWithProtection(tabIds);
+            closeTabIds(tabIds);
         },
-        [closeTabIdsWithProtection, paneId],
+        [closeTabIds, paneId],
     );
     const closeTabsToTheRightInPane = useCallback(
         async (tabId: string) => {
@@ -468,9 +437,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 .map((tab) => tab.id)
                 .reverse();
 
-            await closeTabIdsWithProtection(tabIds);
+            closeTabIds(tabIds);
         },
-        [closeTabIdsWithProtection, paneId],
+        [closeTabIds, paneId],
     );
 
     return (
