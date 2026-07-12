@@ -106,7 +106,12 @@ describe("MarkdownContent", () => {
             background: "transparent",
             padding: "0px",
         });
-        expect(reference.querySelector("svg")).not.toBeNull();
+        const icon = reference.querySelector("svg");
+        expect(icon).not.toBeNull();
+        expect(reference.firstElementChild).toHaveStyle({
+            alignItems: "flex-start",
+        });
+        expect(icon?.parentElement).toHaveStyle({ height: "1.3em" });
 
         fireEvent.click(reference);
         await waitFor(() => {

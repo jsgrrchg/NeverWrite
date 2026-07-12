@@ -2,6 +2,18 @@ import type { CSSProperties } from "react";
 import { CHAT_PILL_VARIANTS, type ChatPillVariant } from "./chatPillPalette";
 import type { ChatPillMetrics } from "./chatPillMetrics";
 
+export function getChatInlineLeadingVisualStyle(
+    metrics: ChatPillMetrics,
+): CSSProperties {
+    return {
+        alignItems: "center",
+        display: "inline-flex",
+        flexShrink: 0,
+        // Keep the icon centered against the first line when the label wraps.
+        height: `${metrics.lineHeight}em`,
+    };
+}
+
 export function getChatInlinePillStyle({
     appearance,
     clickable,
