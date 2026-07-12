@@ -244,7 +244,6 @@ function buildAgentsSidebarMetrics(scalePercent: number): {
             titleFontSize: scaleMetric(11.5, scale, 10.5),
             timestampFontSize: scaleMetric(10, scale, 9),
             providerIconSize: scaleMetric(12, scale, 10),
-            indicatorSize: scaleMetric(5, scale, 4),
             pinButtonSize: scaleMetric(16, scale, 14),
             pinIconSize: scaleMetric(11, scale, 10),
         },

@@ -285,7 +285,7 @@ describe("AgentsSidebarPanel", () => {
             .map((item) => item.textContent ?? "");
         expect(labels[0]).toContain("Parent task");
         expect(labels[1]).toContain("Worker investigation");
-        expect(labels[1]).toContain("Agent busy");
+        expect(labels[1]).toContain("Working…");
 
         fireEvent.click(screen.getAllByTestId("agent-sidebar-item")[1]);
 

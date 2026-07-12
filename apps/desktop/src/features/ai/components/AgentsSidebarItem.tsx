@@ -23,7 +23,6 @@ export interface AgentsSidebarItemMetrics {
     titleFontSize: number;
     timestampFontSize: number;
     providerIconSize: number;
-    indicatorSize: number;
     pinButtonSize: number;
     pinIconSize: number;
 }
@@ -358,22 +357,6 @@ export function AgentsSidebarItem({
                 className="shrink-0"
             />
 
-            <span
-                aria-hidden
-                title={indicator?.title}
-                className="shrink-0 rounded-full"
-                style={{
-                    width: metrics.indicatorSize,
-                    height: metrics.indicatorSize,
-                    background: indicator
-                        ? indicator.tone === "danger"
-                            ? "var(--diff-remove, #f43f5e)"
-                            : "var(--diff-warn, #d97706)"
-                        : "transparent",
-                }}
-            />
-            {indicator ? <span className="sr-only">{indicator.title}</span> : null}
-
             {isRenaming ? (
                     <input
                         ref={renameInputRef}
@@ -453,6 +436,15 @@ export function AgentsSidebarItem({
                         <path d="m4 6 4 4 4-4" />
                     </svg>
                 </button>
+            ) : canPin ? (
+                <span
+                    aria-hidden
+                    className="shrink-0"
+                    style={{
+                        width: metrics.pinButtonSize,
+                        height: metrics.pinButtonSize,
+                    }}
+                />
             ) : null}
 
             {canPin ? (
@@ -499,13 +491,23 @@ export function AgentsSidebarItem({
 
             <span
                 className="shrink-0 text-[10px]"
+                title={indicator?.title}
                 style={{
-                    color: "var(--text-secondary)",
+                    color:
+                        indicator?.tone === "danger"
+                            ? "var(--diff-remove, #f43f5e)"
+                            : indicator?.tone === "working"
+                              ? "var(--diff-warn, #d97706)"
+                              : "var(--text-secondary)",
                     fontSize: metrics.timestampFontSize,
                     opacity: 0.8,
                 }}
             >
-                {timestampLabel}
+                {indicator?.tone === "working"
+                    ? "Working…"
+                    : indicator?.tone === "danger"
+                      ? "Error"
+                      : timestampLabel}
             </span>
         </div>
     );
