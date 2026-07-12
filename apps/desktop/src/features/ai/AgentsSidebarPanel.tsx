@@ -36,7 +36,6 @@ import {
 import { openClaudeCodeTerminalWithContext } from "../terminal/claudeCodeTerminal";
 import { emitAgentSidebarDrag } from "./agentSidebarDragEvents";
 import {
-    getSessionPreview,
     getSessionTitle,
     getSessionTitleText,
     getSessionUpdatedAt,
@@ -240,14 +239,12 @@ function buildAgentsSidebarMetrics(scalePercent: number): {
     return {
         item: {
             rowPaddingX: scaleMetric(8, scale, 7),
-            rowPaddingY: scaleMetric(6, scale, 5),
-            rowGap: scaleMetric(2, scale, 1.5),
+            rowPaddingY: scaleMetric(4, scale, 3),
             inlineGap: scaleMetric(6, scale, 5),
             titleFontSize: scaleMetric(11.5, scale, 10.5),
-            previewFontSize: scaleMetric(10.5, scale, 9.5),
-            metaFontSize: scaleMetric(10, scale, 9),
             timestampFontSize: scaleMetric(10, scale, 9),
-            indicatorFontSize: scaleMetric(9, scale, 8),
+            providerIconSize: scaleMetric(12, scale, 10),
+            indicatorSize: scaleMetric(5, scale, 4),
             pinButtonSize: scaleMetric(16, scale, 14),
             pinIconSize: scaleMetric(11, scale, 10),
         },
@@ -616,13 +613,7 @@ export function AgentsSidebarPanel() {
         const metaLabel = isSubagent
             ? `${getRuntimeMenuLabel(runtimeLabel)} agent`
             : runtimeLabel;
-        const messageCount =
-            session.persistedMessageCount ?? session.messages.length;
-        const timestampLabel = indicator
-            ? indicator.tone === "danger"
-                ? "Error"
-                : "Working…"
-            : formatAgentTimestamp(updatedAt);
+        const timestampLabel = formatAgentTimestamp(updatedAt);
         const dragTitle = getSessionTitleText(session);
         const updateDragPreview = (clientX: number, clientY: number) => {
             setDragPreview({
@@ -639,9 +630,6 @@ export function AgentsSidebarPanel() {
                 key={session.sessionId}
                 session={session}
                 title={getSessionTitle(session)}
-                preview={getSessionPreview(session)}
-                runtimeLabel={metaLabel}
-                messageCount={messageCount}
                 timestampLabel={timestampLabel}
                 isActive={activeSidebarId === session.sessionId}
                 isPinned={canPin && isPinned}

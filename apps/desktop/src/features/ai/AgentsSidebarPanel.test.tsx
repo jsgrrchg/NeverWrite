@@ -252,7 +252,7 @@ describe("AgentsSidebarPanel", () => {
 
         await waitFor(() => {
             const labels = screen
-                .getAllByRole("option")
+                .getAllByTestId("agent-sidebar-item")
                 .map((item) => item.textContent ?? "");
             expect(labels[0]).toContain("Alpha task");
             expect(labels[1]).toContain("Beta task");
@@ -281,19 +281,39 @@ describe("AgentsSidebarPanel", () => {
         renderComponent(<AgentsSidebarPanel />);
 
         const labels = screen
-            .getAllByRole("option")
+            .getAllByTestId("agent-sidebar-item")
             .map((item) => item.textContent ?? "");
         expect(labels[0]).toContain("Parent task");
         expect(labels[1]).toContain("Worker investigation");
-        expect(labels[1]).not.toContain("Agent");
-        expect(labels[1]).toContain("Working");
+        expect(labels[1]).toContain("Agent busy");
 
-        fireEvent.click(screen.getAllByRole("option")[1]);
+        fireEvent.click(screen.getAllByTestId("agent-sidebar-item")[1]);
 
         await waitFor(() => {
             expect(
                 chatPaneMovementMock.openChatSessionInWorkspace,
             ).toHaveBeenCalledWith("session-child");
+        });
+    });
+
+    it("opens a thread from the keyboard", async () => {
+        const session = createSession("session-alpha", "Alpha task");
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.keyDown(screen.getByTestId("agent-sidebar-item"), {
+            key: "Enter",
+        });
+
+        await waitFor(() => {
+            expect(
+                chatPaneMovementMock.openChatSessionInWorkspace,
+            ).toHaveBeenCalledWith(session.sessionId);
         });
     });
 
@@ -318,7 +338,7 @@ describe("AgentsSidebarPanel", () => {
         try {
             renderComponent(<AgentsSidebarPanel />);
 
-            const row = screen.getByRole("option");
+            const row = screen.getByTestId("agent-sidebar-item");
             firePointer(row, "pointerdown", {
                 button: 0,
                 buttons: 1,
@@ -386,7 +406,7 @@ describe("AgentsSidebarPanel", () => {
         try {
             renderComponent(<AgentsSidebarPanel />);
 
-            const row = screen.getByRole("option");
+            const row = screen.getByTestId("agent-sidebar-item");
             firePointer(row, "pointerdown", {
                 button: 0,
                 buttons: 1,
@@ -444,7 +464,7 @@ describe("AgentsSidebarPanel", () => {
         try {
             renderComponent(<AgentsSidebarPanel />);
 
-            const row = screen.getByRole("option");
+            const row = screen.getByTestId("agent-sidebar-item");
             firePointer(row, "pointerdown", {
                 button: 0,
                 buttons: 1,
@@ -503,7 +523,7 @@ describe("AgentsSidebarPanel", () => {
         try {
             const { unmount } = renderComponent(<AgentsSidebarPanel />);
 
-            const row = screen.getByRole("option");
+            const row = screen.getByTestId("agent-sidebar-item");
             firePointer(row, "pointerdown", {
                 button: 0,
                 buttons: 1,
@@ -565,7 +585,7 @@ describe("AgentsSidebarPanel", () => {
 
         await waitFor(() => {
             const labels = screen
-                .getAllByRole("option")
+                .getAllByTestId("agent-sidebar-item")
                 .map((item) => item.textContent ?? "");
             expect(labels[0]).toContain("Parent task");
             expect(labels[1]).toContain("Heisenberg");
@@ -599,7 +619,7 @@ describe("AgentsSidebarPanel", () => {
         });
 
         const labels = screen
-            .getAllByRole("option")
+            .getAllByTestId("agent-sidebar-item")
             .map((item) => item.textContent ?? "");
         expect(labels[0]).toContain("Parent task");
         expect(labels[1]).toContain("Needle subagent result");
@@ -626,7 +646,7 @@ describe("AgentsSidebarPanel", () => {
 
         renderComponent(<AgentsSidebarPanel />);
 
-        fireEvent.doubleClick(screen.getAllByRole("option")[1]);
+        fireEvent.doubleClick(screen.getAllByTestId("agent-sidebar-item")[1]);
 
         expect(screen.queryByDisplayValue("Worker investigation")).toBeNull();
     });
@@ -650,7 +670,7 @@ describe("AgentsSidebarPanel", () => {
 
         renderComponent(<AgentsSidebarPanel />);
 
-        fireEvent.contextMenu(screen.getAllByRole("option")[0]);
+        fireEvent.contextMenu(screen.getAllByTestId("agent-sidebar-item")[0]);
         fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
         await waitFor(() => {
@@ -682,7 +702,7 @@ describe("AgentsSidebarPanel", () => {
 
         renderComponent(<AgentsSidebarPanel />);
 
-        fireEvent.contextMenu(screen.getByRole("option"));
+        fireEvent.contextMenu(screen.getByTestId("agent-sidebar-item"));
         fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
 
         await waitFor(() => {
@@ -745,7 +765,7 @@ describe("AgentsSidebarPanel", () => {
 
         renderComponent(<AgentsSidebarPanel />);
 
-        fireEvent.contextMenu(screen.getByRole("option"));
+        fireEvent.contextMenu(screen.getByTestId("agent-sidebar-item"));
         expect(
             await screen.findByRole("button", { name: "Close Terminal" }),
         ).toBeInTheDocument();

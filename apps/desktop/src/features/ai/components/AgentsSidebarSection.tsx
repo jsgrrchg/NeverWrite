@@ -13,9 +13,8 @@ interface AgentsSidebarSectionProps {
     };
 }
 
-// Thin section wrapper used to group the Pinned/Open/All buckets inside the
-// Agents sidebar list. The header label renders with a subtle count suffix
-// and matches the uppercase tracking used by the other sidebar panels.
+// Sections mirror the compact grouping used by Comando: the count belongs to
+// the label and the extra vertical space separates session groups, not rows.
 
 export function AgentsSidebarSection({
     title,
@@ -26,10 +25,10 @@ export function AgentsSidebarSection({
 }: AgentsSidebarSectionProps) {
     if (count === 0) return null;
     return (
-        <div className="flex flex-col">
+        <section className="mt-3 flex flex-col first:mt-0">
             {showHeader ? (
                 <div
-                    className="flex items-center justify-between px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.1em]"
+                    className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.09em]"
                     style={{
                         color: "var(--text-secondary)",
                         opacity: 0.8,
@@ -38,10 +37,10 @@ export function AgentsSidebarSection({
                     }}
                 >
                     <span>{title}</span>
-                    <span>{count}</span>
+                    <span style={{ opacity: 0.7 }}>{count}</span>
                 </div>
             ) : null}
-            <div className="flex flex-col">{children}</div>
-        </div>
+            <div className="flex flex-col gap-0.5">{children}</div>
+        </section>
     );
 }
