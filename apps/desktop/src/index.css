@@ -1416,6 +1416,53 @@ body.dragging-tab * {
     outline-offset: 1px;
 }
 
+/* Sidebar filter bar (file tree, tags, maps, bookmarks, agents). Idle state
+   stays a quiet translucent pill; hover lifts it slightly and focus draws an
+   accent ring so keyboard users get feedback even though the native outline
+   is suppressed on the input itself. */
+.nw-sidebar-filter {
+    background-color: color-mix(in srgb, var(--bg-tertiary) 85%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    transition:
+        background-color 120ms ease-out,
+        border-color 120ms ease-out,
+        box-shadow 120ms ease-out;
+}
+.nw-sidebar-filter:hover {
+    border-color: color-mix(in srgb, var(--text-primary) 16%, var(--border));
+}
+.nw-sidebar-filter:focus-within {
+    background-color: color-mix(in srgb, var(--bg-tertiary) 96%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 46%, var(--border));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.nw-sidebar-filter-icon {
+    color: var(--text-secondary);
+    transition: color 120ms ease-out;
+}
+.nw-sidebar-filter:focus-within .nw-sidebar-filter-icon {
+    color: var(--accent);
+}
+.nw-sidebar-filter-clear {
+    color: var(--text-secondary);
+    transition:
+        background-color 100ms ease-out,
+        color 100ms ease-out,
+        transform 80ms ease-out;
+}
+.nw-sidebar-filter-clear:hover {
+    background-color: color-mix(in srgb, var(--text-primary) 12%, transparent);
+    color: var(--text-primary);
+}
+.nw-sidebar-filter-clear:active {
+    transform: scale(0.88);
+    transition-duration: 60ms;
+}
+.nw-sidebar-filter-clear:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
+}
+
 /* "Find in chat" matches, painted via the CSS Custom Highlight API. The active
    match is distinguished by a stronger background. ::highlight() only supports a
    small subset of properties (background-color, color, text-decoration).

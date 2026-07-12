@@ -30,22 +30,15 @@ export function SidebarFilterInput({
     // Mirrors Comando's `.sidebar-search` (styles.css:626): padding-based
     // sizing (no fixed height), 12px/18px text, 12px icon, 6px gap. Keeps
     // the bar quietly translucent so it blends into the sidebar vibrancy.
+    // Interactive states (hover, focus-within, clear-button press) live in
+    // the `.nw-sidebar-filter*` rules in index.css.
     return (
         <div
-            className="flex items-center rounded-md"
-            style={{
-                gap: 6,
-                padding: "4px 8px",
-                backgroundColor:
-                    "color-mix(in srgb, var(--bg-tertiary) 85%, transparent)",
-                border:
-                    "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
-                transition:
-                    "background-color 120ms ease, border-color 120ms ease",
-            }}
+            className="nw-sidebar-filter flex items-center gap-1.5 rounded-md px-2 py-1"
             onClick={() => inputRef.current?.focus()}
         >
             <svg
+                className="nw-sidebar-filter-icon shrink-0"
                 width="12"
                 height="12"
                 viewBox="0 0 16 16"
@@ -54,10 +47,6 @@ export function SidebarFilterInput({
                 strokeWidth="1.3"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                style={{
-                    color: "var(--text-secondary)",
-                    flexShrink: 0,
-                }}
             >
                 <circle cx="7" cy="7" r="4.5" />
                 <path d="M10.5 10.5L14 14" />
@@ -91,13 +80,7 @@ export function SidebarFilterInput({
                     }}
                     title="Clear filter"
                     aria-label="Clear filter"
-                    className="flex items-center justify-center rounded-[3px] transition-colors"
-                    style={{
-                        color: "var(--text-secondary)",
-                        width: 16,
-                        height: 16,
-                        flexShrink: 0,
-                    }}
+                    className="nw-sidebar-filter-clear flex size-4 shrink-0 items-center justify-center rounded-[3px]"
                 >
                     <svg
                         width="10"
