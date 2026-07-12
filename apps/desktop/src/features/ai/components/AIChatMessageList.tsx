@@ -9,6 +9,7 @@ import {
     useState,
 } from "react";
 import { AIChatMessageItem, PlanMessage } from "./AIChatMessageItem";
+import { ToolActivitySegment } from "./ToolActivitySegment";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -36,9 +37,16 @@ import {
     useChatRowUiStore,
 } from "../store/chatRowUiStore";
 import { useChatStore } from "../store/chatStore";
+import type { ActivityDisplayMode } from "../activityDisplayMode";
+import { isTurnStartedStatusMessage } from "../transcriptModel";
 import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
 import { ChatFindBar } from "./find/ChatFindBar";
 import { useChatFind } from "./find/useChatFind";
+import {
+    buildActivityTimelineRows,
+    getActivityTimelineRowKey,
+    type ActivityTimelineSegmentRow,
+} from "./activityTimelinePresentation";
 
 interface AIChatMessageListProps {
     sessionId?: string | null;
@@ -73,6 +81,12 @@ type TimelineRow =
           key: string;
           kind: "message";
           message: AIChatMessage;
+      }
+    | {
+          isCurrentTurnTail: boolean;
+          key: string;
+          kind: "activity-segment";
+          segment: ActivityTimelineSegmentRow;
       }
     | {
           key: string;
@@ -268,6 +282,10 @@ function renderTimelineRow(
             action: AIUrlElicitationAction,
         ) => void;
         onDismissMessage?: (messageId: string) => void;
+        highlightedMessageId?: string | null;
+        forceExpandedMessageId?: string | null;
+        forceExpandedForSearch?: boolean;
+        activityDisplayMode: ActivityDisplayMode;
     },
 ) {
     if (row.kind === "run-indicator") {
@@ -280,11 +298,53 @@ function renderTimelineRow(
         );
     }
 
+    if (row.kind === "activity-segment") {
+        return (
+            <ToolActivitySegment
+                activityDisplayMode={options.activityDisplayMode}
+                forceExpandedMessageId={options.forceExpandedMessageId}
+                forceExpandedForSearch={options.forceExpandedForSearch}
+                highlightedMessageId={options.highlightedMessageId}
+                isCurrentTurnTail={row.isCurrentTurnTail}
+                renderEntry={(message) =>
+                    renderTimelineMessage(message, options)
+                }
+                segment={row.segment}
+                sessionId={options.sessionId}
+            />
+        );
+    }
+
+    return renderTimelineMessage(row.message, options);
+}
+
+function renderTimelineMessage(
+    message: AIChatMessage,
+    options: {
+        sessionId?: string | null;
+        readOnly?: boolean;
+        pillMetrics: ReturnType<typeof getChatPillMetrics>;
+        chatFontSize: number;
+        visibleWorkCycleId?: string | null;
+        onPermissionResponse?: (requestId: string, optionId?: string) => void;
+        onUserInputResponse?: (
+            requestId: string,
+            answers: Record<string, string[]>,
+            action?: AIUserInputAction,
+        ) => void;
+        onUrlElicitationOpen?: (requestId: string) => void;
+        onUrlElicitationResponse?: (
+            requestId: string,
+            action: AIUrlElicitationAction,
+        ) => void;
+        onDismissMessage?: (messageId: string) => void;
+    },
+) {
     return (
         <AIChatMessageItem
             sessionId={options.sessionId}
             readOnly={options.readOnly}
-            message={row.message}
+            message={message}
             pillMetrics={options.pillMetrics}
             chatFontSize={options.chatFontSize}
             visibleWorkCycleId={options.visibleWorkCycleId}
@@ -365,6 +425,9 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     );
     const rowUiSessionId = resolveChatRowUiSessionId(sessionId);
     const dismissMessage = useChatStore((state) => state.dismissMessage);
+    const activityDisplayMode = useChatStore(
+        (state) => state.toolActivityDisplayMode,
+    );
     const handleDismissMessage = useCallback(
         (messageId: string) => {
             if (!sessionId) return;
@@ -455,21 +518,50 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     );
     const dismissPinnedPlan = useChatRowUiStore((state) => state.patchRow);
     const visiblePinnedPlan = pinnedPlanDismissed ? null : pinnedPlan;
+    const visiblePinnedPlanId = visiblePinnedPlan?.id ?? null;
+    const shouldRevealHiddenActivity =
+        scrollToMessageId !== null ||
+        (findOpen && findQuery.trim().length > 0);
+    const timelineActivityDisplayMode =
+        activityDisplayMode === "hidden" && shouldRevealHiddenActivity
+            ? "collapsed"
+            : activityDisplayMode;
     const timelineRows = useMemo(() => {
         const rows: TimelineRow[] = [];
+        const timelineMessages = messages.filter(
+            (message) =>
+                !isTurnStartedStatusMessage(message) &&
+                !(
+                    message.kind === "plan" &&
+                    message.id === visiblePinnedPlanId
+                ),
+        );
+        const presentationRows = buildActivityTimelineRows(
+            timelineMessages,
+            timelineActivityDisplayMode,
+        );
+        const trailingPresentationRow = presentationRows.at(-1);
+        const lastTimelineMessageId = timelineMessages.at(-1)?.id;
 
-        for (const message of messages) {
-            if (
-                message.kind === "plan" &&
-                message.id === visiblePinnedPlan?.id
-            ) {
+        for (const presentationRow of presentationRows) {
+            if (presentationRow.kind === "message") {
+                rows.push({
+                    key: scopeTimelineRowKey(sessionId, presentationRow.id),
+                    kind: "message",
+                    message: presentationRow.message,
+                });
                 continue;
             }
 
             rows.push({
-                key: scopeTimelineRowKey(sessionId, message.id),
-                kind: "message",
-                message,
+                isCurrentTurnTail:
+                    status === "streaming" &&
+                    trailingPresentationRow?.id === presentationRow.id &&
+                    presentationRow.entries.at(-1)?.message.id ===
+                        lastTimelineMessageId,
+                key: getActivityTimelineRowKey(sessionId, presentationRow.id),
+                kind: "activity-segment",
+                segment: presentationRow,
             });
         }
 
@@ -491,7 +583,8 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         runIndicatorAnchor,
         sessionId,
         status,
-        visiblePinnedPlan?.id,
+        timelineActivityDisplayMode,
+        visiblePinnedPlanId,
     ]);
     const rowRenderOptions = useMemo(
         () => ({
@@ -505,10 +598,19 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             onUrlElicitationOpen,
             onUrlElicitationResponse,
             onDismissMessage: handleDismissMessage,
+            forceExpandedMessageId: scrollToMessageId,
+            forceExpandedForSearch: findOpen && findQuery.trim().length > 0,
+            highlightedMessageId: outlineHighlightedMessageId,
+            activityDisplayMode,
         }),
         [
+            activityDisplayMode,
             chatFontSize,
+            findOpen,
+            scrollToMessageId,
+            findQuery,
             handleDismissMessage,
+            outlineHighlightedMessageId,
             onPermissionResponse,
             onUserInputResponse,
             onUrlElicitationOpen,

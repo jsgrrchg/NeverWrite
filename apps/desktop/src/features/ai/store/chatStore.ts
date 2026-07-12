@@ -169,6 +169,10 @@ import {
     buildClaudeTerminalSetupStatus,
 } from "../utils/claudeTerminalRuntime";
 import { checkClaudeCodeInstalled } from "../../terminal/claudeCodeTerminal";
+import {
+    normalizeActivityDisplayMode,
+    type ActivityDisplayMode,
+} from "../activityDisplayMode";
 
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "neverwrite.ai.runtime-catalog";
@@ -225,6 +229,7 @@ interface AiPreferences {
     editDiffZoom?: number;
     historyRetentionDays?: number;
     screenshotRetentionSeconds?: number;
+    toolActivityDisplayMode?: ActivityDisplayMode;
     defaultRuntimeId?: string;
 }
 
@@ -238,6 +243,7 @@ interface NormalizedAiPreferences {
     editDiffZoom: number;
     historyRetentionDays: number;
     screenshotRetentionSeconds: number;
+    toolActivityDisplayMode: ActivityDisplayMode;
 }
 
 const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
@@ -250,6 +256,7 @@ const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
     editDiffZoom: 0.72,
     historyRetentionDays: 0,
     screenshotRetentionSeconds: DEFAULT_SCREENSHOT_RETENTION_SECONDS,
+    toolActivityDisplayMode: "collapsed",
 };
 
 interface AIRuntimeCatalogSnapshot {
@@ -310,6 +317,7 @@ function aiPrefsEqual(
         | "editDiffZoom"
         | "historyRetentionDays"
         | "screenshotRetentionSeconds"
+        | "toolActivityDisplayMode"
     >,
     right: NormalizedAiPreferences,
 ) {
@@ -322,7 +330,8 @@ function aiPrefsEqual(
         left.chatFontFamily === right.chatFontFamily &&
         left.editDiffZoom === right.editDiffZoom &&
         left.historyRetentionDays === right.historyRetentionDays &&
-        left.screenshotRetentionSeconds === right.screenshotRetentionSeconds
+        left.screenshotRetentionSeconds === right.screenshotRetentionSeconds &&
+        left.toolActivityDisplayMode === right.toolActivityDisplayMode
     );
 }
 
@@ -409,6 +418,9 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
         editDiffZoom: prefs.editDiffZoom ?? 0.72,
         historyRetentionDays: prefs.historyRetentionDays ?? 0,
         screenshotRetentionSeconds,
+        toolActivityDisplayMode: normalizeActivityDisplayMode(
+            prefs.toolActivityDisplayMode,
+        ),
     };
 }
 
@@ -1374,6 +1386,7 @@ interface ChatStore {
     editDiffZoom: number;
     historyRetentionDays: number;
     screenshotRetentionSeconds: number;
+    toolActivityDisplayMode: ActivityDisplayMode;
     composerPartsBySessionId: Record<string, AIComposerPart[]>;
     queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>;
     queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
@@ -1587,6 +1600,7 @@ interface ChatStore {
     setEditDiffZoom: (size: number) => void;
     setHistoryRetentionDays: (days: number) => Promise<void>;
     setScreenshotRetentionSeconds: (seconds: number) => void;
+    setToolActivityDisplayMode: (mode: ActivityDisplayMode) => void;
     openNotePicker: () => void;
     closeNotePicker: () => void;
     forkSession: (sessionId: string) => Promise<void>;
@@ -7545,6 +7559,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         historyRetentionDays: DEFAULT_AI_PREFERENCES.historyRetentionDays,
         screenshotRetentionSeconds:
             DEFAULT_AI_PREFERENCES.screenshotRetentionSeconds,
+        toolActivityDisplayMode: DEFAULT_AI_PREFERENCES.toolActivityDisplayMode,
         composerPartsBySessionId: {},
         queuedMessagesBySessionId: {},
         queuedMessageEditBySessionId: {},
@@ -12881,6 +12896,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             saveAiPreferences({ screenshotRetentionSeconds: next });
         },
 
+        setToolActivityDisplayMode: (mode) => {
+            const next = normalizeActivityDisplayMode(mode);
+            set({ toolActivityDisplayMode: next });
+            saveAiPreferences({ toolActivityDisplayMode: next });
+        },
+
         openNotePicker: () => set({ notePickerOpen: true }),
 
         closeNotePicker: () => set({ notePickerOpen: false }),
@@ -12976,6 +12997,7 @@ export function hydrateChatStorePreferences() {
         editDiffZoom: prefs.editDiffZoom,
         historyRetentionDays: prefs.historyRetentionDays,
         screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
+        toolActivityDisplayMode: prefs.toolActivityDisplayMode,
     });
 }
 
@@ -13009,6 +13031,8 @@ export function initializeChatStoreRuntime() {
                               historyRetentionDays: prefs.historyRetentionDays,
                               screenshotRetentionSeconds:
                                   prefs.screenshotRetentionSeconds,
+                              toolActivityDisplayMode:
+                                  prefs.toolActivityDisplayMode,
                           },
                 );
             }, 80);
@@ -13093,6 +13117,7 @@ export function resetChatStore() {
         editDiffZoom: prefs.editDiffZoom,
         historyRetentionDays: prefs.historyRetentionDays,
         screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
+        toolActivityDisplayMode: prefs.toolActivityDisplayMode,
         composerPartsBySessionId: {},
         queuedMessagesBySessionId: {},
         queuedMessageEditBySessionId: {},

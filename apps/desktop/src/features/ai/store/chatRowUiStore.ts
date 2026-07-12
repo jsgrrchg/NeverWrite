@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 export interface ChatRowUiState {
+    activitySegmentExpanded?: boolean;
     expanded?: boolean;
     singleDiffExpanded?: boolean;
     diffExpandedByPath?: Record<string, boolean>;

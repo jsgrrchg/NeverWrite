@@ -22,6 +22,7 @@ import {
     type RecentVault,
 } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
+import type { ActivityDisplayMode } from "../ai/activityDisplayMode";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { getShortcutSettingsEntries } from "../../app/shortcuts/registry";
 import {
@@ -3903,6 +3904,12 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     const setContextUsageBarEnabled = useChatStore(
         (s) => s.setContextUsageBarEnabled,
     );
+    const toolActivityDisplayMode = useChatStore(
+        (s) => s.toolActivityDisplayMode,
+    );
+    const setToolActivityDisplayMode = useChatStore(
+        (s) => s.setToolActivityDisplayMode,
+    );
     const screenshotRetentionSeconds = useChatStore(
         (s) => s.screenshotRetentionSeconds,
     );
@@ -3943,6 +3950,13 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     const showChat = sectionHasSettingsSearchMatches(searchQuery, "Chat", [
         ["Chat font family", "Font used for messages in the chat.", ...fontKeywords],
         ["Chat font size", "Font size of messages in the chat, in pixels."],
+        [
+            "Tool activity display",
+            "Choose how tool activity appears between assistant messages.",
+            "Expanded",
+            "Collapsed",
+            "Hide routine activity",
+        ],
         [
             "Chat history retention",
             "How long saved chat histories stay on disk before they are automatically deleted.",
@@ -4037,6 +4051,31 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                         min={12}
                         max={28}
                         onChange={setChatFontSize}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
+                label="Tool activity display"
+                description="Choose how tool activity appears between assistant messages."
+                keywords={["Expanded", "Collapsed", "Hide routine activity"]}
+                control={
+                    <SelectField
+                        value={toolActivityDisplayMode}
+                        options={[
+                            { value: "expanded", label: "Expanded" },
+                            { value: "collapsed", label: "Collapsed" },
+                            {
+                                value: "hidden",
+                                label: "Hide routine activity",
+                            },
+                        ]}
+                        onChange={(value) =>
+                            setToolActivityDisplayMode(
+                                value as ActivityDisplayMode,
+                            )
+                        }
                     />
                 }
             />
@@ -4602,6 +4641,10 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Chat",
         "Chat font family",
         "Chat font size",
+        "Tool activity display",
+        "Expanded",
+        "Collapsed",
+        "Hide routine activity",
         "Chat history retention",
         "Composer",
         "Require command enter control enter to send",

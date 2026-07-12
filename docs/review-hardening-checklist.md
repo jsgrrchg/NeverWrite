@@ -140,6 +140,21 @@ back to the agent.
 - [ ] Click undo from the compact panel and confirm the rejected tracked files
       and disk content are restored when safe.
 
+## Chat Activity And Change Review
+
+- [ ] Set Tool activity display to `expanded`, `collapsed`, and `hidden` in
+      Settings, then confirm each mode produces the expected conversation
+      timeline presentation.
+- [ ] With activity hidden, navigate directly to a tool or change-review
+      message and confirm its activity segment is temporarily revealed.
+- [ ] With activity hidden, search for a tool or change-review message and
+      confirm matching activity is revealed while the search result is active.
+- [ ] Confirm hidden activity does not leave a change-review row styled as the
+      active tail of a streaming turn.
+- [ ] Open a Markdown change preview in an activity card and confirm the
+      rendered preview, source fallback, gutter, and file reference links are
+      readable and navigate to the expected target.
+
 ## File Lifecycle Cases
 
 - [ ] Modified file: reject restores original content; accept keeps agent

@@ -105,14 +105,16 @@ Inline or partial review:
 
 ## Review Surfaces
 
-There are two review surfaces:
+There are three review surfaces:
 
 - Full Review tab: [`AIReviewView.tsx`](../apps/desktop/src/features/ai/components/AIReviewView.tsx) opens from the editor and shows pending changes with global actions, expansion state, zoom, persisted scroll/anchor state, and per-file diff cards.
 - Compact Edits surface: [`EditedFilesBufferPanel.tsx`](../apps/desktop/src/features/ai/components/EditedFilesBufferPanel.tsx) appears in the chat sidebar and offers compact keep/reject/review/undo actions.
+- Chat activity rows: [`ChangeReviewToolRail.tsx`](../apps/desktop/src/features/ai/components/ChangeReviewToolRail.tsx) renders change-review progress and diff previews in the conversation timeline. It is a navigation and inspection surface; keep/reject state and actions still derive from the same canonical ActionLog projection.
 
-Both surfaces render shared rows through
+The Review tab and Edits surface render shared rows through
 [`EditedFilesReviewList.tsx`](../apps/desktop/src/features/ai/components/EditedFilesReviewList.tsx)
-and derive file items from the same tracked-file projection. Keep user-facing UI
+and derive file items from the same tracked-file projection. Chat activity rows
+also derive their change-review state from that projection. Keep user-facing UI
 copy in English.
 
 Review projection groups spans into hunks and chunks:
