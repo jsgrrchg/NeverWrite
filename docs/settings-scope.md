@@ -190,7 +190,7 @@ preferences, workspace state, or privacy-relevant local state.
 | `neverwrite.fileTree.clipboard` | Global transient state | None | `fileTreeClipboard.ts` | File tree copy/cut payload. |
 | `neverwrite.search.history` | Global preference/state | `[]` | `searchHistory.ts` | Recent search queries. |
 | `neverwrite.chats.pinnedIds` | Global preference/state | `[]` | `pinnedChatsStore.ts` | Pinned chat session ids. |
-| `neverwrite.chats.folders` | Global preference/state | Empty folders, assignments, and collapsed state | `chatFoldersStore.ts` | Agents sidebar folder definitions, root-session-to-folder assignments, and collapsed folder ids. Folder names are global; assignments are reconciled against the root sessions available in the active vault. A Claude Code terminal pseudo-session can be assigned while live, but the assignment is removed when its terminal ends. |
+| `neverwrite.chats.folders` | Global preference/state | Empty folders, order, assignments, and collapsed state | `chatFoldersStore.ts` | Agents sidebar folder definitions, manual folder order, root-session-to-folder assignments, and collapsed folder ids. Folder names are global; assignments are reconciled against the root sessions available in the active vault. A Claude Code terminal pseudo-session can be assigned while live, but the assignment is removed when its terminal ends. |
 | `neverwrite.ai.agentsSidebar.collapsedParents` | Global UI state | `[]` | `AgentsSidebarPanel.tsx` | Collapsed parent groups in the agents sidebar. |
 | `neverwrite.ai.runtime-catalog` | Global cache | `{}` | `chatStore.ts` | Cached runtime models, modes, and config option catalogs. |
 | `neverwrite:debug-log-scopes` | Global developer preference | None | `runtimeLog.ts` | Enables scoped debug logging. |

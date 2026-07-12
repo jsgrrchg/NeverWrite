@@ -6,6 +6,7 @@ const CHAT_FOLDERS_KEY = "neverwrite.chats.folders";
 function resetFoldersStore() {
     useChatFoldersStore.setState({
         folders: {},
+        folderOrder: [],
         sessionFolderIds: {},
         collapsedFolderIds: [],
     });
@@ -56,6 +57,7 @@ describe("chatFoldersStore", () => {
                 research: { id: "research", name: "Research", createdAt: 1 },
                 archive: { id: "archive", name: "Archive", createdAt: 2 },
             },
+            folderOrder: ["research", "archive"],
             sessionFolderIds: {
                 "session-a": "research",
                 "session-b": "archive",
@@ -69,6 +71,7 @@ describe("chatFoldersStore", () => {
             folders: {
                 archive: { id: "archive", name: "Archive", createdAt: 2 },
             },
+            folderOrder: ["archive"],
             sessionFolderIds: { "session-b": "archive" },
             collapsedFolderIds: ["archive"],
         });
@@ -80,6 +83,7 @@ describe("chatFoldersStore", () => {
                 research: { id: "research", name: "Research", createdAt: 1 },
                 archive: { id: "archive", name: "Archive", createdAt: 2 },
             },
+            folderOrder: ["research", "archive"],
             sessionFolderIds: {
                 pending: "research",
                 live: "archive",
@@ -95,6 +99,30 @@ describe("chatFoldersStore", () => {
         expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
             live: "research",
         });
+    });
+
+    it("persists a manual folder order", () => {
+        useChatFoldersStore.setState({
+            folders: {
+                research: { id: "research", name: "Research", createdAt: 1 },
+                archive: { id: "archive", name: "Archive", createdAt: 2 },
+                later: { id: "later", name: "Later", createdAt: 3 },
+            },
+            folderOrder: ["research", "archive", "later"],
+        });
+
+        useChatFoldersStore.getState().reorderFolder("later", 0);
+
+        expect(useChatFoldersStore.getState().folderOrder).toEqual([
+            "later",
+            "research",
+            "archive",
+        ]);
+        expect(JSON.parse(localStorage.getItem(CHAT_FOLDERS_KEY) ?? "{}")).toEqual(
+            expect.objectContaining({
+                folderOrder: ["later", "research", "archive"],
+            }),
+        );
     });
 
     it("hydrates only valid folders, assignments, and collapse state", async () => {
@@ -122,6 +150,7 @@ describe("chatFoldersStore", () => {
             folders: {
                 valid: { id: "valid", name: "Research", createdAt: 4 },
             },
+            folderOrder: ["valid"],
             sessionFolderIds: { "session-a": "valid" },
             collapsedFolderIds: ["valid"],
         });

@@ -103,6 +103,7 @@ describe("AgentsSidebarPanel", () => {
         usePinnedChatsStore.setState({ entries: {} });
         useChatFoldersStore.setState({
             folders: {},
+            folderOrder: [],
             sessionFolderIds: {},
             collapsedFolderIds: [],
         });
@@ -246,6 +247,59 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.getByTestId("agent-sidebar-item")).toHaveTextContent(
             "Alpha task",
         );
+    });
+
+    it("reorders folders by dragging their headers", () => {
+        const first = useChatFoldersStore.getState().createFolder("First");
+        const second = useChatFoldersStore.getState().createFolder("Second");
+        expect(first).toBeTruthy();
+        expect(second).toBeTruthy();
+        const session = createSession("session-alpha", "Alpha task");
+        useChatFoldersStore.getState().moveSession(session.sessionId, first);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+        renderComponent(<AgentsSidebarPanel />);
+
+        const firstHeader = document.querySelector<HTMLElement>(
+            `[data-chat-folder-header="${first}"]`,
+        );
+        const secondHeader = document.querySelector<HTMLElement>(
+            `[data-chat-folder-header="${second}"]`,
+        );
+        expect(firstHeader).not.toBeNull();
+        expect(secondHeader).not.toBeNull();
+        Object.defineProperty(document, "elementFromPoint", {
+            configurable: true,
+            value: vi.fn(() => secondHeader),
+        });
+        vi.spyOn(secondHeader!, "getBoundingClientRect").mockReturnValue({
+            top: 100,
+            height: 20,
+        } as DOMRect);
+
+        firePointer(firstHeader!, "pointerdown", {
+            clientX: 10,
+            clientY: 10,
+            pointerId: 7,
+        });
+        firePointer(window, "pointermove", {
+            clientX: 10,
+            clientY: 115,
+            pointerId: 7,
+        });
+        firePointer(window, "pointerup", {
+            clientX: 10,
+            clientY: 115,
+            pointerId: 7,
+        });
+
+        expect(useChatFoldersStore.getState().folderOrder).toEqual([
+            second,
+            first,
+        ]);
     });
 
     it("opens Claude Code from the plus menu as a terminal runtime", async () => {

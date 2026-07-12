@@ -18,6 +18,7 @@ export interface ChatFolder {
 
 interface PersistedChatFolders {
     folders: Record<string, ChatFolder>;
+    folderOrder: string[];
     sessionFolderIds: Record<string, string>;
     collapsedFolderIds: string[];
 }
@@ -26,6 +27,7 @@ interface ChatFoldersStore extends PersistedChatFolders {
     createFolder: (name: string) => string | null;
     renameFolder: (folderId: string, name: string) => void;
     deleteFolder: (folderId: string) => void;
+    reorderFolder: (folderId: string, destinationIndex: number) => void;
     moveSession: (sessionId: string, folderId: string | null) => void;
     replaceSessionId: (fromSessionId: string, toSessionId: string) => void;
     toggleFolderCollapsed: (folderId: string) => void;
@@ -34,12 +36,27 @@ interface ChatFoldersStore extends PersistedChatFolders {
 
 const EMPTY_STATE: PersistedChatFolders = {
     folders: {},
+    folderOrder: [],
     sessionFolderIds: {},
     collapsedFolderIds: [],
 };
 
 function normalizeFolderName(name: string) {
     return name.trim().replace(/\s+/g, " ").slice(0, 80);
+}
+
+function getOrderedFolderIds(
+    folders: Record<string, ChatFolder>,
+    requestedOrder: readonly string[],
+) {
+    const legacyOrder = Object.values(folders)
+        .sort((left, right) => left.createdAt - right.createdAt)
+        .map((folder) => folder.id);
+    const knownRequestedIds = requestedOrder.filter((id) => Boolean(folders[id]));
+    return [
+        ...new Set(knownRequestedIds),
+        ...legacyOrder.filter((id) => !knownRequestedIds.includes(id)),
+    ];
 }
 
 function readHydratedState(): PersistedChatFolders {
@@ -68,8 +85,17 @@ function readHydratedState(): PersistedChatFolders {
                 sessionFolderIds[sessionId] = folderId;
             }
         }
+        // Older persisted state did not have an explicit order. Preserve the
+        // historical created-at ordering when it is first read.
+        const requestedOrder = Array.isArray(parsed.folderOrder)
+            ? parsed.folderOrder.filter(
+                  (id): id is string => typeof id === "string" && Boolean(folders[id]),
+              )
+            : [];
+        const folderOrder = getOrderedFolderIds(folders, requestedOrder);
         return {
             folders,
+            folderOrder,
             sessionFolderIds,
             collapsedFolderIds: Array.isArray(parsed.collapsedFolderIds)
                 ? parsed.collapsedFolderIds.filter((id): id is string =>
@@ -92,6 +118,7 @@ function persistState(state: PersistedChatFolders) {
 function getPersistedState(state: ChatFoldersStore): PersistedChatFolders {
     return {
         folders: state.folders,
+        folderOrder: state.folderOrder,
         sessionFolderIds: state.sessionFolderIds,
         collapsedFolderIds: state.collapsedFolderIds,
     };
@@ -110,6 +137,10 @@ export const useChatFoldersStore = create<ChatFoldersStore>((set) => ({
                     ...state.folders,
                     [id]: { id, name, createdAt: Date.now() },
                 },
+                folderOrder: [
+                    ...getOrderedFolderIds(state.folders, state.folderOrder),
+                    id,
+                ],
             };
             persistState(next);
             return next;
@@ -145,11 +176,38 @@ export const useChatFoldersStore = create<ChatFoldersStore>((set) => ({
             );
             const next = {
                 folders,
+                folderOrder: getOrderedFolderIds(
+                    folders,
+                    state.folderOrder.filter((id) => id !== folderId),
+                ),
                 sessionFolderIds,
                 collapsedFolderIds: state.collapsedFolderIds.filter(
                     (id) => id !== folderId,
                 ),
             };
+            persistState(next);
+            return next;
+        }),
+    reorderFolder: (folderId, destinationIndex) =>
+        set((state) => {
+            if (!state.folders[folderId]) return state;
+            const currentOrder = getOrderedFolderIds(
+                state.folders,
+                state.folderOrder,
+            ).filter((id) => id !== folderId);
+            const nextIndex = Math.max(
+                0,
+                Math.min(destinationIndex, currentOrder.length),
+            );
+            const folderOrder = [...currentOrder];
+            folderOrder.splice(nextIndex, 0, folderId);
+            if (
+                folderOrder.length === state.folderOrder.length &&
+                folderOrder.every((id, index) => id === state.folderOrder[index])
+            ) {
+                return state;
+            }
+            const next = { ...getPersistedState(state), folderOrder };
             persistState(next);
             return next;
         }),

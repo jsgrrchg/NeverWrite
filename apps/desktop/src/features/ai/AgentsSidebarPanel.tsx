@@ -5,6 +5,7 @@ import {
     useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
+    type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { confirm } from "@neverwrite/runtime";
@@ -92,6 +93,11 @@ type AgentDragPreview = {
 type EditingFolder = {
     folderId: string;
     name: string;
+};
+
+type FolderDropTarget = {
+    folderId: string;
+    position: "before" | "after";
 };
 
 type ChatSidebarDropTarget =
@@ -320,9 +326,11 @@ export function AgentsSidebarPanel() {
     const collapsedFolderIds = useChatFoldersStore(
         (state) => state.collapsedFolderIds,
     );
+    const folderOrder = useChatFoldersStore((state) => state.folderOrder);
     const createFolder = useChatFoldersStore((state) => state.createFolder);
     const renameFolder = useChatFoldersStore((state) => state.renameFolder);
     const deleteFolder = useChatFoldersStore((state) => state.deleteFolder);
+    const reorderFolder = useChatFoldersStore((state) => state.reorderFolder);
     const moveSessionToFolder = useChatFoldersStore(
         (state) => state.moveSession,
     );
@@ -489,11 +497,22 @@ export function AgentsSidebarPanel() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [hierarchy.groups, pinnedEntries, workingOrderRevision]);
     const orderedFolders = useMemo(
-        () =>
-            Object.values(chatFolders).sort(
+        () => {
+            const unordered = Object.values(chatFolders).sort(
                 (left, right) => left.createdAt - right.createdAt,
-            ),
-        [chatFolders],
+            );
+            const byId = new Map(unordered.map((folder) => [folder.id, folder]));
+            const ordered = folderOrder.flatMap((id) => {
+                const folder = byId.get(id);
+                if (!folder) return [];
+                byId.delete(id);
+                return [folder];
+            });
+            // This also makes an interrupted migration harmless: folders that
+            // have not reached folderOrder remain visible and usable.
+            return [...ordered, ...unordered.filter((folder) => byId.has(folder.id))];
+        },
+        [chatFolders, folderOrder],
     );
     // Folders are the chat's organizational home. Keep every group eligible
     // here (including pinned/open groups) so the folder projection remains
@@ -614,6 +633,147 @@ export function AgentsSidebarPanel() {
         null,
     );
     const [isDraggingOverUnfiled, setIsDraggingOverUnfiled] = useState(false);
+    const folderDragRef = useRef<{
+        pointerId: number;
+        folderId: string;
+        startX: number;
+        startY: number;
+        active: boolean;
+        folderIds: string[];
+    } | null>(null);
+    const folderDragCleanupRef = useRef<(() => void) | null>(null);
+    const suppressFolderClickRef = useRef(false);
+    const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
+    const [folderDropTarget, setFolderDropTarget] =
+        useState<FolderDropTarget | null>(null);
+
+    useEffect(
+        () => () => {
+            folderDragCleanupRef.current?.();
+            folderDragCleanupRef.current = null;
+        },
+        [],
+    );
+
+    const clearFolderDrag = useCallback(() => {
+        folderDragRef.current = null;
+        folderDragCleanupRef.current?.();
+        folderDragCleanupRef.current = null;
+        setDraggedFolderId(null);
+        setFolderDropTarget(null);
+    }, []);
+
+    const handleFolderPointerDown = useCallback(
+        (event: ReactPointerEvent<HTMLElement>, folderId: string) => {
+            if (event.button !== 0 || editingFolder?.folderId === folderId) return;
+
+            const target = event.target;
+            if (target instanceof Element && target.closest("input,button")) return;
+
+            folderDragCleanupRef.current?.();
+            const state = {
+                pointerId: event.pointerId,
+                folderId,
+                startX: event.clientX,
+                startY: event.clientY,
+                active: false,
+                folderIds: orderedFolders.map((folder) => folder.id),
+            };
+            folderDragRef.current = state;
+
+            const updateTarget = (moveEvent: PointerEvent) => {
+                const current = folderDragRef.current;
+                if (!current || current.pointerId !== moveEvent.pointerId) return;
+                if (!current.active) {
+                    if (
+                        Math.hypot(
+                            moveEvent.clientX - current.startX,
+                            moveEvent.clientY - current.startY,
+                        ) < 5
+                    ) {
+                        return;
+                    }
+                    current.active = true;
+                    setDraggedFolderId(current.folderId);
+                }
+                moveEvent.preventDefault();
+                const element = document.elementFromPoint(
+                    moveEvent.clientX,
+                    moveEvent.clientY,
+                );
+                const header = element?.closest<HTMLElement>(
+                    "[data-chat-folder-header]",
+                );
+                const targetFolderId = header?.dataset.chatFolderHeader;
+                if (!targetFolderId || targetFolderId === current.folderId) {
+                    setFolderDropTarget(null);
+                    return;
+                }
+                const rect = header.getBoundingClientRect();
+                setFolderDropTarget({
+                    folderId: targetFolderId,
+                    position:
+                        moveEvent.clientY < rect.top + rect.height / 2
+                            ? "before"
+                            : "after",
+                });
+            };
+            const finish = (upEvent: PointerEvent, cancelled = false) => {
+                const current = folderDragRef.current;
+                if (!current || current.pointerId !== upEvent.pointerId) return;
+                // Calculate from the final pointer position instead of React
+                // state, which can be stale inside this window listener.
+                const element = document.elementFromPoint(
+                    upEvent.clientX,
+                    upEvent.clientY,
+                );
+                const header = element?.closest<HTMLElement>(
+                    "[data-chat-folder-header]",
+                );
+                const targetFolderId = header?.dataset.chatFolderHeader;
+                const rect = header?.getBoundingClientRect();
+                const finalTarget =
+                    targetFolderId && targetFolderId !== current.folderId && rect
+                        ? {
+                              folderId: targetFolderId,
+                              position:
+                                  upEvent.clientY < rect.top + rect.height / 2
+                                      ? ("before" as const)
+                                      : ("after" as const),
+                          }
+                        : null;
+                const wasActive = current.active;
+                clearFolderDrag();
+                if (!wasActive || cancelled || !finalTarget) return;
+
+                const remainingIds = current.folderIds.filter(
+                    (id) => id !== current.folderId,
+                );
+                const targetIndex = remainingIds.indexOf(finalTarget.folderId);
+                if (targetIndex < 0) return;
+                reorderFolder(
+                    current.folderId,
+                    targetIndex + (finalTarget.position === "after" ? 1 : 0),
+                );
+                suppressFolderClickRef.current = true;
+                window.requestAnimationFrame(() => {
+                    suppressFolderClickRef.current = false;
+                });
+            };
+            const onMove = (moveEvent: PointerEvent) => updateTarget(moveEvent);
+            const onUp = (upEvent: PointerEvent) => finish(upEvent);
+            const onCancel = (cancelEvent: PointerEvent) => finish(cancelEvent, true);
+            window.addEventListener("pointermove", onMove);
+            window.addEventListener("pointerup", onUp);
+            window.addEventListener("pointercancel", onCancel);
+            folderDragCleanupRef.current = () => {
+                window.removeEventListener("pointermove", onMove);
+                window.removeEventListener("pointerup", onUp);
+                window.removeEventListener("pointercancel", onCancel);
+            };
+        },
+        [clearFolderDrag, editingFolder?.folderId, orderedFolders, reorderFolder],
+    );
 
     const newChatMenuEntries = useMemo<ContextMenuEntry[]>(() => {
         const sortedRuntimes = [...runtimes].sort((left, right) => {
@@ -910,9 +1070,21 @@ export function AgentsSidebarPanel() {
                         dragOverFolderId === folder.id
                             ? "1px solid color-mix(in srgb, var(--accent) 55%, transparent)"
                             : "1px solid transparent",
+                    borderTop:
+                        folderDropTarget?.folderId === folder.id &&
+                        folderDropTarget.position === "before"
+                            ? "2px solid var(--accent)"
+                            : "2px solid transparent",
+                    borderBottom:
+                        folderDropTarget?.folderId === folder.id &&
+                        folderDropTarget.position === "after"
+                            ? "2px solid var(--accent)"
+                            : "2px solid transparent",
+                    opacity: draggedFolderId === folder.id ? 0.55 : 1,
                 }}
             >
                 <div
+                    data-chat-folder-header={folder.id}
                     role="button"
                     tabIndex={0}
                     className="flex items-center gap-1.5 px-2 text-left text-[10px] font-semibold uppercase tracking-[0.09em]"
@@ -923,7 +1095,13 @@ export function AgentsSidebarPanel() {
                         padding: `${metrics.header.paddingTop}px ${metrics.header.paddingX}px ${metrics.header.paddingBottom}px`,
                     }}
                     title={collapsed ? "Expand folder" : "Collapse folder"}
-                    onClick={() => toggleFolderCollapsed(folder.id)}
+                    onClick={() => {
+                        if (suppressFolderClickRef.current) return;
+                        toggleFolderCollapsed(folder.id);
+                    }}
+                    onPointerDown={(event) =>
+                        handleFolderPointerDown(event, folder.id)
+                    }
                     onContextMenu={(event) =>
                         handleFolderContextMenu(event, folder)
                     }
