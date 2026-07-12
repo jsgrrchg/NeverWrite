@@ -891,6 +891,19 @@ export function AgentsSidebarPanel() {
                             action: () =>
                                 handleStartRename(contextMenu.payload),
                         },
+                        ...(isClaudeTerminalAgentSession(contextMenu.payload)
+                            ? []
+                            : [
+                                  {
+                                      label: "Open in New Tab",
+                                      action: () => {
+                                          void openChatSessionInWorkspace(
+                                              contextMenu.payload.sessionId,
+                                              { forceNewTab: true },
+                                          );
+                                      },
+                                  },
+                              ]),
                         { type: "separator" },
                         isClaudeTerminalAgentSession(contextMenu.payload)
                             ? {

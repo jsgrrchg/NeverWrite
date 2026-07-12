@@ -189,6 +189,7 @@ export interface EditorWorkspaceActions {
             paneId?: string;
             insertIndex?: number;
             historySessionId?: string | null;
+            forceNewTab?: boolean;
         },
     ) => void;
     closeChat: (sessionId: string) => void;
@@ -2465,7 +2466,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                                     tab.historySessionId ===
                                         requestedHistorySessionId)),
                     ) ?? null;
-                if (existingPane && existing) {
+                if (existingPane && existing && !options?.forceNewTab) {
                     const nextTitle = options?.title ?? existing.title;
                     const nextHistorySessionId =
                         requestedHistorySessionId ?? existing.historySessionId;
@@ -2543,7 +2544,8 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 if (
                     getTabOpenBehavior() === "history" &&
                     !options?.background &&
-                    options?.insertIndex === undefined
+                    options?.insertIndex === undefined &&
+                    !options?.forceNewTab
                 ) {
                     const activeChat = focusedPane.tabs.find(
                         (tab): tab is ChatTab =>

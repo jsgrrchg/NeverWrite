@@ -1543,6 +1543,22 @@ describe("editorStore tab history mode", () => {
         });
     });
 
+    it("opens a separate chat tab when explicitly requested", () => {
+        useEditorStore.getState().openChat("session-a", { title: "First" });
+        useEditorStore.getState().openChat("session-a", {
+            forceNewTab: true,
+            title: "First",
+        });
+
+        expect(useEditorStore.getState().tabs).toHaveLength(2);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.filter(isChatTab)
+                .map((tab) => tab.sessionId),
+        ).toEqual(["session-a", "session-a"]);
+    });
+
     it("truncates forward chat history after opening another AI session", () => {
         useEditorStore.getState().openChat("session-a", { title: "First" });
         useEditorStore.getState().openChat("session-b", { title: "Second" });

@@ -711,6 +711,28 @@ describe("AgentsSidebarPanel", () => {
         expect(deleteSession).not.toHaveBeenCalled();
     });
 
+    it("opens a thread in a new tab from the context menu", async () => {
+        const session = createSession("session-alpha", "Alpha task");
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.contextMenu(screen.getByTestId("agent-sidebar-item"));
+        fireEvent.click(
+            await screen.findByRole("button", { name: "Open in New Tab" }),
+        );
+
+        await waitFor(() => {
+            expect(
+                chatPaneMovementMock.openChatSessionInWorkspace,
+            ).toHaveBeenCalledWith(session.sessionId, { forceNewTab: true });
+        });
+    });
+
     it("closes a Claude Code terminal agent instead of deleting it", async () => {
         const session = createSession(
             "claude-terminal:term-1",
