@@ -39,10 +39,51 @@ resource-backed tab kinds are:
   `text`, `csv`, `mermaid`, or `image`.
 - `PdfTab`: PDF state, including page, zoom, view mode, and scroll position.
 
-Only `note`, `pdf`, `file`, and `map` participate in the history-tab registry
-in [`editorTabRegistry.ts`](../apps/desktop/src/app/store/editorTabRegistry.ts).
-Transient tabs such as AI review/chat and graph are intentionally outside that
-history model.
+Only `note`, `pdf`, `file`, and `map` participate in the resource-backed history
+registry in
+[`editorTabRegistry.ts`](../apps/desktop/src/app/store/editorTabRegistry.ts).
+AI review and graph tabs remain outside that model. AI chat tabs implement a
+separate session-navigation history directly on `ChatTab`; they do not use the
+resource registry.
+
+### AI Chat Views And Session Ownership
+
+The Agents sidebar is the durable owner of live ACP chat sessions. An `ai-chat`
+tab is a workspace view of an ACP session, not the session itself. Closing a chat
+tab must therefore close only that physical view; it must not stop, delete, or
+otherwise change the lifetime of the underlying agent. Explicit session deletion
+is the operation that removes matching physical tabs and prunes that session
+from the history of other chat tabs.
+
+When the configured tab-open behavior is `history`, opening a chat from the
+sidebar reuses the focused chat tab and appends a `ChatHistoryEntry`. Back and
+Forward navigate those entries in place. `Open in New Tab`, pane-targeted opens,
+background opens, and drag/drop placement can create or move a separate physical
+view instead. Each chat history entry stores the live session ID, optional saved
+history session ID, and title; the workspace session serializer persists the
+history and current index.
+
+Session IDs can change when a temporary or restored session becomes durable.
+That migration must update every workspace history entry as well as other
+session-keyed sidebar metadata such as pins and folder membership. Likewise,
+deleting a session must clean all panes without leaving stale Back/Forward
+entries or empty panes behind.
+
+Claude Code terminal agents are an intentional exception to this ownership
+model. They have no ACP backend session. A live terminal is their durable owner,
+and [`claudeTerminalAgentSession.ts`](../apps/desktop/src/features/ai/claudeTerminalAgentSession.ts)
+projects a lightweight, non-persisted pseudo-session into the Agents sidebar.
+Opening that entry focuses its existing terminal tab; it cannot participate in
+chat-tab history or `Open in New Tab`. Closing the terminal tab ends the PTY and
+removes the sidebar entry, while the sidebar's explicit `Close Terminal` action
+confirms before performing the same lifecycle operation.
+
+Pins, renames, and folder assignments can decorate a live Claude Code terminal
+entry, but they do not make the pseudo-session durable. Its pin and folder
+assignment are reconciled away when the terminal ends. A restored `TerminalTab`
+also does not encode enough information to relaunch Claude Code or reconstruct
+the pseudo-session automatically; terminal-agent restoration would require a
+separate persisted terminal role and launch contract.
 
 `FileTabView` applies the file viewer boundary:
 
@@ -146,6 +187,14 @@ or resolver revision changes, resolves note targets through the backend
 `resolve_wikilinks_batch`, and can fall back to text-like vault file matches.
 Navigation opens existing notes/files when possible and creates a note for a
 broken note link.
+
+Links emitted in AI chat are resolved separately by
+[`chatNoteNavigation.ts`](../apps/desktop/src/features/ai/chatNoteNavigation.ts).
+Chat output may reference a note by ID, relative path, title, or an extensionless
+basename, so this resolver normalizes Markdown extensions, path separators,
+case, accents, spaces, underscores, and hyphens. It must never choose an
+arbitrary result: basename and normalized matches open only when they identify a
+single note across the vault.
 
 Pitfall: active note context matters. `Editor.tsx` passes
 `activeTabRef.current?.noteId` into the wikilink extension; helpers such as
@@ -360,7 +409,11 @@ npm run electron:vault-editor:smoke
   sync and wikilink resolution intentionally pass candidate path sets.
 - Do not forget multi-pane focus. Global active-tab selectors can be wrong when
   a secondary pane or detached window owns the interaction.
+- Do not tie an ACP session's lifetime to a workspace tab. Closing a chat tab
+  closes a view; explicit session deletion owns cross-pane and history cleanup.
+  Claude Code terminal agents are the explicit exception because their PTY/tab
+  is the owned session, not a view of an ACP session.
 - Do not add a file viewer without deciding its text-content, autosave, dirty,
   reload, history, and session-persistence behavior.
 
-Last updated: May 11, 2026.
+Last updated: July 11, 2026.

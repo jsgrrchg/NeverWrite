@@ -34,6 +34,23 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Added persistent folders to the Agents sidebar, including create, rename, collapse, delete, context-menu organization, and drag-and-drop assignment.
+- Added browser-like Back and Forward navigation between AI sessions in a reused chat tab, plus an explicit **Open in New Tab** action for dedicated views.
+- Added provider-specific identity icons and refined parent/subagent hierarchy alignment in the Agents sidebar.
+
+### Changed
+
+- Changed ACP chat session ownership so the Agents sidebar retains live sessions while editor tabs and panes act as temporary views; closing an ACP chat tab no longer stops or deletes its agent. Claude Code terminal entries remain projections of their live terminal and close when that terminal closes.
+
+### Fixed
+
+- Fixed session deletion and ID migration cleanup so workspace histories, physical tabs, pins, and folder assignments do not retain stale session references.
+- Fixed internal chat note links so extensionless references can resolve notes in nested folders without choosing an arbitrary note when basenames are ambiguous.
+
 ## [0.4.5] - 2026-07-06
 
 ### Added
