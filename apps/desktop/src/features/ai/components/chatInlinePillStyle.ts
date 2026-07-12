@@ -29,6 +29,7 @@ export function getChatInlinePillStyle({
         border: "none",
         cursor: clickable ? "pointer" : "default",
         fontFamily: "inherit",
+        textAlign: "left",
         verticalAlign: "baseline",
         overflowWrap: "anywhere",
         transform: `translateY(${isLink ? 2 : metrics.offsetY}px)`,
