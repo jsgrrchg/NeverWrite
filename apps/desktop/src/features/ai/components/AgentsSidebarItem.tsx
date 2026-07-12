@@ -17,6 +17,7 @@ export type AgentsSidebarActivityIndicator = {
 
 export interface AgentsSidebarItemMetrics {
     rowPaddingX: number;
+    rowPaddingLeft: number;
     rowPaddingY: number;
     inlineGap: number;
     titleFontSize: number;
@@ -276,7 +277,7 @@ export function AgentsSidebarItem({
             style={{
                 gap: metrics.inlineGap,
                 padding: `${metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
-                paddingLeft: metrics.rowPaddingX + depth * 14,
+                paddingLeft: metrics.rowPaddingLeft + depth * 14,
                 backgroundColor: isActive
                     ? "color-mix(in srgb, var(--accent) 14%, transparent)"
                     : "transparent",
@@ -351,56 +352,6 @@ export function AgentsSidebarItem({
                 event.currentTarget.style.backgroundColor = "transparent";
             }}
         >
-            {hasChildren ? (
-                    <button
-                        type="button"
-                        title={isCollapsed ? "Expand agents" : "Collapse agents"}
-                        aria-label={
-                            isCollapsed ? "Expand agents" : "Collapse agents"
-                        }
-                        onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            onToggleCollapse?.();
-                        }}
-                        className="flex shrink-0 items-center justify-center rounded"
-                        style={{
-                            width: metrics.pinButtonSize,
-                            height: metrics.pinButtonSize,
-                            color: "var(--text-secondary)",
-                            background: "transparent",
-                        }}
-                    >
-                        <svg
-                            width={metrics.pinIconSize}
-                            height={metrics.pinIconSize}
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            style={{
-                                transform: isCollapsed
-                                    ? "rotate(-90deg)"
-                                    : "rotate(0)",
-                                transition: "transform 120ms ease",
-                            }}
-                        >
-                            <path d="m4 6 4 4 4-4" />
-                        </svg>
-                    </button>
-                ) : depth > 0 ? (
-                    <span
-                        aria-hidden
-                        className="shrink-0"
-                        style={{
-                            width: metrics.pinButtonSize,
-                            height: metrics.pinButtonSize,
-                        }}
-                    />
-                ) : null}
-
             <AIProviderIcon
                 runtimeId={session.runtimeId}
                 size={metrics.providerIconSize}
@@ -460,6 +411,49 @@ export function AgentsSidebarItem({
                         {title}
                     </span>
                 )}
+
+            {/* Keep provider marks aligned; expansion is a row action, not a
+                leading tree gutter. */}
+            {hasChildren ? (
+                <button
+                    type="button"
+                    title={isCollapsed ? "Expand agents" : "Collapse agents"}
+                    aria-label={
+                        isCollapsed ? "Expand agents" : "Collapse agents"
+                    }
+                    onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onToggleCollapse?.();
+                    }}
+                    className="flex shrink-0 items-center justify-center rounded"
+                    style={{
+                        width: metrics.pinButtonSize,
+                        height: metrics.pinButtonSize,
+                        color: "var(--text-secondary)",
+                        background: "transparent",
+                    }}
+                >
+                    <svg
+                        width={metrics.pinIconSize}
+                        height={metrics.pinIconSize}
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{
+                            transform: isCollapsed
+                                ? "rotate(-90deg)"
+                                : "rotate(0)",
+                            transition: "transform 120ms ease",
+                        }}
+                    >
+                        <path d="m4 6 4 4 4-4" />
+                    </svg>
+                </button>
+            ) : null}
 
             {canPin ? (
                     <button

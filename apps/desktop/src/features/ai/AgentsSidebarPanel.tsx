@@ -238,6 +238,7 @@ function buildAgentsSidebarMetrics(scalePercent: number): {
     return {
         item: {
             rowPaddingX: scaleMetric(8, scale, 7),
+            rowPaddingLeft: scaleMetric(12, scale, 10),
             rowPaddingY: scaleMetric(4, scale, 3),
             inlineGap: scaleMetric(6, scale, 5),
             titleFontSize: scaleMetric(11.5, scale, 10.5),
