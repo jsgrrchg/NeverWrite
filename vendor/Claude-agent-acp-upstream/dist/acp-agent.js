@@ -838,7 +838,7 @@ export class ClaudeAcpAgent {
                     if (session.activeTurn && !session.activeTurn.settled) {
                         session.pendingOrphanResults = (session.pendingOrphanResults ?? 0) + 1;
                     }
-                    settleActive({ stopReason: "cancelled" });
+                    settleActive({ stopReason: "cancelled", usage: sessionUsage(session) });
                     // If the session is being torn down, abandon the in-flight next()
                     // (swallowing any later rejection so it can't surface as unhandled)
                     // and stop; otherwise re-arm and keep consuming — `pendingNext`
@@ -863,9 +863,10 @@ export class ClaudeAcpAgent {
                     //
                     // Settle the turn that was in flight so its prompt() doesn't hang:
                     // cancelled if a cancel is pending, otherwise the accumulated outcome.
-                    settleActive(session.cancelled
-                        ? { stopReason: "cancelled" }
-                        : { stopReason, usage: sessionUsage(session) });
+                    settleActive({
+                        stopReason: session.cancelled ? "cancelled" : stopReason,
+                        usage: sessionUsage(session),
+                    });
                     // Queued turns the SDK never started never ran, so reject them rather
                     // than reporting a success (end_turn) — or a misleading "cancelled" —
                     // for a prompt that produced no output. (A cancel already settled the
@@ -1008,8 +1009,14 @@ export class ClaudeAcpAgent {
                                     // the turn NOW so its session/prompt gets a terminal
                                     // response, instead of leaving it hanging until the next
                                     // prompt drains the wreckage.
+                                    // A cancelled turn still consumed tokens: its dropped result
+                                    // already fed the accumulator (the usage tally at the result
+                                    // handler runs before the `session.cancelled` guard), so
+                                    // report it — clients metering spend would otherwise lose
+                                    // the interrupted turn's tokens entirely (issue #844). Zero
+                                    // when the cancel pre-empted the result (wedge/force-cancel).
                                     if (session.cancelled && session.activeTurn && !session.activeTurn.settled) {
-                                        settleActive({ stopReason: "cancelled" });
+                                        settleActive({ stopReason: "cancelled", usage: sessionUsage(session) });
                                     }
                                     else if (owedTrailingIdles > 0) {
                                         // Absorb a settled turn's trailing idle. Also covers a
@@ -1247,6 +1254,15 @@ export class ClaudeAcpAgent {
                                     lastRefusalExplanation = message.api_refusal_explanation ?? message.content;
                                 }
                                 break;
+                            // `control_request_progress` only reports on side_question
+                            // control requests, which this adapter never issues.
+                            // `background_tasks_changed` is a level signal (the full live
+                            // background-task set on every membership change) for surfaces
+                            // that render a background-activity indicator; turn lifecycle
+                            // here is driven by results/idle, so there is nothing to track.
+                            case "control_request_progress":
+                            case "background_tasks_changed":
+                                break;
                             default:
                                 unreachable(message, this.logger);
                                 break;
@@ -1468,7 +1484,7 @@ export class ClaudeAcpAgent {
                             // create a block the consolidated handler's `text.length > 0`
                             // guard can never consume, stalling the diff cursor and
                             // re-emitting the next block as a duplicate.
-                            if (chunk && chunk.text.length > 0) {
+                            if (chunk?.text) {
                                 const index = message.event.index;
                                 const last = streamedBlocks[streamedBlocks.length - 1];
                                 if (last && last.index === index && last.type === chunk.type) {
@@ -1573,7 +1589,9 @@ export class ClaudeAcpAgent {
                                             // as the freshly-activated turn ending without a result
                                             // (which would false-fail a healthy turn — issue #825).
                                             owedTrailingIdles++;
-                                            settleActive({ stopReason: "cancelled" });
+                                            // Before activateTurn resets the accumulator, so the
+                                            // usage still belongs to the cancelled turn.
+                                            settleActive({ stopReason: "cancelled", usage: sessionUsage(session) });
                                         }
                                         else {
                                             settleActive({ stopReason: "end_turn", usage: sessionUsage(session) });
@@ -1782,13 +1800,10 @@ export class ClaudeAcpAgent {
                     // `conversation_reset` (from `/clear`, plan-mode exit, fresh-session
                     // flows) is safe to drop: turn lifecycle here is driven by
                     // results/idle, and the client owns its own transcript view.
-                    // `control_request_progress` only reports on side_question control
-                    // requests, which this adapter never issues.
                     case "tool_use_summary":
                     case "auth_status":
                     case "prompt_suggestion":
                     case "conversation_reset":
-                    case "control_request_progress":
                         break;
                     default:
                         unreachable(message);
@@ -1845,20 +1860,22 @@ export class ClaudeAcpAgent {
         // they have no in-flight SDK work to interrupt. The active turn is settled
         // by the consumer when it observes the interrupt's trailing idle (or via the
         // backstop below). Mirrors the old pendingMessages cancellation.
+        const orphanedUuids = [];
         if (session.turnQueue) {
-            let orphaned = 0;
             for (const turn of session.turnQueue) {
                 if (turn !== session.activeTurn && !turn.settled) {
                     turn.settled = true;
+                    // Deliberately no `usage`: a queued turn never ran, so the session
+                    // accumulator (the active turn's tally) is not its spend.
                     turn.resolve({ stopReason: "cancelled" });
-                    orphaned++;
+                    orphanedUuids.push(turn.promptUuid);
                 }
             }
             // Each removed queued turn's user message was already pushed to the SDK,
             // which processes input FIFO and will still emit a result for it with no
             // uuid to match. Count those so the consumer skips them (see
             // ensureActiveTurn) rather than misattributing them to the head.
-            session.pendingOrphanResults = (session.pendingOrphanResults ?? 0) + orphaned;
+            session.pendingOrphanResults = (session.pendingOrphanResults ?? 0) + orphanedUuids.length;
             session.turnQueue = session.turnQueue.filter((turn) => turn === session.activeTurn && !turn.settled);
         }
         // Arm a backstop before interrupting: if a turn is actively consuming the
@@ -1882,7 +1899,29 @@ export class ClaudeAcpAgent {
                 cancelController.abort();
             }, this.forceCancelGraceMs);
         }
-        await session.query.interrupt();
+        const receipt = await session.query.interrupt();
+        // On CLIs advertising `interrupt_receipt_v1`, the receipt's `still_queued`
+        // lists exactly which queued messages survive the interrupt and will still
+        // run. An orphaned turn whose uuid is absent was dropped by the interrupt
+        // and will never emit a result — uncount it now instead of leaving a stale
+        // skip that activateTurn's reset only clears once a later live ECHO
+        // arrives: an echo-less result in between (a local-only command like
+        // `/context`) would be wrongly swallowed by the leftover count. Subtracting
+        // a count (rather than tracking uuids) stays race-safe against the
+        // consumer draining concurrently: dropped uuids produce no results, so the
+        // consumer's decrements only ever consume the still-queued share. Unknown
+        // uuids in the receipt (internally-enqueued messages) are ignored, per its
+        // contract. Older CLIs resolve `undefined` (guard the FIELD, not just the
+        // receipt, so a bare `{}` success from a gateway can't read as "everything
+        // was dropped") — keep the count-everything behavior and its
+        // activation-time self-heal.
+        if (Array.isArray(receipt?.still_queued) && orphanedUuids.length > 0) {
+            const stillQueued = new Set(receipt.still_queued);
+            const dropped = orphanedUuids.filter((uuid) => !stillQueued.has(uuid)).length;
+            if (dropped > 0) {
+                session.pendingOrphanResults = Math.max(0, (session.pendingOrphanResults ?? 0) - dropped);
+            }
+        }
     }
     /** Mark a session's SDK query stream as permanently ended and release the
      *  resources tied to it: drop the consumer handle, dispose the settings
@@ -2006,18 +2045,36 @@ export class ClaudeAcpAgent {
             ? option.options.flatMap((o) => ("options" in o ? o.options : [o]))
             : [];
         let validValue = allValues.find((o) => o.value === params.value);
+        // The option's reported currentValue is always a valid target, even when
+        // it has no options entry: a session running an out-of-picker model
+        // (resumed onto an allowlist-excluded model, or a refusal fallback)
+        // reports a currentValue that isn't selectable, and a client
+        // round-tripping it must not get "Invalid value". It flows through the
+        // normal apply path below — re-asserting an already-current value is
+        // harmless and can repair SDK drift.
+        if (!validValue && option.currentValue === params.value) {
+            validValue = { value: params.value, name: params.value };
+        }
         // For model options, fall back to resolveModelPreference when the exact
         // value doesn't match.  This lets callers use human-friendly aliases like
         // "opus" or "sonnet" instead of full model IDs like "claude-opus-4-6".
+        // Resolve against session.modelInfos first: those entries carry
+        // `resolvedModel`, so a full model id (in either hint spelling) lands on
+        // the right row via the exact tier instead of a fuzzier one picking a
+        // same-family sibling from a different context lane. The options-derived
+        // list (which never carries `resolvedModel`) remains as a fallback for
+        // resolutions that don't map back onto a selectable option (e.g. a fuzzy
+        // hit on an out-of-picker verbatim entry).
         if (!validValue && params.configId === MODEL_CONFIG_ID) {
-            const modelInfos = allValues.map((o) => ({
-                value: o.value,
-                displayName: o.name,
-                description: o.description ?? "",
-            }));
-            const resolved = resolveModelPreference(modelInfos, params.value);
-            if (resolved) {
-                validValue = allValues.find((o) => o.value === resolved.value);
+            const toOptionValue = (resolved) => resolved ? allValues.find((o) => o.value === resolved.value) : undefined;
+            validValue = toOptionValue(resolveModelPreference(session.modelInfos, params.value));
+            if (!validValue) {
+                const optionInfos = allValues.map((o) => ({
+                    value: o.value,
+                    displayName: o.name,
+                    description: o.description ?? "",
+                }));
+                validValue = toOptionValue(resolveModelPreference(optionInfos, params.value));
             }
         }
         if (!validValue) {
@@ -2966,10 +3023,42 @@ export class ClaudeAcpAgent {
         const allowedModels = Array.isArray(settingsAvailableModels)
             ? applyAvailableModelsAllowlist(initializationResult.models, settingsAvailableModels, settingsModelOverrides)
             : initializationResult.models;
-        const models = await getAvailableModels(q, allowedModels, initializationResult.models, settingsManager, this.logger);
+        const models = await getAvailableModels(q, allowedModels, initializationResult.models, settingsManager, this.logger, creationOpts.resume !== undefined);
         // Gate `auto` (and future model-specific modes) on the resolved model's
         // `ModelInfo`. See `buildAvailableModes` for the canonical SDK signal.
-        const currentModelInfo = allowedModels.find((m) => m.value === models.currentModelId);
+        // A resumed session can be running a model outside the `availableModels`
+        // allowlist (currentModelId is then the verbatim live id, see
+        // `matchResumedModel`); its capabilities are still known to the SDK's
+        // unfiltered list, so fall back to that before treating the model as
+        // unknown — otherwise auto mode would be spuriously clamped and the
+        // Fast-mode/Effort options hidden for a model that supports them.
+        const allowlistedModelInfo = allowedModels.find((m) => m.value === models.currentModelId);
+        const fallbackModelInfo = allowlistedModelInfo
+            ? undefined
+            : (resolveModelPreference(initializationResult.models, models.currentModelId) ?? undefined);
+        const currentModelInfo = allowlistedModelInfo ?? fallbackModelInfo;
+        // Register the fallback-resolved capabilities under the verbatim live id
+        // so every modelInfos consumer (buildConfigOptions' effort lookup, later
+        // rebuilds via session.modelInfos) agrees with the gating below. The
+        // picker options themselves come from `models.availableModels`, so this
+        // adds no selectable entry. The spread keeps every capability flag
+        // (current and future); the identity fields are overridden because the
+        // fuzzy-matched sibling's resolvedModel/displayName/description can
+        // describe a different context lane and would poison later resolvedModel
+        // matching (syncModelAfterRefusalFallback) and context-window inference
+        // (applyConfigOptionValue) if they traveled under this id.
+        const modelInfos = fallbackModelInfo
+            ? [
+                ...allowedModels,
+                {
+                    ...fallbackModelInfo,
+                    value: models.currentModelId,
+                    displayName: models.currentModelId,
+                    description: "",
+                    resolvedModel: undefined,
+                },
+            ]
+            : allowedModels;
         const availableModes = buildAvailableModes(currentModelInfo);
         // Clamp `permissionMode` if the resolved session does not offer it. The
         // common case is `permissions.defaultMode: "auto"` resolving to a model
@@ -3023,7 +3112,7 @@ export class ClaudeAcpAgent {
             enabled: fastModeEnabled,
             useBooleanOption: clientSupportsBooleanConfigOptions(this.clientCapabilities),
         };
-        const configOptions = buildConfigOptions(modes, models, allowedModels, settingsManager.getSettings().effortLevel, agents, currentAgent, fastMode);
+        const configOptions = buildConfigOptions(modes, models, modelInfos, settingsManager.getSettings().effortLevel, agents, currentAgent, fastMode);
         // Apply the initial effort level to the SDK so it matches the UI default
         const initialEffort = configOptions.find((o) => o.id === EFFORT_CONFIG_ID);
         if (initialEffort &&
@@ -3048,14 +3137,20 @@ export class ClaudeAcpAgent {
             },
             modes,
             models,
-            modelInfos: allowedModels,
+            modelInfos,
             configOptions,
             agents,
             currentAgent,
             fastModeEnabled,
             abortController,
             emitRawSDKMessages: sessionMeta?.claudeCode?.emitRawSDKMessages ?? false,
-            contextWindowSize: inferContextWindowFromModel(models.currentModelId, currentModelInfo?.displayName, currentModelInfo?.description) ?? DEFAULT_CONTEXT_WINDOW,
+            contextWindowSize:
+            // Deliberately keyed to the allowlisted entry: a fallback-resolved
+            // sibling's displayName/description can describe a different context
+            // lane than the verbatim live id (e.g. an "opus[1m]" row matched for
+            // a bare 200k id), so on the fallback path only the id itself is a
+            // trustworthy window signal.
+            inferContextWindowFromModel(models.currentModelId, allowlistedModelInfo?.displayName, allowlistedModelInfo?.description) ?? DEFAULT_CONTEXT_WINDOW,
             taskState,
             toolUseCache: {},
             emittedToolCalls: new Set(),
@@ -3391,14 +3486,32 @@ export function buildConfigOptions(modes, models, modelInfos, currentEffortLevel
 // Claude Code CLI persists display strings like "opus[1m]" in settings,
 // but the SDK model list uses IDs like "claude-opus-4-6-1m".
 const MODEL_CONTEXT_HINT_PATTERN = /\[(\d+m)\]$/i;
+// The id-suffix spelling of a context hint ("-1m" in "claude-opus-4-6-1m");
+// shared by the strip and canonicalize helpers below so the two can't drift.
+const CONTEXT_HINT_SUFFIX_PATTERN = /-(\d+m)$/i;
+/** Remove context-window hints — the display form "[1m]" and the SDK id
+ *  suffix form "-1m" — from a model string. Those digits describe context
+ *  size, not model identity or generation version. */
+function stripContextHints(s) {
+    return s.replace(/\[\d+m\]/gi, "").replace(CONTEXT_HINT_SUFFIX_PATTERN, "");
+}
+/** Canonicalize a model id for exact comparison: trimmed, lowercased, with
+ *  the id-suffix hint spelling unified to the bracket form ("-1m" → "[1m]").
+ *  The hint itself is kept — bare and 1M ids must stay distinct. */
+function canonicalizeModelId(s) {
+    return s.trim().toLowerCase().replace(CONTEXT_HINT_SUFFIX_PATTERN, "[$1]");
+}
+/** The context hint a model string carries ("1m" for either spelling), or
+ *  null for a bare id. */
+function contextHintOf(s) {
+    return canonicalizeModelId(s).match(MODEL_CONTEXT_HINT_PATTERN)?.[1] ?? null;
+}
 // Captures a model family version: `4-6`/`4.7` for dated generations, or a
 // bare `5` for single-number ones like "Sonnet 5". Used to keep a pinned
 // `claude-opus-4-6` from matching the `opus` alias once it points at 4.7.
 const MODEL_FAMILY_VERSION_PATTERN = /\b(\d+)(?:[-.](\d+))?\b/;
 function extractModelFamilyVersion(s) {
-    // Strip "[1m]"-style context hints first — that digit is context window
-    // size, not a model generation version.
-    const match = s.replace(/\[\d+m\]/gi, "").match(MODEL_FAMILY_VERSION_PATTERN);
+    const match = stripContextHints(s).match(MODEL_FAMILY_VERSION_PATTERN);
     if (!match)
         return null;
     return match[2] ? `${match[1]}.${match[2]}` : match[1];
@@ -3451,24 +3564,37 @@ export function resolveModelPreference(models, preference) {
     if (!trimmed)
         return null;
     const lower = trimmed.toLowerCase();
-    // Exact match on value or display name
+    // Exact match on value or display name. Values compare on the canonical
+    // hint spelling so "opus-1m" hits an "opus[1m]" row (and vice versa).
+    const canonicalPreference = canonicalizeModelId(trimmed);
     const directMatch = models.find((model) => model.value === trimmed ||
-        model.value.toLowerCase() === lower ||
+        canonicalizeModelId(model.value) === canonicalPreference ||
         model.displayName.toLowerCase() === lower);
     if (directMatch)
         return directMatch;
     // Exact match on the alias's canonical resolved id (e.g. a pinned
     // "claude-sonnet-5" against the "sonnet" row's `resolvedModel`). SDK-
     // reported and unambiguous, so it's tried before the fuzzier tiers below.
-    // "default" is skipped first since it shares a resolvedModel with
-    // whichever alias the CLI currently recommends — a specific pin should
-    // land on that named alias, not "default".
-    const resolvedMatch = models.find((model) => model.value !== "default" && model.resolvedModel?.toLowerCase() === lower) ?? models.find((model) => model.resolvedModel?.toLowerCase() === lower);
+    // Compared on the canonical hint spelling so a "-1m"-suffix pin matches a
+    // "[1m]"-spelled resolvedModel instead of falling into the substring tier
+    // (which would land on the bare 200k sibling). "default" is skipped first
+    // since it shares a resolvedModel with whichever alias the CLI currently
+    // recommends — a specific pin should land on that named alias, not
+    // "default".
+    const matchesResolved = (model) => model.resolvedModel != null && canonicalizeModelId(model.resolvedModel) === canonicalPreference;
+    const resolvedMatch = models.find((model) => model.value !== "default" && matchesResolved(model)) ??
+        models.find(matchesResolved);
     if (resolvedMatch)
         return resolvedMatch;
-    // Substring match
+    // Substring match. Skips candidates whose context hint disagrees with the
+    // preference's — a bare row must not absorb a 1M-hinted preference (nor
+    // vice versa); such pairs fall through to the tokenized tier, which
+    // weighs hints in its scoring and still finds the best same-family row.
+    const preferenceHint = contextHintOf(trimmed);
     const includesMatch = models.find((model) => {
         if (!modelVersionsCompatible(trimmed, model))
+            return false;
+        if (contextHintOf(model.value) !== preferenceHint)
             return false;
         const value = model.value.toLowerCase();
         const display = model.displayName.toLowerCase();
@@ -3492,6 +3618,51 @@ export function resolveModelPreference(models, preference) {
         }
     }
     return bestMatch;
+}
+/** Map the live model reported by a resumed session onto the picker's model
+ *  list. The CLI restores a resumed session's model from the transcript's
+ *  last assistant message, which records the concrete API id (e.g.
+ *  "claude-opus-4-6") with any "[1m]" context hint dropped. Tiers, in order:
+ *  1. Exact match with the Default entry's resolution — when a named alias
+ *     shares Default's resolvedModel verbatim, the live id can't tell the
+ *     two apart, and a never-customized session should stay on Default.
+ *  2. Exact resolvedModel match on a named row. Checked before the
+ *     hint-stripped Default comparison so a live "claude-sonnet-5[1m]" lands
+ *     on the "sonnet[1m]" row rather than a Default that resolves to the
+ *     bare "claude-sonnet-5" — the two rows differ in context window, which
+ *     drives `contextWindowSize` and capability gating downstream.
+ *  3. Hint-stripped match with Default's resolution — a session that never
+ *     left the default resumes as the bare transcript id, and shouldn't show
+ *     a concrete picker entry.
+ *  4. `resolveModelPreference` over the picker entries.
+ *  5. A model with no picker counterpart (e.g. excluded by an
+ *     `availableModels` allowlist) is tracked verbatim, mirroring
+ *     `syncModelAfterRefusalFallback`: the picker shows no selection, but the
+ *     model-dependent bookkeeping stays truthful to what the SDK is running. */
+export function matchResumedModel(models, liveModel) {
+    const live = canonicalizeModelId(liveModel);
+    const defaultEntry = models.find((m) => m.value === "default");
+    const defaultResolved = defaultEntry?.resolvedModel
+        ? canonicalizeModelId(defaultEntry.resolvedModel)
+        : undefined;
+    if (defaultEntry && defaultResolved === live) {
+        return defaultEntry;
+    }
+    // No default-row exclusion needed: a default row matching `live` exactly
+    // already returned at the tier above.
+    const exactMatch = models.find((m) => m.resolvedModel && canonicalizeModelId(m.resolvedModel) === live);
+    if (exactMatch)
+        return exactMatch;
+    if (defaultEntry &&
+        defaultResolved &&
+        stripContextHints(defaultResolved) === stripContextHints(live)) {
+        return defaultEntry;
+    }
+    return (resolveModelPreference(models, liveModel) ?? {
+        value: liveModel,
+        displayName: liveModel,
+        description: "",
+    });
 }
 function resolveSettingsModel(models, settingsModel, logger) {
     if (settingsModel === undefined) {
@@ -3572,14 +3743,30 @@ export function applyAvailableModelsAllowlist(sdkModels, allowlist, settingsMode
     }
     return result;
 }
-async function getAvailableModels(query, models, sdkModels, settingsManager, logger) {
+/** Read the model a resumed session is actually running (via the
+ *  `getContextUsage` control request — the same source `/context` prints) and
+ *  map it onto the picker. Best-effort: a control-request failure is logged
+ *  and returns null so callers keep their current choice; failing the whole
+ *  session/load over an unreadable report would be worse. */
+async function readResumedLiveModel(query, models, logger) {
+    try {
+        const liveModel = (await query.getContextUsage()).model;
+        return liveModel ? matchResumedModel(models, liveModel) : null;
+    }
+    catch (error) {
+        logger.error("Failed to read the resumed session's live model:", error);
+        return null;
+    }
+}
+async function getAvailableModels(query, models, sdkModels, settingsManager, logger, isResumedSession) {
     const settings = settingsManager.getSettings();
     let currentModel = models[0];
     let resolvedFromInput;
     // Model priority (highest to lowest):
     // 1. ANTHROPIC_MODEL environment variable
     // 2. settings.model (user configuration)
-    // 3. models[0] (default first model)
+    // 3. the resumed session's live model (resumed sessions only)
+    // 4. models[0] (default first model)
     if (process.env.ANTHROPIC_MODEL) {
         const match = resolveModelPreference(models, process.env.ANTHROPIC_MODEL);
         if (match) {
@@ -3594,21 +3781,49 @@ async function getAvailableModels(query, models, sdkModels, settingsManager, log
             resolvedFromInput = settings.model;
         }
     }
+    // A resumed session restores the model it was previously running (the CLI
+    // re-reads it from the transcript), so without an env/settings override the
+    // freshly-computed default above can disagree with what the session actually
+    // runs — session/load then reports a model the session isn't using (issue
+    // #845). Ask the CLI for the live model and reflect it. No `setModel` here:
+    // the SDK is already running this model, and pushing a picker alias back
+    // (e.g. "opus[1m]") could change the live model rather than describe it.
+    if (resolvedFromInput === undefined && isResumedSession) {
+        currentModel = (await readResumedLiveModel(query, models, logger)) ?? currentModel;
+    }
     // Skip the setModel round-trip when we can prove the SDK has already landed
     // on the same model. Two cases qualify:
-    //  (a) No override applied — currentModel stayed at models[0]; the SDK is on
-    //      its own default and we have nothing to sync.
+    //  (a) No override applied — currentModel is the SDK's own default (or, on
+    //      resume, the live model read back from the SDK above); nothing to sync.
     //  (b) The resolver returned the user's input verbatim AND that value exists
     //      in the SDK's original model list — meaning no fuzzy match or
     //      allowlist rewrite was involved, and the SDK (which reads the same
     //      ANTHROPIC_MODEL / settings.json) will have arrived at the same entry.
+    //      This only holds for fresh sessions: a resumed session lands on the
+    //      transcript's model regardless of env/settings, so the override must
+    //      be re-asserted to keep the reported model truthful.
     // Anything else (fuzzy match, allowlist-synthesized value, alias) gets a
     // setModel call so we don't drift from the user's intended pin.
     const sdkSawSameValue = sdkModels.some((m) => m.value === currentModel.value);
     const skipSetModel = resolvedFromInput === undefined ||
-        (currentModel.value === resolvedFromInput && sdkSawSameValue);
+        (!isResumedSession && currentModel.value === resolvedFromInput && sdkSawSameValue);
     if (!skipSetModel) {
-        await query.setModel(currentModel.value);
+        try {
+            await query.setModel(currentModel.value);
+        }
+        catch (error) {
+            // On a fresh session the pin is a defining option — fail loudly. A
+            // resumed session already runs fine on the transcript's model, so
+            // failing the whole session/load over the re-assert would be worse
+            // than loading with the pin unapplied (mirrors the setPermissionMode
+            // containment in createSession). The SDK then stayed on the
+            // transcript's model, so read that back rather than reporting the
+            // pin the session isn't running.
+            if (!isResumedSession)
+                throw error;
+            logger.error(`Failed to re-assert model "${currentModel.value}" on resume:`, error);
+            currentModel = (await readResumedLiveModel(query, models, logger)) ?? currentModel;
+        }
     }
     return {
         availableModels: models.map((model) => ({
@@ -3865,8 +4080,8 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
         let update = null;
         switch (chunk.type) {
             case "text":
-            case "text_delta":
-                if (chunk.text.length > 0) {
+            case "text_delta": {
+                if (chunk.text) {
                     update = {
                         sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
                         content: {
@@ -3876,6 +4091,7 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                     };
                 }
                 break;
+            }
             case "image":
                 update = {
                     sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
@@ -3888,10 +4104,10 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                 };
                 break;
             case "thinking":
-            case "thinking_delta":
+            case "thinking_delta": {
                 // Recent models default `thinking.display` to "omitted", which streams
                 // signature-only thinking blocks whose text is empty.
-                if (chunk.thinking.length > 0) {
+                if (chunk.thinking) {
                     update = {
                         sessionUpdate: "agent_thought_chunk",
                         content: {
@@ -3901,6 +4117,7 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                     };
                 }
                 break;
+            }
             case "tool_use":
             case "server_tool_use":
             case "mcp_tool_use": {

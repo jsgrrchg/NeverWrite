@@ -125,10 +125,10 @@ dictionary licenses.
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.57.0  | Apache-2.0                      |
-| @agentclientprotocol/sdk                | 1.2.0   | Apache-2.0                      |
-| @anthropic-ai/claude-agent-sdk          | 0.3.202 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/claude-agent-sdk-*        | 0.3.202 | Anthropic SDK terms in LICENSE.md |
+| @agentclientprotocol/claude-agent-acp   | 0.58.1  | Apache-2.0                      |
+| @agentclientprotocol/sdk                | 1.2.1   | Apache-2.0                      |
+| @anthropic-ai/claude-agent-sdk          | 0.3.205 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/claude-agent-sdk-*        | 0.3.205 | Anthropic SDK terms in LICENSE.md |
 | @anthropic-ai/sdk                       | 0.110.0 | MIT                             |
 | @modelcontextprotocol/sdk               | 1.29.0  | MIT                             |
 | zod                                     | 4.4.3   | MIT                             |
@@ -285,7 +285,7 @@ Original source: https://github.com/zed-industries/codex
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.57.0` (`2bf865eb42bbe744c476d38a005444eab8f4b624`) with generated `dist/` runtime files required by desktop packaging |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.58.1` (`3500ef736ffe816ab5b01c0c20669015fb4cf8b7`) with generated `dist/` runtime files required by desktop packaging |
 | `.gitignore`          | Keeps generated `dist/` files visible to Git so new runtime outputs are tracked for packaging |
 
 > All original copyright notices and license headers have been preserved.
