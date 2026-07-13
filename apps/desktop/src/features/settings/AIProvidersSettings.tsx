@@ -44,6 +44,8 @@ import type {
 
 const OPENCODE_RUNTIME_ID = "opencode-acp";
 const OPENCODE_AUTH_METHOD_ID = "opencode-login";
+const COPILOT_RUNTIME_ID = "copilot-acp";
+const COPILOT_AUTH_METHOD_ID = "copilot-login";
 const GROK_RUNTIME_ID = "grok-acp";
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -89,6 +91,7 @@ function getShortMethodDesc(id: string): string {
         case "grok-login":
         case "kilo-login":
         case OPENCODE_AUTH_METHOD_ID:
+        case COPILOT_AUTH_METHOD_ID:
             return "Terminal sign-in";
         case "openai-api-key":
             return "OpenAI API key";
@@ -125,6 +128,8 @@ function getAuthHelpText(id: string): string {
             return "Opens a Kilo sign-in terminal inside the app.";
         case OPENCODE_AUTH_METHOD_ID:
             return "Use providers and credentials configured by the OpenCode CLI.";
+        case COPILOT_AUTH_METHOD_ID:
+            return "Open GitHub Copilot sign-in in an integrated terminal.";
         case "openai-api-key":
             return `Store an OpenAI API key locally for ${APP_BRAND_NAME} only.`;
         case "codex-api-key":
@@ -163,6 +168,7 @@ function getActionLabel(
     if (methodId === "grok-login") return "Open sign-in terminal";
     if (methodId === "kilo-login") return "Open sign-in terminal";
     if (methodId === OPENCODE_AUTH_METHOD_ID) return "Open sign-in terminal";
+    if (methodId === COPILOT_AUTH_METHOD_ID) return "Open sign-in terminal";
     if (isApiKeyMethod(methodId)) {
         return status.authReady && status.authMethod === methodId
             ? "Replace key"
@@ -173,11 +179,13 @@ function getActionLabel(
 }
 
 function getSecondaryAuthActionLabel(status: AIRuntimeSetupStatus): string {
-    return status.runtimeId === OPENCODE_RUNTIME_ID ? "Disconnect" : "Log Out";
+    return [OPENCODE_RUNTIME_ID, COPILOT_RUNTIME_ID].includes(status.runtimeId)
+        ? "Disconnect"
+        : "Log Out";
 }
 
 function getLogoutErrorFallback(runtimeId: string): string {
-    return runtimeId === OPENCODE_RUNTIME_ID
+    return [OPENCODE_RUNTIME_ID, COPILOT_RUNTIME_ID].includes(runtimeId)
         ? "Failed to disconnect."
         : "Failed to log out.";
 }
@@ -233,7 +241,7 @@ function setSecretPatch(value: string): AISecretPatch {
 }
 
 function supportsRuntimeBinaryOverride(runtimeId: string): boolean {
-    return runtimeId === OPENCODE_RUNTIME_ID || runtimeId === GROK_RUNTIME_ID;
+    return [OPENCODE_RUNTIME_ID, GROK_RUNTIME_ID, COPILOT_RUNTIME_ID].includes(runtimeId);
 }
 
 function getRuntimeBinaryPlaceholder(runtimeId: string): string {
@@ -242,6 +250,9 @@ function getRuntimeBinaryPlaceholder(runtimeId: string): string {
     }
     if (runtimeId === GROK_RUNTIME_ID) {
         return "Custom Grok runtime path, for example grok";
+    }
+    if (runtimeId === COPILOT_RUNTIME_ID) {
+        return "Custom GitHub Copilot runtime path, for example copilot";
     }
     return "Custom runtime path";
 }
@@ -252,6 +263,9 @@ function getRuntimeBinaryHelpText(runtimeId: string): string {
     }
     if (runtimeId === GROK_RUNTIME_ID) {
         return "Leave empty to use grok from PATH.";
+    }
+    if (runtimeId === COPILOT_RUNTIME_ID) {
+        return "Leave empty to use copilot from PATH.";
     }
     return "Leave empty to use the bundled runtime or PATH.";
 }
@@ -337,6 +351,10 @@ function getProviderSearchValues(
             : undefined,
         provider.id === GROK_RUNTIME_ID
             ? "NEVERWRITE_GROK_ACP_BIN"
+            : undefined,
+        provider.id === COPILOT_RUNTIME_ID ? "copilot acp --acp" : undefined,
+        provider.id === COPILOT_RUNTIME_ID
+            ? "NEVERWRITE_COPILOT_ACP_BIN"
             : undefined,
         getMethodDisplayName(setupStatus),
         error,

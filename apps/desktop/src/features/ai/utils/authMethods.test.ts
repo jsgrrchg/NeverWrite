@@ -18,6 +18,9 @@ describe("authMethods", () => {
         expect(
             isIntegratedTerminalAuthMethod("opencode-acp", "opencode-login"),
         ).toBe(true);
+        expect(
+            isIntegratedTerminalAuthMethod("copilot-acp", "copilot-login"),
+        ).toBe(true);
     });
 
     it("rejects terminal auth methods for the wrong runtime", () => {
@@ -40,6 +43,7 @@ describe("authMethods", () => {
         expect(isIntegratedTerminalAuthMethodId("grok-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("kilo-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("opencode-login")).toBe(true);
+        expect(isIntegratedTerminalAuthMethodId("copilot-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("openai-api-key")).toBe(false);
     });
 });
