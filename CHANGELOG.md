@@ -53,7 +53,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 - Refined AI chat activity, message, code-fence, inline-code, and vault-reference presentation for a clearer and more compact conversation view.
 - Refined AI chat composer pickers, streamed plan presentation, queued-message and change-review controls, and the placement of pending messages relative to edited files.
 - Refined sidebar filter controls across the app so they blend into their panels and provide clearer hover and focus feedback.
-- Updated the embedded Claude ACP runtime to `0.57.0` and the embedded Codex runtime to `0.144.0`, including refreshed configuration options after selecting a model.
+- Updated the embedded Claude ACP runtime to `0.58.1` and the embedded Codex runtime to `0.144.0`, including more accurate model state after resuming sessions and refreshed configuration options after selecting a model.
 
 ### Fixed
 

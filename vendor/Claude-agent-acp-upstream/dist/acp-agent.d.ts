@@ -66,8 +66,11 @@ type Session = {
      *  the SDK still runs it and emits a result with no uuid we can match. Because
      *  the SDK processes input FIFO, those orphan results arrive (in submission
      *  order) before the next live turn's, so skipping exactly this many leaves
-     *  the genuine head untouched. Reset to 0 on every activation as a backstop
-     *  against an SDK that drops queued input on interrupt (no orphan emitted). */
+     *  the genuine head untouched. On CLIs with the interrupt receipt, orphans
+     *  the interrupt dropped (absent from `still_queued`) are uncounted as soon
+     *  as the receipt arrives (see cancel()). Reset to 0 on every activation as
+     *  a backstop against a dropped queued input this can't see (older CLIs, a
+     *  receipt lost to a failed control round-trip). */
     pendingOrphanResults?: number;
     /** The long-lived consumer task. Lazily started on the first `prompt()` and
      *  kept alive for the session so between-turn/background messages are still
@@ -489,6 +492,27 @@ export type FastModeOptionState = {
 };
 export declare function buildConfigOptions(modes: SessionModeState, models: SessionModelState, modelInfos: ModelInfo[], currentEffortLevel?: string, agents?: AgentInfo[], currentAgent?: string, fastMode?: FastModeOptionState): SessionConfigOption[];
 export declare function resolveModelPreference(models: ModelInfo[], preference: string): ModelInfo | null;
+/** Map the live model reported by a resumed session onto the picker's model
+ *  list. The CLI restores a resumed session's model from the transcript's
+ *  last assistant message, which records the concrete API id (e.g.
+ *  "claude-opus-4-6") with any "[1m]" context hint dropped. Tiers, in order:
+ *  1. Exact match with the Default entry's resolution — when a named alias
+ *     shares Default's resolvedModel verbatim, the live id can't tell the
+ *     two apart, and a never-customized session should stay on Default.
+ *  2. Exact resolvedModel match on a named row. Checked before the
+ *     hint-stripped Default comparison so a live "claude-sonnet-5[1m]" lands
+ *     on the "sonnet[1m]" row rather than a Default that resolves to the
+ *     bare "claude-sonnet-5" — the two rows differ in context window, which
+ *     drives `contextWindowSize` and capability gating downstream.
+ *  3. Hint-stripped match with Default's resolution — a session that never
+ *     left the default resumes as the bare transcript id, and shouldn't show
+ *     a concrete picker entry.
+ *  4. `resolveModelPreference` over the picker entries.
+ *  5. A model with no picker counterpart (e.g. excluded by an
+ *     `availableModels` allowlist) is tracked verbatim, mirroring
+ *     `syncModelAfterRefusalFallback`: the picker shows no selection, but the
+ *     model-dependent bookkeeping stays truthful to what the SDK is running. */
+export declare function matchResumedModel(models: ModelInfo[], liveModel: string): ModelInfo;
 /**
  * Restrict the SDK's model list to the user's `availableModels` allowlist
  * (already merged-and-deduped across settings sources by `SettingsManager`).
