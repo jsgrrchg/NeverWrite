@@ -471,6 +471,7 @@ async function main() {
     for (const runtimeId of [
       "codex-acp",
       "claude-acp",
+      "copilot-acp",
       "grok-acp",
       "kilo-acp",
       "opencode-acp",

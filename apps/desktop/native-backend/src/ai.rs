@@ -47,7 +47,8 @@ use neverwrite_ai::{
     AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
     AI_TOOL_ACTIVITY_EVENT, AI_URL_ELICITATION_REQUEST_EVENT, AI_USER_INPUT_REQUEST_EVENT,
-    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, COPILOT_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID,
+    OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -151,6 +152,7 @@ enum AcpProtocolFlavor {
 }
 
 const NO_ACP_ARGS: &[&str] = &[];
+const COPILOT_ACP_ARGS: &[&str] = &["--acp"];
 const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
 const SHELL_ACP_ARGS: &[&str] = &["acp"];
 
@@ -172,6 +174,16 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "claude",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current,
+        supports_native_resume: false,
+    },
+    RuntimeDefinition {
+        id: COPILOT_RUNTIME_ID,
+        name: "GitHub Copilot",
+        description: "GitHub Copilot CLI running as a native ACP agent.",
+        default_executable: "copilot",
+        bin_env_var: "NEVERWRITE_COPILOT_ACP_BIN",
+        acp_args: COPILOT_ACP_ARGS,
         acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
@@ -3784,9 +3796,7 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
             }
         };
         let result = match flavor {
-            AcpProtocolFlavor::Current => {
-                runtime.block_on(run_acp_auth_inner(spec, auth_command))
-            }
+            AcpProtocolFlavor::Current => runtime.block_on(run_acp_auth_inner(spec, auth_command)),
             AcpProtocolFlavor::Legacy12 => {
                 runtime.block_on(run_acp12_auth_inner(spec, auth_command))
             }
@@ -7023,7 +7033,10 @@ fn resolve_grok_official_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn resolve_macos_homebrew_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
-    if !matches!(runtime_id, GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID) {
+    if !matches!(
+        runtime_id,
+        COPILOT_RUNTIME_ID | GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID
+    ) {
         return None;
     }
     ["/opt/homebrew/bin", "/usr/local/bin"]
@@ -9882,6 +9895,7 @@ mod tests {
     fn native_resume_is_currently_limited_to_codex() {
         assert!(runtime_supports_native_resume(CODEX_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(CLAUDE_RUNTIME_ID));
+        assert!(!runtime_supports_native_resume(COPILOT_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(GROK_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(KILO_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(OPENCODE_RUNTIME_ID));
@@ -9970,6 +9984,29 @@ mod tests {
             .iter()
             .any(|capability| capability == "grok-login"));
         assert!(diagnostic_executable_names().contains(&"grok"));
+    }
+
+    #[test]
+    fn copilot_runtime_is_registered_with_expected_launch_contract() {
+        let definition = runtime_definition(COPILOT_RUNTIME_ID).unwrap();
+        assert_eq!(definition.name, "GitHub Copilot");
+        assert_eq!(definition.default_executable, "copilot");
+        assert_eq!(definition.bin_env_var, "NEVERWRITE_COPILOT_ACP_BIN");
+        assert_eq!(definition.acp_args, ["--acp"]);
+        assert_eq!(definition.acp_protocol, AcpProtocolFlavor::Current);
+        assert!(!definition.supports_native_resume);
+
+        let descriptor = runtime_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.runtime.id == COPILOT_RUNTIME_ID)
+            .unwrap();
+        assert_eq!(descriptor.runtime.name, "GitHub Copilot");
+        assert!(!descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .any(|capability| capability == "resume_session"));
+        assert!(diagnostic_executable_names().contains(&"copilot"));
     }
 
     #[test]
@@ -12311,13 +12348,11 @@ mod tests {
         for runtime_id in [
             CLAUDE_RUNTIME_ID,
             CODEX_RUNTIME_ID,
+            COPILOT_RUNTIME_ID,
             KILO_RUNTIME_ID,
             OPENCODE_RUNTIME_ID,
         ] {
-            assert_eq!(
-                acp_protocol_flavor(runtime_id),
-                AcpProtocolFlavor::Current
-            );
+            assert_eq!(acp_protocol_flavor(runtime_id), AcpProtocolFlavor::Current);
         }
     }
 
@@ -12713,7 +12748,10 @@ mod tests {
 
         assert_eq!(option.label, "Grid layout");
         assert_eq!(option.value, "Grid layout");
-        assert_eq!(option.description.as_deref(), Some("Structured description"));
+        assert_eq!(
+            option.description.as_deref(),
+            Some("Structured description")
+        );
     }
 
     #[test]
