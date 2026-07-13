@@ -20,7 +20,7 @@ Today the repository combines:
 - An Electron desktop app with a Rust sidecar that opens a local vault and keeps working state on disk.
 - A Markdown, CSV, Mermaid, and text/code editing workflow with wikilinks, live preview, frontmatter editing, OKF document status hints, spellcheck, and grammar checking.
 - Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view.
-- An ACP-based AI layer with Codex, Claude, Grok, Kilo, and OpenCode runtimes.
+- An ACP-based AI layer with Codex, Claude, GitHub Copilot, Grok, Kilo, and OpenCode runtimes.
 - An explicit AI change-review system with inline review inside the editor and a dedicated surface in chat and a tab with changes pending approval.
 - A separate browser web clipper that can save directly into the desktop app through a local API, with deep-link fallback. Compatible with both Firefox and Chromium.
 
@@ -89,7 +89,7 @@ NeverWrite has partial Open Knowledge Format support for `status`, `type`, and v
 
 ### AI and change control
 
-- ACP runtime integration for Codex, Claude, Grok, Kilo, and OpenCode
+- ACP runtime integration for Codex, Claude, GitHub Copilot, Grok, Kilo, and OpenCode
 - Attachment flows for notes, folders, files, PDFs, audio, images, and screenshots
 - Session history, transcript viewing, session export, fork, resume, and rename flows
 - Crash recovery for saved chats through `Chat History` and local `.neverwrite/sessions/` transcripts
@@ -212,10 +212,11 @@ The repository already contains broad Vitest coverage in the desktop app and web
 
 ## AI Runtime Notes
 
-NeverWrite currently wires five ACP runtimes:
+NeverWrite currently wires six ACP runtimes:
 
 - `codex-acp`
 - `claude-acp`
+- `copilot-acp`
 - `grok-acp`
 - `kilo-acp`
 - `opencode-acp`
@@ -224,6 +225,7 @@ Current packaging status:
 
 - Codex is intended to be bundled as a sidecar binary in desktop release builds.
 - Claude is intended to be bundled through an embedded Node runtime plus vendored runtime files.
+- GitHub Copilot is integrated in the app, but not bundled by default today.
 - Grok is integrated in the app, but not bundled by default today.
 - Kilo is integrated in the app, but not bundled by default today.
 - OpenCode is integrated in the app, but not bundled by default today.
@@ -232,6 +234,7 @@ Useful runtime overrides during development:
 
 - `NEVERWRITE_CODEX_ACP_BIN`
 - `NEVERWRITE_CLAUDE_ACP_BIN`
+- `NEVERWRITE_COPILOT_ACP_BIN`
 - `NEVERWRITE_GROK_ACP_BIN`
 - `NEVERWRITE_KILO_ACP_BIN`
 - `NEVERWRITE_OPENCODE_ACP_BIN`

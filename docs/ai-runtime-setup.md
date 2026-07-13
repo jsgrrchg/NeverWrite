@@ -21,13 +21,14 @@ and terminal-auth routing helpers are in
 | --- | --- | --- | --- |
 | `codex-acp` | `codex-acp` | Yes. Staged as a sidecar binary. | ChatGPT account, OpenAI API key, Codex API key |
 | `claude-acp` | Claude ACP adapter | Yes. Staged as vendored JS plus embedded Node. | Claude subscription terminal login, Anthropic Console terminal login, Anthropic API key, custom Anthropic-compatible gateway |
+| `copilot-acp` | `copilot --acp` | No. Must be installed separately and available from PATH or a configured binary override. | Copilot terminal login |
 | `grok-acp` | `grok --no-auto-update agent stdio` | No. Must be available from PATH or a configured binary override. | Grok terminal login, xAI API key |
 | `kilo-acp` | `kilo acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
 | `opencode-acp` | `opencode acp` | No. Must be available from PATH or a configured binary override. | OpenCode terminal login |
 
 NeverWrite currently supports two ACP compatibility paths:
 
-- `Current14`: Claude, Codex, Kilo, and OpenCode use the current ACP session
+- `Current14`: Claude, Codex, GitHub Copilot, Kilo, and OpenCode use the current ACP session
   config path.
 - `Legacy12`: Grok uses the legacy ACP model/mode path.
 
@@ -53,7 +54,7 @@ For every provider, the backend resolves the runtime command in this order:
 3. Packaged release resources, when available.
 4. Development vendor fallback for Codex and Claude.
 5. A command found on the app process `PATH`.
-6. macOS Homebrew fallback paths for Grok and OpenCode.
+6. macOS Homebrew fallback paths for GitHub Copilot, Grok, and OpenCode.
 
 The provider-specific runtime binary overrides are:
 
@@ -61,13 +62,14 @@ The provider-specific runtime binary overrides are:
 | --- | --- |
 | `NEVERWRITE_CODEX_ACP_BIN` | Codex |
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Claude |
+| `NEVERWRITE_COPILOT_ACP_BIN` | GitHub Copilot |
 | `NEVERWRITE_GROK_ACP_BIN` | Grok |
 | `NEVERWRITE_KILO_ACP_BIN` | Kilo |
 | `NEVERWRITE_OPENCODE_ACP_BIN` | OpenCode |
 
 The values may be absolute paths or command names resolvable on `PATH`. For
-Grok, Kilo, and OpenCode, NeverWrite appends the ACP arguments automatically:
-`grok --no-auto-update agent stdio`, `kilo acp`, and `opencode acp`.
+For GitHub Copilot, Grok, Kilo, and OpenCode, NeverWrite appends the ACP arguments automatically:
+`copilot --acp`, `grok --no-auto-update agent stdio`, `kilo acp`, and `opencode acp`.
 
 Packaged builds use `NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR` internally to point
 the native backend at staged Electron resources. In normal app usage this is set
@@ -91,12 +93,13 @@ The backend also detects existing CLI auth files and environment secrets:
 | Grok | `XAI_API_KEY` or active non-empty Grok CLI auth under `~/.grok/`, currently `~/.grok/auth.json` |
 | Kilo | Non-empty Kilo auth file, including `~/.local/share/kilo/auth.json` on Unix-like systems |
 | OpenCode | `OPENCODE_API_KEY`, provider keys inherited by OpenCode, or active `opencode/auth.json` in the platform data directory |
+| GitHub Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`; otherwise a successful integrated `copilot login` is recorded locally without reading Copilot's credential store |
 
 Codex ChatGPT auth is implemented through the ACP `authenticate` request and
 requires a resolved Codex runtime binary before NeverWrite marks it connected.
 Codex does not use the integrated auth terminal.
 
-Claude, Grok, Kilo, and OpenCode expose integrated terminal auth methods.
+Claude, GitHub Copilot, Grok, Kilo, and OpenCode expose integrated terminal auth methods.
 NeverWrite starts the provider CLI in a PTY and marks auth pending before
 launch. A zero exit code marks the provider verified; Grok and OpenCode can
 also be marked verified when terminal output contains success strings recognized
@@ -212,6 +215,24 @@ Use Kilo terminal login from the setup UI, a Kilo API key saved in the setup UI,
 or pre-existing Kilo CLI auth. Because Kilo is not bundled by default, install
 the CLI separately or configure `NEVERWRITE_KILO_ACP_BIN`.
 
+### GitHub Copilot
+
+Install the official GitHub Copilot CLI, then use **Open sign-in terminal** in
+AI Providers to run `copilot login`. NeverWrite launches chat sessions with
+`copilot --acp`; it neither downloads the CLI with `npx` nor stores GitHub
+tokens, PATs, or OAuth credentials. The tested baseline is Copilot CLI 1.0.70.
+
+Copilot manages its credential store itself. A successful terminal exit records
+only a local verification timestamp. If ACP reports an authentication failure,
+NeverWrite clears that marker and asks for login again. **Disconnect** only
+forgets NeverWrite's local state: it does not run a provider logout, remove
+`COPILOT_HOME`, or touch the Copilot keychain entry.
+
+ACP-provided Agent, Plan, Autopilot, and `allow_all` controls are preserved as
+runtime controls. Autopilot and Allow All are never selected automatically.
+NeverWrite does not import, list, resume, or fork external Copilot sessions;
+all Copilot edits remain subject to the normal Edits and Review flows.
+
 ### OpenCode
 
 Use OpenCode terminal login from the setup UI, pre-existing OpenCode CLI auth, a
@@ -233,6 +254,7 @@ These `NEVERWRITE_*` variables are relevant to AI runtime setup and packaging:
 | --- | --- |
 | `NEVERWRITE_CODEX_ACP_BIN` | Runtime launch override for Codex in dev or local troubleshooting. |
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Runtime launch override for Claude in dev or local troubleshooting. |
+| `NEVERWRITE_COPILOT_ACP_BIN` | Runtime launch override for GitHub Copilot in dev or local troubleshooting. |
 | `NEVERWRITE_GROK_ACP_BIN` | Runtime launch override for Grok in dev or local troubleshooting. |
 | `NEVERWRITE_KILO_ACP_BIN` | Runtime launch override for Kilo in dev or local troubleshooting. |
 | `NEVERWRITE_OPENCODE_ACP_BIN` | Runtime launch override for OpenCode in dev or local troubleshooting. |
