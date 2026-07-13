@@ -174,229 +174,46 @@ describe("ElectronVaultBackend vault classification", () => {
 });
 
 describe("ElectronVaultBackend AI history migration", () => {
-    it("removes source histories and unreferenced attachments when the target history already exists", async () => {
-        const userDataPath = await fs.mkdtemp(
-            path.join(os.tmpdir(), "neverwrite-user-data-"),
+    it("routes migration to the native persistence layer", async () => {
+        const nativeBackend: NativeBackendBridge & {
+            invoke: ReturnType<typeof vi.fn>;
+        } = {
+            supports: vi.fn(
+                (command: string) => command === "ai_migrate_session_histories",
+            ),
+            invoke: vi.fn(() => Promise.resolve({ histories_copied: 1 })),
+            dispose: vi.fn(),
+        };
+        const backend = new ElectronVaultBackend(
+            vi.fn(),
+            createUpdater(),
+            nativeBackend,
         );
-        electronAppMock.getPath.mockReturnValue(userDataPath);
-
-        const vaultPath = await fs.mkdtemp(
-            path.join(os.tmpdir(), "neverwrite-ai-migration-"),
-        );
-        const stableVaultPath = await fs.realpath(vaultPath);
-        const vaultKey = sha256Hex(stableVaultPath);
-        const sourceRoot = path.join(
-            userDataPath,
-            "ai",
-            "sessions",
-            vaultKey,
-            "sessions",
-        );
-        const targetRoot = path.join(vaultPath, ".neverwrite", "sessions");
-        const sourceHistoryDir = path.join(sourceRoot, "session-existing");
-        const targetHistoryDir = path.join(targetRoot, "session-existing");
-        const attachmentPath = path.join(
-            userDataPath,
-            "ai",
-            "attachments",
-            vaultKey,
-            "session-existing",
-            "pasted-image-source.png",
-        );
-
-        await fs.mkdir(sourceHistoryDir, { recursive: true });
-        await fs.mkdir(targetHistoryDir, { recursive: true });
-        await fs.mkdir(path.dirname(attachmentPath), { recursive: true });
-        await fs.writeFile(attachmentPath, "image-bytes");
-        await fs.writeFile(
-            path.join(sourceHistoryDir, "transcript.jsonl"),
-            `${JSON.stringify({
-                id: "message-1",
-                attachments: [{ filePath: attachmentPath }],
-            })}\n`,
-        );
-        await fs.writeFile(
-            path.join(targetHistoryDir, "transcript.jsonl"),
-            `${JSON.stringify({
-                id: "message-1",
-                attachments: [
-                    {
-                        filePath: path.join(
-                            vaultPath,
-                            "assets",
-                            "chat",
-                            "pasted-image-source.png",
-                        ),
-                    },
-                ],
-            })}\n`,
-        );
-
-        const backend = new ElectronVaultBackend(vi.fn(), createUpdater(), null);
-        const report = (await backend.invoke("ai_migrate_session_histories", {
-            vaultPath,
+        const args = {
+            vaultPath: "/vault",
             fromScope: "device",
             toScope: "vault",
-            deleteSourceAfterCopy: true,
-            migrateAttachments: true,
-        })) as {
-            histories_copied: number;
-            histories_skipped: number;
-            attachments_copied: number;
-            attachments_skipped: number;
-            failures: string[];
         };
 
-        await expect(fs.stat(sourceHistoryDir)).rejects.toMatchObject({
-            code: "ENOENT",
-        });
-        await expect(fs.stat(attachmentPath)).rejects.toMatchObject({
-            code: "ENOENT",
-        });
-        await expect(fs.stat(targetHistoryDir)).resolves.toBeTruthy();
-        expect(report).toMatchObject({
-            histories_copied: 0,
-            histories_skipped: 1,
-            attachments_copied: 0,
-            attachments_skipped: 0,
-            failures: [],
-        });
+        await expect(
+            backend.invoke("ai_migrate_session_histories", args),
+        ).resolves.toEqual({ histories_copied: 1 });
+        expect(nativeBackend.invoke).toHaveBeenCalledWith(
+            "ai_migrate_session_histories",
+            args,
+        );
     });
 
-    it("removes migrated source histories even when external attachments are skipped", async () => {
-        const userDataPath = await fs.mkdtemp(
-            path.join(os.tmpdir(), "neverwrite-user-data-"),
-        );
-        electronAppMock.getPath.mockReturnValue(userDataPath);
-
-        const vaultPath = await fs.mkdtemp(
-            path.join(os.tmpdir(), "neverwrite-ai-migration-"),
-        );
-        const stableVaultPath = await fs.realpath(vaultPath);
-        const vaultKey = sha256Hex(stableVaultPath);
-        const sourceRoot = path.join(
-            userDataPath,
-            "ai",
-            "sessions",
-            vaultKey,
-            "sessions",
-        );
-        const targetRoot = path.join(vaultPath, ".neverwrite", "sessions");
-        const sourceHistoryDir = path.join(sourceRoot, "session-external");
-        const targetHistoryDir = path.join(targetRoot, "session-external");
-        const externalAttachmentPath = path.join(
-            await fs.mkdtemp(path.join(os.tmpdir(), "neverwrite-external-")),
-            "external-image.png",
-        );
-
-        await fs.mkdir(sourceHistoryDir, { recursive: true });
-        await fs.writeFile(externalAttachmentPath, "external-image-bytes");
-        await fs.writeFile(
-            path.join(sourceHistoryDir, "transcript.jsonl"),
-            `${JSON.stringify({
-                id: "message-1",
-                attachments: [{ filePath: externalAttachmentPath }],
-            })}\n`,
-        );
-
+    it("does not fall back to rewriting indexed histories in Node", async () => {
         const backend = new ElectronVaultBackend(vi.fn(), createUpdater(), null);
-        const report = (await backend.invoke("ai_migrate_session_histories", {
-            vaultPath,
-            fromScope: "device",
-            toScope: "vault",
-            deleteSourceAfterCopy: true,
-            migrateAttachments: true,
-        })) as {
-            histories_copied: number;
-            histories_skipped: number;
-            attachments_copied: number;
-            attachments_skipped: number;
-            failures: string[];
-        };
 
-        await expect(fs.stat(sourceHistoryDir)).rejects.toMatchObject({
-            code: "ENOENT",
-        });
-        await expect(fs.stat(targetHistoryDir)).resolves.toBeTruthy();
-        await expect(fs.stat(externalAttachmentPath)).resolves.toBeTruthy();
-        expect(report).toMatchObject({
-            histories_copied: 1,
-            histories_skipped: 0,
-            attachments_copied: 0,
-            attachments_skipped: 1,
-            failures: [],
-        });
-    });
-
-    it("keeps source histories when a later migration step reports a failure", async () => {
-        const userDataPath = await fs.mkdtemp(
-            path.join(os.tmpdir(), "neverwrite-user-data-"),
-        );
-        electronAppMock.getPath.mockReturnValue(userDataPath);
-
-        const vaultPath = await fs.mkdtemp(
-            path.join(os.tmpdir(), "neverwrite-ai-migration-"),
-        );
-        const stableVaultPath = await fs.realpath(vaultPath);
-        const vaultKey = sha256Hex(stableVaultPath);
-        const sourceRoot = path.join(
-            userDataPath,
-            "ai",
-            "sessions",
-            vaultKey,
-            "sessions",
-        );
-        const sourceSuccessDir = path.join(sourceRoot, "session-success");
-        const sourceFailureDir = path.join(sourceRoot, "session-failure");
-        const attachmentPath = path.join(
-            userDataPath,
-            "ai",
-            "attachments",
-            vaultKey,
-            "session-failure",
-            "pasted-image-failure.png",
-        );
-
-        await fs.mkdir(sourceSuccessDir, { recursive: true });
-        await fs.mkdir(sourceFailureDir, { recursive: true });
-        await fs.mkdir(path.dirname(attachmentPath), { recursive: true });
-        await fs.writeFile(attachmentPath, "image-bytes");
-        await fs.writeFile(
-            path.join(sourceSuccessDir, "transcript.jsonl"),
-            `${JSON.stringify({ id: "message-success", content: "ok" })}\n`,
-        );
-        await fs.writeFile(
-            path.join(sourceFailureDir, "transcript.jsonl"),
-            `${JSON.stringify({
-                id: "message-failure",
-                attachments: [{ filePath: attachmentPath }],
-            })}\n`,
-        );
-
-        await fs.mkdir(path.join(vaultPath, "assets"), { recursive: true });
-        await fs.writeFile(path.join(vaultPath, "assets", "chat"), "not-dir");
-
-        const backend = new ElectronVaultBackend(vi.fn(), createUpdater(), null);
-        const report = (await backend.invoke("ai_migrate_session_histories", {
-            vaultPath,
-            fromScope: "device",
-            toScope: "vault",
-            deleteSourceAfterCopy: true,
-            migrateAttachments: true,
-        })) as {
-            histories_copied: number;
-            histories_skipped: number;
-            attachments_copied: number;
-            attachments_skipped: number;
-            failures: string[];
-        };
-
-        await expect(fs.stat(sourceSuccessDir)).resolves.toBeTruthy();
-        await expect(fs.stat(sourceFailureDir)).resolves.toBeTruthy();
-        await expect(fs.stat(attachmentPath)).resolves.toBeTruthy();
-        expect(report.histories_copied).toBe(2);
-        expect(report.attachments_skipped).toBe(1);
-        expect(report.failures.length).toBeGreaterThan(0);
+        await expect(
+            backend.invoke("ai_migrate_session_histories", {
+                vaultPath: "/vault",
+                fromScope: "device",
+                toScope: "vault",
+            }),
+        ).rejects.toThrow("requires the native backend");
     });
 
     it("uses the real vault path for device AI attachment namespaces", async () => {

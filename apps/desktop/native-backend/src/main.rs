@@ -4441,13 +4441,21 @@ mod tests {
         let attachment_path = attachment_dir.join("pasted-image-legacy.png");
         fs::write(&attachment_path, b"png").unwrap();
 
+        let mut history = test_history("vault-session", Some(&attachment_path));
+        history["messages"].as_array_mut().unwrap().push(json!({
+            "id": "msg-2",
+            "role": "assistant",
+            "kind": "text",
+            "content": "the indexed message after the rewritten attachment",
+            "timestamp": 2
+        }));
         invoke(
             &backend,
             "ai_save_session_history",
             json!({
                 "vaultPath": vault_path,
                 "storageScope": "vault",
-                "history": test_history("vault-session", Some(&attachment_path))
+                "history": history
             }),
         )
         .unwrap();
@@ -4492,6 +4500,10 @@ mod tests {
         assert!(rewritten.starts_with(&app_data_dir.path().to_string_lossy().to_string()));
         assert!(Path::new(rewritten).is_file());
         assert!(attachment_path.is_file());
+        assert_eq!(
+            histories[0]["messages"][1]["content"],
+            json!("the indexed message after the rewritten attachment")
+        );
     }
 
     #[test]
