@@ -203,6 +203,7 @@ async function writeFakeAcpRuntime(runtimeDir) {
 import { createInterface } from "node:readline";
 
 const sessionId = "fake-electron-acp-session";
+const isCopilot = process.argv.includes("--acp");
 function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
 }
@@ -213,6 +214,20 @@ function option(id, name) {
   return { value: id, name };
 }
 function configOptions(mode = "default") {
+  if (isCopilot) {
+    return [
+      {
+        id: "mode", name: "Mode", category: "mode", type: "select",
+        currentValue: "https://agentclientprotocol.com/protocol/session-modes#agent",
+        options: [
+          option("https://agentclientprotocol.com/protocol/session-modes#agent", "Agent"),
+          option("https://agentclientprotocol.com/protocol/session-modes#plan", "Plan"),
+          option("https://agentclientprotocol.com/protocol/session-modes#autopilot", "Autopilot")
+        ]
+      },
+      { id: "allow_all", name: "Allow All", category: "other", type: "select", currentValue: "off", options: [option("off", "Off"), option("on", "On")] }
+    ];
+  }
   return [
     {
       id: "mode",
@@ -251,8 +266,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         availableModels: [{ modelId: "auto", name: "Auto" }]
       },
       modes: {
-        currentModeId: "default",
-        availableModes: [
+        currentModeId: isCopilot ? "https://agentclientprotocol.com/protocol/session-modes#agent" : "default",
+        availableModes: isCopilot ? [
+          { id: "https://agentclientprotocol.com/protocol/session-modes#agent", name: "Agent" },
+          { id: "https://agentclientprotocol.com/protocol/session-modes#plan", name: "Plan" },
+          { id: "https://agentclientprotocol.com/protocol/session-modes#autopilot", name: "Autopilot" }
+        ] : [
           { id: "default", name: "Default" },
           { id: "review", name: "Review" }
         ]
@@ -595,6 +614,27 @@ async function main() {
       isAiEvent("ai://message-completed"),
       "real ACP stream completion",
     );
+
+    const copilotSetup = await client.invoke("ai_update_setup", {
+      runtimeId: "copilot-acp",
+      input: { custom_binary_path: fakeAcpPath },
+    });
+    assert(copilotSetup.binary_ready === true, "Copilot should resolve the fake ACP binary");
+    const copilotSession = await client.invoke("ai_create_session", {
+      input: { runtime_id: "copilot-acp", additional_roots: null },
+      vaultPath,
+    });
+    assert(
+      copilotSession.modes.some((mode) => mode.name === "Agent") &&
+        copilotSession.modes.some((mode) => mode.name === "Plan") &&
+        copilotSession.modes.some((mode) => mode.name === "Autopilot"),
+      "Copilot ACP modes should preserve their negotiated IDs",
+    );
+    const allowAll = copilotSession.config_options.find((option) => option.id === "allow_all");
+    assert(allowAll?.value === "off", "Copilot Allow All must remain disabled by default");
+    await client.invoke("ai_set_config_option", {
+      input: { session_id: copilotSession.session_id, option_id: "allow_all", value: "on" },
+    });
 
     const grokSetup = await client.invoke("ai_update_setup", {
       runtimeId: "grok-acp",
