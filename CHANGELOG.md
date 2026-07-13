@@ -34,22 +34,35 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [Unreleased]
+## [0.5.0] - 2026-07-12
 
 ### Added
 
 - Added persistent folders to the Agents sidebar, including create, rename, collapse, delete, context-menu organization, and drag-and-drop assignment.
+- Added drag-and-drop reordering for Agents sidebar folders, with folder layout and chat assignments stored separately for each vault.
 - Added browser-like Back and Forward navigation between AI sessions in a reused chat tab, plus an explicit **Open in New Tab** action for dedicated views.
 - Added provider-specific identity icons and refined parent/subagent hierarchy alignment in the Agents sidebar.
+- Added a chronological tool-activity timeline to AI chats, with compact activity rails, live progress, clearer completed states, and a Chat setting to show activity expanded, collapsed, or hidden.
+- Added in-chat change-review cards with file and Markdown previews, while preserving the existing review surfaces as the canonical place to accept, reject, and undo changes.
+- Added navigable breadcrumbs for subagent activity so parent chats can open the relevant child session.
+- Added the Codex code-mode companion to packaged desktop builds.
 
 ### Changed
 
 - Changed ACP chat session ownership so the Agents sidebar retains live sessions while editor tabs and panes act as temporary views; closing an ACP chat tab no longer stops or deletes its agent. Claude Code terminal entries remain projections of their live terminal and close when that terminal closes.
+- Refined AI chat activity, message, code-fence, inline-code, and vault-reference presentation for a clearer and more compact conversation view.
+- Refined AI chat composer pickers, streamed plan presentation, queued-message and change-review controls, and the placement of pending messages relative to edited files.
+- Refined sidebar filter controls across the app so they blend into their panels and provide clearer hover and focus feedback.
+- Updated the embedded Claude ACP runtime to `0.57.0` and the embedded Codex runtime to `0.144.0`, including refreshed configuration options after selecting a model.
 
 ### Fixed
 
 - Fixed session deletion and ID migration cleanup so workspace histories, physical tabs, pins, and folder assignments do not retain stale session references.
-- Fixed internal chat note links so extensionless references can resolve notes in nested folders without choosing an arbitrary note when basenames are ambiguous.
+- Fixed Agents sidebar folders and chat assignments being lost or mismatched after restarting the app or restoring history-only chats.
+- Fixed in-chat vault references so extensionless and nested note links resolve reliably, ambiguous basenames are not opened arbitrarily, and line targets are preserved.
+- Fixed AI activity projection for duplicate, delayed, and out-of-order tool events so tool output and pending change diffs remain intact.
+- Fixed root AI chats showing runtime-echoed, expanded prompts that could expose internal attachment context or local paths.
+- Fixed subagent activity lifecycle handling so child status, messages, and wait groups remain accurate across handoffs and restored sessions.
 
 ## [0.4.5] - 2026-07-06
 
