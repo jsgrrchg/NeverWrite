@@ -4,6 +4,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+    MAC_UNIVERSAL_COMPONENT_TARGETS,
+    MAC_UNIVERSAL_TARGET,
+    createCodexRuntimeBundlePlan,
+    envSuffixForTarget,
+    executableNameForTarget,
+    validateCodexRuntimeBundleInputs,
+} from "./stage-electron-sidecar-helpers.mjs";
+
 const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const workspaceRoot = path.resolve(appRoot, "..", "..");
 const stagedDir = path.join(appRoot, "out", "native-backend");
@@ -16,11 +25,6 @@ const vendorClaudeEmbeddedDir = path.join(
     "vendor",
     "Claude-agent-acp-upstream",
 );
-const MAC_UNIVERSAL_TARGET = "universal-apple-darwin";
-const MAC_UNIVERSAL_COMPONENT_TARGETS = [
-    "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
-];
 const CLAUDE_RUNTIME_DEPENDENCIES = [
     "@agentclientprotocol/sdk",
     "@anthropic-ai/claude-agent-sdk",
@@ -252,24 +256,8 @@ function resolveHostRustTarget() {
     );
 }
 
-function executableNameForTarget(baseName, targetTriple) {
-    return targetTriple.includes("windows") ? `${baseName}.exe` : baseName;
-}
-
 function isMacUniversalTarget(targetTriple) {
     return targetTriple === MAC_UNIVERSAL_TARGET;
-}
-
-function envSuffixForTarget(targetTriple) {
-    if (targetTriple === "aarch64-apple-darwin") return "ARM64";
-    if (targetTriple === "x86_64-apple-darwin") return "X64";
-    if (targetTriple === "aarch64-pc-windows-msvc") return "ARM64";
-    if (targetTriple === "x86_64-pc-windows-msvc") return "X64";
-    if (targetTriple === "aarch64-unknown-linux-gnu") return "ARM64";
-    if (targetTriple === "x86_64-unknown-linux-gnu") return "X64";
-    throw new Error(
-        `Unsupported target for environment suffix: ${targetTriple}`,
-    );
 }
 
 function embeddedNodeVersion() {
@@ -516,6 +504,21 @@ async function lipoCreate(inputPaths, outputPath) {
     );
 }
 
+async function verifyUniversalBinary(filePath, description) {
+    try {
+        await run(
+            "lipo",
+            ["-verify_arch", "arm64", "x86_64", filePath],
+            appRoot,
+        );
+    } catch (error) {
+        throw new Error(
+            `${description} universal override must contain arm64 and x86_64: ${filePath}`,
+            { cause: error },
+        );
+    }
+}
+
 async function stageUniversalEmbeddedNodeRuntime(nodeSource) {
     const destinationNodeRoot = path.join(embeddedDir, "node");
     await fs.cp(nodeSource.sourcePath, destinationNodeRoot, {
@@ -594,18 +597,6 @@ function nativeBackendPathForTarget(targetTriple) {
     );
 }
 
-function codexPathForTarget(targetTriple) {
-    return path.join(
-        workspaceRoot,
-        "vendor",
-        "codex-acp",
-        "target",
-        targetTriple,
-        "release",
-        executableNameForTarget("codex-acp", targetTriple),
-    );
-}
-
 function targetSpecificEnvKey(baseEnvKey, targetTriple) {
     return `${baseEnvKey}_${envSuffixForTarget(targetTriple)}`;
 }
@@ -633,9 +624,11 @@ async function buildCodexForTarget(targetTriple) {
             "build",
             "--manifest-path",
             path.join(workspaceRoot, "vendor", "codex-acp", "Cargo.toml"),
+            "--locked",
             "--release",
             "--target",
             targetTriple,
+            "--bins",
             "--quiet",
         ],
         workspaceRoot,
@@ -695,12 +688,15 @@ const nativeBackendName = executableNameForTarget(
     "neverwrite-native-backend",
     targetTriple,
 );
-const codexBinaryName = executableNameForTarget("codex-acp", targetTriple);
 const stagedPath = path.join(stagedDir, nativeBackendName);
 const isUniversalMac = isMacUniversalTarget(targetTriple);
+const codexRuntimePlan = createCodexRuntimeBundlePlan({
+    targetTriple,
+    workspaceRoot,
+    skipBuild: args.skipBuild,
+});
 
 let stagingNativeBackendPath;
-let stagingCodexPath;
 
 if (isUniversalMac) {
     stagingNativeBackendPath = await buildOrResolveUniversalRuntimeBinary({
@@ -708,12 +704,6 @@ if (isUniversalMac) {
         description: "Native backend",
         fallbackPathForTarget: nativeBackendPathForTarget,
         buildForTarget: buildNativeBackendForTarget,
-    });
-    stagingCodexPath = await buildOrResolveUniversalRuntimeBinary({
-        baseEnvKey: "NEVERWRITE_CODEX_ACP_BUNDLE_BIN",
-        description: "Codex ACP",
-        fallbackPathForTarget: codexPathForTarget,
-        buildForTarget: buildCodexForTarget,
     });
 } else {
     if (
@@ -729,19 +719,6 @@ if (isUniversalMac) {
         await buildNativeBackendForTarget(targetTriple);
     }
 
-    if (
-        !args.skipBuild &&
-        !process.env.NEVERWRITE_CODEX_ACP_BUNDLE_BIN?.trim() &&
-        !process.env[
-            targetSpecificEnvKey(
-                "NEVERWRITE_CODEX_ACP_BUNDLE_BIN",
-                targetTriple,
-            )
-        ]?.trim()
-    ) {
-        await buildCodexForTarget(targetTriple);
-    }
-
     stagingNativeBackendPath = await materializeStagingSource(
         await resolveSingleTargetRuntimeBinary({
             targetTriple,
@@ -750,15 +727,33 @@ if (isUniversalMac) {
             description: "Native backend",
         }),
     );
-    stagingCodexPath = await materializeStagingSource(
-        await resolveSingleTargetRuntimeBinary({
-            targetTriple,
-            baseEnvKey: "NEVERWRITE_CODEX_ACP_BUNDLE_BIN",
-            fallbackPath: codexPathForTarget(targetTriple),
-            description: "Codex ACP",
-        }),
-    );
 }
+
+// Both companion binaries come from one Cargo invocation for each target.
+for (const buildTarget of codexRuntimePlan.buildTargets) {
+    await buildCodexForTarget(buildTarget);
+}
+
+// Resolve and validate the complete pair before replacing the existing staging tree.
+await validateCodexRuntimeBundleInputs(codexRuntimePlan, pathExists);
+if (isUniversalMac) {
+    for (const binary of codexRuntimePlan.binaries) {
+        if (binary.inputPaths.length === 1) {
+            await verifyUniversalBinary(
+                binary.inputPaths[0],
+                binary.description,
+            );
+        }
+    }
+}
+const stagingCodexRuntime = await Promise.all(
+    codexRuntimePlan.binaries.map(async (binary) => ({
+        ...binary,
+        inputPaths: await Promise.all(
+            binary.inputPaths.map(materializeStagingSource),
+        ),
+    })),
+);
 
 const nodeSource = await resolveEmbeddedNodeSource(targetTriple);
 const claudeEmbeddedSource = await resolveClaudeEmbeddedSource();
@@ -774,13 +769,13 @@ if (Array.isArray(stagingNativeBackendPath)) {
     await fs.copyFile(stagingNativeBackendPath, stagedPath);
 }
 await fs.mkdir(binariesDir, { recursive: true });
-if (Array.isArray(stagingCodexPath)) {
-    await lipoCreate(stagingCodexPath, path.join(binariesDir, codexBinaryName));
-} else {
-    await fs.copyFile(
-        stagingCodexPath,
-        path.join(binariesDir, codexBinaryName),
-    );
+for (const binary of stagingCodexRuntime) {
+    const outputPath = path.join(binariesDir, binary.outputName);
+    if (binary.inputPaths.length > 1) {
+        await lipoCreate(binary.inputPaths, outputPath);
+    } else {
+        await fs.copyFile(binary.inputPaths[0], outputPath);
+    }
 }
 await fs.mkdir(embeddedDir, { recursive: true });
 if (nodeSource.kind === "universal-directory") {
@@ -794,7 +789,9 @@ await fs.cp(claudeEmbeddedSource, path.join(embeddedDir, "claude-agent-acp"), {
 });
 
 await ensureExecutableIfNeeded(stagedPath);
-await ensureExecutableIfNeeded(path.join(binariesDir, codexBinaryName));
+for (const binary of stagingCodexRuntime) {
+    await ensureExecutableIfNeeded(path.join(binariesDir, binary.outputName));
+}
 
 const stagedNodeBinary = path.join(
     embeddedDir,

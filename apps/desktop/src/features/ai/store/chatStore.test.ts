@@ -30,6 +30,8 @@ import {
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
+import { useChatFoldersStore } from "./chatFoldersStore";
+import { usePinnedChatsStore } from "./pinnedChatsStore";
 import {
     disposeChatStoreRuntime,
     flushDeltasSync,
@@ -550,6 +552,12 @@ describe("chatStore", () => {
         resetClaudeCodeInstalledCacheForTests();
         resetChatStore();
         resetChatTabsStore();
+        usePinnedChatsStore.setState({ entries: {} });
+        useChatFoldersStore.setState({
+            folders: {},
+            sessionFolderIds: {},
+            collapsedFolderIds: [],
+        });
         resetExternalReloadBaselinesForTests();
         vi.clearAllMocks();
         delete (globalThis as Record<string, unknown>)
@@ -573,6 +581,47 @@ describe("chatStore", () => {
 
     it("loads the default edit diff zoom when no preference is stored", () => {
         expect(useChatStore.getState().editDiffZoom).toBe(0.72);
+    });
+
+    it("uses collapsed tool activity display by default", () => {
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe(
+            "collapsed",
+        );
+    });
+
+    it("restores a valid persisted tool activity display preference", () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ toolActivityDisplayMode: "expanded" }),
+        );
+
+        resetChatStore();
+
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe(
+            "expanded",
+        );
+    });
+
+    it("normalizes an invalid persisted tool activity display preference", () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ toolActivityDisplayMode: "always-open" }),
+        );
+
+        resetChatStore();
+
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe(
+            "collapsed",
+        );
+    });
+
+    it("persists tool activity display updates globally", () => {
+        useChatStore.getState().setToolActivityDisplayMode("hidden");
+
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe("hidden");
+        expect(
+            JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}"),
+        ).toMatchObject({ toolActivityDisplayMode: "hidden" });
     });
 
     it("restores persisted edit diff zoom from AI preferences", () => {
@@ -1365,6 +1414,28 @@ describe("chatStore", () => {
         vi.useRealTimers();
     });
 
+    it("synchronizes tool activity display changes from another window", () => {
+        vi.useFakeTimers();
+
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ toolActivityDisplayMode: "expanded" }),
+        );
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: AI_PREFS_KEY,
+                newValue: localStorage.getItem(AI_PREFS_KEY),
+            }),
+        );
+
+        vi.advanceTimersByTime(80);
+
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe(
+            "expanded",
+        );
+        vi.useRealTimers();
+    });
+
     it("ignores global AI preference storage events for auto context and syncs only the active vault key", () => {
         vi.useFakeTimers();
 
@@ -1687,6 +1758,53 @@ describe("chatStore", () => {
                 }),
             }),
         );
+    });
+
+    it("keeps sidebar pins and folders when a provisional session becomes live", async () => {
+        const provisionalSessionId = "pending-session";
+        const liveSessionId = sessionPayload.session_id;
+        const folderId = useChatFoldersStore
+            .getState()
+            .createFolder("Research");
+        expect(folderId).toBeTruthy();
+        useChatFoldersStore
+            .getState()
+            .moveSession(provisionalSessionId, folderId);
+        usePinnedChatsStore.getState().pin(provisionalSessionId);
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [provisionalSessionId]: {
+                    ...createSessionWithTrackedFiles(provisionalSessionId, []),
+                    isPendingSessionCreation: true,
+                },
+            },
+            sessionOrder: [provisionalSessionId],
+            activeSessionId: provisionalSessionId,
+            selectedRuntimeId: "codex-acp",
+        }));
+
+        const createdSessionId = await useChatStore
+            .getState()
+            .newSession("codex-acp", provisionalSessionId);
+
+        expect(createdSessionId).toBe(liveSessionId);
+        expect(usePinnedChatsStore.getState().entries).toEqual({
+            [liveSessionId]: expect.objectContaining({
+                pinnedAt: expect.any(Number),
+            }),
+        });
+        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
+            [liveSessionId]: folderId,
+        });
     });
 
     it("selects the first configured runtime on fresh boot", async () => {
@@ -15837,6 +15955,130 @@ describe("chatStore", () => {
                 }),
             }),
         );
+    });
+
+    it("keeps parent and child review decisions isolated after restoring the same path and tool id", async () => {
+        const sharedPath = "/vault/src/shared.md";
+        const sharedToolMessage = {
+            id: "tool:shared-tool-call",
+            role: "assistant" as const,
+            kind: "tool" as const,
+            title: "Edit shared file",
+            content: "Updated shared.md",
+            timestamp: 10,
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: sharedPath,
+            },
+        };
+        const parentFile = createTrackedFile(
+            sharedPath,
+            "base line",
+            "parent line",
+        );
+        const childFile = createTrackedFile(
+            sharedPath,
+            "base line",
+            "child line",
+        );
+        const parent = createSessionWithTrackedFiles("parent-session", [
+            parentFile,
+        ]);
+        parent.messages = [
+            {
+                ...sharedToolMessage,
+                diffs: [
+                    {
+                        path: sharedPath,
+                        kind: "update",
+                        old_text: "base line",
+                        new_text: "parent line",
+                    },
+                ],
+            },
+        ];
+        const child = createSessionWithTrackedFiles("child-session", [childFile]);
+        child.parentSessionId = parent.sessionId;
+        child.messages = [
+            {
+                ...sharedToolMessage,
+                diffs: [
+                    {
+                        path: sharedPath,
+                        kind: "update",
+                        old_text: "base line",
+                        new_text: "child line",
+                    },
+                ],
+            },
+        ];
+
+        // A structured clone models the persisted/restored session boundary:
+        // no object identity is shared between the parent and child snapshots.
+        const restoredSessions = structuredClone({
+            [parent.sessionId]: parent,
+            [child.sessionId]: child,
+        });
+        resetChatStore();
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState({
+            sessionsById: restoredSessions,
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: parent.sessionId,
+        });
+
+        useChatStore
+            .getState()
+            .keepEditedFile(parent.sessionId, parentFile.identityKey);
+
+        expect(getVisibleBuffer(parent.sessionId)).toHaveLength(0);
+        expect(getVisibleBuffer(child.sessionId)).toEqual([
+            expect.objectContaining({ currentText: "child line" }),
+        ]);
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return hashTextContent(childFile.currentText);
+            }
+            if (command === "ai_restore_text_file") {
+                return {
+                    vault_path: "/vault",
+                    kind: "upsert",
+                    note: null,
+                    note_id: null,
+                    entry: null,
+                    relative_path: "src/shared.md",
+                    origin: "agent",
+                    op_id: "child-review-reject",
+                    revision: 2,
+                    content_hash: hashTextContent(childFile.diffBase),
+                    graph_revision: 1,
+                };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useChatStore
+            .getState()
+            .rejectEditedFile(child.sessionId, childFile.identityKey);
+
+        expect(getVisibleBuffer(child.sessionId)).toHaveLength(0);
+        expect(getVisibleBuffer(parent.sessionId)).toHaveLength(0);
+        expect(
+            useChatStore.getState().sessionsById[parent.sessionId]?.messages[0]
+                ?.id,
+        ).toBe("tool:shared-tool-call");
+        expect(
+            useChatStore.getState().sessionsById[child.sessionId]?.messages[0]
+                ?.id,
+        ).toBe("tool:shared-tool-call");
     });
 
     it("restores composer state when closing a subagent with an edited queued message", () => {

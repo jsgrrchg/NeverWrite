@@ -111,6 +111,35 @@ NeverWrite:
 transcript-derived title/preview are intentionally disabled in that mode rather
 than guessed from another terminal's JSONL.
 
+### Sidebar Ownership Exception
+
+The durable Agents-sidebar ownership model applies to ACP chat sessions, not to
+Claude Code running inside a terminal. Claude Code has no ACP backend session in
+this integration: the live PTY and its `TerminalTab` own the lifecycle, while
+`claudeTerminalAgentSession.ts` exposes only a lightweight pseudo-session for
+sidebar discovery and organization.
+
+As a result:
+
+- selecting the sidebar row focuses the existing terminal instead of opening an
+  `ai-chat` view;
+- the row does not offer `Open in New Tab` or participate in chat Back/Forward
+  history;
+- closing the terminal tab closes the PTY and removes the sidebar row;
+- `Close Terminal` in the sidebar confirms before closing the terminal, whereas
+  ordinary tab-close paths follow terminal tab semantics;
+- pin, rename, and folder metadata apply only while that terminal agent remains
+  live and are cleaned up when it disappears; and
+- dragging the row onto the workspace focuses the existing terminal rather than
+  creating or moving an ACP chat view.
+
+The pseudo-session registry is memory-only. Although the workspace persists a
+generic `TerminalTab`, that tab currently has no terminal-role or launch metadata
+that identifies it as Claude Code. Restoring the workspace can therefore restore
+the terminal surface, but it does not relaunch Claude Code or automatically
+re-register its Agents-sidebar entry. Durable terminal-agent restoration would
+need an explicit persisted terminal role and a safe relaunch/resume contract.
+
 Claude Code prompt prefill still uses a fixed TUI settle delay before injecting
 `@` mentions. That delay is a best-effort heuristic; a future improvement should
 detect a stable ready marker from terminal output or use an upstream CLI flag if
@@ -138,4 +167,4 @@ npm run electron:ai-runtime:smoke
 For packaging-sensitive terminal changes, also run the packaged app and sidecar
 smokes described in [Testing and Validation](./testing.md).
 
-Last updated: June 1, 2026.
+Last updated: July 11, 2026.

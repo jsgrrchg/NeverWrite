@@ -87,6 +87,7 @@ the same Settings stores.
 | AI / Context | `autoContextEnabled` | Per-vault, global fallback | `false` | `neverwrite.ai.auto-context:<vault-path>` | Legacy `neverwrite.ai.preferences.autoContextEnabled` is still read as fallback. |
 | AI / Chat | `chatFontFamily` | Global | `system` | `neverwrite.ai.preferences` | Validated with editor font-family normalization. |
 | AI / Chat | `chatFontSize` | Global | `14` | `neverwrite.ai.preferences` | Chat transcript font size. |
+| AI / Chat | `toolActivityDisplayMode` | Global | `collapsed` | `neverwrite.ai.preferences` | Controls whether tool activity is expanded, collapsed, or hidden. Hidden activity is temporarily revealed for search results and explicit message navigation. |
 | AI / Chat | `historyRetentionDays` | Global preference, applied to current vault histories | `0` | `neverwrite.ai.preferences` | `0` means forever; pruning operates on the currently open vault's `.neverwrite/sessions/`. |
 | AI / Composer | `requireCmdEnterToSend` | Global | `false` | `neverwrite.ai.preferences` | Changes Enter behavior in the AI composer. |
 | AI / Composer | `contextUsageBarEnabled` | Global | `true` | `neverwrite.ai.preferences` | Shows or hides composer context usage. |
@@ -189,6 +190,7 @@ preferences, workspace state, or privacy-relevant local state.
 | `neverwrite.fileTree.clipboard` | Global transient state | None | `fileTreeClipboard.ts` | File tree copy/cut payload. |
 | `neverwrite.search.history` | Global preference/state | `[]` | `searchHistory.ts` | Recent search queries. |
 | `neverwrite.chats.pinnedIds` | Global preference/state | `[]` | `pinnedChatsStore.ts` | Pinned chat session ids. |
+| `neverwrite.chats.folders` | Global preference/state | Empty folders, order, assignments, and collapsed state | `chatFoldersStore.ts` | Agents sidebar folder definitions, manual folder order, root-session-to-folder assignments, and collapsed folder ids. Folder names are global; assignments are reconciled against the root sessions available in the active vault. A Claude Code terminal pseudo-session can be assigned while live, but the assignment is removed when its terminal ends. |
 | `neverwrite.ai.agentsSidebar.collapsedParents` | Global UI state | `[]` | `AgentsSidebarPanel.tsx` | Collapsed parent groups in the agents sidebar. |
 | `neverwrite.ai.runtime-catalog` | Global cache | `{}` | `chatStore.ts` | Cached runtime models, modes, and config option catalogs. |
 | `neverwrite:debug-log-scopes` | Global developer preference | None | `runtimeLog.ts` | Enables scoped debug logging. |
@@ -248,4 +250,4 @@ when they are persisted or visible in Settings:
 - Review anchors, resolved hunk positions, and transient review synchronization
   state.
 
-Last updated: June 17, 2026.
+Last updated: July 11, 2026.

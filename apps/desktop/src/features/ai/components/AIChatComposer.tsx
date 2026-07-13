@@ -24,6 +24,12 @@ import {
     type AIChatSlashCommand,
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
+import { getMentionSuggestions } from "../chatMentionSearch";
+import { presentComposerVaultReference } from "./chatVaultReferenceDom";
+import {
+    getChatVaultReferenceBasename,
+    serializeChatVaultReferenceTarget,
+} from "../chatVaultReferenceTarget";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
@@ -40,7 +46,10 @@ import type {
     ReactNode,
 } from "react";
 import { openChatNoteById } from "../chatNoteNavigation";
-import { openAiEditedFileByAbsolutePath } from "../chatFileNavigation";
+import {
+    canOpenAiEditedFileByAbsolutePath,
+    openAiEditedFileByAbsolutePath,
+} from "../chatFileNavigation";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
 import {
     useVaultStore,
@@ -105,8 +114,6 @@ interface MentionState {
     query: string;
     selectedIndex: number;
     items: AIMentionSuggestion[];
-    x: number;
-    y: number;
     range: Range | null;
 }
 
@@ -122,8 +129,6 @@ interface SlashState {
     query: string;
     selectedIndex: number;
     items: AIChatSlashCommand[];
-    x: number;
-    y: number;
     range: Range | null;
 }
 
@@ -132,8 +137,6 @@ const EMPTY_MENTION_STATE: MentionState = {
     query: "",
     selectedIndex: 0,
     items: [],
-    x: 0,
-    y: 0,
     range: null,
 };
 
@@ -142,8 +145,6 @@ const EMPTY_SLASH_STATE: SlashState = {
     query: "",
     selectedIndex: 0,
     items: [],
-    x: 0,
-    y: 0,
     range: null,
 };
 
@@ -246,8 +247,13 @@ function createMentionNode(
     element.dataset.label = part.label;
     element.dataset.path = part.path;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent);
+    presentComposerVaultReference(element, {
+        interactive: true,
+        kind: "note",
+        label: part.label,
+        metrics,
+        path: part.path,
+    });
     return element;
 }
 
@@ -264,8 +270,14 @@ function createFileMentionNode(
         element.dataset.mimeType = part.mimeType;
     }
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
+    presentComposerVaultReference(element, {
+        interactive: true,
+        kind: "file",
+        label: part.label,
+        metrics,
+        mimeType: part.mimeType,
+        path: part.path,
+    });
     return element;
 }
 
@@ -278,8 +290,12 @@ function createFolderMentionNode(
     element.dataset.folderPath = part.folderPath;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.folder);
+    presentComposerVaultReference(element, {
+        kind: "folder",
+        label: part.label,
+        metrics,
+        path: part.folderPath,
+    });
     return element;
 }
 
@@ -316,9 +332,14 @@ function createSelectionMentionNode(
     element.dataset.startLine = String(part.startLine);
     element.dataset.endLine = String(part.endLine);
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent, {
-        compact: true,
+    presentComposerVaultReference(element, {
+        interactive: true,
+        kind: part.noteId ? "note" : "file",
+        label: getChatVaultReferenceBasename(part.path),
+        line: part.startLine,
+        endLine: part.endLine,
+        metrics,
+        path: part.path,
     });
     return element;
 }
@@ -351,8 +372,14 @@ function createFileAttachmentNode(
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = part.label;
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
+    presentComposerVaultReference(element, {
+        interactive: canOpenAiEditedFileByAbsolutePath(part.filePath),
+        kind: "file",
+        label: part.label,
+        metrics,
+        mimeType: part.mimeType,
+        path: part.filePath,
+    });
     return element;
 }
 
@@ -764,9 +791,32 @@ function getComposerPillElementFromNode(node: EventTarget | null) {
               : null;
     return (
         element?.closest<HTMLElement>(
-            "[data-kind='mention'], [data-kind='file_mention']",
+            "[data-kind='mention'], [data-kind='file_mention'], [data-kind='selection_mention'], [data-kind='file_attachment']",
         ) ?? null
     );
+}
+
+function getComposerPillFileReference(element: HTMLElement | null) {
+    if (element?.dataset.kind === "file_mention") {
+        return element.dataset.path ?? null;
+    }
+    if (element?.dataset.kind === "file_attachment") {
+        return element.dataset.filePath ?? null;
+    }
+    if (
+        element?.dataset.kind === "selection_mention" &&
+        element.dataset.path &&
+        element.dataset.startLine
+    ) {
+        return serializeChatVaultReferenceTarget({
+            path: element.dataset.path,
+            line: Number(element.dataset.startLine),
+            endLine: element.dataset.endLine
+                ? Number(element.dataset.endLine)
+                : null,
+        });
+    }
+    return null;
 }
 
 function getComposerPillTargetFromContextMenuEvent(
@@ -777,11 +827,11 @@ function getComposerPillTargetFromContextMenuEvent(
         const mention = getComposerPillElementFromNode(node);
         if (mention) {
             return {
-                noteId: mention.dataset.noteId ?? null,
-                filePath:
-                    mention.dataset.kind === "file_mention"
-                        ? (mention.dataset.path ?? null)
+                noteId:
+                    mention.dataset.kind === "mention"
+                        ? (mention.dataset.noteId ?? null)
                         : null,
+                filePath: getComposerPillFileReference(mention),
             };
         }
     }
@@ -789,20 +839,12 @@ function getComposerPillTargetFromContextMenuEvent(
     const hovered = document.elementFromPoint(event.clientX, event.clientY);
     const mention = getComposerPillElementFromNode(hovered);
     return {
-        noteId: mention?.dataset.noteId ?? null,
-        filePath:
-            mention?.dataset.kind === "file_mention"
-                ? (mention.dataset.path ?? null)
+        noteId:
+            mention?.dataset.kind === "mention"
+                ? (mention.dataset.noteId ?? null)
                 : null,
+        filePath: getComposerPillFileReference(mention),
     };
-}
-
-function normalizeForSearch(value: string): string {
-    return value
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase()
-        .trim();
 }
 
 function getTextPositionForOffset(root: HTMLElement, charOffset: number) {
@@ -877,194 +919,6 @@ function getInlineTriggerMatch(root: HTMLElement, pattern: RegExp) {
     };
 }
 
-const FETCH_KEYWORDS = ["fetch", "web", "search", "buscar", "internet"];
-function getNoteFileNameForSearch(note: AIChatNoteSummary) {
-    return note.path.split("/").pop() ?? note.path;
-}
-
-function getNoteMentionLabel(
-    note: AIChatNoteSummary,
-    showExtensions: boolean,
-    preferFileName: boolean,
-) {
-    if (!preferFileName) {
-        return note.title;
-    }
-
-    const fileName = getNoteFileNameForSearch(note);
-    return showExtensions ? fileName : fileName.replace(/\.md$/i, "");
-}
-
-function getFileMentionLabel(file: AIChatFileSummary, showExtensions: boolean) {
-    if (showExtensions) {
-        return file.fileName;
-    }
-
-    return file.title || file.fileName;
-}
-
-function getNoteMentionSuggestions(
-    notes: AIChatNoteSummary[],
-    query: string,
-    limit: number,
-    preferFileName: boolean,
-) {
-    const normalizedQuery = normalizeForSearch(query);
-
-    return [...notes]
-        .map((note) => {
-            const normalizedTitle = normalizeForSearch(note.title);
-            const normalizedPath = normalizeForSearch(note.path);
-            const normalizedFileName = normalizeForSearch(
-                getNoteFileNameForSearch(note),
-            );
-            let rank = 2;
-            if (normalizedQuery.length > 0) {
-                if (preferFileName) {
-                    rank = normalizedFileName.startsWith(normalizedQuery)
-                        ? 0
-                        : normalizedPath.startsWith(normalizedQuery)
-                          ? 1
-                          : normalizedFileName.includes(normalizedQuery)
-                            ? 2
-                            : normalizedPath.includes(normalizedQuery)
-                              ? 3
-                              : normalizedTitle.startsWith(normalizedQuery)
-                                ? 4
-                                : 5;
-                } else {
-                    rank = normalizedTitle.startsWith(normalizedQuery)
-                        ? 0
-                        : normalizedPath.startsWith(normalizedQuery)
-                          ? 1
-                          : 2;
-                }
-            }
-            const matches =
-                !normalizedQuery ||
-                (preferFileName
-                    ? normalizedFileName.includes(normalizedQuery) ||
-                      normalizedPath.includes(normalizedQuery) ||
-                      normalizedTitle.includes(normalizedQuery)
-                    : normalizedTitle.includes(normalizedQuery)) ||
-                normalizedPath.includes(normalizedQuery);
-
-            return {
-                note,
-                matches,
-                rank,
-            };
-        })
-        .filter((item) => item.matches)
-        .sort((left, right) => {
-            if (left.rank !== right.rank) {
-                return left.rank - right.rank;
-            }
-            const leftPrimary = preferFileName
-                ? getNoteFileNameForSearch(left.note)
-                : left.note.title;
-            const rightPrimary = preferFileName
-                ? getNoteFileNameForSearch(right.note)
-                : right.note.title;
-            return leftPrimary.localeCompare(rightPrimary);
-        })
-        .slice(0, limit)
-        .map((item) => item.note);
-}
-
-function getMentionSuggestions(
-    notes: AIChatNoteSummary[],
-    files: AIChatFileSummary[],
-    folderPaths: string[],
-    query: string,
-    includeFiles: boolean,
-    preferFileName: boolean,
-    showExtensions: boolean,
-    limit = 10,
-): AIMentionSuggestion[] {
-    const nq = normalizeForSearch(query);
-    const results: AIMentionSuggestion[] = [];
-
-    // Always show @fetch at the top when query is empty or matches fetch keywords
-    if (
-        !nq ||
-        FETCH_KEYWORDS.some(
-            (kw) => kw.startsWith(nq) || nq.startsWith(kw.slice(0, nq.length)),
-        )
-    ) {
-        results.push({ kind: "fetch" });
-    }
-
-    // Match folders
-    for (const fp of folderPaths) {
-        const name = fp.split("/").pop() ?? fp;
-        const normalized = normalizeForSearch(name);
-        const normalizedFull = normalizeForSearch(fp);
-        if (!nq || normalized.includes(nq) || normalizedFull.includes(nq)) {
-            results.push({ kind: "folder", folderPath: fp, name });
-        }
-    }
-
-    // Match notes
-    const noteSuggestions = getNoteMentionSuggestions(
-        notes,
-        query,
-        limit,
-        preferFileName,
-    );
-    for (const note of noteSuggestions) {
-        results.push({
-            kind: "note",
-            note,
-            label: getNoteMentionLabel(note, showExtensions, preferFileName),
-        });
-    }
-
-    if (includeFiles) {
-        const fileSuggestions = [...files]
-            .map((file) => {
-                const normalizedFileName = normalizeForSearch(file.fileName);
-                const normalizedRelativePath = normalizeForSearch(
-                    file.relativePath,
-                );
-                const primaryStartsWith =
-                    nq.length > 0 && normalizedFileName.startsWith(nq);
-                const pathStartsWith =
-                    nq.length > 0 && normalizedRelativePath.startsWith(nq);
-                const matches =
-                    !nq ||
-                    normalizedFileName.includes(nq) ||
-                    normalizedRelativePath.includes(nq);
-
-                return {
-                    file,
-                    matches,
-                    rank: primaryStartsWith ? 0 : pathStartsWith ? 1 : 2,
-                };
-            })
-            .filter((item) => item.matches)
-            .sort((left, right) => {
-                if (left.rank !== right.rank) {
-                    return left.rank - right.rank;
-                }
-
-                return left.file.fileName.localeCompare(right.file.fileName);
-            })
-            .slice(0, limit);
-
-        for (const item of fileSuggestions) {
-            results.push({
-                kind: "file",
-                file: item.file,
-                label: getFileMentionLabel(item.file, showExtensions),
-            });
-        }
-    }
-
-    // Fetch first, then folders, then matching notes/files, limited.
-    return results.slice(0, limit);
-}
-
 export function AIChatComposer({
     sessionId,
     parts,
@@ -1107,7 +961,7 @@ export function AIChatComposer({
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
     const fileSizeByPathRef = useRef<Map<string, number>>(new Map());
-    const [composerElement, setComposerElement] =
+    const [composerContentColumnElement, setComposerContentColumnElement] =
         useState<HTMLDivElement | null>(null);
     const [mentionState, setMentionState] =
         useState<MentionState>(EMPTY_MENTION_STATE);
@@ -1211,10 +1065,15 @@ export function AIChatComposer({
     );
     const bindComposerRef = useCallback((element: HTMLDivElement | null) => {
         composerRef.current = element;
-        setComposerElement((current) =>
-            current === element ? current : element,
-        );
     }, []);
+    const bindContentColumnRef = useCallback(
+        (element: HTMLDivElement | null) => {
+            setComposerContentColumnElement((current) =>
+                current === element ? current : element,
+            );
+        },
+        [],
+    );
 
     useEffect(() => {
         const composer = composerRef.current;
@@ -1324,14 +1183,11 @@ export function AIChatComposer({
             fileTreeShowExtensions,
             10,
         );
-        const rect = trigger.range.getBoundingClientRect();
         setMentionState({
             open: true,
             query: trigger.query,
             selectedIndex: 0,
             items: suggestions,
-            x: rect.left,
-            y: rect.top,
             range: trigger.range.cloneRange(),
         });
     };
@@ -1368,14 +1224,11 @@ export function AIChatComposer({
                 .toLowerCase();
             return haystack.includes(normalizedQuery);
         });
-        const rect = trigger.range.getBoundingClientRect();
         setSlashState({
             open: true,
             query: trigger.query,
             selectedIndex: 0,
             items,
-            x: rect.left,
-            y: rect.top,
             range: trigger.range.cloneRange(),
         });
         closeMentionPicker();
@@ -1821,6 +1674,7 @@ export function AIChatComposer({
                 }}
             >
                 <div
+                    ref={bindContentColumnRef}
                     className={contentColumnClassName}
                     data-testid="chat-composer-content-column"
                     style={AI_CHAT_CONTENT_COLUMN_STYLE}
@@ -2305,12 +2159,9 @@ export function AIChatComposer({
                 </div>
                 <AIChatMentionPicker
                     open={mentionState.open}
-                    x={mentionState.x}
-                    y={mentionState.y}
-                    query={mentionState.query}
                     selectedIndex={mentionState.selectedIndex}
                     items={mentionState.items}
-                    anchorElement={composerElement}
+                    anchorElement={composerContentColumnElement}
                     onHoverIndex={(index) =>
                         setMentionState((state) => ({
                             ...state,
@@ -2322,12 +2173,9 @@ export function AIChatComposer({
                 />
                 <AIChatCommandPicker
                     open={slashState.open}
-                    x={slashState.x}
-                    y={slashState.y}
-                    query={slashState.query}
                     selectedIndex={slashState.selectedIndex}
                     items={slashState.items}
-                    anchorElement={composerElement}
+                    anchorElement={composerContentColumnElement}
                     onHoverIndex={(index) =>
                         setSlashState((state) => ({
                             ...state,

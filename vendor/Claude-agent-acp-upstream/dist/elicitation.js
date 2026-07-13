@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CreateElicitationResponse } from "@agentclientprotocol/sdk";
 /**
  * Convert an MCP elicitation request (from the SDK's `onElicitation` callback)
  * into an ACP `CreateElicitationRequest`. Returns `null` when the request can't
@@ -29,38 +30,16 @@ export function mcpElicitationToCreateRequest(request, sessionId) {
         requestedSchema: normalizeElicitationSchema(request.requestedSchema),
     };
 }
-/** A wire value allowed in elicitation form content. */
-function isElicitationContentValue(value) {
-    return (typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean" ||
-        (Array.isArray(value) && value.every((item) => typeof item === "string")));
-}
 /**
  * Content of an accepted elicitation response.
  *
- * The response union includes a custom/future-action variant whose `action` is
- * plain `string`, so a positive `=== "accept"` check can never narrow it away
- * and `content` reads as `unknown`. Rather than asserting which union member
- * this is, validate the values: the SDK's own wire validation has the same
- * blind spot (an accept response with malformed content parses via the
- * catch-all variant), so ill-typed values are dropped here either way.
+ * Uses the SDK's validating guard rather than an `action === "accept"` check:
+ * the guard both narrows past the union's custom/future variant and validates
+ * the payload, so a malformed accept (right tag, ill-typed content) yields
+ * empty content — the same classification the SDK's wire validators apply.
  */
 function acceptedElicitationContent(response) {
-    if (response.action !== "accept") {
-        return {};
-    }
-    const { content } = response;
-    if (!content || typeof content !== "object") {
-        return {};
-    }
-    const validated = {};
-    for (const [key, value] of Object.entries(content)) {
-        if (isElicitationContentValue(value)) {
-            validated[key] = value;
-        }
-    }
-    return validated;
+    return CreateElicitationResponse.isAccept(response) ? (response.content ?? {}) : {};
 }
 /**
  * Map an ACP elicitation response back to the MCP `ElicitResult` the SDK expects

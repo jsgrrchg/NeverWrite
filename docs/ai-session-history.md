@@ -26,6 +26,33 @@ inspect it from a terminal, if you need to audit the stored history directly.
 NeverWrite may also have `.neverwrite-cache/` in the vault for derived cache
 data. Chat recovery uses `.neverwrite/sessions/`.
 
+## Sessions, Sidebar Entries, And Workspace Views
+
+For ACP chats, the Agents sidebar owns the durable live-session entry. Editor
+tabs and panes are views into that session, so closing a chat tab does not stop
+or delete the agent. The session remains available in the sidebar and can be
+reopened in the focused chat tab, explicitly opened in a new tab, or placed in
+another pane.
+
+With history-based tab opening enabled, a physical chat tab can hold a local
+Back/Forward history of sessions visited through that view. This workspace
+navigation history is persisted with the editor session, but it is distinct
+from the transcript stored under `.neverwrite/sessions/`.
+
+Deleting a conversation is different from closing a view. Explicit deletion
+removes physical tabs that display the session and prunes it from other chat-tab
+histories. Sidebar pins and folder assignments are local UI metadata rather
+than provider transcript data; they follow session ID migrations so a restored
+or newly durable session keeps its organization.
+
+Claude Code launched in an integrated terminal is not an ACP chat and does not
+use this durable sidebar ownership model. Its sidebar row is a non-persisted
+projection of the live terminal. Selecting the row focuses that terminal;
+closing the terminal ends the process and removes the row. It has no chat-tab
+Back/Forward history, saved chat view, or `Open in New Tab` action. Terminal tabs
+can be restored as workspace tabs, but their current metadata does not relaunch
+Claude Code or recreate the agent-sidebar projection after an app restart.
+
 ## Recovery Flow
 
 After a crash, freeze, renderer reload, or AI runtime disconnect:
@@ -64,4 +91,4 @@ send a new message so NeverWrite can continue with the stored transcript.
 - Deleting a conversation from `Chat History` deletes its saved history from `.neverwrite/sessions/`.
 - If a recovered chat is missing, confirm you reopened the same vault and that the retention window did not prune the conversation.
 
-Last updated: May 11, 2026.
+Last updated: July 11, 2026.

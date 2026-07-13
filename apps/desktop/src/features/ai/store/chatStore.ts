@@ -110,6 +110,8 @@ import {
     resolveNoteTargetForPath,
 } from "../../editor/editorTargetResolver";
 import { getExternalReloadBaselineCandidate } from "../../editor/externalReloadBaselineCache";
+import { useChatFoldersStore } from "./chatFoldersStore";
+import { usePinnedChatsStore } from "./pinnedChatsStore";
 import { useChatTabsStore } from "./chatTabsStore";
 import {
     clearChatRowUiSession,
@@ -177,6 +179,10 @@ import {
     buildClaudeTerminalSetupStatus,
 } from "../utils/claudeTerminalRuntime";
 import { checkClaudeCodeInstalled } from "../../terminal/claudeCodeTerminal";
+import {
+    normalizeActivityDisplayMode,
+    type ActivityDisplayMode,
+} from "../activityDisplayMode";
 
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "neverwrite.ai.runtime-catalog";
@@ -235,6 +241,7 @@ interface AiPreferences {
     editDiffZoom?: number;
     historyRetentionDays?: number;
     screenshotRetentionSeconds?: number;
+    toolActivityDisplayMode?: ActivityDisplayMode;
     defaultRuntimeId?: string;
 }
 
@@ -247,6 +254,7 @@ interface NormalizedAiPreferences {
     chatFontFamily: EditorFontFamily;
     editDiffZoom: number;
     screenshotRetentionSeconds: number;
+    toolActivityDisplayMode: ActivityDisplayMode;
 }
 
 const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
@@ -258,6 +266,7 @@ const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
     chatFontFamily: "system",
     editDiffZoom: 0.72,
     screenshotRetentionSeconds: DEFAULT_SCREENSHOT_RETENTION_SECONDS,
+    toolActivityDisplayMode: "collapsed",
 };
 
 interface AIRuntimeCatalogSnapshot {
@@ -317,6 +326,7 @@ function aiPrefsEqual(
         | "chatFontFamily"
         | "editDiffZoom"
         | "screenshotRetentionSeconds"
+        | "toolActivityDisplayMode"
     >,
     right: NormalizedAiPreferences,
 ) {
@@ -328,7 +338,8 @@ function aiPrefsEqual(
         left.composerFontFamily === right.composerFontFamily &&
         left.chatFontFamily === right.chatFontFamily &&
         left.editDiffZoom === right.editDiffZoom &&
-        left.screenshotRetentionSeconds === right.screenshotRetentionSeconds
+        left.screenshotRetentionSeconds === right.screenshotRetentionSeconds &&
+        left.toolActivityDisplayMode === right.toolActivityDisplayMode
     );
 }
 
@@ -576,6 +587,9 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
         chatFontFamily: normalizeEditorFontFamily(prefs.chatFontFamily),
         editDiffZoom: prefs.editDiffZoom ?? 0.72,
         screenshotRetentionSeconds,
+        toolActivityDisplayMode: normalizeActivityDisplayMode(
+            prefs.toolActivityDisplayMode,
+        ),
     };
 }
 
@@ -1564,6 +1578,7 @@ interface ChatStore {
     defaultRuntimeId: string | null;
     selectedRuntimeId: string | null;
     isInitializing: boolean;
+    sessionInventoryLoaded: boolean;
     notePickerOpen: boolean;
     autoContextEnabled: boolean;
     requireCmdEnterToSend: boolean;
@@ -1576,6 +1591,7 @@ interface ChatStore {
     aiStorageScope: AIStorageScope;
     historyRetentionDays: number;
     screenshotRetentionSeconds: number;
+    toolActivityDisplayMode: ActivityDisplayMode;
     composerPartsBySessionId: Record<string, AIComposerPart[]>;
     queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>;
     queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
@@ -1791,6 +1807,7 @@ interface ChatStore {
     setAiStorageScope: (scope: AIStorageScope) => void;
     setHistoryRetentionDays: (days: number) => Promise<void>;
     setScreenshotRetentionSeconds: (seconds: number) => void;
+    setToolActivityDisplayMode: (mode: ActivityDisplayMode) => void;
     openNotePicker: () => void;
     closeNotePicker: () => void;
     forkSession: (sessionId: string) => Promise<void>;
@@ -3066,6 +3083,12 @@ function migrateSessionLocalState(
     clearStaleStreamingCheck(fromSessionId);
     _queueDrainLocks.delete(fromSessionId);
     replaceChatRowUiSessionId(fromSessionId, toSession.sessionId);
+    usePinnedChatsStore
+        .getState()
+        .replaceSessionId(fromSessionId, toSession.sessionId);
+    useChatFoldersStore
+        .getState()
+        .replaceSessionId(fromSessionId, toSession.sessionId);
     useChatTabsStore
         .getState()
         .replaceSessionId(
@@ -7762,6 +7785,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         defaultRuntimeId: null,
         selectedRuntimeId: null,
         isInitializing: false,
+        sessionInventoryLoaded: false,
         notePickerOpen: false,
         autoContextEnabled: false,
         requireCmdEnterToSend: DEFAULT_AI_PREFERENCES.requireCmdEnterToSend,
@@ -7775,6 +7799,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         historyRetentionDays: 0,
         screenshotRetentionSeconds:
             DEFAULT_AI_PREFERENCES.screenshotRetentionSeconds,
+        toolActivityDisplayMode: DEFAULT_AI_PREFERENCES.toolActivityDisplayMode,
         composerPartsBySessionId: {},
         queuedMessagesBySessionId: {},
         queuedMessageEditBySessionId: {},
@@ -7895,7 +7920,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const defaultRuntimePreferenceVersionAtStart =
                 _defaultRuntimePreferenceVersion;
 
-            set({ isInitializing: true });
+            set({ isInitializing: true, sessionInventoryLoaded: false });
 
             try {
                 const backendRuntimes = hydrateRuntimesFromCache(
@@ -8212,6 +8237,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             hydratedActiveSessionId,
                         );
                     }
+                    set({ sessionInventoryLoaded: true });
                     return { sessionInventoryLoaded: true };
                 }
 
@@ -8223,6 +8249,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     if (runtimeId) {
                         if (setupStatus?.onboardingRequired) {
+                            set({ sessionInventoryLoaded: true });
                             return { sessionInventoryLoaded: true };
                         }
                         await get().newSession(runtimeId);
@@ -8255,6 +8282,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 set({ isInitializing: false });
             }
 
+            set({ sessionInventoryLoaded: true });
             return { sessionInventoryLoaded: true };
         },
 
@@ -13265,6 +13293,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             saveAiPreferences({ screenshotRetentionSeconds: next });
         },
 
+        setToolActivityDisplayMode: (mode) => {
+            const next = normalizeActivityDisplayMode(mode);
+            set({ toolActivityDisplayMode: next });
+            saveAiPreferences({ toolActivityDisplayMode: next });
+        },
+
         openNotePicker: () => set({ notePickerOpen: true }),
 
         closeNotePicker: () => set({ notePickerOpen: false }),
@@ -13362,6 +13396,7 @@ export function hydrateChatStorePreferences() {
         aiStorageScope: loadAiStorageScopePreference(vaultPath),
         historyRetentionDays: loadHistoryRetentionPreference(vaultPath),
         screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
+        toolActivityDisplayMode: prefs.toolActivityDisplayMode,
     });
 }
 
@@ -13399,6 +13434,8 @@ export function initializeChatStoreRuntime() {
                               historyRetentionDays,
                               screenshotRetentionSeconds:
                                   prefs.screenshotRetentionSeconds,
+                              toolActivityDisplayMode:
+                                  prefs.toolActivityDisplayMode,
                           },
                 );
             }, 80);
@@ -13472,6 +13509,7 @@ export function resetChatStore() {
         defaultRuntimeId: null,
         selectedRuntimeId: null,
         isInitializing: false,
+        sessionInventoryLoaded: false,
         notePickerOpen: false,
         autoContextEnabled: loadAutoContextPreference(vaultPath),
         requireCmdEnterToSend: prefs.requireCmdEnterToSend,
@@ -13484,6 +13522,7 @@ export function resetChatStore() {
         aiStorageScope: loadAiStorageScopePreference(vaultPath),
         historyRetentionDays: loadHistoryRetentionPreference(vaultPath),
         screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
+        toolActivityDisplayMode: prefs.toolActivityDisplayMode,
         composerPartsBySessionId: {},
         queuedMessagesBySessionId: {},
         queuedMessageEditBySessionId: {},

@@ -185,10 +185,10 @@ jobs:
               shell: bash
               run: |
                   if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
-                    cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin
-                    cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin
+                    cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin --bins
+                    cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin --bins
                   else
-                    cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }}
+                    cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
                   fi
 
             - name: Download embedded Node runtime
@@ -224,12 +224,18 @@ jobs:
                   if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
                     echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_ARM64=$GITHUB_WORKSPACE/vendor/codex-acp/target/aarch64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
                     echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_X64=$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN_ARM64=$GITHUB_WORKSPACE/vendor/codex-acp/target/aarch64-apple-darwin/release/codex-code-mode-host" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN_X64=$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-apple-darwin/release/codex-code-mode-host" >> "$GITHUB_ENV"
                   elif [[ "${{ runner.os }}" == "Windows" ]]; then
                     CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp.exe"
+                    CODEX_CODE_MODE_HOST_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-code-mode-host.exe"
                     echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN=$CODEX_CODE_MODE_HOST_BIN" >> "$GITHUB_ENV"
                   else
                     CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp"
+                    CODEX_CODE_MODE_HOST_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-code-mode-host"
                     echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN=$CODEX_CODE_MODE_HOST_BIN" >> "$GITHUB_ENV"
                   fi
 
                   echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
@@ -312,6 +318,33 @@ jobs:
                   NEVERWRITE_ELECTRON_DIST_ARCH: ${{ matrix.arch }}
               run: npm run electron:app:smoke:packaged
 
+            - name: Verify signed macOS Codex runtime
+              if: matrix.target == 'universal-apple-darwin'
+              shell: bash
+              env:
+                  NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
+              run: |
+                  APP_PATH=""
+                  for candidate in \
+                    "$NEVERWRITE_ELECTRON_OUTPUT_DIR/mac-universal/NeverWrite.app" \
+                    "$NEVERWRITE_ELECTRON_OUTPUT_DIR/mac/NeverWrite.app"; do
+                    if [[ -d "$candidate" ]]; then
+                      APP_PATH="$candidate"
+                      break
+                    fi
+                  done
+
+                  if [[ -z "$APP_PATH" ]]; then
+                    echo "Could not find packaged NeverWrite.app in $NEVERWRITE_ELECTRON_OUTPUT_DIR." >&2
+                    exit 1
+                  fi
+
+                  for binary in codex-acp codex-code-mode-host; do
+                    codesign --verify --strict --verbose=2 \
+                      "$APP_PATH/Contents/Resources/native-backend/binaries/$binary"
+                  done
+                  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
             - name: Verify macOS universal runtime binaries
               if: matrix.target == 'universal-apple-darwin'
               shell: bash
@@ -338,7 +371,7 @@ jobs:
                     local archs
                     archs="$(lipo -archs "$binary_path")"
                     echo "$binary_path: $archs"
-                    if [[ "$archs" != *"arm64"* || "$archs" != *"x86_64"* ]]; then
+                    if [[ "$archs" != "arm64 x86_64" && "$archs" != "x86_64 arm64" ]]; then
                       echo "Expected universal arm64/x86_64 binary: $binary_path" >&2
                       exit 1
                     fi
@@ -346,6 +379,7 @@ jobs:
 
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/neverwrite-native-backend"
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-acp"
+                  verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-code-mode-host"
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/embedded/node/bin/node"
 
             - name: Sign Linux RPM package

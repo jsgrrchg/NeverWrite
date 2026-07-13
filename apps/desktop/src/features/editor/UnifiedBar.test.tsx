@@ -563,7 +563,7 @@ describe("UnifiedBar tab strip drop", () => {
         ).toBe("Reference");
     });
 
-    it("confirms before closing a tab with an active agent", async () => {
+    it("closes a tab with an active agent", async () => {
         setEditorTabs([
             {
                 id: "tab-chat",
@@ -588,8 +588,6 @@ describe("UnifiedBar tab strip drop", () => {
                 ),
             },
         });
-        vi.mocked(confirm).mockResolvedValue(false);
-
         const { UnifiedBar } = await import("./UnifiedBar");
         renderComponent(<UnifiedBar windowMode="main" />);
         await flushPromises();
@@ -602,14 +600,12 @@ describe("UnifiedBar tab strip drop", () => {
         fireEvent.click(busyTab!.querySelector("button") as HTMLElement);
         await flushPromises();
 
-        expect(confirm).toHaveBeenCalledTimes(1);
         expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
-            "tab-chat",
             "tab-note",
         ]);
     });
 
-    it("confirms before closing other tabs when an active agent would be closed", async () => {
+    it("closes other tabs when an active agent would be closed", async () => {
         const user = userEvent.setup();
         setEditorTabs(
             [
@@ -645,8 +641,6 @@ describe("UnifiedBar tab strip drop", () => {
                 ),
             },
         });
-        vi.mocked(confirm).mockResolvedValue(false);
-
         const { UnifiedBar } = await import("./UnifiedBar");
         renderComponent(<UnifiedBar windowMode="main" />);
         await flushPromises();
@@ -662,15 +656,12 @@ describe("UnifiedBar tab strip drop", () => {
         );
         await flushPromises();
 
-        expect(confirm).toHaveBeenCalledTimes(1);
         expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
             "tab-keep",
-            "tab-busy",
-            "tab-other",
         ]);
     });
 
-    it("confirms before closing tabs to the right when an active agent would be closed", async () => {
+    it("closes tabs to the right when an active agent would be closed", async () => {
         const user = userEvent.setup();
         setEditorTabs(
             [
@@ -706,8 +697,6 @@ describe("UnifiedBar tab strip drop", () => {
                 ),
             },
         });
-        vi.mocked(confirm).mockResolvedValue(false);
-
         const { UnifiedBar } = await import("./UnifiedBar");
         renderComponent(<UnifiedBar windowMode="main" />);
         await flushPromises();
@@ -723,11 +712,8 @@ describe("UnifiedBar tab strip drop", () => {
         );
         await flushPromises();
 
-        expect(confirm).toHaveBeenCalledTimes(1);
         expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
             "tab-anchor",
-            "tab-busy",
-            "tab-right",
         ]);
     });
 

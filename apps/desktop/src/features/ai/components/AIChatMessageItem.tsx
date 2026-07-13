@@ -2,7 +2,6 @@ import {
     memo,
     useCallback,
     useMemo,
-    useRef,
     useState,
     type MouseEvent,
     type ReactElement,
@@ -15,23 +14,18 @@ import {
 import type {
     AIChatAttachment,
     AIChatMessage,
-    AIChatSession,
     AIFileDiff,
     AIPermissionOption,
     AIUrlElicitationAction,
     AIUserInputAction,
 } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
+import { ChatVaultReference } from "./ChatVaultReference";
 import { MarkdownContent } from "./MarkdownContent";
 import type { ChatPillMetrics } from "./chatPillMetrics";
 import type { ChatPillVariant } from "./chatPillPalette";
 import { useChatStore } from "../store/chatStore";
 import { selectVisibleTrackedFiles } from "../store/editedFilesBufferModel";
-import {
-    resolveChatRowUiSessionId,
-    useChatRowUiStore,
-    type ChatRowUiState,
-} from "../store/chatRowUiStore";
 import {
     computeDiffStats,
     computeFileDiffStats,
@@ -47,7 +41,10 @@ import {
     canOpenAiEditedFileByAbsolutePath,
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
-import { openChatSessionInWorkspace } from "../chatPaneMovement";
+import {
+    getChatVaultReferenceBasename,
+    parseChatVaultReferenceTarget,
+} from "../chatVaultReferenceTarget";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -58,15 +55,24 @@ import {
     buildVaultPreviewUrlFromAbsolutePath,
 } from "../../../app/utils/filePreviewUrl";
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
+import { ChangeReviewToolRail } from "./ChangeReviewToolRail";
+import { ResizableDiffContainer } from "./ResizableDiffContainer";
+import {
+    OpenSessionActionButton,
+    ToolActivityItem,
+    ToolIcon,
+    type ToolTargetContextMenuPayload,
+} from "./ToolActivityItem";
+import { isActivityTimelineEntry } from "./activityTimelinePresentation";
+import {
+    useChatRowUiEntry,
+    useStoredRowExpanded,
+} from "./chatRowUiPresentation";
 
 interface UserMentionContextMenuPayload {
     label: string;
     kind: "note" | "file";
     path?: string;
-}
-
-interface ToolTargetContextMenuPayload {
-    target: string;
 }
 
 function isImageFileAttachment(attachment: AIChatAttachment) {
@@ -310,8 +316,20 @@ function renderUserContent(
         event: MouseEvent<HTMLElement>,
         payload: UserMentionContextMenuPayload,
     ) => void,
+    attachments: AIChatAttachment[] = [],
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
+    const unmatchedFileAttachments = attachments.filter(
+        (attachment) =>
+            attachment.type === "file" && Boolean(attachment.filePath),
+    );
+    const takeFileAttachment = (label: string) => {
+        const index = unmatchedFileAttachments.findIndex(
+            (attachment) => attachment.label === label,
+        );
+        if (index < 0) return null;
+        return unmatchedFileAttachments.splice(index, 1)[0] ?? null;
+    };
     // New bracketed format: [@note], [@📄 /path/file.ts], [@📁 folder], [Screenshot ...], [📎 file]
     // Escaped variants use a pipe plus URL-encoded payload, e.g. [@|%5B%20%5D].
     // Legacy format (backward compat): @fetch, /plan, @📁word, @word
@@ -328,23 +346,58 @@ function renderUserContent(
 
         const token = match[0];
 
-        if (
-            token.startsWith("[Screenshot ") ||
-            token.startsWith("[Screenshot|") ||
-            token.startsWith("[📎 ") ||
-            token.startsWith("[📎|")
-        ) {
+        if (token.startsWith("[Screenshot ") || token.startsWith("[Screenshot|")) {
             const pillLabel = token.startsWith("[Screenshot|")
                 ? decodeSerializedPillValue(token.slice(12, -1))
-                : token.startsWith("[📎|")
-                  ? decodeSerializedPillValue(token.slice(4, -1))
-                  : token.slice(1, -1); // strip [ ]
+                : token.slice(1, -1); // strip [ ]
             parts.push(
                 <ChatInlinePill
                     key={key++}
                     label={pillLabel}
                     metrics={pillMetrics}
                     variant="file"
+                />,
+            );
+            lastIndex = match.index + token.length;
+            continue;
+        }
+
+        if (token.startsWith("[📎 ") || token.startsWith("[📎|")) {
+            const fileLabel = token.startsWith("[📎|")
+                ? decodeSerializedPillValue(token.slice(4, -1))
+                : token.slice(4, -1);
+            const attachment = takeFileAttachment(fileLabel);
+            const filePath = attachment?.filePath ?? fileLabel;
+            const canOpen = Boolean(
+                attachment?.filePath &&
+                    canOpenAiEditedFileByAbsolutePath(attachment.filePath),
+            );
+            parts.push(
+                <ChatVaultReference
+                    key={key++}
+                    kind="file"
+                    label={fileLabel}
+                    metrics={pillMetrics}
+                    mimeType={attachment?.mimeType}
+                    interactive={canOpen}
+                    path={filePath}
+                    onClick={
+                        canOpen
+                            ? () => {
+                                  void openAiEditedFileByAbsolutePath(filePath);
+                              }
+                            : undefined
+                    }
+                    onContextMenu={
+                        canOpen
+                            ? (event) =>
+                                  onMentionContextMenu(event, {
+                                      kind: "file",
+                                      label: fileLabel,
+                                      path: filePath,
+                                  })
+                            : undefined
+                    }
                 />,
             );
             lastIndex = match.index + token.length;
@@ -378,13 +431,14 @@ function renderUserContent(
         }
 
         if (token.startsWith("[@📁 ")) {
-            const folderLabel = token.slice(4, -1); // strip [@📁 and ]
+            const folderLabel = token.slice(5, -1); // strip [@📁 and ]
             parts.push(
-                <ChatInlinePill
+                <ChatVaultReference
                     key={key++}
+                    kind="folder"
                     label={folderLabel}
                     metrics={pillMetrics}
-                    variant="folder"
+                    path={folderLabel}
                 />,
             );
             lastIndex = match.index + token.length;
@@ -394,11 +448,12 @@ function renderUserContent(
         if (token.startsWith("[@📁|")) {
             const folderLabel = decodeSerializedPillValue(token.slice(5, -1));
             parts.push(
-                <ChatInlinePill
+                <ChatVaultReference
                     key={key++}
+                    kind="folder"
                     label={folderLabel}
                     metrics={pillMetrics}
-                    variant="folder"
+                    path={folderLabel}
                 />,
             );
             lastIndex = match.index + token.length;
@@ -410,15 +465,19 @@ function renderUserContent(
                 token.startsWith("[@📄|")
                     ? decodeSerializedPillValue(token.slice(5, -1))
                     : token.slice(4, -1)
-            ).trim();
-            const fileLabel = filePath.split("/").pop() || filePath;
+                ).trim();
+            const target = parseChatVaultReferenceTarget(filePath);
+            const fileLabel = getChatVaultReferenceBasename(target.path);
             parts.push(
-                <ChatInlinePill
+                <ChatVaultReference
                     key={key++}
+                    kind="file"
                     label={fileLabel}
+                    line={target.line}
+                    endLine={target.endLine}
                     metrics={pillMetrics}
                     interactive
-                    variant="file"
+                    path={filePath}
                     onClick={() => {
                         void openAiEditedFileByAbsolutePath(filePath);
                     }}
@@ -448,14 +507,22 @@ function renderUserContent(
         } else {
             noteLabel = token.slice(1); // strip @
         }
+        const target = parseChatVaultReferenceTarget(noteLabel);
         const isNote = variant === "accent";
         parts.push(
-            <ChatInlinePill
+            <ChatVaultReference
                 key={key++}
-                label={noteLabel}
+                kind={isNote ? "note" : "folder"}
+                label={
+                    target.line
+                        ? getChatVaultReferenceBasename(target.path)
+                        : noteLabel
+                }
+                line={target.line}
+                endLine={target.endLine}
                 metrics={pillMetrics}
                 interactive={isNote}
-                variant={variant}
+                path={target.path}
                 onClick={
                     isNote
                         ? () => {
@@ -494,32 +561,79 @@ function UserTextMessage({
 }) {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<UserMentionContextMenuPayload> | null>(null);
+    const [copied, setCopied] = useState(false);
+    const formattedTime = formatUserMessageTime(message.timestamp);
+    const canCopy = message.content.trim().length > 0;
+
+    const copyMessage = () => {
+        if (!canCopy) return;
+
+        void navigator.clipboard.writeText(message.content).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+        });
+    };
 
     return (
         <div
-            className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
-            style={{
-                color: "var(--text-primary)",
-                backgroundColor: "var(--bg-tertiary)",
-                border: "1px solid var(--border)",
-                overflowWrap: "anywhere",
-                wordBreak: "break-word",
-            }}
+            className="min-w-0 w-full max-w-full"
+            data-user-message="true"
         >
-            {renderUserContent(
-                message.content,
-                pillMetrics,
-                (event, payload) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setContextMenu({
-                        x: event.clientX,
-                        y: event.clientY,
-                        payload,
-                    });
-                },
-            )}
-            <UserMessageAttachments attachments={message.attachments} />
+            <div
+                className="ml-auto min-w-0 w-[70%] max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
+                data-user-message-bubble="true"
+                style={{
+                    color: "var(--text-primary)",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--accent) 5%, var(--bg-tertiary))",
+                    border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
+            >
+                {renderUserContent(
+                    message.content,
+                    pillMetrics,
+                    (event, payload) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setContextMenu({
+                            x: event.clientX,
+                            y: event.clientY,
+                            payload,
+                        });
+                    },
+                    message.attachments,
+                )}
+                <UserMessageAttachments attachments={message.attachments} />
+            </div>
+            <div
+                className="mt-1 flex min-h-5 items-center justify-end gap-1.5 px-0.5 text-text-secondary"
+                data-user-message-metadata="true"
+                style={{
+                    fontFamily: "var(--font-mono), ui-monospace, monospace",
+                    fontSize: "10px",
+                    opacity: 0.72,
+                }}
+            >
+                {formattedTime ? (
+                    <time dateTime={new Date(message.timestamp).toISOString()}>
+                        {formattedTime}
+                    </time>
+                ) : null}
+                {canCopy ? (
+                    <button
+                        aria-label={copied ? "Message copied" : "Copy message"}
+                        className="flex h-5 w-5 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--accent)]"
+                        onClick={copyMessage}
+                        style={copied ? { color: "var(--diff-add)" } : undefined}
+                        title={copied ? "Copied" : "Copy message"}
+                        type="button"
+                    >
+                        {copied ? <CopySuccessIcon /> : <CopyMessageIcon />}
+                    </button>
+                ) : null}
+            </div>
             {contextMenu ? (
                 <ContextMenu
                     menu={contextMenu}
@@ -572,6 +686,54 @@ function UserTextMessage({
     );
 }
 
+function formatUserMessageTime(timestamp: number) {
+    if (!Number.isFinite(timestamp)) {
+        return null;
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+    }).format(timestamp);
+}
+
+function CopyMessageIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+            width="12"
+        >
+            <rect height="13" rx="2" width="13" x="8" y="8" />
+            <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
+        </svg>
+    );
+}
+
+function CopySuccessIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.7"
+            viewBox="0 0 24 24"
+            width="12"
+        >
+            <path d="m5 12 4 4L19 6" />
+        </svg>
+    );
+}
+
 interface AIChatMessageItemProps {
     message: AIChatMessage;
     sessionId?: string | null;
@@ -597,158 +759,13 @@ function stripMarkdownBold(text: string) {
     return text.replace(/\*\*(.+?)\*\*/g, "$1");
 }
 
-function getOpenSessionActionLabel(message: AIChatMessage) {
-    const explicitLabel = message.toolAction?.label?.trim();
-    if (explicitLabel) return explicitLabel;
-
-    const name = (message.title ?? "")
-        .replace(/^(spawned|started|opened)\s+/i, "")
-        .trim();
-    return name.length > 0 && name.length <= 28 ? `Open ${name}` : "Open";
-}
-
-function sessionMatchesOpenSessionRef(session: AIChatSession, ref: string) {
-    return (
-        session.sessionId === ref ||
-        session.historySessionId === ref ||
-        session.runtimeSessionId === ref
-    );
-}
-
-function resolveOpenSessionActionId(
-    sessionsById: Record<string, AIChatSession>,
-    sessionOrder: string[],
-    ref: string | null,
-) {
-    if (!ref) return null;
-    const candidates = Object.values(sessionsById).filter((session) =>
-        sessionMatchesOpenSessionRef(session, ref),
-    );
-    if (candidates.length === 0) return null;
-
-    const sessionOrderRank = new Map(
-        sessionOrder.map((sessionId, index) => [sessionId, index]),
-    );
-    candidates.sort((left, right) => {
-        const leftLive = left.runtimeState === "live" && !left.isPersistedSession;
-        const rightLive =
-            right.runtimeState === "live" && !right.isPersistedSession;
-        if (leftLive !== rightLive) return leftLive ? -1 : 1;
-
-        const leftExact = left.sessionId === ref;
-        const rightExact = right.sessionId === ref;
-        if (leftExact !== rightExact) return leftExact ? -1 : 1;
-
-        const leftRank = sessionOrderRank.get(left.sessionId) ?? Number.MAX_SAFE_INTEGER;
-        const rightRank =
-            sessionOrderRank.get(right.sessionId) ?? Number.MAX_SAFE_INTEGER;
-        return leftRank - rightRank;
-    });
-
-    return candidates[0].sessionId;
-}
-
-function OpenSessionActionButton({ message }: { message: AIChatMessage }) {
-    const openSessionAction =
-        message.toolAction?.kind === "open_session" ? message.toolAction : null;
-    const openSessionId = openSessionAction?.session_id ?? null;
-    const resolvedOpenSessionId = useChatStore((state) =>
-        resolveOpenSessionActionId(
-            state.sessionsById,
-            state.sessionOrder,
-            openSessionId,
-        ),
-    );
-    const canOpenSession = resolvedOpenSessionId !== null;
-
-    if (!openSessionAction) {
-        return null;
-    }
-
-    const label = getOpenSessionActionLabel(message);
-
-    return (
-        <button
-            type="button"
-            disabled={!canOpenSession}
-            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            style={{
-                background: "transparent",
-                border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-                color: canOpenSession
-                    ? "var(--text-secondary)"
-                    : "color-mix(in srgb, var(--text-secondary) 62%, transparent)",
-                cursor: canOpenSession ? "pointer" : "default",
-            }}
-            title={canOpenSession ? label : "Session is not available yet"}
-            onClick={(event) => {
-                event.stopPropagation();
-                if (!resolvedOpenSessionId) return;
-                void openChatSessionInWorkspace(resolvedOpenSessionId);
-            }}
-        >
-            {label}
-        </button>
-    );
-}
-
-function useChatRowUiEntry(
-    sessionId: string | null | undefined,
-    messageId: string,
-) {
-    const resolvedSessionId = resolveChatRowUiSessionId(sessionId);
-    const rowState = useChatRowUiStore(
-        (state) => state.rowsBySessionId[resolvedSessionId]?.[messageId],
-    );
-    const patchRow = useChatRowUiStore((state) => state.patchRow);
-
-    const updateRow = useCallback(
-        (
-            patch:
-                | Partial<ChatRowUiState>
-                | ((current: ChatRowUiState) => Partial<ChatRowUiState>),
-        ) => {
-            patchRow(resolvedSessionId, messageId, patch);
-        },
-        [messageId, patchRow, resolvedSessionId],
-    );
-
-    return {
-        rowState,
-        updateRow,
-    };
-}
-
-function useStoredRowExpanded(
-    sessionId: string | null | undefined,
-    messageId: string,
-    fallback: boolean,
-) {
-    const { rowState, updateRow } = useChatRowUiEntry(sessionId, messageId);
-    const expanded = rowState?.expanded ?? fallback;
-
-    const setExpanded = useCallback(
-        (value: boolean | ((current: boolean) => boolean)) => {
-            updateRow((current) => ({
-                expanded:
-                    typeof value === "function"
-                        ? value(current.expanded ?? fallback)
-                        : value,
-            }));
-        },
-        [fallback, updateRow],
-    );
-
-    return [expanded, setExpanded] as const;
-}
-
 type DiffPresentationMode = "active" | "historical" | "none";
 
 function getDiffPresentationMode(
     message: AIChatMessage,
     visibleWorkCycleId?: string | null,
 ) {
-    if (!message.diffs?.length) {
+    if (!message.diffs?.length && !message.reviewDiffs?.length) {
         return "none";
     }
 
@@ -778,21 +795,25 @@ function ThinkingMessage({
     const content = stripMarkdownBold(message.content).trim();
 
     return (
-        <div className="min-w-0 max-w-full">
+        <div
+            className="group min-w-0 max-w-full rounded-md px-2 py-1 transition-colors hover:bg-bg-elevated"
+            data-reasoning-activity="true"
+            style={{ color: "var(--text-secondary)", fontSize: "0.83em" }}
+        >
             <button
                 type="button"
                 onClick={() => {
                     if (content || message.inProgress) setExpanded((v) => !v);
                 }}
-                className="flex items-center gap-2 py-0.5"
+                className="flex min-h-7 w-full items-center gap-2 text-left"
                 style={{
                     color: "var(--text-secondary)",
                     backgroundColor: "transparent",
                     border: "none",
                     cursor:
                         !content && !message.inProgress ? "default" : "pointer",
-                    opacity: 0.7,
-                    fontSize: "0.85em",
+                    opacity: 0.8,
+                    padding: 0,
                 }}
             >
                 <svg
@@ -811,342 +832,35 @@ function ThinkingMessage({
                 >
                     <path d="M4.5 2.5L8 6L4.5 9.5" />
                 </svg>
-                <span>Thinking{message.inProgress ? "..." : ""}</span>
+                <span className="min-w-0 flex-1 truncate font-medium">
+                    Reasoning{message.inProgress ? "..." : ""}
+                </span>
+                {message.inProgress ? (
+                    <span
+                        aria-label="Reasoning in progress"
+                        className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+                        style={{ backgroundColor: "var(--accent)" }}
+                    />
+                ) : null}
             </button>
             {expanded && (content || message.inProgress) && (
-                <div
-                    className="mt-1 whitespace-pre-wrap pl-5 italic"
+                <pre
+                    className="mt-1 max-h-40 overflow-y-auto rounded px-2 py-1.5"
                     style={{
+                        backgroundColor: "var(--bg-tertiary)",
+                        border: "1px solid var(--border)",
                         color: "var(--text-secondary)",
-                        opacity: 0.7,
+                        fontSize: "0.96em",
+                        lineHeight: 1.4,
+                        margin: 0,
                         overflowWrap: "anywhere",
+                        whiteSpace: "pre-wrap",
                         wordBreak: "break-word",
                     }}
                 >
                     {content}
-                </div>
+                </pre>
             )}
-        </div>
-    );
-}
-
-/** Catppuccin file-type icon for tool messages with a resolvable file target;
- *  falls back to the verb-based ToolIcon when no path is available. */
-function ToolFileIcon({
-    target,
-    toolKind,
-    size = 13,
-    opacity = 0.86,
-}: {
-    target: string | null;
-    toolKind?: string;
-    size?: number;
-    opacity?: number;
-}) {
-    if (target) {
-        return (
-            <FileTypeIcon
-                fileName={target}
-                size={size}
-                opacity={opacity}
-            />
-        );
-    }
-    return <ToolIcon kind={toolKind} />;
-}
-
-function ToolIcon({ kind }: { kind?: string }) {
-    const k = String(kind ?? "");
-    if (k === "read" || k === "search") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 12 12"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <circle cx="5.5" cy="5.5" r="3" />
-                <path d="M7.5 7.5L10 10" />
-            </svg>
-        );
-    }
-    if (k === "edit") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 12 12"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <path d="M7 2l3 3-7 7H0V9z" />
-            </svg>
-        );
-    }
-    if (k === "execute") {
-        return (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 12 12"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <path d="M2 3l4 3-4 3z" />
-                <path d="M7 9h3" />
-            </svg>
-        );
-    }
-    // default gear
-    return (
-        <svg
-            width="12"
-            height="12"
-            viewBox="0 0 12 12"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        >
-            <circle cx="6" cy="6" r="1.5" />
-            <path d="M6 1v1.5M6 9.5V11M1 6h1.5M9.5 6H11M2.5 2.5l1 1M8.5 8.5l1 1M9.5 2.5l-1 1M3.5 8.5l-1 1" />
-        </svg>
-    );
-}
-
-/** Compact card for file-mutating tools (edit, delete, move). */
-function FileToolMessage({
-    message,
-    sessionId,
-}: {
-    message: AIChatMessage;
-    sessionId?: string | null;
-}) {
-    const [expanded, setExpanded] = useStoredRowExpanded(
-        sessionId,
-        message.id,
-        false,
-    );
-    const [contextMenu, setContextMenu] =
-        useState<ContextMenuState<ToolTargetContextMenuPayload> | null>(null);
-    const toolKind = String(message.meta?.tool ?? "edit");
-    const target = message.meta?.target ? String(message.meta.target) : null;
-    const canOpenTarget = target
-        ? canOpenAiEditedFileByAbsolutePath(target)
-        : false;
-    const shortTarget = target?.split("/").pop() ?? null;
-    const status = String(message.meta?.status ?? "");
-    const isCompleted = status === "completed";
-    const isInProgress = status === "in_progress";
-
-    const isRead = toolKind === "read" || toolKind === "search";
-    const accent = toolKind === "delete" ? "#ef4444" : "#6b7280"; // neutral gray for read/edit/move
-
-    const actionLabel = isRead
-        ? "Read"
-        : toolKind === "delete"
-          ? "Deleted"
-          : toolKind === "move"
-            ? "Moved"
-            : "Updated";
-    const displayLabel =
-        shortTarget ??
-        (toolKind === "edit" && isInProgress ? "Writing" : message.title) ??
-        actionLabel;
-
-    // Detail: show summary/content if it provides extra info beyond filename
-    const detail =
-        message.content &&
-        message.content !== displayLabel &&
-        message.content !== (message.title ?? toolKind)
-            ? message.content
-            : null;
-
-    return (
-        <div
-            className="min-w-0 max-w-full overflow-hidden rounded-lg"
-            style={{
-                border: `1px solid color-mix(in srgb, ${accent} 25%, var(--border))`,
-                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--bg-secondary))`,
-                opacity: isCompleted ? 0.65 : 1,
-                transition: "opacity 0.2s ease",
-            }}
-        >
-            {/* Header */}
-            <div
-                className="flex items-center gap-2 px-3 py-1.5"
-                style={{
-                    cursor: detail ? "pointer" : "default",
-                    borderBottom:
-                        detail && expanded
-                            ? `1px solid color-mix(in srgb, ${accent} 15%, var(--border))`
-                            : "none",
-                }}
-                onClick={detail ? () => setExpanded((v) => !v) : undefined}
-            >
-                {/* Icon */}
-                <span className="shrink-0">
-                    <ToolFileIcon
-                        target={target}
-                        toolKind={toolKind}
-                        size={13}
-                    />
-                </span>
-
-                {/* Filename + action */}
-                <span
-                    className="min-w-0 flex-1 truncate"
-                    title={target ?? undefined}
-                    style={{
-                        color: target ? "var(--accent)" : "var(--text-primary)",
-                        fontSize: "0.83em",
-                        fontWeight: 500,
-                        cursor: canOpenTarget ? "pointer" : "default",
-                        textDecoration: "none",
-                    }}
-                    onClick={
-                        canOpenTarget && target
-                            ? (e) => {
-                                  e.stopPropagation();
-                                  void openAiEditedFileByAbsolutePath(target);
-                              }
-                            : undefined
-                    }
-                    onContextMenu={
-                        canOpenTarget && target
-                            ? (event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  setContextMenu({
-                                      x: event.clientX,
-                                      y: event.clientY,
-                                      payload: { target },
-                                  });
-                              }
-                            : undefined
-                    }
-                    onMouseEnter={
-                        canOpenTarget
-                            ? (e) => {
-                                  (
-                                      e.currentTarget as HTMLElement
-                                  ).style.textDecoration = "underline";
-                              }
-                            : undefined
-                    }
-                    onMouseLeave={
-                        canOpenTarget
-                            ? (e) => {
-                                  (
-                                      e.currentTarget as HTMLElement
-                                  ).style.textDecoration = "none";
-                              }
-                            : undefined
-                    }
-                >
-                    {displayLabel}
-                </span>
-
-                {/* Status */}
-                {isInProgress ? (
-                    <span
-                        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full shrink-0"
-                        style={{ backgroundColor: accent }}
-                    />
-                ) : isCompleted ? (
-                    <span
-                        style={{
-                            color: accent,
-                            fontSize: "0.75em",
-                            opacity: 0.8,
-                        }}
-                    >
-                        {actionLabel}
-                    </span>
-                ) : null}
-
-                {/* Expand chevron */}
-                {detail && (
-                    <svg
-                        width="10"
-                        height="10"
-                        viewBox="0 0 10 10"
-                        fill="none"
-                        stroke={accent}
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="shrink-0"
-                        style={{
-                            transform: expanded
-                                ? "rotate(180deg)"
-                                : "rotate(0)",
-                            transition: "transform 0.15s ease",
-                            opacity: 0.6,
-                        }}
-                    >
-                        <path d="M2.5 4L5 6.5L7.5 4" />
-                    </svg>
-                )}
-            </div>
-
-            {/* Expandable detail */}
-            {expanded && detail && (
-                <div className="px-3 py-1.5">
-                    <pre
-                        className="max-h-32 overflow-y-auto rounded px-2 py-1.5"
-                        style={{
-                            backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--bg-tertiary))`,
-                            border: `1px solid color-mix(in srgb, ${accent} 10%, var(--border))`,
-                            color: "var(--text-secondary)",
-                            fontSize: "0.78em",
-                            lineHeight: 1.4,
-                            overflowWrap: "anywhere",
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            margin: 0,
-                        }}
-                    >
-                        {detail}
-                    </pre>
-                </div>
-            )}
-            {contextMenu ? (
-                <ContextMenu
-                    menu={contextMenu}
-                    onClose={() => setContextMenu(null)}
-                    entries={[
-                        {
-                            label: "Open",
-                            action: () => {
-                                void openAiEditedFileByAbsolutePath(
-                                    contextMenu.payload.target,
-                                );
-                            },
-                        },
-                        {
-                            label: "Open in New Tab",
-                            action: () => {
-                                void openAiEditedFileByAbsolutePath(
-                                    contextMenu.payload.target,
-                                    { newTab: true },
-                                );
-                            },
-                        },
-                    ]}
-                />
-            ) : null}
         </div>
     );
 }
@@ -1160,19 +874,10 @@ function ToolMessage({
     sessionId?: string | null;
     diffPresentationMode?: DiffPresentationMode;
 }) {
-    const [expanded, setExpanded] = useStoredRowExpanded(
-        sessionId,
-        message.id,
-        false,
-    );
-    const toolKind = String(message.meta?.tool ?? "");
-    const target = message.meta?.target ? String(message.meta.target) : null;
-    const shortTarget = target?.split("/").pop() ?? null;
-    const title = message.title ?? toolKind;
-    const label = shortTarget ?? title;
-    const status = String(message.meta?.status ?? "");
-    const isCompleted = status === "completed";
-    if (diffPresentationMode !== "none" && message.diffs?.length) {
+    if (
+        diffPresentationMode !== "none" &&
+        (message.diffs?.length || message.reviewDiffs?.length)
+    ) {
         return (
             <ChangeReviewPanel
                 message={message}
@@ -1182,88 +887,7 @@ function ToolMessage({
         );
     }
 
-    // File-mutating tools get card treatment
-    if (toolKind === "edit" || toolKind === "delete" || toolKind === "move") {
-        return <FileToolMessage message={message} sessionId={sessionId} />;
-    }
-
-    // Read/search tools with a file target get card treatment
-    if ((toolKind === "read" || toolKind === "search") && target) {
-        return <FileToolMessage message={message} sessionId={sessionId} />;
-    }
-
-    // Show detail content if it differs from the label (e.g. long shell commands)
-    const detail =
-        message.content &&
-        message.content !== label &&
-        message.content !== title
-            ? message.content
-            : null;
-
-    return (
-        <div
-            className="min-w-0 max-w-full py-0.5"
-            style={{
-                color: "var(--text-secondary)",
-                opacity: isCompleted ? 0.45 : 0.7,
-                fontSize: "0.85em",
-            }}
-        >
-            <div
-                className="flex min-w-0 items-center gap-2"
-                style={{ cursor: detail ? "pointer" : "default" }}
-                onClick={detail ? () => setExpanded((v) => !v) : undefined}
-            >
-                <ToolFileIcon target={target} toolKind={toolKind} size={12} />
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-                {!isCompleted && status === "in_progress" ? (
-                    <span
-                        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full"
-                        style={{ backgroundColor: "var(--accent)" }}
-                    />
-                ) : null}
-                {detail && (
-                    <svg
-                        width="10"
-                        height="10"
-                        viewBox="0 0 10 10"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{
-                            flexShrink: 0,
-                            transform: expanded
-                                ? "rotate(180deg)"
-                                : "rotate(0)",
-                            transition: "transform 0.15s ease",
-                        }}
-                    >
-                        <path d="M2.5 4L5 6.5L7.5 4" />
-                    </svg>
-                )}
-                <OpenSessionActionButton message={message} />
-            </div>
-            {expanded && detail && (
-                <pre
-                    className="mt-1 max-h-40 overflow-y-auto rounded px-2 py-1.5"
-                    style={{
-                        backgroundColor: "var(--bg-tertiary)",
-                        border: "1px solid var(--border)",
-                        fontSize: "0.82em",
-                        lineHeight: 1.4,
-                        overflowWrap: "anywhere",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                        margin: 0,
-                    }}
-                >
-                    {detail}
-                </pre>
-            )}
-        </div>
-    );
+    return <ToolActivityItem message={message} sessionId={sessionId} />;
 }
 
 export function PlanMessage({
@@ -1302,20 +926,16 @@ export function PlanMessage({
 
     return (
         <div
-            className="min-w-0 max-w-full overflow-hidden rounded-xl"
-            style={{
-                border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
-                backgroundColor:
-                    "color-mix(in srgb, var(--bg-tertiary) 84%, transparent)",
-            }}
+            className="chat-plan-frame min-w-0 max-w-full overflow-hidden"
+            data-plan-surface="true"
         >
-            <div className="flex items-center gap-1 px-1 py-1">
+            <div className="flex items-center gap-1 px-2.5 py-2">
                 <button
                     type="button"
                     onClick={() => {
                         if (canExpand) setExpanded((value) => !value);
                     }}
-                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1.5 py-0.5 text-left"
+                    className="flex min-w-0 flex-1 items-baseline gap-2 rounded-sm text-left"
                     aria-expanded={expanded}
                     style={{
                         backgroundColor: "transparent",
@@ -1324,22 +944,22 @@ export function PlanMessage({
                     }}
                 >
                     <span
-                        className="inline-flex shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-xs"
+                        className="inline-block w-3 shrink-0 text-center"
                         style={{
                             color: "var(--text-secondary)",
-                            backgroundColor:
-                                "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
-                            border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                            fontSize: "0.78em",
                             fontWeight: 500,
+                            lineHeight: 1.5,
                         }}
                     >
-                        {canExpand ? (expanded ? "▾" : "▸") : "•"}
+                        {canExpand ? (expanded ? "⌄" : ">") : "·"}
                     </span>
                     <span
                         className="min-w-0 flex-1 font-medium"
                         style={{
                             color: "var(--text-secondary)",
-                            fontSize: "0.875rem",
+                            fontSize: "0.78em",
+                            lineHeight: 1.5,
                         }}
                     >
                         {message.title ?? "Plan"}
@@ -1347,7 +967,7 @@ export function PlanMessage({
                     <span
                         style={{
                             color: "var(--text-secondary)",
-                            fontSize: "0.76em",
+                            fontSize: "0.72em",
                         }}
                     >
                         {statusLabel}
@@ -1379,12 +999,7 @@ export function PlanMessage({
 
             {expanded && detail ? (
                 <div
-                    className="mx-2.5 mb-1.5 rounded-md px-2 py-1.5"
-                    style={{
-                        backgroundColor:
-                            "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
-                        border: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                    }}
+                    className="px-7 pb-2"
                 >
                     <div
                         style={{
@@ -1397,6 +1012,7 @@ export function PlanMessage({
                             content={detail}
                             pillMetrics={pillMetrics}
                             chatFontSize={chatFontSize}
+                            fileReferenceAppearance="link"
                         />
                     </div>
                 </div>
@@ -1404,11 +1020,9 @@ export function PlanMessage({
 
             {expanded && entries.length > 0 ? (
                 <div
-                    className="flex flex-col"
-                    style={{
-                        borderTop:
-                            "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                    }}
+                    className="activity-tree flex min-w-0 flex-col gap-1.5 px-2.5 pb-2.5"
+                    data-plan-tree="true"
+                    role="list"
                 >
                     {entries.map((entry, index) => {
                         const isCompleted = entry.status === "completed";
@@ -1416,33 +1030,38 @@ export function PlanMessage({
                         return (
                             <div
                                 key={`${entry.content}:${index}`}
-                                className="flex min-w-0 items-start gap-2.5 px-2.5 py-1.5"
+                                className="activity-tree-branch min-w-0 pl-10"
+                                data-activity-rail-decoration="branch"
+                                data-plan-entry-status={entry.status}
+                                role="listitem"
                                 style={{
-                                    borderTop:
-                                        index === 0
-                                            ? "none"
-                                            : "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
                                     color: isCompleted
                                         ? "var(--text-secondary)"
                                         : "var(--text-primary)",
                                     opacity: isCompleted ? 0.74 : 1,
                                 }}
                             >
-                                <span
-                                    className="mt-0.75 inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
-                                    style={{
-                                        backgroundColor: isCompleted
-                                            ? "#84cc16"
-                                            : isActive
-                                              ? "var(--accent)"
-                                              : "var(--text-secondary)",
-                                        opacity: isCompleted ? 0.9 : 0.8,
-                                    }}
-                                />
-                                <div className="min-w-0 flex-1">
-                                    <div
+                                <div className="flex min-w-0 items-start gap-2 py-0.5">
+                                    <span
+                                        aria-hidden="true"
+                                        className="mt-1 inline-flex h-2 w-2 shrink-0 rounded-full"
                                         style={{
-                                            fontSize: "0.8em",
+                                            backgroundColor: isCompleted
+                                                ? "#84cc16"
+                                                : isActive
+                                                  ? "var(--accent)"
+                                                  : "transparent",
+                                            border: isCompleted || isActive
+                                                ? "none"
+                                                : "1px solid color-mix(in srgb, var(--text-secondary) 58%, transparent)",
+                                            opacity: isCompleted ? 0.9 : 0.8,
+                                        }}
+                                    />
+                                    <div
+                                        className="min-w-0 flex-1"
+                                        style={{
+                                            fontSize: "0.76em",
+                                            lineHeight: 1.5,
                                             overflowWrap: "anywhere",
                                             wordBreak: "break-word",
                                             textDecoration: isCompleted
@@ -1483,16 +1102,6 @@ export function PlanMessage({
             ) : null}
         </div>
     );
-}
-
-function formatElapsedMs(ms: number) {
-    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-    if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
-    if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-    return `${seconds}s`;
 }
 
 function messageMetaString(message: AIChatMessage, key: string): string | null {
@@ -1798,54 +1407,6 @@ function StatusMessage({ message }: { message: AIChatMessage }) {
     const detail =
         message.content && message.content !== title ? message.content : null;
 
-    if (statusKind === "turn_started") {
-        const elapsedMs =
-            typeof message.meta?.elapsed_ms === "number"
-                ? message.meta.elapsed_ms
-                : null;
-        return (
-            <div className="min-w-0 max-w-full py-2">
-                <div className="flex min-w-0 max-w-full items-center gap-3">
-                    <div
-                        className="h-px flex-1"
-                        style={{
-                            backgroundColor: "var(--border)",
-                            opacity: 0.5,
-                        }}
-                    />
-                    <span
-                        className="shrink-0 uppercase tracking-[0.14em]"
-                        style={{
-                            color: "var(--text-secondary)",
-                            fontSize: "0.68em",
-                            opacity: 0.7,
-                        }}
-                    >
-                        {title}
-                    </span>
-                    {elapsedMs != null ? (
-                        <span
-                            style={{
-                                color: "var(--text-secondary)",
-                                fontSize: "0.66em",
-                                opacity: 0.55,
-                            }}
-                        >
-                            {formatElapsedMs(elapsedMs)}
-                        </span>
-                    ) : null}
-                    <div
-                        className="h-px flex-1"
-                        style={{
-                            backgroundColor: "var(--border)",
-                            opacity: 0.5,
-                        }}
-                    />
-                </div>
-            </div>
-        );
-    }
-
     if (emphasis === "error" || statusKind === "stream_error") {
         return (
             <div
@@ -1983,93 +1544,6 @@ function StatusMessage({ message }: { message: AIChatMessage }) {
                     {detail}
                 </div>
             )}
-        </div>
-    );
-}
-
-const DIFF_DEFAULT_HEIGHT = 200;
-const DIFF_MIN_HEIGHT = 80;
-
-function ResizableDiffContainer({
-    accent,
-    children,
-}: {
-    accent: string;
-    children: ReactElement;
-}) {
-    const [height, setHeight] = useState(DIFF_DEFAULT_HEIGHT);
-    const dragging = useRef(false);
-    const startY = useRef(0);
-    const startH = useRef(0);
-
-    const onPointerDown = useCallback(
-        (e: React.PointerEvent) => {
-            e.preventDefault();
-            dragging.current = true;
-            startY.current = e.clientY;
-            startH.current = height;
-            (e.target as HTMLElement).setPointerCapture(e.pointerId);
-        },
-        [height],
-    );
-
-    const onPointerMove = useCallback((e: React.PointerEvent) => {
-        if (!dragging.current) return;
-        const delta = e.clientY - startY.current;
-        setHeight(Math.max(DIFF_MIN_HEIGHT, startH.current + delta));
-    }, []);
-
-    const onPointerUp = useCallback(() => {
-        dragging.current = false;
-    }, []);
-
-    return (
-        <div
-            style={{
-                borderBottom: `1px solid color-mix(in srgb, ${accent} 8%, var(--border))`,
-            }}
-        >
-            <div
-                style={{
-                    maxHeight: height,
-                    overflowY: "auto",
-                }}
-            >
-                {children}
-            </div>
-            {/* Resize handle */}
-            <div
-                onPointerDown={onPointerDown}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-                style={{
-                    height: 6,
-                    cursor: "ns-resize",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    backgroundColor: "transparent",
-                    transition: "background-color 0.15s ease",
-                }}
-                onMouseEnter={(e) => {
-                    (e.currentTarget as HTMLElement).style.backgroundColor =
-                        "color-mix(in srgb, var(--text-secondary) 10%, transparent)";
-                }}
-                onMouseLeave={(e) => {
-                    (e.currentTarget as HTMLElement).style.backgroundColor =
-                        "transparent";
-                }}
-            >
-                <div
-                    style={{
-                        width: 32,
-                        height: 2,
-                        borderRadius: 1,
-                        backgroundColor: "var(--text-secondary)",
-                        opacity: 0.3,
-                    }}
-                />
-            </div>
         </div>
     );
 }
@@ -2506,6 +1980,18 @@ function ChangeReviewPanel({
     const singleDiffExpanded = rowState?.singleDiffExpanded ?? false;
     const [openFileContextMenu, setOpenFileContextMenu] =
         useState<ContextMenuState<ToolTargetContextMenuPayload> | null>(null);
+    if (isToolMessage) {
+        return (
+            <ChangeReviewToolRail
+                diffs={diffs}
+                diffZoom={editDiffZoom}
+                lineWrapping={lineWrapping}
+                message={message}
+                onDiffZoomChange={setEditDiffZoom}
+                sessionId={sessionId}
+            />
+        );
+    }
     return (
         <div
             className="min-w-0 max-w-full overflow-hidden rounded-lg"
@@ -3130,6 +2616,7 @@ function PermissionMessage({
                                 content={expanded ? details : preview}
                                 pillMetrics={pillMetrics}
                                 chatFontSize={chatFontSize}
+                                fileReferenceAppearance="link"
                             />
                             {isLong && (
                                 <button
@@ -3844,7 +3331,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     onDismissMessage,
 }: AIChatMessageItemProps) {
     const diffPresentationMode = readOnly
-        ? message.diffs?.length
+        ? message.diffs?.length || message.reviewDiffs?.length
             ? "historical"
             : "none"
         : getDiffPresentationMode(message, visibleWorkCycleId);
@@ -3887,6 +3374,9 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     }
 
     if (message.kind === "status") {
+        if (isActivityTimelineEntry(message)) {
+            return <ToolActivityItem message={message} sessionId={sessionId} />;
+        }
         return <StatusMessage message={message} />;
     }
 
@@ -3952,6 +3442,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
                 content={message.content}
                 pillMetrics={pillMetrics}
                 chatFontSize={chatFontSize}
+                fileReferenceAppearance="link"
             />
         </div>
     );

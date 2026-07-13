@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
+import { useComposerPickerPosition } from "./useComposerPickerPosition";
 
 export interface AIChatSlashCommand {
     id: string;
@@ -30,9 +30,6 @@ function CommandIcon() {
 
 interface AIChatCommandPickerProps {
     open: boolean;
-    x: number;
-    y: number;
-    query: string;
     selectedIndex: number;
     items: AIChatSlashCommand[];
     anchorElement: HTMLElement | null;
@@ -43,8 +40,6 @@ interface AIChatCommandPickerProps {
 
 export function AIChatCommandPicker({
     open,
-    x,
-    y,
     selectedIndex,
     items,
     anchorElement,
@@ -54,23 +49,12 @@ export function AIChatCommandPicker({
 }: AIChatCommandPickerProps) {
     const ref = useRef<HTMLDivElement>(null);
     const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-    const [position, setPosition] = useState({ x, y });
-
-    useLayoutEffect(() => {
-        if (!open) return;
-        const element = ref.current;
-        if (!element) return;
-
-        const rect = element.getBoundingClientRect();
-        setPosition(
-            getViewportSafeMenuPosition(
-                x,
-                y - rect.height - 8,
-                rect.width,
-                rect.height,
-            ),
-        );
-    }, [open, x, y, items.length]);
+    const position = useComposerPickerPosition(
+        anchorElement,
+        ref.current,
+        open,
+        items.length,
+    );
 
     useEffect(() => {
         if (!open) return;
@@ -99,18 +83,18 @@ export function AIChatCommandPicker({
             ref={ref}
             style={{
                 position: "fixed",
-                top: position.y,
-                left: position.x,
+                top: position?.y ?? 8,
+                left: position?.x ?? 8,
                 zIndex: 10010,
-                width: 420,
-                maxWidth: "min(420px, calc(100vw - 24px))",
-                maxHeight: 280,
+                width: position?.width ?? 320,
+                maxHeight: position?.maxHeight ?? 360,
                 overflow: "hidden",
                 borderRadius: 10,
                 border: "1px solid color-mix(in srgb, var(--border) 86%, transparent)",
                 background:
                     "color-mix(in srgb, var(--bg-elevated) 97%, transparent)",
-                boxShadow: "0 8px 24px rgba(15, 23, 42, 0.12)",
+                boxShadow:
+                    "0 12px 32px rgba(15, 23, 42, 0.16), 0 0 0 1px color-mix(in srgb, var(--border) 40%, transparent)",
                 backdropFilter: "blur(10px)",
             }}
         >
@@ -121,7 +105,7 @@ export function AIChatCommandPicker({
                     display: "flex",
                     flexDirection: "column",
                     gap: 1,
-                    maxHeight: 280,
+                    maxHeight: position?.maxHeight ?? 360,
                 }}
             >
                 {items.length ? (
@@ -149,7 +133,7 @@ export function AIChatCommandPicker({
                                     background: isActive
                                         ? "color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))"
                                         : "transparent",
-                                    padding: "6px 10px",
+                                    padding: "7px 10px",
                                     textAlign: "left",
                                     cursor: "pointer",
                                     width: "100%",
@@ -160,14 +144,15 @@ export function AIChatCommandPicker({
                                 <CommandIcon />
                                 <span
                                     style={{
-                                        color: "var(--accent)",
-                                        fontSize: 13,
-                                        fontWeight: 600,
+                                        color: "var(--text-primary)",
+                                        fontFamily: "var(--font-mono, monospace)",
+                                        fontSize: 12.5,
+                                        fontWeight: 500,
                                         whiteSpace: "nowrap",
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
                                         flex: "0 0 auto",
-                                        maxWidth: "46%",
+                                        maxWidth: "44%",
                                         minWidth: 0,
                                     }}
                                 >
@@ -175,7 +160,7 @@ export function AIChatCommandPicker({
                                 </span>
                                 <span
                                     style={{
-                                        fontSize: 11,
+                                        fontSize: 11.5,
                                         color: "var(--text-secondary)",
                                         opacity: 0.6,
                                         flex: "1 1 0",

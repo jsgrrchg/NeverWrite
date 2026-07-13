@@ -2931,6 +2931,19 @@ impl NativeAcpClient {
             .unwrap_or(false)
     }
 
+    fn is_root_session(&self, session_id: &str) -> bool {
+        self.session_state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .sessions
+                    .get(session_id)
+                    .map(|managed| managed.session.parent_session_id.is_none())
+            })
+            .unwrap_or(false)
+    }
+
     fn resolve_app_session_id(&self, runtime_session_id: &str, meta: Option<&Meta>) -> String {
         if let Some(session_id) = self.find_app_session_id(runtime_session_id) {
             return session_id;
@@ -3098,7 +3111,7 @@ impl NativeAcpClient {
 
     fn child_session_ids_for_terminal_subagent_breadcrumb(
         &self,
-        _parent_session_id: &str,
+        parent_session_id: &str,
         meta: &Meta,
     ) -> Vec<String> {
         let Some(subagent_event_type) = meta_string(meta, CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY) else {
@@ -3107,7 +3120,7 @@ impl NativeAcpClient {
 
         if subagent_event_type == CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE {
             return self
-                .child_session_id_from_breadcrumb_meta(meta)
+                .child_session_id_from_breadcrumb_meta(parent_session_id, meta)
                 .into_iter()
                 .collect();
         }
@@ -3119,7 +3132,7 @@ impl NativeAcpClient {
         ) {
             if codex_acp_agent_status_is_terminal(meta).unwrap_or(false) {
                 return self
-                    .child_session_id_from_breadcrumb_meta(meta)
+                    .child_session_id_from_breadcrumb_meta(parent_session_id, meta)
                     .into_iter()
                     .collect();
             }
@@ -3133,23 +3146,46 @@ impl NativeAcpClient {
         if let Some(runtime_child_session_id) = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) {
             if codex_acp_agent_status_is_terminal(meta).unwrap_or(false) {
                 return self
-                    .find_app_session_id(&runtime_child_session_id)
+                    .child_session_id_for_parent(parent_session_id, &runtime_child_session_id)
                     .into_iter()
                     .collect();
             }
             return vec![];
         }
 
-        self.terminal_child_session_ids_from_agent_statuses(meta)
+        self.terminal_child_session_ids_from_agent_statuses(parent_session_id, meta)
     }
 
-    fn child_session_id_from_breadcrumb_meta(&self, meta: &Meta) -> Option<String> {
+    fn child_session_id_from_breadcrumb_meta(
+        &self,
+        parent_session_id: &str,
+        meta: &Meta,
+    ) -> Option<String> {
         meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY).and_then(|runtime_child_session_id| {
-            self.find_app_session_id(&runtime_child_session_id)
+            self.child_session_id_for_parent(parent_session_id, &runtime_child_session_id)
         })
     }
 
-    fn terminal_child_session_ids_from_agent_statuses(&self, meta: &Meta) -> Vec<String> {
+    fn child_session_id_for_parent(
+        &self,
+        parent_session_id: &str,
+        runtime_child_session_id: &str,
+    ) -> Option<String> {
+        let state = self.session_state.lock().ok()?;
+        state.sessions.values().find_map(|managed| {
+            let matches_child = managed.session.session_id == runtime_child_session_id
+                || managed.session.runtime_session_id.as_deref() == Some(runtime_child_session_id);
+            (matches_child
+                && managed.session.parent_session_id.as_deref() == Some(parent_session_id))
+            .then(|| managed.session.session_id.clone())
+        })
+    }
+
+    fn terminal_child_session_ids_from_agent_statuses(
+        &self,
+        parent_session_id: &str,
+        meta: &Meta,
+    ) -> Vec<String> {
         meta.get(CODEX_ACP_AGENT_STATUSES_KEY)
             .and_then(Value::as_array)
             .map(|statuses| {
@@ -3166,7 +3202,10 @@ impl NativeAcpClient {
                             .get(CODEX_ACP_CHILD_SESSION_ID_KEY)
                             .and_then(Value::as_str)
                             .and_then(|runtime_child_session_id| {
-                                self.find_app_session_id(runtime_child_session_id)
+                                self.child_session_id_for_parent(
+                                    parent_session_id,
+                                    runtime_child_session_id,
+                                )
                             })
                     })
                     .collect()
@@ -3439,6 +3478,13 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                // The composer owns user messages in root sessions. Some runtimes echo the
+                // expanded prompt here, which can contain internal attachment context and local
+                // paths. User chunks remain meaningful for subagents, whose prompts are not
+                // created by the local composer.
+                if self.is_root_session(&session_id) {
+                    return Ok(());
+                }
                 if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
                     return Ok(());
                 }
@@ -10573,6 +10619,27 @@ mod tests {
     }
 
     #[test]
+    fn root_user_message_chunks_do_not_echo_expanded_runtime_prompts() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, GROK_RUNTIME_ID, "grok-session");
+        let client = test_client_with_state(event_tx, session_state);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "grok-session",
+            SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::from(
+                "<attached_folder name=\"Daily note\" path=\"Analysis/June 2026\" />\n\n/private/vault/Analysis/June 2026",
+            ))),
+        )))
+        .unwrap();
+
+        assert!(event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .is_err());
+        assert!(!client.has_active_text_message("grok-session", MessageRole::User));
+    }
+
+    #[test]
     fn child_user_message_closes_before_child_thinking_starts() {
         let (event_tx, event_rx) = mpsc::channel();
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
@@ -10943,6 +11010,77 @@ mod tests {
         assert!(saw_closed_update);
         assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
         assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn terminal_breadcrumb_cannot_close_child_owned_by_another_parent() {
+        const OTHER_PARENT_SESSION_ID: &str = "other-parent-session";
+
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, OTHER_PARENT_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, CHILD_RUNTIME_SESSION_ID);
+        mark_test_session_as_child(
+            &session_state,
+            CHILD_RUNTIME_SESSION_ID,
+            CHILD_RUNTIME_SESSION_ID,
+        );
+        {
+            let mut state = session_state.lock().unwrap();
+            let child = state
+                .sessions
+                .get_mut(CHILD_RUNTIME_SESSION_ID)
+                .expect("child session should exist");
+            child.session.parent_session_id = Some(PARENT_RUNTIME_SESSION_ID.to_string());
+            child.session.status = AiSessionStatus::Streaming;
+        }
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        let close_meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                json!(CHILD_RUNTIME_SESSION_ID),
+            ),
+            (
+                CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_CLOSE_END_EVENT),
+            ),
+        ]);
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                OTHER_PARENT_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("foreign-subagent-close"), "Closed child")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::Completed)
+                        .meta(close_meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("breadcrumb should still emit tool activity")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert!(event_rx.try_recv().is_err());
+
+        let state = session_state.lock().unwrap();
+        let child = &state
+            .sessions
+            .get(CHILD_RUNTIME_SESSION_ID)
+            .expect("child session should remain available")
+            .session;
+        assert_eq!(child.status, AiSessionStatus::Streaming);
+        assert!(child.closed_at.is_none());
     }
 
     #[test]

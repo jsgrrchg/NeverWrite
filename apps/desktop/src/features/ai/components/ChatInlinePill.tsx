@@ -1,61 +1,72 @@
-import type { CSSProperties, MouseEventHandler } from "react";
+import type { MouseEventHandler, ReactNode } from "react";
 import { type ChatPillMetrics } from "./chatPillMetrics";
-import { CHAT_PILL_VARIANTS, type ChatPillVariant } from "./chatPillPalette";
+import type { ChatPillVariant } from "./chatPillPalette";
+import {
+    getChatInlineLeadingVisualStyle,
+    getChatInlinePillStyle,
+} from "./chatInlinePillStyle";
 
 interface ChatInlinePillProps {
+    appearance?: "link" | "pill";
     label: string;
     metrics: ChatPillMetrics;
     title?: string;
     interactive?: boolean;
+    leadingVisual?: ReactNode;
     variant?: ChatPillVariant;
     onClick?: () => void;
     onContextMenu?: MouseEventHandler<HTMLElement>;
 }
 
 export function ChatInlinePill({
+    appearance = "pill",
     label,
     metrics,
     title,
     interactive = false,
+    leadingVisual,
     variant = "accent",
     onClick,
     onContextMenu,
 }: ChatInlinePillProps) {
-    const palette = CHAT_PILL_VARIANTS[variant];
     const clickable = interactive || typeof onClick === "function";
-    const style: CSSProperties = {
-        display: "inline-flex",
-        alignItems: "center",
-        margin: `0 ${metrics.gapX}px`,
-        padding: `${metrics.paddingY}px ${metrics.paddingX}px`,
-        maxInlineSize: "100%",
-        borderRadius: metrics.radius,
-        background: palette.background,
-        color: palette.color,
-        fontSize: metrics.fontSize,
-        lineHeight: metrics.lineHeight,
-        border: "none",
-        cursor: clickable ? "pointer" : "default",
-        fontFamily: "inherit",
-        verticalAlign: "baseline",
-        overflowWrap: "anywhere",
-        transform: `translateY(${metrics.offsetY}px)`,
-        opacity: clickable ? 0.85 : 1,
-        transition: clickable ? "opacity 80ms ease" : undefined,
-    };
+    const style = getChatInlinePillStyle({
+        appearance,
+        clickable,
+        metrics,
+        variant,
+    });
 
     const content = (
         <span
             style={{
-                display: "block",
+                alignItems: "flex-start",
+                display: "inline-flex",
+                gap: leadingVisual ? 4 : 0,
                 minWidth: 0,
                 maxWidth: "100%",
-                overflowWrap: "anywhere",
-                whiteSpace: "normal",
-                wordBreak: "break-word",
             }}
         >
-            {label}
+            {leadingVisual ? (
+                <span
+                    aria-hidden="true"
+                    style={getChatInlineLeadingVisualStyle(metrics)}
+                >
+                    {leadingVisual}
+                </span>
+            ) : null}
+            <span
+                style={{
+                    display: "block",
+                    minWidth: 0,
+                    maxWidth: "100%",
+                    overflowWrap: "anywhere",
+                    whiteSpace: "normal",
+                    wordBreak: "break-word",
+                }}
+            >
+                {label}
+            </span>
         </span>
     );
 
@@ -69,9 +80,11 @@ export function ChatInlinePill({
                 title={title ?? label}
                 onMouseEnter={(e) => {
                     e.currentTarget.style.opacity = "1";
+                    e.currentTarget.style.filter = "brightness(1.08)";
                 }}
                 onMouseLeave={(e) => {
                     e.currentTarget.style.opacity = "0.85";
+                    e.currentTarget.style.filter = "brightness(1)";
                 }}
             >
                 {content}

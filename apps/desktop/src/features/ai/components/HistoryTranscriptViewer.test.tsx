@@ -121,4 +121,56 @@ describe("HistoryTranscriptViewer", () => {
             marginInline: "auto",
         });
     });
+
+    it("renders persisted tool activity through the read-only activity rail", () => {
+        const session = createEmptyPersistedSession("history-activity-rail", {
+            messages: [
+                {
+                    id: "history-tool-1",
+                    role: "assistant",
+                    kind: "tool",
+                    content: "Read project notes",
+                    title: "Read project notes",
+                    timestamp: 10,
+                    meta: {
+                        status: "completed",
+                        target: "/vault/notes/project.md",
+                        tool: "read",
+                    },
+                },
+                {
+                    id: "history-tool-2",
+                    role: "assistant",
+                    kind: "tool",
+                    content: "Search project notes",
+                    title: "Search project notes",
+                    timestamp: 11,
+                    meta: {
+                        status: "completed",
+                        tool: "search",
+                    },
+                },
+            ],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [],
+            ensureSessionTranscriptLoaded: vi.fn().mockResolvedValue(true),
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        }));
+
+        const view = renderComponent(
+            <HistoryTranscriptViewer historySessionId={session.sessionId} />,
+        );
+
+        expect(
+            view.container.querySelector('[data-activity-rail="true"]'),
+        ).toHaveAttribute("data-activity-count", "2");
+        expect(
+            view.container.querySelectorAll("[data-tool-activity-id]"),
+        ).toHaveLength(0);
+    });
 });

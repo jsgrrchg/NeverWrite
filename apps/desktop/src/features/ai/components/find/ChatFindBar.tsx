@@ -114,7 +114,7 @@ export function ChatFindBar({
                         else onNext();
                     }
                 }}
-                placeholder="Find in visible chat…"
+                placeholder="Find in chat…"
                 aria-label="Find in chat"
                 spellCheck={false}
                 className="h-[22px] min-w-0 rounded px-2 outline-none"

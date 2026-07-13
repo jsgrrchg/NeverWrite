@@ -119,9 +119,10 @@ Use one of:
 - Existing CLI auth in `~/.codex/auth.json`.
 - Process environment `OPENAI_API_KEY` or `CODEX_API_KEY`.
 
-In releases, `codex-acp` is expected to be bundled under
-`native-backend/binaries/`. In development, build or point to a local runtime if
-the vendor fallback is not present.
+In releases, `codex-acp` and its `codex-code-mode-host` companion are bundled
+under `native-backend/binaries/`. NeverWrite launches `codex-acp`; the companion
+is required for Codex code-mode features. In development, build or point to a
+local runtime pair if the vendor fallback is not present.
 
 ### Claude
 
@@ -298,7 +299,8 @@ Runtime staging is handled by
 [`stage-electron-sidecar.mjs`](../apps/desktop/scripts/stage-electron-sidecar.mjs):
 
 - Builds or resolves the target-specific native backend.
-- Builds or resolves the target-specific `codex-acp` binary.
+- Builds or resolves the target-specific Codex runtime pair: `codex-acp` and
+  `codex-code-mode-host`. Both are built with Cargo's committed lockfile.
 - Downloads or uses an overridden embedded Node runtime.
 - Resolves the Claude embedded runtime from `apps/desktop/embedded/claude-agent-acp`,
   `vendor/Claude-agent-acp-upstream`, or `NEVERWRITE_CLAUDE_EMBEDDED_DIR`.
@@ -318,17 +320,23 @@ release-critical resources:
 
 The release workflow
 [`release-desktop.yml`](../.github/workflows/release-desktop.yml) builds the
-target-specific Codex sidecar, downloads embedded Node for the target, exports
-the bundle override variables, and verifies macOS universal binaries for the
-native backend, Codex, and embedded Node.
+lockfile-pinned, target-specific Codex runtime pair, downloads embedded Node for
+the target, exports the bundle override variables, and verifies macOS universal
+binaries for the native backend, both Codex binaries, and embedded Node.
 
 Current packaging expectations:
 
-- Codex is bundled as a native sidecar binary.
+- Codex is bundled as a native runtime pair: the `codex-acp` sidecar and the
+  `codex-code-mode-host` companion.
 - Claude is bundled through embedded Node plus vendored runtime files.
 - Grok is integrated but not bundled by default.
 - Kilo is integrated but not bundled by default.
 - OpenCode is integrated but not bundled by default.
+
+The packaged sidecar smoke starts both Codex binaries. It sends an ACP
+`initialize` request to `codex-acp` using an isolated temporary `CODEX_HOME`,
+then checks that the native backend responds to its ping. This catches missing,
+non-executable, or non-starting Codex binaries before release assets are staged.
 
 ## Troubleshooting
 

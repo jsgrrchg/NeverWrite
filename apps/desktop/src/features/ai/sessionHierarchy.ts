@@ -80,6 +80,25 @@ function sessionMatchesFilter(session: AIChatSession, normalizedFilter: string) 
     return getSessionPreview(session).toLowerCase().includes(normalizedFilter);
 }
 
+function relationshipCreatesCycle(
+    session: AIChatSession,
+    parent: AIChatSession,
+    lookup: ReadonlyMap<string, AIChatSession>,
+) {
+    const visited = new Set([session.sessionId]);
+    let current: AIChatSession | null = parent;
+
+    while (current) {
+        if (visited.has(current.sessionId)) return true;
+        visited.add(current.sessionId);
+
+        const parentRef = normalizeSessionRef(current.parentSessionId);
+        current = parentRef ? (lookup.get(parentRef) ?? null) : null;
+    }
+
+    return false;
+}
+
 function compareSessionsByUpdatedAtDesc(
     left: AIChatSession,
     right: AIChatSession,
@@ -124,7 +143,11 @@ export function buildAiSessionHierarchyGroups({
     for (const session of sessions) {
         const parentRef = normalizeSessionRef(session.parentSessionId);
         const parent = parentRef ? lookup.get(parentRef) : null;
-        if (parent && parent.sessionId !== session.sessionId) {
+        if (
+            parent &&
+            parent.sessionId !== session.sessionId &&
+            !relationshipCreatesCycle(session, parent, lookup)
+        ) {
             const children = childrenByParentId.get(parent.sessionId) ?? [];
             children.push(session);
             childrenByParentId.set(parent.sessionId, children);

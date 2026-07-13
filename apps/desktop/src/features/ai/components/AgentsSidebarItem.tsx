@@ -3,12 +3,12 @@ import {
     useRef,
     type MouseEvent as ReactMouseEvent,
 } from "react";
+import { AIProviderIcon } from "./AIProviderIcon";
 import type { AIChatSession } from "../types";
 
-// Comando-style session row for the left sidebar Agents panel. Presentational
-// only — all derived values (title, preview, runtime label, timestamp,
-// activity indicator) are computed by the parent so the item stays dumb and
-// cheap to memoize.
+// Comando-style session row for the left sidebar Agents panel. Keep the row
+// deliberately single-line: the list is for switching threads, not reading
+// transcripts. The full context remains available in the editor chat tab.
 
 export type AgentsSidebarActivityIndicator = {
     readonly tone: "working" | "danger";
@@ -17,14 +17,12 @@ export type AgentsSidebarActivityIndicator = {
 
 export interface AgentsSidebarItemMetrics {
     rowPaddingX: number;
+    rowPaddingLeft: number;
     rowPaddingY: number;
-    rowGap: number;
     inlineGap: number;
     titleFontSize: number;
-    previewFontSize: number;
-    metaFontSize: number;
     timestampFontSize: number;
-    indicatorFontSize: number;
+    providerIconSize: number;
     pinButtonSize: number;
     pinIconSize: number;
 }
@@ -37,10 +35,6 @@ export interface AgentsSidebarItemDragCoordinates {
 export interface AgentsSidebarItemProps {
     session: AIChatSession;
     title: string;
-    preview: string;
-    runtimeLabel: string;
-    badgeLabel?: string;
-    messageCount: number;
     timestampLabel: string;
     isActive: boolean;
     isPinned: boolean;
@@ -68,14 +62,15 @@ export interface AgentsSidebarItemProps {
     metrics: AgentsSidebarItemMetrics;
 }
 
-function isInteractiveDragTarget(target: EventTarget | null) {
-    return target instanceof Element
-        ? Boolean(
-              target.closest(
-                  "button,input,textarea,select,a,[role='button']",
-              ),
-          )
-        : false;
+function isInteractiveDragTarget(
+    target: EventTarget | null,
+    row: HTMLElement,
+) {
+    if (!(target instanceof Element)) return false;
+    const interactive = target.closest(
+        "button,input,textarea,select,a,[role='button']",
+    );
+    return Boolean(interactive && interactive !== row);
 }
 
 const AGENT_SIDEBAR_DRAG_THRESHOLD_PX = 5;
@@ -107,11 +102,8 @@ function safelyReleasePointerCapture(
 }
 
 export function AgentsSidebarItem({
+    session,
     title,
-    preview,
-    runtimeLabel,
-    badgeLabel,
-    messageCount,
     timestampLabel,
     isActive,
     isPinned,
@@ -154,14 +146,6 @@ export function AgentsSidebarItem({
     const globalDragCleanupRef = useRef<(() => void) | null>(null);
     const suppressClickRef = useRef(false);
     const hasChildren = childCount > 0;
-    const hierarchyAdornmentWidth =
-        hasChildren || depth > 0 ? metrics.pinButtonSize + metrics.inlineGap : 0;
-    const activityAdornmentWidth = indicator
-        ? metrics.indicatorFontSize + metrics.inlineGap
-        : 0;
-    const subagentTextColumnOffset =
-        depth > 0 ? hierarchyAdornmentWidth + activityAdornmentWidth : 0;
-
     useEffect(() => {
         dragCallbacksRef.current = {
             onDragStart,
@@ -283,24 +267,21 @@ export function AgentsSidebarItem({
 
     return (
         <div
-            role="option"
-            aria-selected={isActive}
+            role="button"
+            aria-current={isActive ? "true" : undefined}
             tabIndex={0}
-            className="group flex cursor-pointer flex-col gap-0.5 rounded-md px-2 py-1.5"
+            data-testid="agent-sidebar-item"
+            title={title}
+            className="group flex w-full cursor-pointer items-center rounded-md"
             style={{
-                gap: metrics.rowGap,
+                gap: metrics.inlineGap,
                 padding: `${metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
-                paddingLeft: metrics.rowPaddingX + depth * 14,
+                paddingLeft: metrics.rowPaddingLeft + depth * 14,
                 backgroundColor: isActive
                     ? "color-mix(in srgb, var(--accent) 14%, transparent)"
                     : "transparent",
-                borderLeft: `2px solid ${
-                    isActive
-                        ? "var(--accent)"
-                        : "transparent"
-                }`,
                 transition:
-                    "background-color 100ms ease, border-color 100ms ease",
+                    "background-color 100ms ease, color 100ms ease",
             }}
             onClick={() => {
                 if (suppressClickRef.current) return;
@@ -311,7 +292,7 @@ export function AgentsSidebarItem({
                 if (
                     isRenaming ||
                     (event.button ?? 0) !== 0 ||
-                    isInteractiveDragTarget(event.target)
+                    isInteractiveDragTarget(event.target, event.currentTarget)
                 ) {
                     return;
                 }
@@ -353,6 +334,13 @@ export function AgentsSidebarItem({
                 onStartRename();
             }}
             onContextMenu={onContextMenu}
+            onKeyDown={(event) => {
+                if (isRenaming || event.target !== event.currentTarget) return;
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onOpen();
+                }
+            }}
             onMouseEnter={(event) => {
                 if (isActive) return;
                 event.currentTarget.style.backgroundColor =
@@ -363,78 +351,13 @@ export function AgentsSidebarItem({
                 event.currentTarget.style.backgroundColor = "transparent";
             }}
         >
-            <div
-                className="flex min-w-0 items-center"
-                style={{ gap: metrics.inlineGap }}
-            >
-                {hasChildren ? (
-                    <button
-                        type="button"
-                        title={isCollapsed ? "Expand agents" : "Collapse agents"}
-                        aria-label={
-                            isCollapsed ? "Expand agents" : "Collapse agents"
-                        }
-                        onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            onToggleCollapse?.();
-                        }}
-                        className="flex shrink-0 items-center justify-center rounded"
-                        style={{
-                            width: metrics.pinButtonSize,
-                            height: metrics.pinButtonSize,
-                            color: "var(--text-secondary)",
-                            background: "transparent",
-                        }}
-                    >
-                        <svg
-                            width={metrics.pinIconSize}
-                            height={metrics.pinIconSize}
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            style={{
-                                transform: isCollapsed
-                                    ? "rotate(-90deg)"
-                                    : "rotate(0)",
-                                transition: "transform 120ms ease",
-                            }}
-                        >
-                            <path d="m4 6 4 4 4-4" />
-                        </svg>
-                    </button>
-                ) : depth > 0 ? (
-                    <span
-                        aria-hidden
-                        className="shrink-0"
-                        style={{
-                            width: metrics.pinButtonSize,
-                            height: metrics.pinButtonSize,
-                        }}
-                    />
-                ) : null}
+            <AIProviderIcon
+                runtimeId={session.runtimeId}
+                size={metrics.providerIconSize}
+                className="shrink-0"
+            />
 
-                {indicator ? (
-                    <span
-                        aria-hidden
-                        title={indicator.title}
-                        className="shrink-0 leading-none"
-                        style={{
-                            fontSize: metrics.indicatorFontSize,
-                            color:
-                                indicator.tone === "danger"
-                                    ? "var(--diff-remove, #f43f5e)"
-                                    : "var(--diff-warn, #d97706)",
-                        }}
-                    >
-                        ●
-                    </span>
-                ) : null}
-
-                {isRenaming ? (
+            {isRenaming ? (
                     <input
                         ref={renameInputRef}
                         autoFocus
@@ -472,7 +395,59 @@ export function AgentsSidebarItem({
                     </span>
                 )}
 
-                {canPin ? (
+            {/* Keep provider marks aligned; expansion is a row action, not a
+                leading tree gutter. */}
+            {hasChildren ? (
+                <button
+                    type="button"
+                    title={isCollapsed ? "Expand agents" : "Collapse agents"}
+                    aria-label={
+                        isCollapsed ? "Expand agents" : "Collapse agents"
+                    }
+                    onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onToggleCollapse?.();
+                    }}
+                    className="flex shrink-0 items-center justify-center rounded"
+                    style={{
+                        width: metrics.pinButtonSize,
+                        height: metrics.pinButtonSize,
+                        color: "var(--text-secondary)",
+                        background: "transparent",
+                    }}
+                >
+                    <svg
+                        width={metrics.pinIconSize}
+                        height={metrics.pinIconSize}
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{
+                            transform: isCollapsed
+                                ? "rotate(-90deg)"
+                                : "rotate(0)",
+                            transition: "transform 120ms ease",
+                        }}
+                    >
+                        <path d="m4 6 4 4 4-4" />
+                    </svg>
+                </button>
+            ) : canPin ? (
+                <span
+                    aria-hidden
+                    className="shrink-0"
+                    style={{
+                        width: metrics.pinButtonSize,
+                        height: metrics.pinButtonSize,
+                    }}
+                />
+            ) : null}
+
+            {canPin ? (
                     <button
                         type="button"
                         title={
@@ -485,14 +460,17 @@ export function AgentsSidebarItem({
                             event.stopPropagation();
                             onTogglePin();
                         }}
-                        className="flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity"
+                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity ${
+                            isPinned
+                                ? "opacity-100"
+                                : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        }`}
                         style={{
                             width: metrics.pinButtonSize,
                             height: metrics.pinButtonSize,
                             color: isPinned
                                 ? "var(--text-primary)"
                                 : "var(--text-secondary)",
-                            opacity: isPinned ? 1 : 0.55,
                         }}
                     >
                         <svg
@@ -511,74 +489,26 @@ export function AgentsSidebarItem({
                     </button>
                 ) : null}
 
-                <span
-                    className="shrink-0 text-[10px]"
-                    style={{
-                        fontSize: metrics.timestampFontSize,
-                        color:
-                            indicator?.tone === "danger"
-                                ? "var(--diff-remove, #f43f5e)"
-                                : indicator?.tone === "working"
-                                  ? "var(--diff-warn, #d97706)"
-                                  : "var(--text-secondary)",
-                        opacity: 0.85,
-                    }}
-                >
-                    {timestampLabel}
-                </span>
-            </div>
-
-            {preview ? (
-                <p
-                    className="line-clamp-1 text-[10.5px] leading-[1.35]"
-                    style={{
-                        color: "var(--text-secondary)",
-                        fontSize: metrics.previewFontSize,
-                        paddingLeft: subagentTextColumnOffset || undefined,
-                        boxSizing: subagentTextColumnOffset
-                            ? "border-box"
-                            : undefined,
-                    }}
-                >
-                    {preview}
-                </p>
-            ) : null}
-
-            <div
-                className="flex items-center gap-1 text-[10px]"
+            <span
+                className="shrink-0 text-[10px]"
+                title={indicator?.title}
                 style={{
-                    color: "var(--text-secondary)",
-                    fontSize: metrics.metaFontSize,
-                    paddingLeft: subagentTextColumnOffset || undefined,
-                    boxSizing: subagentTextColumnOffset
-                        ? "border-box"
-                        : undefined,
+                    color:
+                        indicator?.tone === "danger"
+                            ? "var(--diff-remove, #f43f5e)"
+                            : indicator?.tone === "working"
+                              ? "var(--diff-warn, #d97706)"
+                              : "var(--text-secondary)",
+                    fontSize: metrics.timestampFontSize,
+                    opacity: 0.8,
                 }}
             >
-                {badgeLabel ? (
-                    <span
-                        className="rounded px-1"
-                        style={{
-                            color: "var(--accent)",
-                            background:
-                                "color-mix(in srgb, var(--accent) 12%, transparent)",
-                        }}
-                    >
-                        {badgeLabel}
-                    </span>
-                ) : null}
-                <span>{runtimeLabel}</span>
-                {messageCount > 0 ? (
-                    <>
-                        <span>·</span>
-                        <span>
-                            {messageCount === 1
-                                ? "1 message"
-                                : `${messageCount} messages`}
-                        </span>
-                    </>
-                ) : null}
-            </div>
+                {indicator?.tone === "working"
+                    ? "Working…"
+                    : indicator?.tone === "danger"
+                      ? "Error"
+                      : timestampLabel}
+            </span>
         </div>
     );
 }

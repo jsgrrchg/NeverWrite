@@ -29,7 +29,7 @@ import {
 } from "@codemirror/search";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { indentUnit } from "@codemirror/language";
-import { getCurrentWebview, confirm } from "@neverwrite/runtime";
+import { getCurrentWebview } from "@neverwrite/runtime";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -168,10 +168,6 @@ import {
 } from "./WikilinkSuggester";
 import { isSearchTab } from "../search/searchTab";
 import { useChatStore } from "../ai/store/chatStore";
-import {
-    findActiveSessionsAffectedByClose,
-    getCloseTabsConfirmationMessage,
-} from "./tabClosePolicy";
 import { aiRegisterFileBaseline } from "../ai/api";
 import {
     changeAuthorAnnotation,
@@ -858,21 +854,7 @@ export function Editor({
         if (!tab) return;
 
         if (!isNoteTab(tab)) {
-            const affected = findActiveSessionsAffectedByClose(
-                [tab],
-                useChatStore.getState().sessionsById,
-            );
-            void (async () => {
-                const confirmationMessage =
-                    getCloseTabsConfirmationMessage(affected);
-                if (
-                    confirmationMessage !== null &&
-                    !(await confirm(confirmationMessage))
-                ) {
-                    return;
-                }
-                closeTab(activeTabId, { reason: "user" });
-            })();
+            closeTab(activeTabId, { reason: "user" });
             return;
         }
 

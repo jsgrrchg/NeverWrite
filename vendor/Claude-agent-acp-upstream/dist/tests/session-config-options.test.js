@@ -669,6 +669,73 @@ describe("session config options", () => {
             });
             expect(setModelSpy).toHaveBeenCalledWith("claude-sonnet-4-6");
         });
+        // Option entries carry no resolvedModel, so alias resolution must consult
+        // session.modelInfos — otherwise a full model id in either hint spelling
+        // ("[1m]"/"-1m") falls to the substring tier and lands on the bare 200k
+        // sibling, silently downgrading the session's context lane.
+        it("resolves a full model id onto its hinted row via session.modelInfos", async () => {
+            const session = agent.sessions[SESSION_ID];
+            session.models = {
+                currentModelId: "sonnet",
+                availableModels: [
+                    { modelId: "sonnet", name: "Sonnet", description: "" },
+                    { modelId: "sonnet[1m]", name: "Sonnet", description: "" },
+                ],
+            };
+            session.modelInfos = [
+                {
+                    value: "sonnet",
+                    resolvedModel: "claude-sonnet-5",
+                    displayName: "Sonnet",
+                    description: "",
+                },
+                {
+                    value: "sonnet[1m]",
+                    resolvedModel: "claude-sonnet-5[1m]",
+                    displayName: "Sonnet",
+                    description: "",
+                },
+            ];
+            session.configOptions = session.configOptions.map((o) => o.id === "model"
+                ? {
+                    ...o,
+                    currentValue: "sonnet",
+                    options: [
+                        { value: "sonnet", name: "Sonnet" },
+                        { value: "sonnet[1m]", name: "Sonnet" },
+                    ],
+                }
+                : o);
+            await agent.setSessionConfigOption({
+                sessionId: SESSION_ID,
+                configId: "model",
+                value: "claude-sonnet-5[1m]",
+            });
+            expect(setModelSpy).toHaveBeenCalledWith("sonnet[1m]");
+            setModelSpy.mockClear();
+            await agent.setSessionConfigOption({
+                sessionId: SESSION_ID,
+                configId: "model",
+                value: "claude-sonnet-5-1m",
+            });
+            expect(setModelSpy).toHaveBeenCalledWith("sonnet[1m]");
+        });
+        // A session can be running a model with no picker entry (resumed onto a
+        // model excluded by the availableModels allowlist, or a refusal
+        // fallback); its verbatim id is then the option's currentValue. A client
+        // round-tripping that reported value must not get "Invalid value".
+        it("accepts the reported currentValue even when it has no options entry", async () => {
+            const session = agent.sessions[SESSION_ID];
+            session.models = { ...session.models, currentModelId: "claude-offlist-9" };
+            session.configOptions = session.configOptions.map((o) => o.id === "model" ? { ...o, currentValue: "claude-offlist-9" } : o);
+            const response = await agent.setSessionConfigOption({
+                sessionId: SESSION_ID,
+                configId: "model",
+                value: "claude-offlist-9",
+            });
+            expect(setModelSpy).toHaveBeenCalledWith("claude-offlist-9");
+            expect(response.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("claude-offlist-9");
+        });
         it("setSessionMode also syncs configOptions", async () => {
             await agent.setSessionMode({ sessionId: SESSION_ID, modeId: "plan" });
             const session = agent.sessions[SESSION_ID];

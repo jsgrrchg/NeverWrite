@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -99,10 +100,210 @@ async function findSidecarPath() {
     );
 }
 
-function assertExecutableMode(stats, sidecarPath) {
+function assertExecutableMode(stats, executablePath, description) {
     if (process.platform === "win32") return;
     if ((stats.mode & 0o111) === 0) {
-        throw new Error(`Packaged sidecar is not executable: ${sidecarPath}`);
+        throw new Error(`Packaged ${description} is not executable: ${executablePath}`);
+    }
+}
+
+async function findCodeModeHostPath(sidecarPath) {
+    const hostName =
+        process.platform === "win32"
+            ? "codex-code-mode-host.exe"
+            : "codex-code-mode-host";
+    const hostPath = path.join(path.dirname(sidecarPath), "binaries", hostName);
+
+    let stats;
+    try {
+        stats = await fs.stat(hostPath);
+    } catch (error) {
+        if (error?.code === "ENOENT") {
+            throw new Error(`Packaged Codex code-mode host is missing: ${hostPath}`);
+        }
+        throw new Error(
+            `Could not inspect packaged Codex code-mode host: ${hostPath}`,
+            { cause: error },
+        );
+    }
+    if (!stats.isFile()) {
+        throw new Error(`Packaged Codex code-mode host is not a file: ${hostPath}`);
+    }
+    assertExecutableMode(stats, hostPath, "Codex code-mode host");
+    return hostPath;
+}
+
+async function findCodexAcpPath(sidecarPath) {
+    const acpName = process.platform === "win32" ? "codex-acp.exe" : "codex-acp";
+    const acpPath = path.join(path.dirname(sidecarPath), "binaries", acpName);
+
+    let stats;
+    try {
+        stats = await fs.stat(acpPath);
+    } catch (error) {
+        if (error?.code === "ENOENT") {
+            throw new Error(`Packaged Codex ACP runtime is missing: ${acpPath}`);
+        }
+        throw new Error(`Could not inspect packaged Codex ACP runtime: ${acpPath}`, {
+            cause: error,
+        });
+    }
+    if (!stats.isFile()) {
+        throw new Error(`Packaged Codex ACP runtime is not a file: ${acpPath}`);
+    }
+    assertExecutableMode(stats, acpPath, "Codex ACP runtime");
+    return acpPath;
+}
+
+async function smokeCodeModeHost(hostPath) {
+    const child = spawn(hostPath, [], { stdio: ["pipe", "ignore", "pipe"] });
+    const stderrChunks = [];
+    let settled = false;
+
+    child.stderr.on("data", (chunk) => stderrChunks.push(String(chunk)));
+
+    await new Promise((resolve, reject) => {
+        const startupTimer = setTimeout(() => {
+            cleanup();
+            resolve();
+        }, Math.min(smokeTimeoutMs, 1_000));
+
+        function cleanup() {
+            if (settled) return;
+            settled = true;
+            clearTimeout(startupTimer);
+            child.stdin.end();
+            if (!child.killed) child.kill("SIGTERM");
+        }
+
+        child.on("error", (error) => {
+            if (settled) return;
+            cleanup();
+            reject(
+                new Error(`Packaged Codex code-mode host could not start: ${hostPath}`, {
+                    cause: error,
+                }),
+            );
+        });
+        child.on("exit", (code, signal) => {
+            if (settled) return;
+            cleanup();
+            reject(
+                new Error(
+                    `Packaged Codex code-mode host exited before startup (${code ?? signal ?? "unknown"}).${formatStderr(stderrChunks)}`,
+                ),
+            );
+        });
+    });
+}
+
+async function smokeCodexAcp(acpPath) {
+    // Keep the smoke isolated from a developer's login and persisted Codex state.
+    const codexHome = await fs.mkdtemp(
+        path.join(os.tmpdir(), "neverwrite-codex-acp-smoke-"),
+    );
+    const child = spawn(acpPath, [], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, CODEX_HOME: codexHome },
+    });
+    const stderrChunks = [];
+    let settled = false;
+
+    child.stderr.on("data", (chunk) => stderrChunks.push(String(chunk)));
+
+    try {
+        await new Promise((resolve, reject) => {
+            const lines = readline.createInterface({ input: child.stdout });
+            const timeout = setTimeout(() => {
+                cleanup();
+                reject(
+                    new Error(
+                        `Timed out waiting for packaged Codex ACP initialization.${formatStderr(stderrChunks)}`,
+                    ),
+                );
+            }, smokeTimeoutMs);
+
+            function cleanup() {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeout);
+                lines.close();
+                child.stdin.destroy();
+                if (!child.killed) child.kill("SIGTERM");
+            }
+
+            child.on("error", (error) => {
+                if (settled) return;
+                cleanup();
+                reject(
+                    new Error(`Packaged Codex ACP runtime could not start: ${acpPath}`, {
+                        cause: error,
+                    }),
+                );
+            });
+            child.on("exit", (code, signal) => {
+                if (settled || child.killed) return;
+                cleanup();
+                reject(
+                    new Error(
+                        `Packaged Codex ACP runtime exited before initialization (${code ?? signal ?? "unknown"}).${formatStderr(stderrChunks)}`,
+                    ),
+                );
+            });
+            lines.on("line", (line) => {
+                if (settled) return;
+                let message;
+                try {
+                    message = JSON.parse(line);
+                } catch (error) {
+                    cleanup();
+                    reject(
+                        new Error(
+                            `Invalid JSON response from packaged Codex ACP runtime: ${error}`,
+                        ),
+                    );
+                    return;
+                }
+
+                if (
+                    message?.id === 1 &&
+                    message?.result?.agentInfo?.name === "codex-acp" &&
+                    message?.result?.protocolVersion === 1
+                ) {
+                    cleanup();
+                    resolve();
+                    return;
+                }
+
+                cleanup();
+                reject(
+                    new Error(
+                        `Unexpected Codex ACP initialization response: ${line}`,
+                    ),
+                );
+            });
+
+            child.stdin.write(
+                `${JSON.stringify({
+                    jsonrpc: "2.0",
+                    id: 1,
+                    method: "initialize",
+                    params: {
+                        protocolVersion: 1,
+                        clientCapabilities: {},
+                        clientInfo: {
+                            name: "NeverWrite packaging smoke",
+                            version: "0.0.0",
+                        },
+                    },
+                })}\n`,
+            );
+        });
+    } finally {
+        if (child.exitCode === null) {
+            await new Promise((resolve) => child.once("exit", resolve));
+        }
+        await fs.rm(codexHome, { recursive: true, force: true });
     }
 }
 
@@ -193,7 +394,13 @@ if (!stats.isFile()) {
     throw new Error(`Packaged sidecar path is not a file: ${sidecarPath}`);
 }
 
-assertExecutableMode(stats, sidecarPath);
+assertExecutableMode(stats, sidecarPath, "sidecar");
+const codexAcpPath = await findCodexAcpPath(sidecarPath);
+const codeModeHostPath = await findCodeModeHostPath(sidecarPath);
+await smokeCodexAcp(codexAcpPath);
+await smokeCodeModeHost(codeModeHostPath);
 await smokePing(sidecarPath);
 
+console.log(`Packaged Codex ACP runtime initialized: ${codexAcpPath}`);
+console.log(`Packaged Codex code-mode host started: ${codeModeHostPath}`);
 console.log(`Packaged native backend sidecar responded to ping: ${sidecarPath}`);

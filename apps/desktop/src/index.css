@@ -616,6 +616,115 @@ html[data-desktop-platform="windows"].dark {
         color-mix(in srgb, var(--code-markup) 72%, transparent);
 }
 
+.chat-inline-code {
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--bg-tertiary) 82%, transparent);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--border) 42%, transparent);
+    color: color-mix(in srgb, var(--text-primary) 78%, var(--text-secondary));
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.82em;
+    overflow-wrap: anywhere;
+}
+
+/* Code fences and streamed plans share one compact terminal-like surface. */
+.chat-code-frame,
+.chat-plan-frame {
+    /* Keep fenced content at a readable measure without overflowing narrow chat panes. */
+    inline-size: min(100%, 68ch);
+    margin-inline: auto;
+    border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--bg-tertiary) 68%, transparent);
+}
+
+.chat-plan-frame {
+    font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+.chat-code-header {
+    display: flex;
+    min-height: 2.45em;
+    align-items: center;
+    gap: 0.75em;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-weight: 600;
+    padding: 0.18em 2.75em 0 1em;
+}
+
+.chat-code-actions {
+    top: 0.55em;
+    right: 0.55em;
+    gap: 0.55em;
+}
+
+.chat-code-mode-button {
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-weight: 500;
+    line-height: 1.4;
+    padding: 0;
+    opacity: 0.72;
+    transition:
+        color 120ms ease,
+        opacity 120ms ease;
+}
+
+.chat-code-mode-button:hover {
+    color: var(--text-primary);
+    opacity: 1;
+}
+
+.chat-code-mode-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 42%, transparent);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+.chat-code-copy-button {
+    width: 20px;
+    height: 20px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    opacity: 0.72;
+    padding: 0;
+    transition:
+        color 100ms ease,
+        opacity 100ms ease;
+}
+
+.chat-code-copy-button:hover {
+    color: var(--text-primary) !important;
+    opacity: 1;
+}
+
+.chat-code-copy-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 42%, transparent);
+    outline-offset: 2px;
+}
+
+.chat-code-block {
+    padding: 0.3em 1em 0.85em;
+}
+
+.chat-markdown-preview {
+    min-width: 0;
+    padding: 0.3em 1em 0.85em;
+}
+
+.chat-code-frame--unlabeled .chat-code-block {
+    padding-top: 0.85em;
+    padding-right: 2.75em;
+}
+
 body.resizing-sidebar,
 body.resizing-sidebar * {
     cursor: col-resize !important;
@@ -635,15 +744,17 @@ body.dragging-tab * {
     cursor: grabbing !important;
 }
 
-@keyframes devtools-terminal-cursor {
-    0%,
-    49% {
-        opacity: 1;
-    }
-    50%,
-    100% {
-        opacity: 0;
-    }
+.activity-rail-indicator {
+    display: inline-grid;
+    flex: 0 0 auto;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    color: var(--text-primary);
+}
+
+.activity-rail-chevron {
+    display: block;
 }
 
 .terminal-surface {
@@ -932,6 +1043,78 @@ body.dragging-tab * {
 }
 .review-action-btn:active:not(:disabled) {
     filter: brightness(0.95);
+}
+
+/* Activity rails own their container query so dense chat panes can hide their
+   secondary label without coupling that decision to the application width. */
+.activity-rail {
+    container-type: inline-size;
+}
+
+.activity-tree-branch {
+    --activity-tree-color: color-mix(
+        in srgb,
+        var(--text-secondary) 34%,
+        transparent
+    );
+    position: relative;
+}
+
+.activity-tree-branch::before,
+.activity-tree-branch::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+}
+
+.activity-tree-branch::before {
+    background: repeating-linear-gradient(
+        to bottom,
+        var(--activity-tree-color) 0 2px,
+        transparent 2px 5px
+    );
+    bottom: -0.375rem;
+    left: 1rem;
+    top: -0.375rem;
+    width: 1px;
+}
+
+.activity-tree-branch::after {
+    background: repeating-linear-gradient(
+        to right,
+        var(--activity-tree-color) 0 2px,
+        transparent 2px 5px
+    );
+    height: 1px;
+    left: 1rem;
+    top: 1rem;
+    width: 0.875rem;
+}
+
+.activity-tree-branch:first-child::before {
+    top: -1.5rem;
+}
+
+.activity-tree-branch:last-child::before {
+    bottom: calc(100% - 1rem);
+}
+
+@container (max-width: 360px) {
+    [data-activity-rail-current="true"] {
+        display: none;
+    }
+}
+
+/* Keep user prompts compact in wide panes, then recover the full row width
+   when the chat column itself becomes too narrow for a fixed percentage. */
+[data-user-message="true"] {
+    container-type: inline-size;
+}
+
+@container (max-width: 420px) {
+    [data-user-message-bubble="true"] {
+        width: 100%;
+    }
 }
 
 /* ── Settings panel primitives ─────────────────────────────────
@@ -1261,6 +1444,53 @@ body.dragging-tab * {
     outline-offset: 1px;
 }
 
+/* Sidebar filter bar (file tree, tags, maps, bookmarks, agents). Idle state
+   stays a quiet translucent pill; hover lifts it slightly and focus draws an
+   accent ring so keyboard users get feedback even though the native outline
+   is suppressed on the input itself. */
+.nw-sidebar-filter {
+    background-color: color-mix(in srgb, var(--bg-tertiary) 85%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    transition:
+        background-color 120ms ease-out,
+        border-color 120ms ease-out,
+        box-shadow 120ms ease-out;
+}
+.nw-sidebar-filter:hover {
+    border-color: color-mix(in srgb, var(--text-primary) 16%, var(--border));
+}
+.nw-sidebar-filter:focus-within {
+    background-color: color-mix(in srgb, var(--bg-tertiary) 96%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 46%, var(--border));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.nw-sidebar-filter-icon {
+    color: var(--text-secondary);
+    transition: color 120ms ease-out;
+}
+.nw-sidebar-filter:focus-within .nw-sidebar-filter-icon {
+    color: var(--accent);
+}
+.nw-sidebar-filter-clear {
+    color: var(--text-secondary);
+    transition:
+        background-color 100ms ease-out,
+        color 100ms ease-out,
+        transform 80ms ease-out;
+}
+.nw-sidebar-filter-clear:hover {
+    background-color: color-mix(in srgb, var(--text-primary) 12%, transparent);
+    color: var(--text-primary);
+}
+.nw-sidebar-filter-clear:active {
+    transform: scale(0.88);
+    transition-duration: 60ms;
+}
+.nw-sidebar-filter-clear:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
+}
+
 /* "Find in chat" matches, painted via the CSS Custom Highlight API. The active
    match is distinguished by a stronger background. ::highlight() only supports a
    small subset of properties (background-color, color, text-decoration).
@@ -1293,6 +1523,102 @@ body.dragging-tab * {
 .nw-composer-action:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
     outline-offset: 2px;
+}
+
+/* Composer strips (queued messages, pending edits). Deliberately flat and
+   quiet — a terminal-like list, not a card UI — so feedback comes from a
+   soft currentColor tint and a quick scale-down press rather than shadows
+   or lifts. Shared between QueuedMessagesPanel and the compact Edits tray. */
+.nw-strip-icon-btn {
+    cursor: pointer;
+    transition:
+        background-color 100ms ease-out,
+        opacity 100ms ease-out,
+        transform 80ms ease-out;
+}
+.nw-strip-icon-btn:disabled {
+    cursor: not-allowed;
+}
+.nw-strip-icon-btn:hover:not(:disabled) {
+    background-color: color-mix(in srgb, currentColor 14%, transparent);
+    opacity: 1;
+}
+.nw-strip-icon-btn:active:not(:disabled) {
+    transform: scale(0.86);
+    transition-duration: 60ms;
+}
+.nw-strip-icon-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 1px;
+}
+
+.nw-strip-text-btn {
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition:
+        color 100ms ease-out,
+        opacity 100ms ease-out,
+        transform 80ms ease-out;
+}
+.nw-strip-text-btn:hover {
+    color: var(--text-primary);
+    opacity: 1;
+}
+.nw-strip-text-btn:active {
+    transform: scale(0.96);
+    transition-duration: 60ms;
+}
+.nw-strip-text-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 1px;
+    border-radius: 3px;
+}
+
+.nw-strip-row {
+    transition: background-color 100ms ease-out;
+}
+.nw-strip-row:hover {
+    background-color: color-mix(in srgb, var(--bg-tertiary) 40%, transparent);
+}
+
+/* Queued-messages tree guide. A tight dotted rail + elbow per row, echoing
+   the AI activity rail's `.activity-tree-branch` so the queue reads as a
+   terminal listing (like `tree`'s `├──`) instead of a stack of cards. Kept
+   as its own rule (rather than reusing .activity-tree-branch) since the
+   offsets are tuned to the queue's own compact row height. */
+.nw-queue-tree-branch {
+    position: relative;
+}
+.nw-queue-tree-branch::before,
+.nw-queue-tree-branch::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+}
+.nw-queue-tree-branch::before {
+    background: repeating-linear-gradient(
+        to bottom,
+        color-mix(in srgb, var(--text-secondary) 30%, transparent) 0 2px,
+        transparent 2px 5px
+    );
+    left: 0.5rem;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+}
+.nw-queue-tree-branch::after {
+    background: repeating-linear-gradient(
+        to right,
+        color-mix(in srgb, var(--text-secondary) 30%, transparent) 0 2px,
+        transparent 2px 5px
+    );
+    height: 1px;
+    left: 0.5rem;
+    top: 50%;
+    width: 0.5rem;
+}
+.nw-queue-tree-branch:last-child::before {
+    bottom: 50%;
 }
 
 .ub-tab:not([data-active="true"]):hover {

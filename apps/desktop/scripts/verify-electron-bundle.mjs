@@ -3,11 +3,12 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { rcedit } from "rcedit";
 
-const REQUIRED_RESOURCE_PATHS = {
+export const REQUIRED_RESOURCE_PATHS = {
     darwin: [
         "icons/icon.png",
         "native-backend/neverwrite-native-backend",
         "native-backend/binaries/codex-acp",
+        "native-backend/binaries/codex-code-mode-host",
         "native-backend/embedded/node/bin/node",
         "native-backend/embedded/claude-agent-acp/dist/index.js",
         "native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json",
@@ -18,6 +19,7 @@ const REQUIRED_RESOURCE_PATHS = {
         "icons/icon.ico",
         "native-backend/neverwrite-native-backend.exe",
         "native-backend/binaries/codex-acp.exe",
+        "native-backend/binaries/codex-code-mode-host.exe",
         "native-backend/embedded/node/bin/node.exe",
         "native-backend/embedded/claude-agent-acp/dist/index.js",
         "native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json",
@@ -28,6 +30,7 @@ const REQUIRED_RESOURCE_PATHS = {
         "icons/icon.png",
         "native-backend/neverwrite-native-backend",
         "native-backend/binaries/codex-acp",
+        "native-backend/binaries/codex-code-mode-host",
         "native-backend/embedded/node/bin/node",
         "native-backend/embedded/claude-agent-acp/dist/index.js",
         "native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json",
@@ -127,8 +130,8 @@ async function stampWindowsExecutable(packContext) {
     });
 }
 
-function assertExecutableMode(absolutePath) {
-    if (process.platform === "win32") {
+function assertExecutableMode(absolutePath, targetPlatform) {
+    if (targetPlatform === "win32") {
         return;
     }
 
@@ -136,6 +139,19 @@ function assertExecutableMode(absolutePath) {
     if ((mode & 0o111) === 0) {
         throw new Error(`Packaged binary is not executable: ${absolutePath}`);
     }
+}
+
+function isExecutableResource(relativePath) {
+    return (
+        relativePath.endsWith("neverwrite-native-backend") ||
+        relativePath.endsWith("neverwrite-native-backend.exe") ||
+        relativePath.endsWith("/codex-acp") ||
+        relativePath.endsWith("/codex-acp.exe") ||
+        relativePath.endsWith("/codex-code-mode-host") ||
+        relativePath.endsWith("/codex-code-mode-host.exe") ||
+        relativePath.endsWith("/node") ||
+        relativePath.endsWith("/node.exe")
+    );
 }
 
 function assertEmbeddedNodeRuntime(packContext, resourcesDir) {
@@ -175,10 +191,7 @@ function assertEmbeddedNodeRuntime(packContext, resourcesDir) {
     }
 }
 
-export default async function verifyElectronBundle(packContext) {
-    await stampWindowsExecutable(packContext);
-
-    const resourcesDir = resolveResourcesDir(packContext);
+export function verifyPackagedResources(packContext, resourcesDir) {
     const requiredPaths =
         REQUIRED_RESOURCE_PATHS[packContext.electronPlatformName];
 
@@ -196,17 +209,15 @@ export default async function verifyElectronBundle(packContext) {
             );
         }
 
-        if (
-            relativePath.endsWith("neverwrite-native-backend") ||
-            relativePath.endsWith("neverwrite-native-backend.exe") ||
-            relativePath.endsWith("/codex-acp") ||
-            relativePath.endsWith("/codex-acp.exe") ||
-            relativePath.endsWith("/node") ||
-            relativePath.endsWith("/node.exe")
-        ) {
-            assertExecutableMode(absolutePath);
+        if (isExecutableResource(relativePath)) {
+            assertExecutableMode(absolutePath, packContext.electronPlatformName);
         }
     }
 
     assertEmbeddedNodeRuntime(packContext, resourcesDir);
+}
+
+export default async function verifyElectronBundle(packContext) {
+    await stampWindowsExecutable(packContext);
+    verifyPackagedResources(packContext, resolveResourcesDir(packContext));
 }

@@ -20,6 +20,7 @@ interface PinnedChatsStore {
     togglePin: (sessionId: string) => void;
     pin: (sessionId: string) => void;
     unpin: (sessionId: string) => void;
+    replaceSessionId: (fromSessionId: string, toSessionId: string) => void;
     reconcile: (existingSessionIds: Iterable<string>) => void;
 }
 
@@ -88,6 +89,20 @@ export const usePinnedChatsStore = create<PinnedChatsStore>((set) => ({
             delete next[sessionId];
             persistEntries(next);
             return { entries: next };
+        }),
+    replaceSessionId: (fromSessionId, toSessionId) =>
+        set((state) => {
+            if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) {
+                return state;
+            }
+            const entry = state.entries[fromSessionId];
+            if (!entry) return state;
+            const entries = { ...state.entries };
+            delete entries[fromSessionId];
+            // Preserve the original pin order across a session ID transition.
+            entries[toSessionId] = entry;
+            persistEntries(entries);
+            return { entries };
         }),
     reconcile: (existingSessionIds) =>
         set((state) => {

@@ -1,4 +1,5 @@
-import type { CreateElicitationRequest, CreateElicitationResponse } from "@agentclientprotocol/sdk";
+import { CreateElicitationResponse } from "@agentclientprotocol/sdk";
+import type { CreateElicitationRequest } from "@agentclientprotocol/sdk";
 import type { ElicitationRequest, ElicitationResult } from "@anthropic-ai/claude-agent-sdk";
 import type { AskUserQuestionInput } from "@anthropic-ai/claude-agent-sdk/sdk-tools.js";
 /**

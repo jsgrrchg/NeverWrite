@@ -8,6 +8,10 @@ import {
 } from "../../../scripts/electron-release-lib.mjs";
 
 const LARGE_COMMAND_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
+const REQUIRED_CODEX_RUNTIME_PATHS = [
+    "/native-backend/binaries/codex-acp",
+    "/native-backend/binaries/codex-code-mode-host",
+];
 
 function parseArgs(argv) {
     const args = {
@@ -125,6 +129,16 @@ function validatePackageMetadata({ debPath, debArch, version }) {
         /\/usr\/share\/icons\/|\/usr\/share\/pixmaps\//m,
         "desktop icon is missing",
     );
+    for (const runtimePath of REQUIRED_CODEX_RUNTIME_PATHS) {
+        assertMatches(
+            contents,
+            new RegExp(
+                `^-rwx\\S*\\s+.*${escapeRegex(runtimePath)}$`,
+                "m",
+            ),
+            `Codex runtime binary is missing or not executable: ${runtimePath}`,
+        );
+    }
 }
 
 function queryInstalledPackage() {

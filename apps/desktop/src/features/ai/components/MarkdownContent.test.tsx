@@ -34,7 +34,7 @@ describe("MarkdownContent", () => {
         );
 
         const pill = screen.getByRole("button", { name: longLabel });
-        const label = pill.querySelector("span");
+        const label = pill.querySelector("span > span");
 
         expect(pill).toBeInTheDocument();
         expect(label).toHaveTextContent(longLabel);
@@ -69,6 +69,275 @@ describe("MarkdownContent", () => {
         expect(
             screen.queryByRole("link", { name: "README" }),
         ).not.toBeInTheDocument();
+    });
+
+    it("resolves unique extensionless note links and preserves line targets", async () => {
+        const title = "Petróleo - Ficha de análisis";
+        setVaultNotes([
+            {
+                id: "Análisis/Petróleo - Ficha de análisis.md",
+                title,
+                path: "/vault/Análisis/Petróleo - Ficha de análisis.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "petroleo-tab",
+                noteId: "Análisis/Petróleo - Ficha de análisis.md",
+                title,
+                content: "# Petróleo",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content={`Revisa [${title}](${encodeURIComponent(title)}#L66).`}
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const reference = screen.getByRole("button", {
+            name: `${title} (line 66)`,
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        const icon = reference.querySelector("svg");
+        expect(icon).not.toBeNull();
+        expect(reference.firstElementChild).toHaveStyle({
+            alignItems: "flex-start",
+        });
+        expect(icon?.parentElement).toHaveStyle({ height: "1.3em" });
+
+        fireEvent.click(reference);
+        await waitFor(() => {
+            expect(useEditorStore.getState().pendingLineReveal).toEqual({
+                noteId: "Análisis/Petróleo - Ficha de análisis.md",
+                line: 66,
+                endLine: null,
+            });
+        });
+    });
+
+    it("does not choose an arbitrary extensionless note when titles are ambiguous", () => {
+        setVaultNotes([
+            {
+                id: "research/Brief.md",
+                title: "Brief",
+                path: "/vault/research/Brief.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+            {
+                id: "archive/Brief.md",
+                title: "Brief",
+                path: "/vault/archive/Brief.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See [Brief](Brief)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(document.body).toHaveTextContent("See Brief.");
+        expect(screen.queryByRole("button", { name: "Brief" })).toBeNull();
+        expect(screen.queryByRole("link", { name: "Brief" })).toBeNull();
+    });
+
+    it("keeps unresolved relative markdown links non-interactive", () => {
+        setVaultNotes([]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See [missing note](missing-note)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(document.body).toHaveTextContent("See missing note.");
+        expect(
+            screen.queryByRole("link", { name: "missing note" }),
+        ).toBeNull();
+    });
+
+    it("does not reinterpret external file-like URLs as vault references", () => {
+        renderComponent(
+            <MarkdownContent
+                content="Read [PDF docs](https://example.com/guide.pdf)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(screen.getByRole("link", { name: "PDF docs" })).toHaveAttribute(
+            "href",
+            "https://example.com/guide.pdf",
+        );
+        expect(screen.queryByRole("button", { name: "PDF docs" })).toBeNull();
+    });
+
+    it("renders chat file references as icon-led links", () => {
+        setVaultEntries([
+            {
+                id: "src/main.ts",
+                path: "/vault/src/main.ts",
+                relative_path: "src/main.ts",
+                title: "main.ts",
+                file_name: "main.ts",
+                extension: "ts",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/typescript",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="Read [main.ts](src/main.ts)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const reference = screen.getByRole("button", { name: "main.ts" });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+    });
+
+    it("renders line fragments in the shared style and reveals note lines", async () => {
+        setVaultNotes([
+            {
+                id: "CHANGELOG.md",
+                title: "CHANGELOG",
+                path: "/vault/CHANGELOG.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "changelog-tab",
+                noteId: "CHANGELOG.md",
+                title: "CHANGELOG",
+                content: "# Changelog",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See [CHANGELOG.md](CHANGELOG.md#L66)."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const reference = screen.getByRole("button", {
+            name: "CHANGELOG.md (line 66)",
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+
+        fireEvent.click(reference);
+        await waitFor(() => {
+            expect(useEditorStore.getState().pendingLineReveal).toEqual({
+                noteId: "CHANGELOG.md",
+                line: 66,
+                endLine: null,
+            });
+        });
+    });
+
+    it("renders line ranges for absolute text file references", () => {
+        setVaultEntries([
+            {
+                id: "src/main.ts",
+                path: "/vault/src/main.ts",
+                relative_path: "src/main.ts",
+                title: "main.ts",
+                file_name: "main.ts",
+                extension: "ts",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/typescript",
+            },
+        ]);
+
+        renderComponent(
+            <MarkdownContent
+                content="See `/vault/src/main.ts#L10-L12`."
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.getByRole("button", { name: "main.ts (lines 10–12)" }),
+        ).toBeInTheDocument();
+    });
+
+    it("renders indexed folders as non-interactive icon links in every supported syntax", () => {
+        setVaultEntries([
+            {
+                id: "docs",
+                path: "/vault/docs",
+                relative_path: "docs",
+                title: "docs",
+                file_name: "docs",
+                extension: "",
+                kind: "folder",
+                modified_at: 0,
+                created_at: 0,
+                size: 0,
+                mime_type: null,
+            },
+        ]);
+
+        const { container } = renderComponent(
+            <MarkdownContent
+                content="Inline `/vault/docs`, [docs](docs), and /vault/docs"
+                fileReferenceAppearance="link"
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const folders = container.querySelectorAll<HTMLElement>(
+            '[title="docs"], [title="/vault/docs"]',
+        );
+        expect(folders).toHaveLength(3);
+        expect(container.querySelectorAll('button[title="docs"]')).toHaveLength(
+            0,
+        );
+        expect(
+            container.querySelectorAll('button[title="/vault/docs"]'),
+        ).toHaveLength(0);
+        for (const folder of folders) {
+            expect(folder).toHaveStyle({
+                background: "transparent",
+                padding: "0px",
+            });
+            expect(folder.querySelector("svg")).not.toBeNull();
+        }
     });
 
     it("renders raw http and https URLs as external links", () => {
@@ -125,6 +394,7 @@ describe("MarkdownContent", () => {
         renderComponent(
             <MarkdownContent
                 content="Coincide con [apps/web-clipper/package.json](apps/web-clipper/package.json)."
+                fileReferenceAppearance="link"
                 pillMetrics={pillMetrics}
             />,
         );
@@ -372,7 +642,9 @@ describe("MarkdownContent", () => {
             />,
         );
 
-        expect(screen.getByText("c++")).toBeInTheDocument();
+        expect(screen.getByText("C++").parentElement).toHaveClass(
+            "chat-code-header",
+        );
 
         await waitFor(() => {
             expect(
@@ -382,6 +654,65 @@ describe("MarkdownContent", () => {
 
         expect(screen.getByText("return")).toHaveClass(
             "cm-static-token-keyword",
+        );
+    });
+
+    it("uses the compact Comando frame for chat code fences", () => {
+        const { container } = renderComponent(
+            <MarkdownContent
+                content={["```bash", "git status", "```"].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(screen.getByText("Bash").parentElement).toHaveClass(
+            "chat-code-header",
+        );
+        expect(screen.getByRole("button", { name: "Copy code block" })).toHaveClass(
+            "chat-code-copy-button",
+        );
+        expect(container.querySelector(".chat-code-frame")).not.toBeNull();
+        expect(container.querySelector(".chat-code-block")).not.toBeNull();
+    });
+
+    it("previews markdown fences and lets the user inspect their source", () => {
+        renderComponent(
+            <MarkdownContent
+                content={[
+                    "```markdown",
+                    "# Rendered heading",
+                    "",
+                    "1. First item",
+                    "2. Second item",
+                    "```",
+                ].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const preview = screen.getByTestId("chat-markdown-preview");
+        expect(preview).toHaveTextContent("Rendered heading");
+        expect(preview.querySelector(".nw-md-heading")).toHaveTextContent(
+            "Rendered heading",
+        );
+        expect(preview.querySelector("ol")).toHaveTextContent(
+            "First itemSecond item",
+        );
+        const toggle = screen.getByRole("button", {
+            name: "Toggle markdown display mode",
+        });
+        expect(toggle).toHaveAttribute("title", "Show source");
+
+        fireEvent.click(toggle);
+
+        expect(screen.queryByTestId("chat-markdown-preview")).toBeNull();
+        expect(
+            screen.getByRole("button", {
+                name: "Toggle markdown display mode",
+            }),
+        ).toHaveAttribute("title", "Show preview");
+        expect(screen.getByText((_text, node) => node?.tagName === "CODE")).toHaveTextContent(
+            /# Rendered heading.*1\. First item.*2\. Second item/s,
         );
     });
 

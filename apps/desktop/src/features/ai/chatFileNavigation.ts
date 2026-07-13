@@ -16,6 +16,7 @@ import {
     openChatNoteByAbsolutePath,
     openChatResolvedNote,
 } from "./chatNoteNavigation";
+import { parseChatVaultReferenceTarget } from "./chatVaultReferenceTarget";
 
 function getVaultEntryByAbsolutePath(absPath: string) {
     return (
@@ -90,6 +91,8 @@ export function canOpenAiEditedFileEntry(entry: VaultEntryDto | null) {
 }
 
 export function canOpenAiEditedFileByAbsolutePath(absPath: string) {
+    const target = parseChatVaultReferenceTarget(absPath);
+    absPath = target.path;
     const note = useVaultStore
         .getState()
         .notes.find((entry) => entry.path === absPath);
@@ -107,19 +110,38 @@ export function canOpenAiEditedFileByAbsolutePath(absPath: string) {
 
 export async function openAiEditedFileByAbsolutePath(
     absPath: string,
-    options?: { newTab?: boolean },
+    options?: {
+        newTab?: boolean;
+        line?: number | null;
+        endLine?: number | null;
+    },
 ) {
+    const target = parseChatVaultReferenceTarget(absPath);
+    absPath = target.path;
+    const navigationOptions = {
+        ...options,
+        line: options?.line ?? target.line,
+        endLine: options?.endLine ?? target.endLine,
+    };
     const note = useVaultStore
         .getState()
         .notes.find((entry) => entry.path === absPath);
     if (note) {
-        return openChatNoteByAbsolutePath(absPath, options);
+        return openChatNoteByAbsolutePath(absPath, navigationOptions);
     }
 
     const entry = getVaultEntryByAbsolutePath(absPath);
     if (entry && canOpenAiEditedFileEntry(entry)) {
         if (entry.kind === "note") {
-            return openResolvedNoteEntry(entry, options);
+            const opened = await openResolvedNoteEntry(entry, options);
+            if (opened && navigationOptions.line) {
+                useEditorStore.getState().queueLineReveal({
+                    noteId: entry.id,
+                    line: navigationOptions.line,
+                    endLine: navigationOptions.endLine,
+                });
+            }
+            return opened;
         }
 
         await openVaultFileEntry(entry, options);
@@ -132,7 +154,15 @@ export async function openAiEditedFileByAbsolutePath(
     }
 
     if (resolvedEntry.kind === "note") {
-        return openResolvedNoteEntry(resolvedEntry, options);
+        const opened = await openResolvedNoteEntry(resolvedEntry, options);
+        if (opened && navigationOptions.line) {
+            useEditorStore.getState().queueLineReveal({
+                noteId: resolvedEntry.id,
+                line: navigationOptions.line,
+                endLine: navigationOptions.endLine,
+            });
+        }
+        return opened;
     }
     const title = getFileNameFromAbsolutePath(absPath);
     resolvedEntry.title ||= title.replace(/\.[^/.]+$/, "");

@@ -1,5 +1,4 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { confirm } from "@neverwrite/runtime";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../test/test-utils";
@@ -168,8 +167,6 @@ describe("EditorPaneBar", () => {
             "primary",
         );
         useSettingsStore.getState().reset();
-        vi.mocked(confirm).mockReset();
-        vi.mocked(confirm).mockResolvedValue(true);
     });
 
     it("shows compact empty-pane chrome when a pane has no tabs", () => {
@@ -202,6 +199,48 @@ describe("EditorPaneBar", () => {
 
         expect(screen.getByTitle("Go back")).toBeInTheDocument();
         expect(screen.getByTitle("Go forward")).toBeInTheDocument();
+    });
+
+    it("navigates a chat session history from the pane controls", () => {
+        useSettingsStore.getState().setSetting("tabOpenBehavior", "history");
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "chat-history",
+                            kind: "ai-chat",
+                            sessionId: "session-b",
+                            title: "Second",
+                            history: [
+                                { sessionId: "session-a", title: "First" },
+                                { sessionId: "session-b", title: "Second" },
+                            ],
+                            historyIndex: 1,
+                        },
+                    ],
+                    activeTabId: "chat-history",
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        expect(screen.getByTitle("Go back")).toBeEnabled();
+        expect(screen.getByTitle("Go forward")).toBeDisabled();
+
+        fireEvent.click(screen.getByTitle("Go back"));
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "chat-history"),
+        ).toMatchObject({ sessionId: "session-a", historyIndex: 0 });
+        expect(screen.getByTitle("Go forward")).toBeEnabled();
+
+        fireEvent.click(screen.getByTitle("Go forward"));
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "chat-history"),
+        ).toMatchObject({ sessionId: "session-b", historyIndex: 1 });
     });
 
     it("hides pane history navigation buttons when open behavior creates new tabs", () => {
@@ -335,7 +374,7 @@ describe("EditorPaneBar", () => {
         ).toEqual(["tab-b", "tab-e"]);
     });
 
-    it("keeps all tabs open when close others confirmation is cancelled", async () => {
+    it("closes other tabs even when an active agent is among them", async () => {
         const user = userEvent.setup();
         useEditorStore.getState().hydrateWorkspace(
             [
@@ -369,8 +408,6 @@ describe("EditorPaneBar", () => {
                 },
             },
         });
-        vi.mocked(confirm).mockResolvedValue(false);
-
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
         const tabButton = document.querySelector(
@@ -382,15 +419,12 @@ describe("EditorPaneBar", () => {
             await screen.findByRole("button", { name: "Close Others" }),
         );
 
-        await waitFor(() => {
-            expect(confirm).toHaveBeenCalledTimes(1);
-        });
         expect(
             useEditorStore
                 .getState()
                 .panes.find((pane) => pane.id === "primary")
                 ?.tabs.map((tab) => tab.id),
-        ).toEqual(["tab-a", "tab-chat", "tab-c"]);
+        ).toEqual(["tab-a"]);
         expect(
             useEditorStore
                 .getState()
@@ -467,7 +501,7 @@ describe("EditorPaneBar", () => {
         ).toEqual(["tab-c"]);
     });
 
-    it("confirms before closing a tab with an active agent", async () => {
+    it("closes a tab with an active agent", async () => {
         useEditorStore.getState().hydrateWorkspace(
             [
                 {
@@ -493,17 +527,12 @@ describe("EditorPaneBar", () => {
                 },
             },
         });
-        vi.mocked(confirm).mockResolvedValue(false);
-
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
         fireEvent.click(screen.getByTitle("Close Busy agent"));
         await waitFor(() => {
-            expect(confirm).toHaveBeenCalledTimes(1);
+            expect(useEditorStore.getState().tabs).toEqual([]);
         });
-        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
-            "tab-chat",
-        ]);
     });
 
     it("shows an activity dot for tabs with a working agent", () => {

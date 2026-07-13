@@ -82,8 +82,29 @@ describe("DiffLineView", () => {
         expect(row).toHaveAttribute("data-line-wrapping", "true");
         expect(row).toHaveStyle({
             whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
+            wordBreak: "normal",
         });
+    });
+
+    it("keeps changed text readable without a polarity gutter", () => {
+        render(
+            <DiffLineView
+                line={{
+                    type: "remove",
+                    prefix: "- ",
+                    text: "previous Markdown paragraph",
+                    oldLineNumber: 5,
+                }}
+            />,
+        );
+
+        const row = screen
+            .getByText("previous Markdown paragraph")
+            .closest("[data-diff-line]");
+        expect(row).not.toBeNull();
+        expect(row).toHaveStyle({ color: "var(--text-primary)" });
+        expect(screen.getByText("5")).toBeInTheDocument();
+        expect(screen.queryByText("−")).toBeNull();
     });
 
     it("renders syntax highlighting when a language support is provided", () => {

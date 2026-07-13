@@ -336,9 +336,22 @@ describe("editorSession", () => {
                         {
                             id: "chat-1",
                             kind: "ai-chat",
-                            sessionId: "session-1",
-                            historySessionId: "history-1",
-                            title: "Research Chat",
+                            sessionId: "session-2",
+                            historySessionId: "history-2",
+                            title: "Implementation Chat",
+                            history: [
+                                {
+                                    sessionId: "session-1",
+                                    historySessionId: "history-1",
+                                    title: "Research Chat",
+                                },
+                                {
+                                    sessionId: "session-2",
+                                    historySessionId: "history-2",
+                                    title: "Implementation Chat",
+                                },
+                            ],
+                            historyIndex: 1,
                         },
                     ],
                     activeTabId: "chat-1",
@@ -352,9 +365,22 @@ describe("editorSession", () => {
                 {
                     id: "chat-1",
                     kind: "ai-chat",
-                    sessionId: "session-1",
-                    historySessionId: "history-1",
-                    title: "Research Chat",
+                    sessionId: "session-2",
+                    historySessionId: "history-2",
+                    title: "Implementation Chat",
+                    history: [
+                        {
+                            sessionId: "session-1",
+                            historySessionId: "history-1",
+                            title: "Research Chat",
+                        },
+                        {
+                            sessionId: "session-2",
+                            historySessionId: "history-2",
+                            title: "Implementation Chat",
+                        },
+                    ],
+                    historyIndex: 1,
                 },
             ],
             activeTabId: "chat-1",
@@ -363,9 +389,22 @@ describe("editorSession", () => {
         expect(session.tabsById["chat-1"]).toMatchObject({
             id: "chat-1",
             kind: "ai-chat",
-            sessionId: "session-1",
-            historySessionId: "history-1",
-            title: "Research Chat",
+            sessionId: "session-2",
+            historySessionId: "history-2",
+            title: "Implementation Chat",
+            history: [
+                {
+                    sessionId: "session-1",
+                    historySessionId: "history-1",
+                    title: "Research Chat",
+                },
+                {
+                    sessionId: "session-2",
+                    historySessionId: "history-2",
+                    title: "Implementation Chat",
+                },
+            ],
+            historyIndex: 1,
         });
 
         localStorage.setItem(
@@ -383,14 +422,63 @@ describe("editorSession", () => {
                     expect.objectContaining({
                         id: "chat-1",
                         kind: "ai-chat",
-                        sessionId: "session-1",
-                        historySessionId: "history-1",
-                        title: "Research Chat",
+                        sessionId: "session-2",
+                        historySessionId: "history-2",
+                        title: "Implementation Chat",
+                        history: [
+                            {
+                                sessionId: "session-1",
+                                historySessionId: "history-1",
+                                title: "Research Chat",
+                            },
+                            {
+                                sessionId: "session-2",
+                                historySessionId: "history-2",
+                                title: "Implementation Chat",
+                            },
+                        ],
+                        historyIndex: 1,
                     }),
                 ],
             }),
         ]);
         expect(restored?.activeTabId).toBe("chat-1");
+    });
+
+    it("adds a one-entry history when restoring a chat tab saved before chat history", async () => {
+        const session = buildPersistedSession({
+            tabs: [
+                {
+                    id: "legacy-chat",
+                    kind: "ai-chat",
+                    sessionId: "session-legacy",
+                    historySessionId: "history-legacy",
+                    title: "Legacy Chat",
+                },
+            ],
+            activeTabId: "legacy-chat",
+        });
+
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify(session),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.tabs).toEqual([
+            expect.objectContaining({
+                id: "legacy-chat",
+                history: [
+                    {
+                        sessionId: "session-legacy",
+                        historySessionId: "history-legacy",
+                        title: "Legacy Chat",
+                    },
+                ],
+                historyIndex: 0,
+            }),
+        ]);
     });
 
     it("persists and restores pane pinned tab ids", async () => {

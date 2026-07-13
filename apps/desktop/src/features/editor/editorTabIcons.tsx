@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Tab } from "../../app/store/editorStore";
 import { FileTypeIcon } from "../../components/icons/FileTypeIcon";
+import { AIProviderIcon } from "../ai/components/AIProviderIcon";
 import type { AIChatSession } from "../ai/types";
 
 type TabIconSessionLookup = Record<
@@ -17,134 +18,6 @@ function getTabRuntimeId(
     }
 
     return sessionsById?.[tab.sessionId]?.runtimeId ?? null;
-}
-
-function ChatProviderIcon({ runtimeId }: { readonly runtimeId: string }) {
-    if (runtimeId.includes("claude")) {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="none"
-                height={12}
-                stroke="currentColor"
-                strokeLinecap="round"
-                viewBox="0 0 16 16"
-                width={12}
-            >
-                <line strokeWidth="1.35" x1="8" x2="8" y1="2" y2="14" />
-                <line strokeWidth="1.35" x1="2" x2="14" y1="8" y2="8" />
-                <line
-                    strokeWidth="1.35"
-                    x1="3.75"
-                    x2="12.25"
-                    y1="3.75"
-                    y2="12.25"
-                />
-                <line
-                    strokeWidth="1.35"
-                    x1="12.25"
-                    x2="3.75"
-                    y1="3.75"
-                    y2="12.25"
-                />
-            </svg>
-        );
-    }
-
-    if (runtimeId.includes("codex")) {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="none"
-                height={12}
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                viewBox="0 0 16 16"
-                width={12}
-            >
-                <polygon
-                    points="8,2.3 13.4,5.4 13.4,10.6 8,13.7 2.6,10.6 2.6,5.4"
-                    strokeWidth="1.1"
-                />
-                <line strokeWidth="1" x1="8" x2="8" y1="2.3" y2="13.7" />
-                <line strokeWidth="1" x1="2.6" x2="13.4" y1="5.4" y2="10.6" />
-                <line strokeWidth="1" x1="13.4" x2="2.6" y1="5.4" y2="10.6" />
-            </svg>
-        );
-    }
-
-    if (runtimeId.includes("gemini")) {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="currentColor"
-                height={12}
-                viewBox="0 0 16 16"
-                width={12}
-            >
-                <path d="M8 1.2c.25 3.55 1.6 5.35 6.8 6.8-5.2 1.45-6.55 3.25-6.8 6.8-.25-3.55-1.6-5.35-6.8-6.8C6.4 6.55 7.75 4.75 8 1.2Z" />
-            </svg>
-        );
-    }
-
-    if (runtimeId.includes("opencode")) {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="none"
-                height={12}
-                viewBox="0 0 300 300"
-                width={12}
-            >
-                <path
-                    d="M210 240H90V120H210V240Z"
-                    fill="currentColor"
-                    opacity="0.38"
-                />
-                <path
-                    d="M210 60H90V240H210V60ZM270 300H30V0H270V300Z"
-                    fill="currentColor"
-                />
-            </svg>
-        );
-    }
-
-    if (runtimeId.includes("grok")) {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="none"
-                height={12}
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                viewBox="0 0 16 16"
-                width={12}
-            >
-                <path d="M3.25 8a4.75 4.75 0 1 1 4.75 4.75" strokeWidth="1.1" />
-                <path d="M8 3.25v4.75h4.75" strokeWidth="1.1" />
-                <path d="M4.4 11.6 11.6 4.4" strokeWidth="1" />
-            </svg>
-        );
-    }
-
-    return (
-        <svg
-            className="shrink-0 opacity-55"
-            fill="none"
-            height={12}
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            viewBox="0 0 16 16"
-            width={12}
-        >
-            <line strokeWidth="1.5" x1="4.75" x2="4.75" y1="2.75" y2="13.25" />
-            <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="2.75" />
-            <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="13.25" />
-        </svg>
-    );
 }
 
 export function renderEditorTabLeadingIcon(
@@ -191,7 +64,7 @@ export function renderEditorTabLeadingIcon(
     if (tab.kind === "ai-review") {
         const runtimeId = getTabRuntimeId(tab, sessionsById);
         if (runtimeId) {
-            return <ChatProviderIcon runtimeId={runtimeId} />;
+            return <AIProviderIcon runtimeId={runtimeId} />;
         }
 
         return (
@@ -214,7 +87,7 @@ export function renderEditorTabLeadingIcon(
     if (tab.kind === "ai-chat") {
         const runtimeId = getTabRuntimeId(tab, sessionsById);
         if (runtimeId) {
-            return <ChatProviderIcon runtimeId={runtimeId} />;
+            return <AIProviderIcon runtimeId={runtimeId} />;
         }
 
         return (

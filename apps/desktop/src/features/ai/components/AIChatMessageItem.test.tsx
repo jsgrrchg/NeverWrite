@@ -1,10 +1,11 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { invoke, openPath, revealItemInDir } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import {
+    getClipboardMock,
     renderComponent,
     setEditorTabs,
     setVaultEntries,
@@ -70,6 +71,39 @@ function createDiffMessage(
     };
 }
 
+function getChangeReviewRail(path: string) {
+    const rail = document.querySelector<HTMLElement>(
+        `[data-change-review-path="${path}"]`,
+    );
+    if (!rail) {
+        throw new Error(`Expected a change review rail for ${path}.`);
+    }
+    return rail;
+}
+
+function expectChangeReviewRail(path: string, action = "Edited") {
+    const rail = getChangeReviewRail(path);
+    expect(
+        rail.querySelector("[data-change-review-operation-icon]"),
+    ).not.toBeNull();
+    expect(rail.querySelector("[data-change-review-file-icon]")).toBeNull();
+    expect(within(rail).getByText(action)).toBeInTheDocument();
+    expect(
+        within(rail).getByText(path.split("/").at(-1) ?? path),
+    ).toBeInTheDocument();
+    return rail;
+}
+
+function expandChangeReviewRail(path: string) {
+    const rail = getChangeReviewRail(path);
+    fireEvent.click(
+        within(rail).getByRole("button", {
+            name: "Expand inline diff review",
+        }),
+    );
+    return rail;
+}
+
 beforeEach(() => {
     localStorage.clear();
     resetChatStore();
@@ -77,6 +111,7 @@ beforeEach(() => {
     useEditorStore.setState({
         tabs: [],
         activeTabId: null,
+        pendingLineReveal: null,
     });
 });
 
@@ -98,6 +133,68 @@ describe("AIChatMessageItem errors", () => {
         fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
 
         expect(onDismissMessage).toHaveBeenCalledWith("error:1");
+    });
+});
+
+describe("AIChatMessageItem assistant references", () => {
+    it("uses the icon-led link appearance for assistant file references", () => {
+        setVaultEntries([
+            {
+                id: "src/main.ts",
+                path: "/vault/src/main.ts",
+                relative_path: "src/main.ts",
+                title: "main.ts",
+                file_name: "main.ts",
+                extension: "ts",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/typescript",
+            },
+        ]);
+
+        renderMessage({
+            content: "Read [main.ts](src/main.ts).",
+            id: "assistant:file-reference",
+            kind: "text",
+            role: "assistant",
+            timestamp: Date.now(),
+        });
+
+        const reference = screen.getByRole("button", { name: "main.ts" });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+    });
+});
+
+describe("AIChatMessageItem reasoning", () => {
+    it("renders reasoning with the same compact activity language", () => {
+        renderMessage({
+            content: "Checking source reliability",
+            id: "thinking:1",
+            kind: "thinking",
+            role: "assistant",
+            timestamp: Date.now(),
+            title: "Thinking",
+        });
+
+        expect(screen.getByText("Reasoning")).toBeInTheDocument();
+        expect(
+            document.querySelector("[data-reasoning-activity]"),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByText("Checking source reliability"),
+        ).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
+
+        expect(
+            screen.getByText("Checking source reliability"),
+        ).toBeInTheDocument();
     });
 });
 
@@ -278,6 +375,65 @@ describe("AIChatMessageItem generated images", () => {
 });
 
 describe("AIChatMessageItem user image attachments", () => {
+    it("uses Comando's responsive user bubble width", () => {
+        const view = renderMessage({
+            id: "user:compact-bubble",
+            role: "user",
+            kind: "text",
+            content: "Keep this compact",
+            timestamp: Date.now(),
+        });
+
+        expect(
+            view.container.querySelector("[data-user-message]"),
+        ).toHaveClass("w-full");
+        expect(
+            view.container.querySelector("[data-user-message-bubble]"),
+        ).toHaveClass("ml-auto", "w-[70%]", "max-w-full");
+        expect(
+            view.container.querySelector("[data-user-message-bubble]"),
+        ).toHaveAttribute(
+            "style",
+            expect.stringContaining(
+                "background-color: color-mix(in srgb, var(--accent) 5%, var(--bg-tertiary))",
+            ),
+        );
+        expect(
+            view.container.querySelector("[data-user-message-bubble]"),
+        ).toHaveAttribute(
+            "style",
+            expect.stringContaining(
+                "border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
+            ),
+        );
+    });
+
+    it("shows sent time and copies the user message", async () => {
+        const timestamp = Date.parse("2026-07-11T15:42:00Z");
+        const view = renderMessage({
+            id: "user:copy",
+            role: "user",
+            kind: "text",
+            content: "Copy this prompt",
+            timestamp,
+        });
+
+        expect(
+            view.container.querySelector("[data-user-message-metadata] time"),
+        ).toHaveAttribute("dateTime", new Date(timestamp).toISOString());
+
+        fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+
+        await waitFor(() => {
+            expect(getClipboardMock().writeText).toHaveBeenCalledWith(
+                "Copy this prompt",
+            );
+        });
+        expect(
+            screen.getByRole("button", { name: "Message copied" }),
+        ).toBeInTheDocument();
+    });
+
     it("renders image attachments below user text", () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         const filePath = "/vault/assets/chat/screenshot.png";
@@ -471,6 +627,12 @@ describe("AIChatMessageItem plan message", () => {
         expect(screen.getByText("Review state")).toHaveStyle(
             "text-decoration: line-through",
         );
+        expect(document.querySelector('[data-plan-surface="true"]')).toHaveClass(
+            "chat-plan-frame",
+        );
+        expect(
+            document.querySelectorAll('[data-activity-rail-decoration="branch"]'),
+        ).toHaveLength(2);
     });
 
     it("collapses and expands the plan body", () => {
@@ -549,18 +711,81 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        expect(screen.getByText("Edited watcher.md")).toBeInTheDocument();
+        const rail = expectChangeReviewRail("/vault/notes/watcher.md");
         expect(
-            screen.getByRole("button", { name: "Open" }),
+            within(rail).getByRole("button", {
+                name: "Open /vault/notes/watcher.md",
+            }),
         ).toBeInTheDocument();
         expect(screen.queryByText("Reject")).not.toBeInTheDocument();
 
+        expandChangeReviewRail("/vault/notes/watcher.md");
         fireEvent.click(
-            screen.getByRole("button", { name: /Edited watcher\.md/i }),
+            screen.getByRole("button", { name: "Show source diff" }),
         );
 
         expect(screen.getByText(/old line/)).toBeInTheDocument();
         expect(screen.getByText(/new line/)).toBeInTheDocument();
+    });
+
+    it("opens the diff's own file when a tool reports multiple changes", () => {
+        const firstPath = "/vault/notes/first.md";
+        const secondPath = "/vault/notes/second.md";
+        setVaultNotes([
+            {
+                id: "first-note",
+                path: firstPath,
+                title: "first",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "second-note",
+                path: secondPath,
+                title: "second",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        renderMessage({
+            id: "tool:multi-file",
+            role: "assistant",
+            kind: "tool",
+            title: "Apply updates",
+            content: "Updated two notes",
+            timestamp: Date.now(),
+            diffs: [
+                {
+                    path: firstPath,
+                    kind: "update",
+                    old_text: "first old",
+                    new_text: "first new",
+                },
+                {
+                    path: secondPath,
+                    kind: "update",
+                    old_text: "second old",
+                    new_text: "second new",
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: firstPath,
+            },
+        });
+
+        expect(
+            within(getChangeReviewRail(firstPath)).getByRole("button", {
+                name: `Open ${firstPath}`,
+            }),
+        ).toBeInTheDocument();
+        expect(
+            within(getChangeReviewRail(secondPath)).getByRole("button", {
+                name: `Open ${secondPath}`,
+            }),
+        ).toBeInTheDocument();
     });
 
     it("disables line wrapping inside edit file diffs when editor line wrapping is disabled", () => {
@@ -598,7 +823,10 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        fireEvent.click(screen.getByRole("button", { name: /watcher.md/i }));
+        expandChangeReviewRail("/vault/notes/watcher.md");
+        fireEvent.click(
+            screen.getByRole("button", { name: "Show source diff" }),
+        );
 
         const diffPreview = screen.getByTestId(
             "diff-content:/vault/notes/watcher.md",
@@ -645,7 +873,7 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        fireEvent.click(screen.getByRole("button", { name: /watcher.rs/i }));
+        expandChangeReviewRail("/vault/src/watcher.rs");
 
         expect(screen.getAllByText("13").length).toBeGreaterThanOrEqual(1);
         expect(screen.queryByText("+ old line")).not.toBeInTheDocument();
@@ -679,9 +907,11 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
+        const rail = expectChangeReviewRail("/vault/src/watcher.rs");
         expect(
-            screen.getByRole("button", { name: "Open" }),
+            within(rail).getByRole("button", {
+                name: "Open /vault/src/watcher.rs",
+            }),
         ).toBeInTheDocument();
     });
 
@@ -715,7 +945,7 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
         expect(screen.queryByText("Earlier change")).not.toBeInTheDocument();
         expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
-        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
+        expectChangeReviewRail("/vault/src/watcher.rs");
     });
 
     it("keeps non-visible work cycles on the rich diff card without a recency badge", () => {
@@ -750,7 +980,7 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
         expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
         expect(screen.queryByText("Recent change")).not.toBeInTheDocument();
-        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
+        expectChangeReviewRail("/vault/src/watcher.rs");
     });
 
     it("keeps historical permission diffs inspectable without rendering decision actions", () => {
@@ -825,6 +1055,37 @@ describe("AIChatMessageItem tool diffs", () => {
             screen.queryByRole("button", { name: "Open" }),
         ).not.toBeInTheDocument();
         expect(screen.queryByText("Edit 1 file")).not.toBeInTheDocument();
+    });
+
+    it("keeps review snapshots on the existing rich diff card", () => {
+        renderMessage({
+            id: "tool:review-snapshot",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit watcher",
+            content: "Updated watcher.rs",
+            timestamp: Date.now(),
+            reviewDiffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: "/vault/src/watcher.rs",
+            },
+        });
+
+        const rail = expectChangeReviewRail("/vault/src/watcher.rs");
+        expect(
+            within(rail).getByRole("button", {
+                name: "Open /vault/src/watcher.rs",
+            }),
+        ).toBeInTheDocument();
     });
 
     it("shows Writing for active edit cards without a target path", () => {
@@ -921,12 +1182,10 @@ describe("AIChatMessageItem tool diffs", () => {
             }),
         );
 
-        expect(screen.getByText("Edited final.md")).toBeInTheDocument();
-        expect(screen.getByText("moved from draft.md")).toBeInTheDocument();
+        const rail = expectChangeReviewRail("/vault/archive/final.md");
+        expect(within(rail).getByText("Moved from draft.md")).toBeInTheDocument();
 
-        fireEvent.click(
-            screen.getByRole("button", { name: /Edited final\.md/i }),
-        );
+        expandChangeReviewRail("/vault/archive/final.md");
 
         expect(
             screen.queryByTestId("diff-content:/vault/archive/final.md"),
@@ -944,11 +1203,10 @@ describe("AIChatMessageItem tool diffs", () => {
             }),
         );
 
-        expect(screen.getByText("partial")).toBeInTheDocument();
+        const rail = expectChangeReviewRail("/vault/archive/deleted.md");
+        expect(within(rail).getByText("Partial")).toBeInTheDocument();
 
-        fireEvent.click(
-            screen.getByRole("button", { name: /Edited deleted\.md/i }),
-        );
+        expandChangeReviewRail("/vault/archive/deleted.md");
 
         expect(
             screen.getByText("(partial preview — delete snapshot unavailable)"),
@@ -989,8 +1247,9 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.getByText("+~1")).toBeInTheDocument();
         expect(screen.getByText("-~1")).toBeInTheDocument();
 
+        expandChangeReviewRail("/vault/giant.md");
         fireEvent.click(
-            screen.getByRole("button", { name: /Edited giant\.md/i }),
+            screen.getByRole("button", { name: "Show source diff" }),
         );
 
         expect(screen.getByText("shared 1199")).toBeInTheDocument();
@@ -1008,7 +1267,7 @@ describe("AIChatMessageItem tool diffs", () => {
             }),
         );
 
-        fireEvent.click(screen.getByRole("button", { name: /watcher.rs/i }));
+        expandChangeReviewRail("/vault/src/watcher.rs");
 
         const diffContent = screen.getByTestId(
             "diff-content:/vault/src/watcher.rs",
@@ -1067,13 +1326,96 @@ describe("AIChatMessageItem tool diffs", () => {
             },
         });
 
-        fireEvent.click(screen.getByRole("button", { name: /exact.md/i }));
+        expandChangeReviewRail("/vault/exact.md");
+        fireEvent.click(
+            screen.getByRole("button", { name: "Show source diff" }),
+        );
 
         expect(screen.queryByText("alpha")).not.toBeInTheDocument();
         expect(screen.queryByText("101")).not.toBeInTheDocument();
         expect(screen.getAllByText("102")).toHaveLength(2);
         expect(screen.getByText("before")).toBeInTheDocument();
         expect(screen.getByText("after")).toBeInTheDocument();
+    });
+
+    it("opens Markdown changes as a decorated preview and can return to the source diff", () => {
+        renderMessage({
+            id: "tool:markdown-preview",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit note",
+            content: "Updated briefing.md",
+            timestamp: Date.now(),
+            diffs: [
+                {
+                    path: "/vault/briefing.md",
+                    kind: "update",
+                    old_text: "> **Previous:** short note",
+                    new_text: "> **Updated:** longer note",
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: "/vault/briefing.md",
+            },
+        });
+
+        expandChangeReviewRail("/vault/briefing.md");
+
+        expect(screen.getByTestId("markdown-diff-preview")).toBeInTheDocument();
+        expect(
+            document.querySelectorAll('[data-markdown-preview-block="true"]'),
+        ).toHaveLength(1);
+        expect(screen.queryByText("Previous:")).toBeNull();
+        expect(screen.getByText("Updated:")).toBeInTheDocument();
+        expect(screen.queryByText("1")).toBeNull();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Show source diff" }),
+        );
+
+        expect(screen.queryByTestId("markdown-diff-preview")).toBeNull();
+        expect(
+            screen.getByTestId("diff-content:/vault/briefing.md"),
+        ).toBeInTheDocument();
+    });
+
+    it("renders a changed Markdown table in preview mode", () => {
+        renderMessage({
+            id: "tool:markdown-table-preview",
+            role: "assistant",
+            kind: "tool",
+            title: "Edit table",
+            content: "Updated status.md",
+            timestamp: Date.now(),
+            diffs: [
+                {
+                    path: "/vault/status.md",
+                    kind: "update",
+                    old_text: [
+                        "| Status | Owner |",
+                        "| --- | --- |",
+                        "| Draft | Ana |",
+                    ].join("\n"),
+                    new_text: [
+                        "| Status | Owner |",
+                        "| --- | --- |",
+                        "| Ready | Ana |",
+                    ].join("\n"),
+                },
+            ],
+            meta: {
+                tool: "edit",
+                status: "completed",
+                target: "/vault/status.md",
+            },
+        });
+
+        expandChangeReviewRail("/vault/status.md");
+
+        expect(screen.getByRole("table")).toBeInTheDocument();
+        expect(screen.getByRole("cell", { name: "Ready" })).toBeInTheDocument();
     });
 
     it("disables zoom controls at the configured min and max", () => {
@@ -1149,8 +1491,8 @@ describe("AIChatMessageItem tool diffs", () => {
         fireEvent.click(
             screen.getAllByRole("button", { name: "Increase diff zoom" })[0],
         );
-        fireEvent.click(screen.getByRole("button", { name: /first.rs/i }));
-        fireEvent.click(screen.getByRole("button", { name: /second.rs/i }));
+        expandChangeReviewRail("/vault/src/first.rs");
+        expandChangeReviewRail("/vault/src/second.rs");
 
         expect(
             screen.getByTestId("diff-content:/vault/src/first.rs"),
@@ -1172,7 +1514,7 @@ describe("AIChatMessageItem tool diffs", () => {
             sessionId: "session-diff-state",
         });
 
-        fireEvent.click(screen.getByRole("button", { name: /persisted\.rs/i }));
+        expandChangeReviewRail("/vault/src/persisted.rs");
         expect(
             screen.getByTestId("diff-content:/vault/src/persisted.rs"),
         ).toBeInTheDocument();
@@ -1190,6 +1532,126 @@ describe("AIChatMessageItem tool diffs", () => {
 });
 
 describe("AIChatMessageItem user mention pills", () => {
+    it("uses the shared icon-led reference style for notes, files, and folders", () => {
+        renderMessage({
+            id: "user:references",
+            role: "user",
+            kind: "text",
+            content:
+                "Use [@Alpha], [@📄 /vault/src/watcher.rs], and [@📁 Clips]",
+            timestamp: Date.now(),
+        });
+
+        const references = [
+            screen.getByRole("button", { name: "Alpha" }),
+            screen.getByRole("button", { name: "watcher.rs" }),
+            document.querySelector<HTMLElement>('[title="Clips"]'),
+        ];
+
+        for (const reference of references) {
+            expect(reference).not.toBeNull();
+            expect(reference).toHaveStyle({
+                background: "transparent",
+                padding: "0px",
+            });
+            expect(reference?.querySelector("svg")).not.toBeNull();
+        }
+    });
+
+    it("renders and opens sent line references with the shared style", async () => {
+        setVaultNotes([
+            {
+                id: "CHANGELOG.md",
+                title: "CHANGELOG",
+                path: "/vault/CHANGELOG.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "changelog-tab",
+                noteId: "CHANGELOG.md",
+                title: "CHANGELOG",
+                content: "# Changelog",
+            },
+        ]);
+        renderMessage({
+            id: "user:line-reference",
+            role: "user",
+            kind: "text",
+            content: "Check [@📄 /vault/CHANGELOG.md#L66]",
+            timestamp: Date.now(),
+        });
+
+        const reference = screen.getByRole("button", {
+            name: "CHANGELOG.md (line 66)",
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+        fireEvent.click(reference);
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().pendingLineReveal).toEqual({
+                noteId: "CHANGELOG.md",
+                line: 66,
+                endLine: null,
+            });
+        });
+    });
+
+    it("renders sent file attachments with the shared icon-led style", () => {
+        setVaultEntries([
+            {
+                id: "vision-semanal-2026-06-22.html",
+                path: "/vault/vision-semanal-2026-06-22.html",
+                relative_path: "vision-semanal-2026-06-22.html",
+                title: "vision-semanal-2026-06-22.html",
+                file_name: "vision-semanal-2026-06-22.html",
+                extension: "html",
+                kind: "file",
+                modified_at: 0,
+                created_at: 0,
+                size: 32,
+                mime_type: "text/html",
+            },
+        ]);
+        // Sent composer attachments use the compact [📎 label] transcript token.
+        renderMessage({
+            id: "user:file-attachment-reference-serialized",
+            role: "user",
+            kind: "text",
+            content: "[📎 vision-semanal-2026-06-22.html] actualiza esto",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:file-serialized",
+                    type: "file",
+                    noteId: null,
+                    label: "vision-semanal-2026-06-22.html",
+                    path: null,
+                    filePath: "/vault/vision-semanal-2026-06-22.html",
+                    mimeType: "text/html",
+                },
+            ],
+        });
+
+        const reference = screen.getByRole("button", {
+            name: "vision-semanal-2026-06-22.html",
+        });
+        expect(reference).toHaveStyle({
+            background: "transparent",
+            padding: "0px",
+        });
+        expect(reference.querySelector("svg")).not.toBeNull();
+        expect(
+            screen.queryByText("📎 vision-semanal-2026-06-22.html"),
+        ).not.toBeInTheDocument();
+    });
+
     it("opens the mention context menu in a new tab", async () => {
         setVaultNotes([
             {
@@ -1400,6 +1862,115 @@ describe("AIChatMessageItem read tool targets", () => {
                     ),
             ).toBe(true);
         });
+    });
+
+    it("labels subagent breadcrumbs from the resolved child session", () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "child-session": {
+                    sessionId: "child-session",
+                    historySessionId: "child-session",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    parentSessionId: "parent-session",
+                    persistedTitle: "Franklin",
+                    runtimeState: "live",
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["child-session"],
+        }));
+
+        renderMessage({
+            id: "tool:subagent-name",
+            role: "assistant",
+            kind: "tool",
+            title: "Started explorer",
+            content: "Agent: /root/explorer",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "child-session",
+            },
+            meta: {
+                tool: "other",
+                status: "completed",
+            },
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Open Franklin" }),
+        ).toBeEnabled();
+        expect(
+            screen.queryByRole("button", { name: "Open explorer" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("updates a breadcrumb label when the child session arrives later", () => {
+        renderMessage({
+            id: "tool:subagent-late-name",
+            role: "assistant",
+            kind: "tool",
+            title: "Started explorer",
+            content: "Agent: /root/explorer",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "runtime-child",
+            },
+            meta: {
+                tool: "other",
+                status: "completed",
+            },
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Open explorer" }),
+        ).toBeDisabled();
+
+        act(() => {
+            useChatStore.setState((state) => ({
+                ...state,
+                sessionsById: {
+                    ...state.sessionsById,
+                    "child-session": {
+                        sessionId: "child-session",
+                        historySessionId: "child-session",
+                        runtimeSessionId: "runtime-child",
+                        status: "idle",
+                        runtimeId: "codex-acp",
+                        modelId: "test-model",
+                        modeId: "default",
+                        models: [],
+                        modes: [],
+                        configOptions: [],
+                        messages: [],
+                        attachments: [],
+                        parentSessionId: "parent-session",
+                        persistedTitle: "Franklin",
+                        runtimeState: "live",
+                        activeWorkCycleId: null,
+                        visibleWorkCycleId: null,
+                        resumeContextPending: false,
+                    },
+                },
+                sessionOrder: [...state.sessionOrder, "child-session"],
+            }));
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Open Franklin" }),
+        ).toBeEnabled();
     });
 
     it("opens restored subagent sessions by history id from persisted breadcrumbs", async () => {

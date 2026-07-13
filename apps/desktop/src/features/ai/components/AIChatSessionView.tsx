@@ -974,6 +974,31 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             )}
 
             <ChatContentColumn>
+                <QueuedMessagesPanel
+                    items={queuedMessages}
+                    editingItem={queuedMessageEdit?.item ?? null}
+                    onCancel={(messageId) => {
+                        chatActions.removeQueuedMessage(sessionId, messageId);
+                    }}
+                    onClearAll={() => {
+                        chatActions.clearSessionQueue(sessionId);
+                    }}
+                    onEdit={(messageId) => {
+                        chatActions.editQueuedMessage(sessionId, messageId);
+                    }}
+                    onSendNow={(messageId) => {
+                        void chatActions.sendQueuedMessageNow(
+                            sessionId,
+                            messageId,
+                        );
+                    }}
+                    onCancelEdit={() => {
+                        chatActions.cancelQueuedMessageEdit(sessionId);
+                    }}
+                />
+            </ChatContentColumn>
+
+            <ChatContentColumn>
                 <EditedFilesBufferPanel sessionId={sessionId} />
             </ChatContentColumn>
 
@@ -984,33 +1009,6 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                         : "pt-2"
                 }
             >
-                <ChatContentColumn>
-                    <QueuedMessagesPanel
-                        items={queuedMessages}
-                        editingItem={queuedMessageEdit?.item ?? null}
-                        onCancel={(messageId) => {
-                            chatActions.removeQueuedMessage(
-                                sessionId,
-                                messageId,
-                            );
-                        }}
-                        onClearAll={() => {
-                            chatActions.clearSessionQueue(sessionId);
-                        }}
-                        onEdit={(messageId) => {
-                            chatActions.editQueuedMessage(sessionId, messageId);
-                        }}
-                        onSendNow={(messageId) => {
-                            void chatActions.sendQueuedMessageNow(
-                                sessionId,
-                                messageId,
-                            );
-                        }}
-                        onCancelEdit={() => {
-                            chatActions.cancelQueuedMessageEdit(sessionId);
-                        }}
-                    />
-                </ChatContentColumn>
                 <AIChatComposer
                     key={sessionId}
                     sessionId={sessionId}

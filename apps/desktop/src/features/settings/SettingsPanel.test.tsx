@@ -782,6 +782,35 @@ describe("SettingsPanel", () => {
         });
     });
 
+    it("renders, persists, and searches the global tool activity display setting", () => {
+        useChatStore.setState({ toolActivityDisplayMode: "collapsed" });
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "AI" }));
+
+        const label = screen.getByText("Tool activity display");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        fireEvent.click(
+            within(row as HTMLElement).getByRole("button", {
+                name: "Collapsed",
+            }),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Expanded" }));
+
+        expect(useChatStore.getState().toolActivityDisplayMode).toBe(
+            "expanded",
+        );
+
+        fireEvent.change(
+            screen.getByRole("textbox", { name: "Search settings" }),
+            { target: { value: "hide routine activity" } },
+        );
+
+        expect(screen.getByText("Tool activity display")).toBeInTheDocument();
+    });
+
     it("groups the font family selector and persists new bundled font options", () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 
