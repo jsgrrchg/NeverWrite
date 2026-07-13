@@ -908,6 +908,7 @@ struct AcpPromptCapabilities {
 struct AcpActorSharedState {
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
+    setup_store: Option<RuntimeSetupStore>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
 }
@@ -1134,6 +1135,7 @@ impl NativeAi {
             shared: AcpActorSharedState {
                 event_tx: self.event_tx.clone(),
                 session_state: Arc::clone(&self.inner),
+                setup_store: Some(self.setup_store.clone()),
                 tool_diffs: self.tool_diffs.clone(),
                 agent_writes: self.agent_writes.clone(),
             },
@@ -2482,6 +2484,7 @@ impl AcpSessionHandle {
 struct NativeAcpClient {
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
+    setup_store: Option<RuntimeSetupStore>,
     message_ids: Arc<Mutex<HashMap<MessageStreamKey, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
@@ -2527,6 +2530,29 @@ impl NativeAcpClient {
     fn emit<T: serde::Serialize>(&self, event_name: &str, payload: T) {
         if let Ok(value) = serde_json::to_value(payload) {
             emit_event(&self.event_tx, event_name, value);
+        }
+    }
+
+    fn invalidate_copilot_auth_for_session(&self, session_id: &str, error: &str) {
+        if !is_copilot_auth_error(error) {
+            return;
+        }
+        let setup_to_save = self.session_state.lock().ok().and_then(|mut state| {
+            let runtime_id = state.sessions.get(session_id)?.session.runtime_id.clone();
+            if runtime_id != COPILOT_RUNTIME_ID {
+                return None;
+            }
+            let setup = state.setup.entry(runtime_id).or_default();
+            setup.auth_method = Some("copilot-login".to_string());
+            setup.auth_ready = false;
+            setup.suppress_persisted_auth = false;
+            setup.external_auth_verified_at_ms = None;
+            setup.auth_invalidated_at_ms = Some(current_epoch_ms());
+            setup.message = Some(COPILOT_LOGIN_INVALIDATED_MESSAGE.to_string());
+            Some(state.setup.clone())
+        });
+        if let (Some(store), Some(setup)) = (&self.setup_store, setup_to_save) {
+            let _ = store.save(&setup);
         }
     }
 
@@ -4211,6 +4237,7 @@ async fn run_acp12_actor_inner(
     let client = NativeAcpClient {
         event_tx: event_tx.clone(),
         session_state: Arc::clone(&context.shared.session_state),
+        setup_store: context.shared.setup_store.clone(),
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -4408,6 +4435,7 @@ async fn run_acp_actor_inner(
     let client = NativeAcpClient {
         event_tx: event_tx.clone(),
         session_state: Arc::clone(&context.shared.session_state),
+        setup_store: context.shared.setup_store.clone(),
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -4815,6 +4843,7 @@ async fn handle_acp_command(
                 client.end_user_message(&session_id);
                 client.complete_assistant_turn(&session_id, &message_id);
                 if let Err(error) = &result {
+                    client.invalidate_copilot_auth_for_session(&session_id, error);
                     client.emit(
                         AI_SESSION_ERROR_EVENT,
                         AiSessionErrorPayload {
@@ -9464,6 +9493,7 @@ mod tests {
         NativeAcpClient {
             event_tx,
             session_state,
+            setup_store: None,
             message_ids: Arc::new(Mutex::new(HashMap::new())),
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -15598,6 +15628,37 @@ mod tests {
             setup.message.as_deref(),
             Some(COPILOT_LOGIN_INVALIDATED_MESSAGE)
         );
+    }
+
+    #[test]
+    fn copilot_prompt_auth_error_invalidates_and_persists_verified_login() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = RuntimeSetupStore::with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, COPILOT_RUNTIME_ID, "copilot-session");
+        session_state.lock().unwrap().setup.insert(
+            COPILOT_RUNTIME_ID.to_string(),
+            RuntimeSetupState {
+                auth_method: Some("copilot-login".to_string()),
+                auth_ready: true,
+                external_auth_verified_at_ms: Some(123),
+                ..RuntimeSetupState::default()
+            },
+        );
+        let (event_tx, _) = mpsc::channel();
+        let mut client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.setup_store = Some(store.clone());
+
+        client.invalidate_copilot_auth_for_session("copilot-session", "Run copilot login");
+
+        let persisted = store.load().unwrap();
+        let setup = persisted.get(COPILOT_RUNTIME_ID).unwrap();
+        assert!(!setup.auth_ready);
+        assert_eq!(setup.external_auth_verified_at_ms, None);
+        assert!(setup.auth_invalidated_at_ms.is_some());
     }
 
     #[test]
