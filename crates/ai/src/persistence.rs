@@ -105,6 +105,12 @@ pub struct PersistedSessionHistoryPage {
     pub messages: Vec<PersistedMessage>,
 }
 
+#[derive(Debug, Default)]
+pub struct SessionAttachmentReferenceInventory {
+    pub file_paths: Vec<String>,
+    pub unreadable_artifacts: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchedMessage {
     pub message_id: String,
@@ -1626,6 +1632,105 @@ pub fn load_all_session_histories_in_storage_root(
         .collect::<Vec<_>>();
     histories.sort_by_key(|history| std::cmp::Reverse(history.updated_at));
     Ok(histories)
+}
+
+// Attachment cleanup must not depend on the fully validated history loader. A damaged
+// metadata or index sidecar can make a recoverable transcript invisible to that loader.
+pub fn inspect_session_attachment_references_in_storage_root(
+    sessions_root: &Path,
+) -> Result<SessionAttachmentReferenceInventory, String> {
+    if !sessions_root.exists() {
+        return Ok(SessionAttachmentReferenceInventory::default());
+    }
+
+    let entries = fs::read_dir(sessions_root).map_err(|error| error.to_string())?;
+    let mut inventory = SessionAttachmentReferenceInventory::default();
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                inventory.unreadable_artifacts.push(sessions_root.to_path_buf());
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => {
+                inventory.unreadable_artifacts.push(path);
+                continue;
+            }
+        };
+        let result = if file_type.is_dir() {
+            inspect_transcript_attachment_references(
+                &session_transcript_path(&path),
+                &mut inventory,
+            )
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+            inspect_json_attachment_references(&path, &mut inventory)
+        } else {
+            continue;
+        };
+
+        if result.is_err() {
+            inventory.unreadable_artifacts.push(path);
+        }
+    }
+
+    Ok(inventory)
+}
+
+fn inspect_transcript_attachment_references(
+    transcript_path: &Path,
+    inventory: &mut SessionAttachmentReferenceInventory,
+) -> Result<(), String> {
+    let file = File::open(transcript_path).map_err(|error| error.to_string())?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line.map_err(|error| error.to_string())?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let message: serde_json::Value =
+            serde_json::from_str(&line).map_err(|error| error.to_string())?;
+        if let Some(attachments) = message.get("attachments") {
+            collect_attachment_file_paths(attachments, &mut inventory.file_paths);
+        }
+    }
+
+    Ok(())
+}
+
+fn inspect_json_attachment_references(
+    path: &Path,
+    inventory: &mut SessionAttachmentReferenceInventory,
+) -> Result<(), String> {
+    let history: serde_json::Value = read_json_file(path)?;
+    if let Some(messages) = history.get("messages") {
+        collect_attachment_file_paths(messages, &mut inventory.file_paths);
+    }
+    Ok(())
+}
+
+fn collect_attachment_file_paths(value: &serde_json::Value, output: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_attachment_file_paths(item, output);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(file_path)) = map.get("filePath") {
+                output.push(file_path.clone());
+            }
+            for child in map.values() {
+                collect_attachment_file_paths(child, output);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn upsert_history(

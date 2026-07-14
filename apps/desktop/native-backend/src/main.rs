@@ -1263,12 +1263,7 @@ impl NativeBackend {
                     &session_id,
                 )?;
                 if let Some(history) = history {
-                    let remaining_histories =
-                        persistence::load_all_session_histories_in_storage_root(
-                            &storage.sessions_root,
-                            true,
-                        )?;
-                    cleanup_device_history_attachments(&storage, &[history], &remaining_histories)?;
+                    cleanup_device_history_attachments(&storage, &[history])?;
                 }
             }
         }
@@ -1305,15 +1300,7 @@ impl NativeBackend {
                     &storage.sessions_root,
                     max_age_days,
                 )?;
-                let remaining_histories = persistence::load_all_session_histories_in_storage_root(
-                    &storage.sessions_root,
-                    true,
-                )?;
-                cleanup_device_history_attachments(
-                    &storage,
-                    &pruned_histories,
-                    &remaining_histories,
-                )?;
+                cleanup_device_history_attachments(&storage, &pruned_histories)?;
                 deleted
             }
         };
@@ -2988,7 +2975,6 @@ fn cleanup_device_attachment_namespace(storage: &AiSessionsStorage) -> Result<()
 fn cleanup_device_history_attachments(
     storage: &AiSessionsStorage,
     histories: &[PersistedSessionHistory],
-    protected_histories: &[PersistedSessionHistory],
 ) -> Result<(), String> {
     if histories.is_empty() {
         return Ok(());
@@ -3001,13 +2987,21 @@ fn cleanup_device_history_attachments(
         Err(error) => return Err(error.to_string()),
     };
 
+    let protected_references =
+        persistence::inspect_session_attachment_references_in_storage_root(&storage.sessions_root)?;
+    if !protected_references.unreadable_artifacts.is_empty() {
+        for artifact in protected_references.unreadable_artifacts {
+            eprintln!(
+                "Preserving device AI attachments because session references could not be inspected: {}",
+                artifact.to_string_lossy()
+            );
+        }
+        return Ok(());
+    }
+
     let mut protected_paths = Vec::new();
-    for history in protected_histories {
-        collect_device_history_attachment_file_paths(
-            history,
-            &canonical_root,
-            &mut protected_paths,
-        );
+    for file_path in protected_references.file_paths {
+        collect_device_attachment_file_path(&file_path, &canonical_root, &mut protected_paths);
     }
     let protected_paths: HashSet<PathBuf> = protected_paths.into_iter().collect();
 
@@ -3056,15 +3050,23 @@ fn collect_device_attachment_file_paths(
         }
         Value::Object(map) => {
             if let Some(Value::String(file_path)) = map.get("filePath") {
-                let path = PathBuf::from(file_path);
-                if let Ok(canonical_path) = path.canonicalize() {
-                    if canonical_path.starts_with(canonical_root) {
-                        output.push(canonical_path);
-                    }
-                }
+                collect_device_attachment_file_path(file_path, canonical_root, output);
             }
         }
         _ => {}
+    }
+}
+
+fn collect_device_attachment_file_path(
+    file_path: &str,
+    canonical_root: &Path,
+    output: &mut Vec<PathBuf>,
+) {
+    let path = PathBuf::from(file_path);
+    if let Ok(canonical_path) = path.canonicalize() {
+        if canonical_path.starts_with(canonical_root) {
+            output.push(canonical_path);
+        }
     }
 }
 
@@ -5470,6 +5472,78 @@ mod tests {
                 "vaultPath": vault_path,
                 "storageScope": "device",
                 "sessionId": "shared-delete-old"
+            }),
+        )
+        .unwrap();
+
+        assert!(attachment_path.exists());
+    }
+
+    #[test]
+    fn ai_delete_device_history_keeps_attachments_referenced_by_corrupt_history() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+        let saved = invoke(
+            &backend,
+            "ai_save_attachment",
+            json!({
+                "vaultPath": vault_path,
+                "sessionId": "deleted-session",
+                "fileName": "pasted-image-corrupt-reference.png",
+                "bytes": [112, 110, 103]
+            }),
+        )
+        .unwrap();
+        let attachment_path = PathBuf::from(saved["path"].as_str().unwrap());
+
+        for session_id in ["deleted-session", "corrupt-session"] {
+            invoke(
+                &backend,
+                "ai_save_session_history",
+                json!({
+                    "vaultPath": vault_path,
+                    "storageScope": "device",
+                    "history": test_history(session_id, Some(&attachment_path))
+                }),
+            )
+            .unwrap();
+        }
+
+        let vault_key = normalize_vault_path(&vault_path).unwrap();
+        let sessions_root = resolve_ai_sessions_root(
+            &vault_key,
+            vault_dir.path(),
+            AiStorageScope::Device,
+            app_data_dir.path(),
+        );
+        let corrupt_session_dir = fs::read_dir(&sessions_root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.is_dir()
+                    && fs::read_to_string(path.join("session-meta.json"))
+                        .ok()
+                        .and_then(|metadata| serde_json::from_str::<Value>(&metadata).ok())
+                        .and_then(|metadata| metadata["session_id"].as_str().map(str::to_owned))
+                        .as_deref()
+                        == Some("corrupt-session")
+            })
+            .expect("corrupt session directory");
+        fs::write(corrupt_session_dir.join("index.json"), "not json").unwrap();
+
+        invoke(
+            &backend,
+            "ai_delete_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "sessionId": "deleted-session"
             }),
         )
         .unwrap();
