@@ -16706,6 +16706,39 @@ describe("chatStore", () => {
         });
     });
 
+    it("deletes histories from every scope owned by chats in the active vault", async () => {
+        useChatStore.setState({
+            aiStorageScope: "vault",
+            sessionsById: {
+                "device-chat": {
+                    ...createSessionWithTrackedFiles("device-chat", []),
+                    vaultPath: "/vault",
+                    historyStorageScope: "device",
+                },
+                "vault-chat": {
+                    ...createSessionWithTrackedFiles("vault-chat", []),
+                    vaultPath: "/vault",
+                    historyStorageScope: "vault",
+                },
+            },
+            sessionOrder: ["device-chat", "vault-chat"],
+            activeSessionId: "vault-chat",
+        });
+
+        invokeMock.mockClear();
+        await useChatStore.getState().deleteAllSessions();
+
+        const deletedScopes = invokeMock.mock.calls
+            .filter(([command]) => command === "ai_delete_all_session_histories")
+            .map(
+                ([, args]) =>
+                    (args as { storageScope?: string }).storageScope,
+            )
+            .sort();
+
+        expect(deletedScopes).toEqual(["device", "vault"]);
+    });
+
     it("applies agent changes while the session is busy", async () => {
         await useChatStore.getState().initialize();
 

@@ -12895,6 +12895,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         deleteAllSessions: async () => {
             const vaultPath = getEffectiveAiVaultPath();
             const snapshotSessions = Object.values(get().sessionsById);
+            const selectedStorageScope = get().aiStorageScope;
+            const historyStorageScopes = new Set<AIStorageScope>([
+                selectedStorageScope,
+            ]);
+            for (const session of snapshotSessions) {
+                if (sessionMatchesVaultPath(session, vaultPath)) {
+                    historyStorageScopes.add(
+                        getSessionHistoryStorageScope(session),
+                    );
+                }
+            }
             _pendingStopBySessionId.clear();
             await Promise.all(
                 snapshotSessions.map(async (session) => {
@@ -12911,12 +12922,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
             );
             await aiDeleteRuntimeSessionsForVault(vaultPath).catch(() => {});
             if (vaultPath) {
-                await aiDeleteAllSessionHistories(
-                    vaultPath,
-                    get().aiStorageScope,
-                ).catch(() => {});
+                await Promise.all(
+                    [...historyStorageScopes].map((storageScope) =>
+                        aiDeleteAllSessionHistories(
+                            vaultPath,
+                            storageScope,
+                        ).catch(() => {}),
+                    ),
+                );
             }
-            clearPersistedHistoryCache(vaultPath, get().aiStorageScope);
+            for (const storageScope of historyStorageScopes) {
+                clearPersistedHistoryCache(vaultPath, storageScope);
+            }
             // Close all review and chat tabs before clearing sessions
             const editor = useEditorStore.getState();
             for (const sessionId of Object.keys(get().sessionsById)) {
