@@ -1322,6 +1322,32 @@ pub fn delete_session_history_in_storage_root(
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
+    remove_legacy_history_file_in_storage_root(sessions_root, session_id)?;
+    Ok(())
+}
+
+fn remove_legacy_history_file_in_storage_root(
+    sessions_root: &Path,
+    session_id: &str,
+) -> Result<(), String> {
+    if !sessions_root.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(sessions_root).map_err(|e| e.to_string())? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        if load_legacy_history_file(&path).is_ok_and(|history| history.session_id == session_id) {
+            fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+    }
+
     Ok(())
 }
 
@@ -1549,7 +1575,8 @@ pub fn load_all_session_histories_in_storage_root(
     }
 
     let entries = fs::read_dir(sessions_root).map_err(|e| e.to_string())?;
-    let mut histories = Vec::new();
+    let mut histories_by_session_id: HashMap<String, (u8, PersistedSessionHistory)> =
+        HashMap::new();
 
     for entry in entries {
         let entry = match entry {
@@ -1558,15 +1585,45 @@ pub fn load_all_session_histories_in_storage_root(
         };
 
         let path = entry.path();
-        if !path.is_dir() {
+        if path.is_dir() {
+            let history = match load_history_from_session_dir(&path, include_messages) {
+                Ok(history) => history,
+                Err(_) => continue,
+            };
+            upsert_history(
+                &mut histories_by_session_id,
+                history.session_id.clone(),
+                2,
+                history,
+            );
             continue;
         }
 
-        if let Ok(history) = load_history_from_session_dir(&path, include_messages) {
-            histories.push(history);
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
         }
+
+        let mut history = match load_legacy_history_file(&path) {
+            Ok(history) => history,
+            Err(_) => continue,
+        };
+        if !include_messages {
+            history.start_index = Some(0);
+            history.message_count = Some(history.messages.len());
+            history.messages.clear();
+        }
+        upsert_history(
+            &mut histories_by_session_id,
+            history.session_id.clone(),
+            1,
+            history,
+        );
     }
 
+    let mut histories = histories_by_session_id
+        .into_values()
+        .map(|(_, history)| history)
+        .collect::<Vec<_>>();
     histories.sort_by_key(|history| std::cmp::Reverse(history.updated_at));
     Ok(histories)
 }

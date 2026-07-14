@@ -4939,6 +4939,67 @@ mod tests {
     }
 
     #[test]
+    fn ai_migration_converts_legacy_device_history_before_removing_source() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+        let vault_key = normalize_vault_path(&vault_path).unwrap();
+        let device_sessions_root = resolve_ai_sessions_root(
+            &vault_key,
+            vault_dir.path(),
+            AiStorageScope::Device,
+            app_data_dir.path(),
+        );
+        fs::create_dir_all(&device_sessions_root).unwrap();
+        let legacy_path = device_sessions_root.join("legacy-device-history.json");
+        let mut history = test_history("legacy-device-history", None);
+        history["messages"][0]["content"] = json!("legacy device message");
+        fs::write(&legacy_path, serde_json::to_vec(&history).unwrap()).unwrap();
+
+        let report = invoke(
+            &backend,
+            "ai_migrate_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "fromScope": "device",
+                "toScope": "vault",
+                "deleteSourceAfterCopy": true,
+                "migrateAttachments": true
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(report["histories_copied"], json!(1));
+        assert_eq!(report["failures"], json!([]));
+        assert!(!legacy_path.exists());
+        let vault_histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "includeMessages": true
+            }),
+        )
+        .unwrap();
+        assert_eq!(vault_histories.as_array().unwrap().len(), 1);
+        assert_eq!(
+            vault_histories[0]["messages"][0]["content"],
+            json!("legacy device message")
+        );
+        let vault_sessions_root = persistence::sessions_root_for_vault(vault_dir.path());
+        assert!(vault_sessions_root
+            .read_dir()
+            .unwrap()
+            .any(|entry| entry.unwrap().path().is_dir()));
+        assert!(!vault_sessions_root.join("legacy-device-history.json").exists());
+    }
+
+    #[test]
     fn ai_migration_keeps_all_sources_when_any_history_reports_failure() {
         let _env_guard = APP_DATA_ENV_LOCK
             .get_or_init(|| Mutex::new(()))
