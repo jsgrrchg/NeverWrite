@@ -26,6 +26,7 @@ const SUPPORTED_COMMANDS = new Set([
     "save_vault_binary_file",
     "ai_save_attachment",
     "ai_delete_attachment",
+    "ai_get_attachment_root",
     "copy_external_file_to_vault",
     "read_note",
     "save_note",

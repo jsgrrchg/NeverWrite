@@ -815,6 +815,7 @@ impl NativeBackend {
             "save_vault_binary_file" => self.save_vault_binary_file(args),
             "ai_save_attachment" => self.ai_save_attachment(args),
             "ai_delete_attachment" => self.ai_delete_attachment(args),
+            "ai_get_attachment_root" => self.ai_get_attachment_root(args),
             "copy_external_file_to_vault" => self.copy_external_file_to_vault(args),
             "read_note" => {
                 let state = self.state(&args)?;
@@ -1785,6 +1786,14 @@ impl NativeBackend {
         }
 
         Ok(json!(null))
+    }
+
+    fn ai_get_attachment_root(&self, args: Value) -> Result<Value, String> {
+        let vault_path = required_string(&args, &["vaultPath", "vault_path"])?;
+        let vault_key = normalize_vault_path(&vault_path)?;
+        Ok(json!(resolve_ai_attachments_root(&vault_key, &app_data_dir())
+            .to_string_lossy()
+            .to_string()))
     }
 
     fn copy_external_file_to_vault(&mut self, args: Value) -> Result<Value, String> {
@@ -4322,6 +4331,17 @@ mod tests {
         assert_eq!(saved["file_name"].as_str(), Some("pasted-image.png"));
         assert_eq!(saved["mime_type"].as_str(), Some("image/png"));
         assert!(!vault_dir.path().join("assets").join("chat").exists());
+
+        let attachment_root = invoke(
+            &backend,
+            "ai_get_attachment_root",
+            json!({ "vaultPath": vault_path }),
+        )
+        .unwrap();
+        assert_eq!(
+            PathBuf::from(attachment_root.as_str().unwrap()),
+            saved_path.parent().unwrap().parent().unwrap().to_path_buf()
+        );
 
         invoke(
             &backend,

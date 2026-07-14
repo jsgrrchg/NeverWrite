@@ -1,10 +1,8 @@
 import fs from "node:fs/promises";
-import { realpathSync } from "node:fs";
-import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import {
     ELECTRON_IPC,
     type IpcAppLogEnvelope,
@@ -25,7 +23,10 @@ import {
     previewMimeType,
     resolvePreviewFilePath,
 } from "./vaultBackend";
-import { createNativeBackendSidecar } from "./nativeBackend";
+import {
+    createNativeBackendSidecar,
+    type NativeBackendBridge,
+} from "./nativeBackend";
 import { getSystemUsername } from "./systemUser";
 import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
@@ -213,6 +214,7 @@ function registerInvokeHandler() {
         }
     };
     const nativeBackend = createNativeBackendSidecar(emitRuntimeEvent);
+    nativeBackendForAttachmentPreviews = nativeBackend;
     const backend = new ElectronVaultBackend(
         emitRuntimeEvent,
         new ElectronAppUpdater(),
@@ -283,31 +285,22 @@ function generatedImageRootCandidates() {
     return [...new Set(roots)];
 }
 
-function sha256Hex(value: string) {
-    return crypto.createHash("sha256").update(value).digest("hex");
-}
+let nativeBackendForAttachmentPreviews: NativeBackendBridge | null = null;
 
-function stableVaultKeyPath(vaultPath: string) {
-    const absolutePath = path.resolve(vaultPath);
-    try {
-        return realpathSync.native(absolutePath);
-    } catch {
-        return absolutePath;
+async function aiAttachmentRootCandidates(encodedVaultPath: string) {
+    const nativeBackend = nativeBackendForAttachmentPreviews;
+    if (!nativeBackend?.supports("ai_get_attachment_root")) {
+        return [];
     }
-}
 
-function aiAttachmentRootCandidates(encodedVaultPath: string) {
-    const vaultPath = stableVaultKeyPath(
-        decodeBase64UrlSegment(encodedVaultPath),
-    );
-    return [
-        path.join(
-            app.getPath("userData"),
-            "ai",
-            "attachments",
-            sha256Hex(vaultPath),
-        ),
-    ];
+    try {
+        const root = await nativeBackend.invoke("ai_get_attachment_root", {
+            vaultPath: decodeBase64UrlSegment(encodedVaultPath),
+        });
+        return typeof root === "string" ? [root] : [];
+    } catch {
+        return [];
+    }
 }
 
 function isPathInside(parent: string, child: string) {
@@ -330,7 +323,7 @@ export async function resolveAiAttachmentPreviewPath(
 ) {
     return resolveLocalImagePreviewPath(
         encodedPath,
-        aiAttachmentRootCandidates(encodedVaultPath),
+        await aiAttachmentRootCandidates(encodedVaultPath),
     );
 }
 
