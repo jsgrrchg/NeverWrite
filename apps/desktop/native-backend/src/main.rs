@@ -721,6 +721,11 @@ struct PendingAiSourceCleanup {
     attachments: Vec<PathBuf>,
 }
 
+struct CopiedAiAttachment {
+    source: PathBuf,
+    target: PathBuf,
+}
+
 impl NativeBackend {
     fn new(event_tx: Sender<RpcOutput>) -> Self {
         Self {
@@ -1131,14 +1136,22 @@ impl NativeBackend {
                     &mut report,
                 );
             }
+            if report.failures.len() > failure_count_before_history {
+                rollback_copied_ai_attachments(&copied_attachments, &mut report);
+                continue;
+            }
+
             save_session_history_for_storage(&to_storage, &history)?;
             verify_session_history_exists(&to_storage, &history.session_id)?;
             report.histories_copied += 1;
 
-            if delete_source_after_copy && report.failures.len() == failure_count_before_history {
+            if delete_source_after_copy {
                 pending_source_cleanups.push(PendingAiSourceCleanup {
                     session_id: history.session_id.clone(),
-                    attachments: copied_attachments,
+                    attachments: copied_attachments
+                        .into_iter()
+                        .map(|attachment| attachment.source)
+                        .collect(),
                 });
             }
         }
@@ -3185,7 +3198,7 @@ fn unique_file_path(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
 fn rewrite_history_attachment_paths(
     history: &mut PersistedSessionHistory,
     context: &AiAttachmentMigrationContext,
-    copied_attachments: &mut Vec<PathBuf>,
+    copied_attachments: &mut Vec<CopiedAiAttachment>,
     report: &mut AiHistoryMigrationReport,
 ) {
     for message in &mut history.messages {
@@ -3199,7 +3212,7 @@ fn rewrite_history_attachment_paths(
 fn rewrite_attachments_value_paths(
     value: &mut Value,
     context: &AiAttachmentMigrationContext,
-    copied_attachments: &mut Vec<PathBuf>,
+    copied_attachments: &mut Vec<CopiedAiAttachment>,
     report: &mut AiHistoryMigrationReport,
 ) {
     match value {
@@ -3216,7 +3229,7 @@ fn rewrite_attachments_value_paths(
                             "filePath".to_string(),
                             Value::String(target.to_string_lossy().to_string()),
                         );
-                        copied_attachments.push(source);
+                        copied_attachments.push(CopiedAiAttachment { source, target });
                         report.attachments_copied += 1;
                     }
                     Ok(None) => {
@@ -3230,6 +3243,25 @@ fn rewrite_attachments_value_paths(
             }
         }
         _ => {}
+    }
+}
+
+fn rollback_copied_ai_attachments(
+    copied_attachments: &[CopiedAiAttachment],
+    report: &mut AiHistoryMigrationReport,
+) {
+    report.attachments_copied = report
+        .attachments_copied
+        .saturating_sub(copied_attachments.len());
+    for attachment in copied_attachments.iter().rev() {
+        if let Err(error) = fs::remove_file(&attachment.target) {
+            if error.kind() != io::ErrorKind::NotFound {
+                report.failures.push(format!(
+                    "Failed to roll back migrated attachment {}: {error}",
+                    attachment.target.to_string_lossy(),
+                ));
+            }
+        }
     }
 }
 
@@ -5000,7 +5032,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_migration_keeps_all_sources_when_any_history_reports_failure() {
+    fn ai_migration_does_not_publish_history_when_attachment_copy_fails() {
         let _env_guard = APP_DATA_ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
@@ -5059,10 +5091,26 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(report["histories_copied"], json!(2));
+        assert_eq!(report["histories_copied"], json!(1));
         assert_eq!(report["attachments_skipped"], json!(1));
         assert!(!report["failures"].as_array().unwrap().is_empty());
         assert!(attachment_path.exists());
+
+        let vault_histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "includeMessages": true
+            }),
+        )
+        .unwrap();
+        assert_eq!(vault_histories.as_array().unwrap().len(), 1);
+        assert_eq!(
+            vault_histories[0]["session_id"],
+            json!("partial-success-session")
+        );
 
         let device_histories = invoke(
             &backend,
