@@ -63,6 +63,7 @@ import {
     isTextLikeVaultEntry,
 } from "../../../app/utils/vaultEntries";
 import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { getComposerPrimaryAction } from "./chatComposerPrimaryAction";
 import {
     type ImageAttachmentValidationFailure,
     validateNewImageAttachmentReference,
@@ -1093,17 +1094,35 @@ export function AIChatComposer({
     const isStreaming = status === "streaming";
     const isStopTransitionActive = isStopping || hasPendingSubmitAfterStop;
     const isEmpty = serializedValue.length === 0;
-    const canSubmit = !disabled && !isEmpty && !hasPendingSubmitAfterStop;
+    const canSubmit =
+        !disabled &&
+        !isEmpty &&
+        !isStopping &&
+        !hasPendingSubmitAfterStop;
+    const primaryAction = getComposerPrimaryAction({
+        hasDraft: !isEmpty,
+        hasPendingSubmitAfterStop,
+        isStopping,
+        isStreaming,
+    });
+    const primaryActionLabel =
+        primaryAction === "queue"
+            ? "Queue"
+            : primaryAction === "stop"
+              ? "Stop"
+              : primaryAction === "stopping"
+                ? "Stopping"
+                : primaryAction === "waiting"
+                  ? "Waiting for stop"
+                  : "Send";
+    const canRunPrimaryAction =
+        !disabled &&
+        (primaryAction === "stop" ||
+            ((primaryAction === "send" || primaryAction === "queue") &&
+                canSubmit));
     const stopTransitionLabel = hasPendingSubmitAfterStop
         ? "Sending next message after stop..."
         : "Stopping previous run...";
-    const stopButtonVisible = isStreaming || isStopping;
-    const stopButtonOpacity = !stopButtonVisible
-        ? 0
-        : disabled || isStopping
-          ? 0.4
-          : 1;
-
     const closeMentionPicker = () => setMentionState(EMPTY_MENTION_STATE);
     const closeSlashPicker = () => setSlashState(EMPTY_SLASH_STATE);
 
@@ -2064,97 +2083,47 @@ export function AIChatComposer({
                             {stopTransitionLabel}
                         </div>
                     </div>
-                    {/* Stop is rendered unconditionally and placed before
-                        Send in DOM order so Send stays anchored to the right
-                        edge regardless of streaming state. Visibility toggles
-                        via opacity + pointer-events for a smooth fade with no
-                        layout shift. */}
-                        <button
-                            type="button"
-                            onClick={onStop}
-                            disabled={!stopButtonVisible || disabled || isStopping}
-                            aria-hidden={!stopButtonVisible || undefined}
-                            tabIndex={stopButtonVisible ? 0 : -1}
-                            className="nw-composer-action flex shrink-0 cursor-pointer items-center justify-center rounded-full"
-                            style={{
-                                width: 28,
-                                height: 28,
-                                color: "#fff",
-                                backgroundColor: "#b91c1c",
-                                border: "none",
-                                opacity: stopButtonOpacity,
-                                pointerEvents: stopButtonVisible
-                                    ? "auto"
-                                    : "none",
-                                // No overshoot on transform: the bouncy ease
-                                // used elsewhere would briefly grow the button
-                                // past scale 1 while it is also fading out,
-                                // which reads as a flash. Smooth ease-out keeps
-                                // the press feel without that interaction.
-                                transition:
-                                    "transform 120ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 120ms ease-out, box-shadow 120ms ease-out, background-color 150ms ease, opacity 180ms ease-out",
-                            }}
-                            aria-label={isStopping ? "Stopping" : "Stop"}
-                            title={isStopping ? "Stopping" : "Stop"}
-                        ><svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 14 14"
-                            fill="currentColor"
-                        >
-                            <rect
-                                x="2"
-                                y="2"
-                                width="10"
-                                height="10"
-                                rx="2"
-                            />
-                        </svg>
-                    </button>
                     <button
                         type="button"
-                        onClick={onSubmit}
-                        disabled={!canSubmit}
+                        onClick={() => {
+                            if (!canRunPrimaryAction) return;
+                            if (primaryAction === "stop") {
+                                onStop();
+                                return;
+                            }
+                            onSubmit();
+                        }}
+                        disabled={!canRunPrimaryAction}
                         className="nw-composer-action flex shrink-0 cursor-pointer items-center justify-center rounded-full"
                         style={{
                             width: 28,
                             height: 28,
-                            color: isEmpty ? "var(--text-secondary)" : "#fff",
-                            backgroundColor: isEmpty
-                                ? "transparent"
-                                : "var(--accent)",
+                            color: canRunPrimaryAction
+                                ? "#fff"
+                                : "var(--text-secondary)",
+                            backgroundColor: canRunPrimaryAction
+                                ? primaryAction === "stop"
+                                    ? "#b91c1c"
+                                    : "var(--accent)"
+                                : "transparent",
                             border: "none",
-                            opacity: canSubmit ? 1 : 0.4,
+                            opacity: canRunPrimaryAction ? 1 : 0.4,
                             transition:
                                 "transform 120ms cubic-bezier(0.34, 1.56, 0.64, 1), filter 120ms ease-out, box-shadow 120ms ease-out, background-color 150ms ease, color 150ms ease, opacity 150ms ease",
                         }}
-                        aria-label={
-                            hasPendingSubmitAfterStop
-                                ? "Waiting for stop"
-                                : isStreaming
-                                  ? "Queue"
-                                  : "Send"
-                        }
-                        title={
-                            hasPendingSubmitAfterStop
-                                ? "Waiting for stop"
-                                : isStreaming
-                                  ? "Queue"
-                                  : "Send"
-                        }
+                        aria-label={primaryActionLabel}
+                        title={primaryActionLabel}
                     >
-                        <svg
-                            width="16"
-                            height="16"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="M8 12V4M4 7l4-3 4 3" />
-                        </svg>
+                        {primaryAction === "stop" ||
+                        primaryAction === "stopping" ? (
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+                                <rect x="2" y="2" width="10" height="10" rx="2" />
+                            </svg>
+                        ) : (
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M8 12V4M4 7l4-3 4 3" />
+                            </svg>
+                        )}
                     </button>
                 </div>
                 <AIChatMentionPicker
