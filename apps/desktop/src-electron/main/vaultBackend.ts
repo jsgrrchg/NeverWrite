@@ -152,7 +152,12 @@ function sanitizeAiAttachmentFileName(fileName: string) {
     return sanitized;
 }
 
-function aiAttachmentsRoot(vaultPath: string) {
+/**
+ * Resolve the attachment namespace used by Electron's temporary Node backend.
+ * Keep this available to protocol handlers so fallback-saved images remain
+ * previewable when the native sidecar is not running.
+ */
+export function resolveElectronAiAttachmentsRoot(vaultPath: string) {
     const normalizedVaultPath = toStableVaultKeyPath(vaultPath);
     return path.join(
         app.getPath("userData"),
@@ -1372,7 +1377,7 @@ export class ElectronVaultBackend {
         const bytes = Array.isArray(args.bytes)
             ? Buffer.from(args.bytes as number[])
             : Buffer.from([]);
-        const root = aiAttachmentsRoot(vaultPath);
+        const root = resolveElectronAiAttachmentsRoot(vaultPath);
         const dir = path.join(root, sanitizeAiAttachmentDirName(sessionId));
         const target = await uniqueFilePath(dir, fileName);
 
@@ -1397,7 +1402,7 @@ export class ElectronVaultBackend {
         const target = String(args.path ?? "");
         if (!target) return null;
 
-        const root = aiAttachmentsRoot(vaultPath);
+        const root = resolveElectronAiAttachmentsRoot(vaultPath);
         const [canonicalRoot, canonicalTarget] = await Promise.all([
             fs.realpath(root),
             fs.realpath(target).catch((error: NodeJS.ErrnoException) => {

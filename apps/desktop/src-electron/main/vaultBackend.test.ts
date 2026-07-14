@@ -3,7 +3,10 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ElectronVaultBackend } from "./vaultBackend";
+import {
+    ElectronVaultBackend,
+    resolveElectronAiAttachmentsRoot,
+} from "./vaultBackend";
 import type { NativeBackendBridge } from "./nativeBackend";
 import type { AppUpdaterBackend } from "./updater";
 
@@ -241,6 +244,9 @@ describe("ElectronVaultBackend AI history migration", () => {
 
         expect(saved.path).toContain(sha256Hex(await fs.realpath(realVaultPath)));
         expect(saved.path).not.toContain(sha256Hex(path.resolve(linkPath)));
+        expect(
+            saved.path.startsWith(resolveElectronAiAttachmentsRoot(linkPath)),
+        ).toBe(true);
     });
 });
 

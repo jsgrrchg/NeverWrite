@@ -21,6 +21,7 @@ import {
 import {
     ElectronVaultBackend,
     previewMimeType,
+    resolveElectronAiAttachmentsRoot,
     resolvePreviewFilePath,
 } from "./vaultBackend";
 import {
@@ -288,18 +289,21 @@ function generatedImageRootCandidates() {
 let nativeBackendForAttachmentPreviews: NativeBackendBridge | null = null;
 
 async function aiAttachmentRootCandidates(encodedVaultPath: string) {
+    const vaultPath = decodeBase64UrlSegment(encodedVaultPath);
     const nativeBackend = nativeBackendForAttachmentPreviews;
     if (!nativeBackend?.supports("ai_get_attachment_root")) {
-        return [];
+        return [resolveElectronAiAttachmentsRoot(vaultPath)];
     }
 
     try {
         const root = await nativeBackend.invoke("ai_get_attachment_root", {
-            vaultPath: decodeBase64UrlSegment(encodedVaultPath),
+            vaultPath,
         });
-        return typeof root === "string" ? [root] : [];
+        return typeof root === "string"
+            ? [root]
+            : [resolveElectronAiAttachmentsRoot(vaultPath)];
     } catch {
-        return [];
+        return [resolveElectronAiAttachmentsRoot(vaultPath)];
     }
 }
 
