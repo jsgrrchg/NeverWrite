@@ -721,6 +721,13 @@ function getPersistedHistoryCacheKey(
     return `${vaultPath ?? ""}:${storageScope}`;
 }
 
+function getScopedHistoryKey(
+    storageScope: AIStorageScope,
+    historySessionId: string | null | undefined,
+) {
+    return `${storageScope}:${historySessionId ?? ""}`;
+}
+
 function getPersistedHistorySessionId(sessionId: string) {
     if (!sessionId.startsWith("persisted:")) {
         return null;
@@ -8075,8 +8082,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     sessions,
                 );
 
-                let histories: PersistedSessionHistory[] = [];
-                let persistedBySessionId = new Map<
+                const historyScopes: AIStorageScope[] =
+                    aiStorageScope === "device"
+                        ? ["device", "vault"]
+                        : ["vault", "device"];
+                const historiesByScope = new Map<
+                    AIStorageScope,
+                    PersistedSessionHistory[]
+                >();
+                const persistedByScopedHistoryId = new Map<
                     string,
                     PersistedSessionHistory
                 >();
@@ -8090,19 +8104,39 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 aiStorageScope,
                             );
                         }
-                        histories = (
-                            await aiLoadSessionHistories(vaultPath, {
-                                includeMessages: false,
-                                storageScope: aiStorageScope,
-                            })
-                        ).filter(hasPersistedHistoryContent);
-                        persistedBySessionId = new Map(
-                            histories.map((h) => [h.session_id, h]),
+                        const loadedHistories = await Promise.all(
+                            historyScopes.map(async (storageScope) => {
+                                try {
+                                    const histories = (
+                                        await aiLoadSessionHistories(vaultPath, {
+                                            includeMessages: false,
+                                            storageScope,
+                                        })
+                                    ).filter(hasPersistedHistoryContent);
+                                    return [storageScope, histories] as const;
+                                } catch {
+                                    // A secondary storage location can be unavailable
+                                    // without preventing the selected location from loading.
+                                    return [storageScope, []] as const;
+                                }
+                            }),
                         );
+                        for (const [storageScope, histories] of loadedHistories) {
+                            historiesByScope.set(storageScope, histories);
+                            for (const history of histories) {
+                                persistedByScopedHistoryId.set(
+                                    getScopedHistoryKey(
+                                        storageScope,
+                                        history.session_id,
+                                    ),
+                                    history,
+                                );
+                            }
+                        }
                         setPersistedHistoryCache(
                             vaultPath,
                             aiStorageScope,
-                            histories,
+                            historiesByScope.get(aiStorageScope) ?? [],
                         );
                     } catch {
                         // Disk histories unavailable, continue without them
@@ -8116,14 +8150,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     setPersistedHistoryCache(null, aiStorageScope, []);
                 }
 
-                const hasLoadedInventory = sessions.length > 0 || histories.length > 0;
+                const hasLoadedInventory =
+                    sessions.length > 0 ||
+                    [...historiesByScope.values()].some(
+                        (histories) => histories.length > 0,
+                    );
                 set((state) => {
-                    const existingSessionByHistoryId = new Map(
+                    const existingSessionByScopedHistoryId = new Map(
                         Object.values(state.sessionsById).flatMap((session) =>
                             session.historySessionId
                                 ? [
                                       [
-                                          session.historySessionId,
+                                          getScopedHistoryKey(
+                                              getSessionHistoryStorageScope(session),
+                                              session.historySessionId,
+                                          ),
                                           session,
                                       ] as const,
                                   ]
@@ -8133,18 +8174,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const nextSessionsById = sessions.reduce<
                         Record<string, AIChatSession>
                     >((accumulator, session) => {
+                        const existingBySessionId =
+                            state.sessionsById[session.sessionId];
                         const scopedSession = stampSessionHistoryStorageScope(
                             stampSessionVaultPath(session, vaultPath),
-                            aiStorageScope,
+                            existingBySessionId?.historyStorageScope ??
+                                aiStorageScope,
                         );
                         const existing =
-                            state.sessionsById[scopedSession.sessionId] ??
-                            existingSessionByHistoryId.get(
-                                scopedSession.historySessionId,
+                            existingBySessionId ??
+                            existingSessionByScopedHistoryId.get(
+                                getScopedHistoryKey(
+                                    getSessionHistoryStorageScope(scopedSession),
+                                    scopedSession.historySessionId,
+                                ),
                             );
                         let merged = mergeSession(existing, scopedSession);
-                        const persisted = persistedBySessionId.get(
-                            merged.historySessionId,
+                        const persisted = persistedByScopedHistoryId.get(
+                            getScopedHistoryKey(
+                                getSessionHistoryStorageScope(merged),
+                                merged.historySessionId,
+                            ),
                         );
 
                         if (persisted) {
@@ -8177,28 +8227,59 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         return accumulator;
                     }, {});
 
+                    const liveScopedHistoryIds = new Set(
+                        Object.values(nextSessionsById).map(
+                            (session) =>
+                                getScopedHistoryKey(
+                                    getSessionHistoryStorageScope(session),
+                                    session.historySessionId,
+                                ),
+                        ),
+                    );
                     const liveHistoryIds = new Set(
                         Object.values(nextSessionsById).map(
                             (session) => session.historySessionId,
                         ),
                     );
 
-                    for (const history of histories) {
-                        if (liveHistoryIds.has(history.session_id)) continue;
-                        const restored = createPersistedSession(
-                            history,
-                            hydratedRuntimes,
-                            vaultPath,
-                            aiStorageScope,
-                        );
-                        if (!restored) continue;
-                        const existing =
-                            state.sessionsById[restored.sessionId] ??
-                            existingSessionByHistoryId.get(
-                                restored.historySessionId,
+                    for (const storageScope of historyScopes) {
+                        for (const history of historiesByScope.get(storageScope) ?? []) {
+                            const scopedHistoryKey = getScopedHistoryKey(
+                                storageScope,
+                                history.session_id,
                             );
-                        nextSessionsById[restored.sessionId] =
-                            mergeSession(existing, restored);
+                            if (
+                                liveScopedHistoryIds.has(scopedHistoryKey) ||
+                                liveHistoryIds.has(history.session_id)
+                            ) {
+                                continue;
+                            }
+                            // Session IDs predate storage scopes. If a history was
+                            // copied without removing its source, keep the selected
+                            // scope's entry rather than letting the fallback scope
+                            // overwrite the same UI session.
+                            if (
+                                nextSessionsById[
+                                    `persisted:${history.session_id}`
+                                ]
+                            ) {
+                                continue;
+                            }
+                            const restored = createPersistedSession(
+                                history,
+                                hydratedRuntimes,
+                                vaultPath,
+                                storageScope,
+                            );
+                            if (!restored) continue;
+                            const existing =
+                                state.sessionsById[restored.sessionId] ??
+                                existingSessionByScopedHistoryId.get(
+                                    scopedHistoryKey,
+                                );
+                            nextSessionsById[restored.sessionId] =
+                                mergeSession(existing, restored);
+                        }
                     }
 
                     const nextSessionOrder =

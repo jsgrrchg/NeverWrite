@@ -1221,6 +1221,48 @@ describe("chatStore", () => {
         expect(useChatStore.getState().activeSessionId).toBeNull();
     });
 
+    it("keeps histories from the non-selected storage scope visible", async () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_histories") {
+                const scope = (args as { storageScope?: string }).storageScope;
+                if (scope === "device") {
+                    return [
+                        {
+                            version: 1,
+                            session_id: "device-history",
+                            runtime_id: "codex-acp",
+                            model_id: "test-model",
+                            mode_id: "default",
+                            created_at: 10,
+                            updated_at: 20,
+                            title: "Local chat",
+                            preview: "Kept on this device",
+                            message_count: 1,
+                            messages: [],
+                        },
+                    ];
+                }
+                return [];
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .initialize({ createDefaultSession: false });
+
+        expect(
+            useChatStore.getState().sessionsById["persisted:device-history"],
+        ).toMatchObject({
+            historyStorageScope: "device",
+            runtimeState: "persisted_only",
+        });
+    });
+
     it("prunes session history with the retention of the session vault", async () => {
         localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
         localStorage.setItem(getHistoryRetentionKey("/vaults/one"), "9");
