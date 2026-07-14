@@ -1738,14 +1738,7 @@ impl NativeBackend {
         let file_name = sanitize_ai_attachment_file_name(&file_name)?;
         let session_dir = sanitize_ai_attachment_dir_name(&session_id);
         let root = resolve_ai_attachments_root(&vault_key, &app_data_dir());
-        let path = unique_file_path(&root.join(session_dir), &file_name)?;
-
-        fs::create_dir_all(
-            path.parent()
-                .ok_or_else(|| "Attachment path has no parent".to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+        let path = write_unique_file(&root.join(session_dir), &file_name, &bytes)?;
 
         Ok(json!(SavedBinaryFileDetail {
             path: path.to_string_lossy().to_string(),
@@ -1765,10 +1758,17 @@ impl NativeBackend {
         let vault_key = normalize_vault_path(&vault_path)?;
         let root = resolve_ai_attachments_root(&vault_key, &app_data_dir());
         let target = PathBuf::from(path);
+        if !target.starts_with(&root) {
+            return Err("Attachment path is outside AI app data".to_string());
+        }
+        let canonical_root = match root.canonicalize() {
+            Ok(root) => root,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(json!(null)),
+            Err(error) => return Err(error.to_string()),
+        };
         if !target.exists() {
             return Ok(json!(null));
         }
-        let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
         let canonical_target = target.canonicalize().map_err(|error| error.to_string())?;
 
         if !canonical_target.starts_with(&canonical_root) {
@@ -3171,30 +3171,56 @@ fn sanitize_ai_attachment_file_name(file_name: &str) -> Result<String, String> {
     }
 }
 
-fn unique_file_path(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
-    let candidate = dir.join(file_name);
-    if !candidate.exists() {
-        return Ok(candidate);
-    }
-
+fn unique_file_name_candidates(file_name: &str) -> impl Iterator<Item = String> + '_ {
     let path = Path::new(file_name);
     let stem = path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("file");
     let extension = path.extension().and_then(|value| value.to_str());
-    for index in 1..1000 {
-        let next_name = match extension {
-            Some(extension) if !extension.is_empty() => format!("{stem}-{index}.{extension}"),
-            _ => format!("{stem}-{index}"),
-        };
-        let next = dir.join(next_name);
-        if !next.exists() {
-            return Ok(next);
+    std::iter::once(file_name.to_string()).chain((1..1000).map(move |index| match extension {
+        Some(extension) if !extension.is_empty() => format!("{stem}-{index}.{extension}"),
+        _ => format!("{stem}-{index}"),
+    }))
+}
+
+fn create_unique_file(dir: &Path, file_name: &str) -> Result<(PathBuf, fs::File), String> {
+    fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    for candidate_name in unique_file_name_candidates(file_name) {
+        let candidate = dir.join(candidate_name);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
         }
     }
 
     Err("Could not allocate attachment file name".to_string())
+}
+
+fn write_unique_file(dir: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let (path, mut file) = create_unique_file(dir, file_name)?;
+    if let Err(error) = file.write_all(bytes).and_then(|_| file.flush()) {
+        fs::remove_file(&path).ok();
+        return Err(error.to_string());
+    }
+    Ok(path)
+}
+
+fn copy_to_unique_file(source: &Path, dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    let mut source_file = fs::File::open(source).map_err(|error| error.to_string())?;
+    let (path, mut target_file) = create_unique_file(dir, file_name)?;
+    if let Err(error) =
+        io::copy(&mut source_file, &mut target_file).and_then(|_| target_file.flush())
+    {
+        fs::remove_file(&path).ok();
+        return Err(error.to_string());
+    }
+    Ok(path)
 }
 
 fn rewrite_history_attachment_paths(
@@ -3310,24 +3336,17 @@ fn migrate_ai_owned_attachment(
         return Ok(None);
     };
 
-    let target = match context.to_scope {
-        AiStorageScope::Vault => unique_file_path(
-            &context.vault_root.join("assets").join("chat"),
-            &sanitize_ai_attachment_file_name(&file_name)?,
-        )?,
-        AiStorageScope::Device => unique_file_path(
-            &resolve_ai_attachments_root(&context.vault_key, &context.app_data_root)
-                .join("migrated"),
-            &sanitize_ai_attachment_file_name(&file_name)?,
-        )?,
+    let target_dir = match context.to_scope {
+        AiStorageScope::Vault => context.vault_root.join("assets").join("chat"),
+        AiStorageScope::Device => {
+            resolve_ai_attachments_root(&context.vault_key, &context.app_data_root).join("migrated")
+        }
     };
-    fs::create_dir_all(
-        target
-            .parent()
-            .ok_or_else(|| "Attachment target path has no parent".to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    fs::copy(&canonical_source, &target).map_err(|error| error.to_string())?;
+    let target = copy_to_unique_file(
+        &canonical_source,
+        &target_dir,
+        &sanitize_ai_attachment_file_name(&file_name)?,
+    )?;
 
     Ok(Some((canonical_source, target)))
 }
@@ -4381,6 +4400,75 @@ mod tests {
 
         assert!(result.is_err());
         assert!(outside_file.path().exists());
+    }
+
+    #[test]
+    fn ai_delete_attachment_is_a_noop_when_attachment_root_is_missing() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, _vault_dir, vault_path) = test_backend_with_open_vault();
+        let vault_key = normalize_vault_path(&vault_path).unwrap();
+        let missing_path =
+            resolve_ai_attachments_root(&vault_key, app_data_dir.path()).join("missing.png");
+
+        invoke(
+            &backend,
+            "ai_delete_attachment",
+            json!({
+                "vaultPath": vault_path,
+                "path": missing_path
+            }),
+        )
+        .unwrap();
+
+        assert!(!missing_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ai_save_attachment_does_not_reuse_a_dangling_symlink_name() {
+        use std::os::unix::fs::symlink;
+
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, _vault_dir, vault_path) = test_backend_with_open_vault();
+        let vault_key = normalize_vault_path(&vault_path).unwrap();
+        let attachment_dir = resolve_ai_attachments_root(&vault_key, app_data_dir.path())
+            .join("dangling-symlink-session");
+        fs::create_dir_all(&attachment_dir).unwrap();
+        let dangling_path = attachment_dir.join("pasted-image.png");
+        symlink(app_data_dir.path().join("missing-target"), &dangling_path).unwrap();
+
+        let saved = invoke(
+            &backend,
+            "ai_save_attachment",
+            json!({
+                "vaultPath": vault_path,
+                "sessionId": "dangling-symlink-session",
+                "fileName": "pasted-image.png",
+                "bytes": [112, 110, 103]
+            }),
+        )
+        .unwrap();
+        let saved_path = PathBuf::from(saved["path"].as_str().unwrap());
+
+        assert!(fs::symlink_metadata(&dangling_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            saved_path.file_name().and_then(|name| name.to_str()),
+            Some("pasted-image-1.png")
+        );
+        assert_eq!(fs::read(saved_path).unwrap(), b"png");
     }
 
     #[test]
