@@ -64,10 +64,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty/`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.58.1`
-  - upstream tag: `v0.58.1`
-  - upstream commit: `3500ef736ffe816ab5b01c0c20669015fb4cf8b7`
-  - dependencies match the upstream `0.58.1` release (`@agentclientprotocol/sdk` `1.2.1`, `@anthropic-ai/claude-agent-sdk` `0.3.205`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.59.0`
+  - upstream tag: `v0.59.0`
+  - upstream commit: `30b7c06f7640fb6a0530ba18f85e26fe2bc08882`
+  - dependencies match the upstream `0.59.0` release (`@agentclientprotocol/sdk` `1.2.1`, `@anthropic-ai/claude-agent-sdk` `0.3.207`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 - `acp12/`
   - local package names: `agent-client-protocol-legacy` and
@@ -152,7 +152,7 @@ compatibility paths that NeverWrite depends on.
 ## Current Claude Delta
 
 The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.58.1` with no expected NeverWrite-specific source delta.
+`0.59.0` with no expected NeverWrite-specific source delta.
 
 The `dist/` directory is rebuilt from the vendored source snapshot because the
 desktop packaging flow stages the compiled runtime files, while upstream does
