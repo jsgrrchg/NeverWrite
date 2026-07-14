@@ -47,6 +47,77 @@ type Turn = {
     /** Set once the deferred has been resolved/rejected, so the consumer never
      *  settles a turn twice (idle + handoff + stream-end can all race). */
     settled: boolean;
+    /** Set when a `command_lifecycle` "started" frame arrives for this turn's
+     *  uuid (msg_lifecycle_v1 CLIs): the SDK dispatched the command into a turn.
+     *  Read by cancel() to seed the orphan's state — a started orphan's turn may
+     *  still emit a result, an undispatched one may be dropped without one. */
+    commandStarted?: boolean;
+    /** Set when a terminal `command_lifecycle` frame arrives for this turn's
+     *  uuid while the turn is still queued (msg_lifecycle_v1 CLIs). The command
+     *  is already finished SDK-side, so a later cancel() must not seed an
+     *  orphan entry for it — no terminal frame will ever come to drain it.
+     *  "completed"/"discarded" leave nothing outstanding; "cancelled" after a
+     *  dispatch means the dead turn's result may still arrive (seeded as a
+     *  zombie) unless it already passed (`commandResultSeen`), and without a
+     *  dispatch means dropped (nothing coming). */
+    commandFinished?: "completed" | "discarded" | "cancelled";
+    /** Set when a user-turn result arrives while this command is known
+     *  dispatched (`commandStarted`) with no terminal frame yet. Turns run
+     *  sequentially and frames arrive in stream order, so the turn this command
+     *  was dispatched into IS the turn that emitted that result — including
+     *  when the command was FOLDED into another turn (their shared result).
+     *  Read by cancel() and the force-cancel wedge path so neither seeds an
+     *  orphan entry for a result that has already passed: such an entry could
+     *  never be drained by its result and would swallow an unrelated later
+     *  echo-less one instead. */
+    commandResultSeen?: boolean;
+    /** Task ids of the background subagents launched while this turn was the
+     *  active one — including during its held-open drain window, so an agent
+     *  chain (a followup that launches another subagent) extends the hold.
+     *  A turn only waits on its OWN spawned subagents: a long-running agent
+     *  from an earlier turn must not stall every later prompt's settlement.
+     *  Known residual: task_started carries no lineage, so a spawn made by a
+     *  PREVIOUS turn's followup chain while a later turn happens to be held
+     *  is attributed to the holder — extending that hold behind a foreign
+     *  chain. Bounded: the hold still ends at drain, hand-off, or cancel. */
+    spawnedTaskIds?: Set<string>;
+    /** Set instead of settling when the turn's terminal result arrives while
+     *  subagents it spawned are still live (`spawnedTaskIds` ∩
+     *  `session.liveBackgroundTasks`). The turn is held open — its
+     *  `session/prompt` stays pending — so the subagents' streamed output,
+     *  their permission requests (which would otherwise block on an RPC a
+     *  client that stops consuming at the prompt response never answers —
+     *  issue #866), and the model's task-notification followup summary all
+     *  land inside the turn.
+     *
+     *  The CLI does NOT hold its trailing idle for background agents (observed
+     *  on 2.1.206: `idle` follows the result immediately while the subagent
+     *  still runs), so the hold spans multiple idle cycles: user result →
+     *  idle → (subagent works) → task_notification → followup turn → idle.
+     *  The stored outcome (the result's stop reason and usage snapshot) is
+     *  what the turn settles with once its spawned subagents have settled —
+     *  at the followup's terminal result (the summary has streamed by then),
+     *  or at an idle with none of its subagents left (no followup came). A
+     *  cancel or the next turn's echo hand-off settles it earlier, so a
+     *  long-running subagent never holds the prompt hostage.
+     *
+     *  Accepted residuals. (1) A subagent that ends WITHOUT waking the model —
+     *  its task_notification lost or skipped (only the terminal task_updated
+     *  patch is guaranteed per transition) — leaves no followup result and no
+     *  further idle, so the held turn parks until `session/cancel` or the next
+     *  prompt (either settles it: the echo hand-off or ensureActiveTurn's
+     *  held-turn hand-off). Settling at the prune sites instead would preempt
+     *  the followup summary in the normal ordering (prunes precede the
+     *  notification), and a grace timer was judged not worth the machinery —
+     *  the same rescue contract as the adapter's other wedge classes (issue
+     *  #825's out-of-scope notes). (2) Drained-ness is judged by live-task
+     *  membership only: with parallel subagents, a notification that prunes
+     *  the last task during an earlier task's still-streaming followup lets
+     *  that followup's result settle the turn before the LAST task's summary
+     *  streams — degrading to post-turn delivery for it, never worse than the
+     *  pre-hold behavior (pending wakes are not countable: notifications can
+     *  batch into one followup). */
+    deferredSettle?: PromptResponse;
     resolve: (response: PromptResponse) => void;
     reject: (error: unknown) => void;
 };
@@ -70,8 +141,40 @@ type Session = {
      *  the interrupt dropped (absent from `still_queued`) are uncounted as soon
      *  as the receipt arrives (see cancel()). Reset to 0 on every activation as
      *  a backstop against a dropped queued input this can't see (older CLIs, a
-     *  receipt lost to a failed control round-trip). */
+     *  receipt lost to a failed control round-trip). Only used when the CLI does
+     *  NOT emit lifecycle frames (see `orphanCommands` for the msg_lifecycle_v1
+     *  lane); a count can't express command coalescing — N queued commands can
+     *  fold into ONE turn emitting one result, leaving a stale skip of N-1. */
     pendingOrphanResults?: number;
+    /** msg_lifecycle_v1 lane of the orphan accounting (see
+     *  `pendingOrphanResults` for the count lane): the uuids of cancelled queued
+     *  turns whose SDK-side command may still produce an unaccounted result,
+     *  keyed to what we know of its fate. "pending" = not seen dispatched; if
+     *  the SDK drops it (interrupt, `cancelled` before "started") no result
+     *  ever comes. "started" = dispatched into a turn whose result is still
+     *  coming; exactly one terminal lifecycle frame will follow. "zombie" = its
+     *  turn was aborted/failed after dispatch with no result seen since
+     *  (`cancelled` after "started"); no more lifecycle frames come, but the
+     *  dead turn's error result may still arrive. Entries are removed the
+     *  moment their result is covered: EVERY user-turn result covers ALL
+     *  started and zombie entries at once (turns run sequentially and frames
+     *  arrive in stream order, so at any result the started entries were
+     *  dispatched into — possibly folded into — the emitting turn, and any
+     *  zombie's late result has already passed or never existed), whether that
+     *  result was attributed to the active turn or skipped echo-less (see
+     *  recordResultForOrphanCommands / ensureActiveTurn). A command's own
+     *  terminal frame also drains its entry ("completed" is emitted after any
+     *  result its turn produced; a bare `cancelled` deletes a pending entry —
+     *  dropped without running — and zombifies a started one). An echo-less
+     *  result is an orphan's iff this map is non-empty (FIFO: orphan turns run
+     *  before any live turn's). Cleared on every activation, same self-heal as
+     *  the count (covers a lost frame, which can leak an entry — each state
+     *  bounds the damage to one wrong skip). */
+    orphanCommands?: Map<string, "pending" | "started" | "zombie">;
+    /** True once a `system`/init advertised the msg_lifecycle_v1 capability, so
+     *  cancel() routes orphan accounting to `orphanCommands` (exact, per-uuid)
+     *  instead of `pendingOrphanResults` (count, coalescing-blind). */
+    msgLifecycleV1?: boolean;
     /** The long-lived consumer task. Lazily started on the first `prompt()` and
      *  kept alive for the session so between-turn/background messages are still
      *  drained and forwarded. */
@@ -117,11 +220,12 @@ type Session = {
      *  cancel. */
     forceCancelTimer?: ReturnType<typeof setTimeout>;
     emitRawSDKMessages: boolean | SDKMessageFilter[];
-    /** Context window size of the last top-level assistant model, carried across
+    /** Context window size of the session's current model, carried across
      *  prompts so mid-stream usage_update notifications report a correct `size`
-     *  before the turn's first result message arrives. Defaults to
-     *  DEFAULT_CONTEXT_WINDOW, refreshed from each result's modelUsage, and
-     *  invalidated when the user switches the session's model. */
+     *  before the turn's first result message arrives. Seeded from the SDK's
+     *  getContextUsage report at session creation (DEFAULT_CONTEXT_WINDOW when
+     *  that and the text heuristic both fail), refreshed the same way on model
+     *  switches, and confirmed by each result's modelUsage. */
     contextWindowSize: number;
     /** Accumulated task list for the session, keyed by task ID. Task IDs are
      *  per-session, so this state must not be shared across sessions. */
@@ -146,6 +250,113 @@ type Session = {
      *  tool_use block streams; this set makes the two paths converge regardless of
      *  order. Pruned at `tool_result` time alongside `toolUseCache`. */
     emittedToolCalls: Set<string>;
+    /** Registry of live background tasks, keyed by task id: populated at
+     *  `task_started`, pruned when the task settles (a `task_notification` or
+     *  a terminal `task_updated` patch), and reconciled against
+     *  `background_tasks_changed`'s replace-semantics payload so a lost
+     *  bookend can't leak an entry. One structure for both of its concerns so
+     *  a future terminal path can't prune one and not the other:
+     *
+     *  `parentToolUseId` — the tool_use id of the Agent/Task call that spawned
+     *  the task. For subagent tasks the SDK keys its registry by agent id, so
+     *  `task_started.task_id` IS the `agentID` that `canUseTool` later
+     *  receives. Lets the permission flow attribute a subagent's
+     *  eagerly-emitted `tool_call` (and the permission request itself) to its
+     *  parent tool call via `_meta.claudeCode.parentToolUseId`, matching the
+     *  streamed subagent path. Best-effort: a `canUseTool` that races ahead of
+     *  the consumer processing `task_started` omits the attribution from the
+     *  eager tool_call, and the streamed tool_use chunk's refining
+     *  `tool_call_update` — which carries the message-level
+     *  `parent_tool_use_id` — restores it for merging clients; that recovery
+     *  is what makes best-effort acceptable here.
+     *
+     *  `isSubagent` — whether the task is a Task/Agent-tool subagent
+     *  (`task_started` carried a `subagent_type`). Read by
+     *  `turnAwaitingSubagents` (with `spawnedTaskIds`) to decide whether a
+     *  turn's settlement is deferred (see `Turn.deferredSettle`), so the
+     *  subagents' post-result output and permission requests stay inside the
+     *  turn (issues #864/#866). Deliberately false for non-subagent background
+     *  tasks (e.g. a `run_in_background` dev server): those can outlive every
+     *  turn, and the model's contract with them is a wake-on-exit
+     *  notification, not a turn-scoped drain — a hold must NEVER wait on a
+     *  shell.
+     *
+     *  `endedPerLevel` — a `background_tasks_changed` payload did not include
+     *  this subagent entry. The level's universe is BACKGROUND tasks only, so
+     *  a live sync (foreground) subagent is legitimately absent — its entry is
+     *  kept for permission attribution — but a hold must stop waiting on the
+     *  id: an absent id can equally be a leaked async entry whose settle
+     *  bookends were lost, and waiting on it would park the hold forever.
+     *  Non-subagent entries are simply deleted instead (shells are always in
+     *  the level's universe). */
+    liveBackgroundTasks: Map<string, {
+        parentToolUseId?: string;
+        isSubagent: boolean;
+        /** Absent-from-level lifecycle, one field so the illegal
+         *  armed-but-not-ended state is unrepresentable: undefined = live per
+         *  the level signal; "ended" = a level omitted the task (holds stop
+         *  waiting on it; attribution is kept); "sweep-armed" = a turn
+         *  activation saw it ended — the NEXT activation deletes it. The
+         *  one-activation grace exists for the absent-mark race (a level
+         *  payload built before a live async agent's registration): a
+         *  corrective inclusive level resets the field to undefined — one
+         *  assignment, disarming any in-flight sweep — if it arrives within a
+         *  full turn, keeping the agent's attribution; eager deletion would
+         *  be irreversible, since levels never ADD entries. A re-mark
+         *  preserves an in-flight arm (`??=`), keeping a continuously absent
+         *  entry on its two-activation clock. */
+        endedPerLevel?: "ended" | "sweep-armed";
+    }>;
+    /** Whether any top-level assistant text reached the client since the last
+     *  stretch boundary. Set as a side effect of sending in the consumer's
+     *  `sendUpdate`, never at an emission site; read at the terminal `result`
+     *  to tell a turn whose answer was already delivered from one that only
+     *  ever carried it on `result` (issue #453). Session-level (not
+     *  consumer-scoped) so cancel()'s inline settle can clear it.
+     *
+     *  The CURRENT boundary set — a new clear site must be added here: the
+     *  result case's `finally` (user-turn results), settleActive's wasHeld
+     *  clear (every held-turn settle lane: drain settle, both hand-offs,
+     *  stream-done), failActive, the force-cancel backstop, the idle
+     *  cancelled-settle, the autonomous-result close (only with no turn
+     *  active OR queued — see its queued-turn guard), and cancel()'s inline
+     *  mirror.
+     *
+     *  Deliberately NOT reset on turn activation: activation can fire
+     *  mid-message (see the echo hand-off), so a flag cleared there would
+     *  forget text that already streamed and the result text would be emitted
+     *  a second time. Neither the consolidated `assistant` message nor a
+     *  `stream_event` carries `origin`, so an autonomous cycle's prose is
+     *  indistinguishable from a user turn's here and sets the flag too; the
+     *  autonomous-result close normally ends that stretch so a replayed
+     *  prompt behind it still delivers, and only in the racing window (a
+     *  turn already active or queued when the autonomous result lands) does
+     *  the replayed turn stay silent rather than risk a duplicate. */
+    emittedAssistantText: boolean;
+    /** The most recent `session_state_changed` state the consumer processed.
+     *  Read by cancel() to decide whether the interrupt will produce a
+     *  trailing idle worth pre-counting: interrupting a RUNNING cycle yields
+     *  one; interrupting an already-idle session (the common held-turn shape)
+     *  yields none, and a pre-counted debt that never drains would mask one
+     *  future issue-#825 detection. */
+    lastSessionState?: "idle" | "running" | "requires_action";
+    /** How many trailing `session_state_changed: idle` messages are already
+     *  accounted for: every result is followed by one (user-turn results that
+     *  terminate a turn — settle, reject, or orphan skip — and autonomous
+     *  cycles alike), as is a cancelled turn settled by the next turn's echo
+     *  hand-off or by cancel()'s inline settle of a held turn whose interrupt
+     *  pre-empts a running cycle — the reason this lives on the Session:
+     *  cancel() must be able to record the debt. The idle handler absorbs
+     *  owed idles; an idle that arrives when NONE is owed while the active
+     *  turn is still unsettled means the SDK ended the turn without ever
+     *  emitting its result, so the turn will never settle on its own (issue
+     *  #825). Stream-level debt, deliberately NOT reset per turn: a lagged
+     *  idle can arrive after the next turn has already activated (issue
+     *  #773), and the debt is what attributes it to the turn that owed it.
+     *  Over-counting (an idle the SDK never emits) is benign: the counter
+     *  just absorbs one future idle, and detection degrades to the status quo
+     *  rather than misfiring. */
+    owedTrailingIdles: number;
     /** Maps the ACP `messageId` we expose to clients (see `messageIdForGrouping`)
      *  to the SDK message uuid that the Agent SDK's rewind/resume APIs key on
      *  (`Query.rewindFiles` takes a user-message uuid; `resumeSessionAt` takes an
@@ -227,6 +438,7 @@ export type ToolUpdateMeta = {
     claudeCode?: {
         toolName: string;
         toolResponse?: unknown;
+        parentToolUseId?: string;
     };
     terminal_info?: {
         terminal_id: string;
@@ -249,6 +461,25 @@ export type ToolUseCache = {
         input: unknown;
     };
 };
+type StreamedToolInput = {
+    id: string;
+    name: string;
+    partialJson: string;
+    /** Offset into `partialJson` the scanner has consumed; each delta only scans
+     *  the newly appended fragment, so total scan work stays linear. */
+    scannedTo: number;
+    inString: boolean;
+    escaped: boolean;
+    objectDepth: number;
+    arrayDepth: number;
+    /** Offset of the most recent comma at the top level of the input object
+     *  (-1 before the first). Everything before it is a complete field. */
+    lastTopLevelComma: number;
+    /** The comma offset the last emitted refinement was sliced at (-1 before the
+     *  first), so a field boundary only triggers one recovery attempt. */
+    emittedThroughComma: number;
+};
+export type StreamedToolInputCache = Map<string, Map<number, StreamedToolInput>>;
 export declare function claudeCliPath(): Promise<string>;
 /**
  * Return user-message content with local-command marker tags removed, or
@@ -258,6 +489,23 @@ export declare function claudeCliPath(): Promise<string>;
  */
 export declare function stripLocalCommandMetadata(content: unknown): unknown | null;
 export declare function isLocalCommandMetadata(content: unknown): boolean;
+/**
+ * True for the synthetic assistant message the CLI injects into the transcript
+ * when a turn fails authentication (e.g. "Not logged in · Please run /login",
+ * "Session expired. Please run /login to sign in again."). The `/login`
+ * instruction is Claude Code TUI-specific and meaningless to ACP clients
+ * (issue #863). The live prompt loop suppresses the text and fails the turn
+ * with `authRequired` so the client can run its own auth flow; replay must
+ * skip it too — both for parity with what the client saw live and because the
+ * message stays in the transcript forever, so it would resurface on every
+ * session/load even after the user has logged back in.
+ *
+ * Takes the API message (`message.message`), which replay only knows as
+ * `unknown`. The persisted record's structured `error: "authentication_failed"`
+ * marker is stripped by `getSessionMessages`, so the synthetic model + text is
+ * all both paths have to match on.
+ */
+export declare function isSyntheticLoginMessage(apiMessage: unknown): boolean;
 export declare function resolvePermissionMode(defaultMode?: unknown, logger?: Logger): PermissionMode;
 /**
  * Builds the label for the "Always Allow" permission option so the user can see
@@ -324,6 +572,22 @@ export declare class ClaudeAcpAgent {
      *  Turn's deferred when that turn ends. Replaces the per-prompt message loop;
      *  `params` only carries the (session-invariant) `sessionId`. */
     private runConsumer;
+    /** Route one orphaned command into the session's orphan-accounting lane:
+     *  the per-uuid map on msg_lifecycle_v1 CLIs (drained by the command's own
+     *  terminal lifecycle frame and the echo-less-result skip), the plain count
+     *  elsewhere (the count lane can't express per-command states, so `state`
+     *  only matters on the map lane). Both orphan-producing paths — cancel()'s
+     *  queued-turn sweep and the consumer's force-cancel wedge path — must seed
+     *  through here so the lane split stays a single mechanism.
+     *
+     *  Known window: `msgLifecycleV1` is only learnable from the stream's first
+     *  `system`/init (the control-channel initialize carries no capabilities),
+     *  so a cancel that beats that drain seeds the COUNT lane on a
+     *  lifecycle-capable CLI — where command coalescing can leave the count
+     *  stale by N-1 (the pre-map bug, confined to this sub-second window and
+     *  still healed by the next activation's reset). Structural until the SDK
+     *  exposes capabilities before the stream starts. */
+    private trackOrphanCommand;
     cancel(params: CancelNotification): Promise<void>;
     /** Mark a session's SDK query stream as permanently ended and release the
      *  resources tied to it: drop the consumer handle, dispose the settings
@@ -372,7 +636,12 @@ export declare class ClaudeAcpAgent {
      *  instead of emitting a duplicate (see `emittedToolCalls`). Built via the same
      *  `toolCallNotification` helper as the streamed path so the two are identical.
      *  Tools the stream renders as a plan (TodoWrite) or suppresses (Task*) are
-     *  skipped so a permission prompt for them never surfaces a stray tool_call. */
+     *  emitted too: a permission request referencing a tool call the client has
+     *  never seen can trip strict clients (issue #851), so the reference must
+     *  always resolve. Since the streamed path never completes those calls, they
+     *  are resolved at tool_result time instead (see `toAcpNotifications`).
+     *  `parentToolUseId` attributes a subagent's tool call to the Agent/Task call
+     *  that spawned it, matching the streamed path's `_meta`. */
     private ensureToolCallEmitted;
     canUseTool(sessionId: string): CanUseTool;
     /**
@@ -559,6 +828,7 @@ export declare function toAcpNotifications(content: string | ContentBlockParam[]
     taskState?: TaskState;
     emittedToolCalls?: Set<string>;
     messageId?: string;
+    toolUseResult?: unknown;
 }): SessionNotification[];
 export declare function streamEventToAcpNotifications(message: SDKPartialAssistantMessage, sessionId: string, toolUseCache: ToolUseCache, client: AcpClient, logger: Logger, options?: {
     clientCapabilities?: ClientCapabilities;
@@ -566,6 +836,7 @@ export declare function streamEventToAcpNotifications(message: SDKPartialAssista
     taskState?: TaskState;
     emittedToolCalls?: Set<string>;
     messageId?: string;
+    streamedToolInputs?: StreamedToolInputCache;
 }): SessionNotification[];
 /** Run a `session/prompt` while honoring `$/cancel_request` for it. ACP clients
  *  normally stop a turn with the `session/cancel` notification, but `signal`

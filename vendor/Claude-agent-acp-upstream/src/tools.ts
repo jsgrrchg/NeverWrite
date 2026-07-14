@@ -8,10 +8,13 @@ import {
 import { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import {
   AgentInput,
+  AgentOutput,
   AskUserQuestionInput,
   BashInput,
+  BashOutput,
   FileEditInput,
   FileReadInput,
+  FileReadOutput,
   FileWriteInput,
   GlobInput,
   GrepInput,
@@ -22,6 +25,7 @@ import {
   TodoWriteInput,
   WebFetchInput,
   WebSearchInput,
+  WebSearchOutput,
 } from "@anthropic-ai/claude-agent-sdk/sdk-tools.js";
 import {
   ImageBlockParam,
@@ -486,6 +490,109 @@ export function toolInfoFromToolUse(
   }
 }
 
+/**
+ * Narrow the untyped message-level `tool_use_result` toward a per-tool Output
+ * shape: rejects everything but a plain non-null object (arrays pass a bare
+ * `typeof === "object"` check, so they're excluded here). The returned value
+ * is only *nominally* typed — it arrives over the wire from arbitrary CLI
+ * versions, so each caller must still guard the specific fields it reads
+ * before trusting them.
+ */
+function structuredResult<T extends object>(toolUseResult: unknown): T | undefined {
+  return toolUseResult !== null &&
+    typeof toolUseResult === "object" &&
+    !Array.isArray(toolUseResult)
+    ? (toolUseResult as T)
+    : undefined;
+}
+
+/**
+ * Strip the model-directed trailer from a raw Agent/Task tool_result text:
+ * a `<usage>…</usage>` totals block and/or an
+ * `agentId: <id> (use SendMessage …)` continuation line at the end of the
+ * text. Both patterns are tail-anchored and independent (older CLIs emit
+ * variants with only one of them), so a format change makes them stop
+ * matching rather than mangle the report.
+ */
+function stripAgentTrailer(text: string): string {
+  return stripTrailingAgentId(stripTrailingUsage(text));
+}
+
+/** Remove a terminal `<usage>` block with a bounded number of linear scans. */
+function stripTrailingUsage(text: string): string {
+  const trimmedEnd = text.trimEnd();
+  const closingTag = "</usage>";
+  if (!trimmedEnd.endsWith(closingTag)) {
+    return text;
+  }
+
+  const openingTagIndex = trimmedEnd.lastIndexOf("<usage>", trimmedEnd.length - closingTag.length);
+  if (openingTagIndex === -1) {
+    return text;
+  }
+
+  const trailerStart =
+    openingTagIndex > 0 && text[openingTagIndex - 1] === "\n"
+      ? openingTagIndex - 1
+      : openingTagIndex;
+  return text.slice(0, trailerStart);
+}
+
+/** Remove a terminal `agentId: … (…)` continuation line with linear parsing. */
+function stripTrailingAgentId(text: string): string {
+  const trimmedEnd = text.trimEnd();
+  const prefix = "agentId: ";
+  const trailerStart = trimmedEnd.lastIndexOf(prefix);
+  if (trailerStart === -1) {
+    return text;
+  }
+
+  let cursor = trailerStart + prefix.length;
+  const idStart = cursor;
+  while (
+    cursor < trimmedEnd.length &&
+    ((trimmedEnd[cursor] >= "a" && trimmedEnd[cursor] <= "z") ||
+      (trimmedEnd[cursor] >= "A" && trimmedEnd[cursor] <= "Z") ||
+      (trimmedEnd[cursor] >= "0" && trimmedEnd[cursor] <= "9") ||
+      trimmedEnd[cursor] === "_" ||
+      trimmedEnd[cursor] === "-")
+  ) {
+    cursor += 1;
+  }
+  if (cursor === idStart || trimmedEnd.slice(cursor, cursor + 2) !== " (") {
+    return text;
+  }
+
+  const messageStart = cursor + 2;
+  const closingParen = trimmedEnd.indexOf(")", messageStart);
+  if (closingParen !== trimmedEnd.length - 1) {
+    return text;
+  }
+
+  const start =
+    trailerStart > 0 && text[trailerStart - 1] === "\n" ? trailerStart - 1 : trailerStart;
+  return text.slice(0, start);
+}
+
+/** Apply {@link stripAgentTrailer} across a raw tool_result `content` (plain
+ *  string or block array), leaving non-text blocks untouched. */
+function stripAgentTrailerFromContent(content: unknown): unknown {
+  if (typeof content === "string") {
+    return stripAgentTrailer(content);
+  }
+  if (Array.isArray(content)) {
+    return content.map((block) =>
+      block !== null &&
+      typeof block === "object" &&
+      block.type === "text" &&
+      typeof block.text === "string"
+        ? { ...block, text: stripAgentTrailer(block.text) }
+        : block,
+    );
+  }
+  return content;
+}
+
 export function toolUpdateFromToolResult(
   toolResult:
     | ToolResultBlockParam
@@ -500,6 +607,7 @@ export function toolUpdateFromToolResult(
     | BetaToolSearchToolResultBlockParam,
   toolUse: any | undefined,
   supportsTerminalOutput: boolean = false,
+  toolUseResult?: unknown,
 ): ToolUpdate {
   if (
     "is_error" in toolResult &&
@@ -512,8 +620,63 @@ export function toolUpdateFromToolResult(
     return toAcpContentUpdate(toolResult.content, true);
   }
 
+  // Shared raw-text fallback: renders the tool_result content the model saw.
+  // The structured cases below fall back to this when `tool_use_result` is
+  // absent or fails its shape guard (older CLIs, replayed sessions).
+  const rawContentUpdate = () =>
+    toAcpContentUpdate(toolResult.content, "is_error" in toolResult ? toolResult.is_error : false);
+
   switch (toolUse?.name) {
-    case "Read":
+    case "Read": {
+      // The raw tool_result text is the model-facing view: line-numbered
+      // content plus any appended <system-reminder> blocks (malicious-code
+      // checks, memory staleness notes, …) that clients shouldn't see. The
+      // structured FileReadOutput carries the clean content — rebuild the
+      // line-numbered view from it. Non-text variants (image/notebook/pdf)
+      // fall back to the raw content blocks, which already render fine.
+      const structuredRead = structuredResult<FileReadOutput>(toolUseResult);
+      if (
+        structuredRead?.type === "text" &&
+        typeof structuredRead.file?.content === "string" &&
+        // An empty file has nothing to line-number; keep the raw view (the
+        // model-facing "file is empty" note) rather than a phantom blank line.
+        structuredRead.file.content.length > 0
+      ) {
+        // startLine is typed non-optional but defended anyway; a Read's
+        // `offset` input is the same 1-based starting line, so it beats a
+        // blind 1 when an emitter omits the field.
+        const startLine =
+          structuredRead.file.startLine ??
+          (toolUse.input as FileReadInput | undefined)?.offset ??
+          1;
+        // A trailing newline is a line terminator, not an extra line — don't
+        // number a phantom empty line after it.
+        let numbered = structuredRead.file.content
+          .replace(/\n$/, "")
+          .split("\n")
+          .map((line, i) => `${startLine + i}\t${line}`)
+          .join("\n");
+        // The model-facing truncation banner doesn't survive reconstruction
+        // from file.content (the SDK flag exists for exactly this case) —
+        // re-establish it so a partial first page doesn't read as the whole
+        // file.
+        if (structuredRead.file.truncatedByTokenCap) {
+          const { numLines, totalLines } = structuredRead.file;
+          const detail =
+            typeof numLines === "number" && typeof totalLines === "number"
+              ? `: showing ${numLines} of ${totalLines} lines`
+              : "";
+          numbered += `\n[File truncated${detail}]`;
+        }
+        return {
+          content: [
+            {
+              type: "content",
+              content: { type: "text", text: markdownEscape(numbered) },
+            },
+          ],
+        };
+      }
       if (Array.isArray(toolResult.content) && toolResult.content.length > 0) {
         return {
           content: toolResult.content.map((content: any) => ({
@@ -541,6 +704,7 @@ export function toolUpdateFromToolResult(
         };
       }
       return {};
+    }
 
     case "Bash": {
       const result = toolResult.content;
@@ -548,15 +712,57 @@ export function toolUpdateFromToolResult(
       const isError = "is_error" in toolResult && toolResult.is_error;
 
       // Extract output and exit code from either format:
-      // 1. BetaBashCodeExecutionResultBlock: { type: "bash_code_execution_result", stdout, stderr, return_code }
-      // 2. Plain string content from a regular tool_result
-      // 3. Array content (e.g. [{ type: "text", text: "..." }] for stdout,
+      // 1. The structured BashOutput (message-level tool_use_result): its
+      //    stdout/stderr exclude the model-directed suffixes the raw text
+      //    carries (stale-read hints, gh rate-limit hints, the
+      //    persisted-output wrapper for too-large outputs — the interruption
+      //    and truncation facts those carried are re-established from the
+      //    structured flags below). Skipped for image output (the raw content
+      //    array carries the actual image blocks) and backgrounded commands
+      //    (the raw text carries the background-task notice; structured
+      //    stdout may be empty).
+      // 2. BetaBashCodeExecutionResultBlock: { type: "bash_code_execution_result", stdout, stderr, return_code }
+      // 3. Plain string content from a regular tool_result
+      // 4. Array content (e.g. [{ type: "text", text: "..." }] for stdout,
       //    or [{ type: "image", source: {...} }] when the local Bash tool
       //    produces an image, e.g. piping a base64 data URI)
       let output = "";
       let exitCode = isError ? 1 : 0;
 
+      const structuredBash = structuredResult<BashOutput>(toolUseResult);
       if (
+        structuredBash &&
+        typeof structuredBash.stdout === "string" &&
+        typeof structuredBash.stderr === "string" &&
+        !structuredBash.isImage &&
+        structuredBash.backgroundTaskId === undefined
+      ) {
+        output = [structuredBash.stdout, structuredBash.stderr].filter(Boolean).join("\n");
+        // Two raw-text notices don't survive the structured stdout/stderr —
+        // re-establish them so the client isn't shown a clean-looking result:
+        // the CLI appends its abort marker only to the model-facing text, and
+        // an aborted command isn't a success, so synthesize a failing exit
+        // code when the result wasn't already an error.
+        if (structuredBash.interrupted) {
+          output = [output, "[Command was aborted before completion]"].filter(Boolean).join("\n");
+          exitCode = 1;
+        }
+        // Structured stdout is clipped (~30k chars) when the full output was
+        // persisted to disk; without this note the clip is silent and the
+        // path to the full output is lost.
+        if (typeof structuredBash.persistedOutputPath === "string") {
+          const size =
+            typeof structuredBash.persistedOutputSize === "number"
+              ? ` (${structuredBash.persistedOutputSize} bytes total)`
+              : "";
+          output = [
+            output,
+            `[Output truncated${size}: full output saved to ${structuredBash.persistedOutputPath}]`,
+          ]
+            .filter(Boolean)
+            .join("\n");
+        }
+      } else if (
         result &&
         typeof result === "object" &&
         "type" in result &&
@@ -619,6 +825,45 @@ export function toolUpdateFromToolResult(
       return {};
     }
 
+    case "Agent":
+    case "Task": {
+      // The raw tool_result text ends with a model-directed trailer (an
+      // `agentId: … (use SendMessage …)` line plus a `<usage>` totals block)
+      // that ACP clients shouldn't see. The message-level `tool_use_result`
+      // carries the structured AgentOutput whose `content` is the subagent's
+      // report without the trailer — render from it when present (per the SDK
+      // 0.3.207 guidance) and fall back to the raw text otherwise (older CLIs,
+      // replayed sessions).
+      // Narrowed to the full union, not the completed variant — the status
+      // check below is what discriminates it, and pre-narrowing would let
+      // future field reads typecheck against a variant the runtime value may
+      // not be.
+      const structured = structuredResult<AgentOutput>(toolUseResult);
+      if (
+        structured?.status === "completed" &&
+        Array.isArray(structured.content) &&
+        // A completed subagent can end with zero text blocks; an empty
+        // structured render would beat the raw fallback for no benefit.
+        structured.content.length > 0
+      ) {
+        return toAcpContentUpdate(
+          structured.content,
+          "is_error" in toolResult ? toolResult.is_error : false,
+        );
+      }
+      // No structured report to render from (replayed sessions —
+      // getSessionMessages doesn't expose the transcript's toolUseResult —
+      // and older CLIs). The SDK advises rendering from tool_use_result
+      // instead of parsing the text, but with no structured value the
+      // tail-anchored strip is the only cleanup available; if the trailer
+      // format changes it simply stops matching and the full raw text
+      // renders, no worse than before.
+      return toAcpContentUpdate(
+        stripAgentTrailerFromContent(toolResult.content),
+        "is_error" in toolResult ? toolResult.is_error : false,
+      );
+    }
+
     case "Edit": // Edit is handled in hooks
     case "Write": {
       return {};
@@ -628,13 +873,52 @@ export function toolUpdateFromToolResult(
       return { title: "Exited Plan Mode" };
     }
 
+    case "WebSearch": {
+      // The raw tool_result text is a model-directed dump ("Web search
+      // results for query: …\n\nLinks: [{…json…}]"). The structured
+      // WebSearchOutput carries the hits — render them the way server-side
+      // web_search_result blocks render ("Title (url)").
+      const structuredSearch = structuredResult<WebSearchOutput>(toolUseResult);
+      if (structuredSearch && Array.isArray(structuredSearch.results)) {
+        const lines = structuredSearch.results.flatMap((entry) =>
+          typeof entry === "string"
+            ? [entry]
+            : Array.isArray(entry?.content)
+              ? // tool_use_result arrives untyped across CLI version skew —
+                // skip off-spec hits rather than rendering
+                // "undefined (undefined)" lines.
+                entry.content.flatMap((hit) =>
+                  typeof hit?.title === "string" && typeof hit?.url === "string"
+                    ? [formatWebSearchHit(hit)]
+                    : [],
+                )
+              : [],
+        );
+        if (lines.length > 0) {
+          return {
+            content: [
+              {
+                type: "content",
+                content: { type: "text", text: lines.join("\n") },
+              },
+            ],
+          };
+        }
+      }
+      return rawContentUpdate();
+    }
+
     default: {
-      return toAcpContentUpdate(
-        toolResult.content,
-        "is_error" in toolResult ? toolResult.is_error : false,
-      );
+      return rawContentUpdate();
     }
   }
+}
+
+/** One display format for a web-search hit, shared by the structured
+ *  WebSearchOutput render and the server-side `web_search_result` block so
+ *  the two paths can't drift. */
+function formatWebSearchHit(hit: { title: string; url: string }): string {
+  return `${hit.title} (${hit.url})`;
 }
 
 function toAcpContentUpdate(
@@ -711,7 +995,7 @@ function toAcpContentBlock(content: ToolResultContent, isError: boolean): Conten
         `Error: ${content.error_code}${content.error_message ? ` - ${content.error_message}` : ""}`,
       );
     case "web_search_result":
-      return wrapText(`${content.title} (${content.url})`);
+      return wrapText(formatWebSearchHit(content));
     case "web_search_tool_result_error":
       return wrapText(`Error: ${content.error_code}`);
     case "web_fetch_result":

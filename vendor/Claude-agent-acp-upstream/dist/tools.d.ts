@@ -35,7 +35,7 @@ interface ToolUpdate {
  */
 export declare function toDisplayPath(filePath: string, cwd?: string): string;
 export declare function toolInfoFromToolUse(toolUse: any, supportsTerminalOutput?: boolean, cwd?: string): ToolInfo;
-export declare function toolUpdateFromToolResult(toolResult: ToolResultBlockParam | BetaToolResultBlockParam | BetaWebSearchToolResultBlockParam | BetaWebFetchToolResultBlockParam | WebSearchToolResultBlockParam | BetaCodeExecutionToolResultBlockParam | BetaBashCodeExecutionToolResultBlockParam | BetaTextEditorCodeExecutionToolResultBlockParam | BetaRequestMCPToolResultBlockParam | BetaToolSearchToolResultBlockParam, toolUse: any | undefined, supportsTerminalOutput?: boolean): ToolUpdate;
+export declare function toolUpdateFromToolResult(toolResult: ToolResultBlockParam | BetaToolResultBlockParam | BetaWebSearchToolResultBlockParam | BetaWebFetchToolResultBlockParam | WebSearchToolResultBlockParam | BetaCodeExecutionToolResultBlockParam | BetaBashCodeExecutionToolResultBlockParam | BetaTextEditorCodeExecutionToolResultBlockParam | BetaRequestMCPToolResultBlockParam | BetaToolSearchToolResultBlockParam, toolUse: any | undefined, supportsTerminalOutput?: boolean, toolUseResult?: unknown): ToolUpdate;
 export type ClaudePlanEntry = {
     content: string;
     status: "pending" | "in_progress" | "completed";

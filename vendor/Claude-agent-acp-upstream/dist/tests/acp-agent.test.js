@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "child_process";
 import { client as acpClient, CreateElicitationRequest, methods, ndJsonStream, } from "@agentclientprotocol/sdk";
 import { nodeToWebWritable, nodeToWebReadable } from "../utils.js";
 import { markdownEscape, toolInfoFromToolUse, toDisplayPath, toolUpdateFromToolResult, toolUpdateFromDiffToolResponse, } from "../tools.js";
-import { toAcpNotifications, promptToClaude, isLocalCommandMetadata, stripLocalCommandMetadata, ClaudeAcpAgent, claudeCliPath, describeAlwaysAllow, streamEventToAcpNotifications, messageIdForGrouping, buildConfigOptions, createFastModeConfigOption, discoverCustomAgents, runPromptWithCancellation, } from "../acp-agent.js";
+import { toAcpNotifications, promptToClaude, isLocalCommandMetadata, isSyntheticLoginMessage, stripLocalCommandMetadata, ClaudeAcpAgent, claudeCliPath, describeAlwaysAllow, streamEventToAcpNotifications, messageIdForGrouping, buildConfigOptions, createFastModeConfigOption, discoverCustomAgents, runPromptWithCancellation, } from "../acp-agent.js";
 import { Pushable } from "../utils.js";
 import { deleteSession, getSessionInfo, getSessionMessages, query, } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "crypto";
@@ -13,6 +13,10 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
         ...actual,
         deleteSession: vi.fn(),
         getSessionInfo: vi.fn(),
+        // Delegates to the real implementation so integration tests that read
+        // actual transcripts keep working; unit tests override per-call with
+        // `mockResolvedValueOnce`.
+        getSessionMessages: vi.fn(actual.getSessionMessages),
     };
 });
 /** Build the replayed `user` message the SDK echoes back for a pushed prompt,
@@ -25,6 +29,27 @@ function userEcho(u) {
         uuid: u.uuid,
         session_id: "test-session",
         isReplay: true,
+    };
+}
+/** A `system`/init frame advertising the msg_lifecycle_v1 capability, so the
+ *  consumer latches `session.msgLifecycleV1` and cancel() routes orphan
+ *  accounting through `orphanCommands` (CLIs 2.1.206+). */
+const lifecycleInit = {
+    type: "system",
+    subtype: "init",
+    session_id: "test-session",
+    capabilities: ["interrupt_receipt_v1", "msg_lifecycle_v1"],
+};
+/** Build a `command_lifecycle` frame (CLIs 2.1.206+) reporting `state` for the
+ *  uuid-stamped command `commandUuid`. One builder for every test so the
+ *  @internal wire shape can't drift between suites. */
+function lifecycleFrame(commandUuid, state) {
+    return {
+        type: "command_lifecycle",
+        command_uuid: commandUuid,
+        state,
+        uuid: randomUUID(),
+        session_id: "test-session",
     };
 }
 /** The `usage` a cancelled active turn settles with when the cancel pre-empted
@@ -74,6 +99,9 @@ function mockSessionState(overrides = {}) {
         taskState: new Map(),
         toolUseCache: {},
         emittedToolCalls: new Set(),
+        liveBackgroundTasks: new Map(),
+        emittedAssistantText: false,
+        owedTrailingIdles: 0,
         messageIdToUuid: new Map(),
         ...overrides,
     };
@@ -1202,6 +1230,74 @@ describe("isLocalCommandMetadata", () => {
         ])).toBe(false);
     });
 });
+describe("synthetic login message (issue #863)", () => {
+    // The exact shape the CLI persists (and streams) when a turn fails auth:
+    // model "<synthetic>", a single text block, structured `error` stripped by
+    // getSessionMessages.
+    const syntheticLoginApiMessage = {
+        id: "0a1dfa6b-1c2f-4aa2-8bff-ae1690acd6e1",
+        model: "<synthetic>",
+        role: "assistant",
+        type: "message",
+        stop_reason: "stop_sequence",
+        content: [{ type: "text", text: "Not logged in · Please run /login" }],
+    };
+    it("isSyntheticLoginMessage matches the CLI auth-error message", () => {
+        expect(isSyntheticLoginMessage(syntheticLoginApiMessage)).toBe(true);
+        expect(isSyntheticLoginMessage({
+            ...syntheticLoginApiMessage,
+            content: [{ type: "text", text: "Session expired. Please run /login to sign in again." }],
+        })).toBe(true);
+    });
+    it("isSyntheticLoginMessage does not match real assistant messages", () => {
+        // Real model output that merely mentions the phrase.
+        expect(isSyntheticLoginMessage({
+            ...syntheticLoginApiMessage,
+            model: "claude-sonnet-5",
+        })).toBe(false);
+        // Other synthetic error texts (e.g. API errors) still replay as-is.
+        expect(isSyntheticLoginMessage({
+            ...syntheticLoginApiMessage,
+            content: [{ type: "text", text: "API Error: 500 Internal Server Error" }],
+        })).toBe(false);
+        expect(isSyntheticLoginMessage(undefined)).toBe(false);
+        expect(isSyntheticLoginMessage("Not logged in · Please run /login")).toBe(false);
+    });
+    it("loadSession replay skips the synthetic login message but keeps the rest", async () => {
+        const updates = [];
+        const client = {
+            sessionUpdate: async (u) => {
+                updates.push(u);
+            },
+        };
+        const agent = new ClaudeAcpAgent(client, { log: () => { }, error: () => { } });
+        vi.mocked(getSessionMessages).mockResolvedValueOnce([
+            {
+                type: "user",
+                uuid: "u1",
+                session_id: "s1",
+                parent_tool_use_id: null,
+                parent_agent_id: null,
+                message: { role: "user", content: [{ type: "text", text: "hi, say one word" }] },
+            },
+            {
+                type: "assistant",
+                uuid: "a1",
+                session_id: "s1",
+                parent_tool_use_id: null,
+                parent_agent_id: null,
+                message: syntheticLoginApiMessage,
+            },
+        ]);
+        await agent.replaySessionHistory("s1");
+        // The user's prompt still replays…
+        expect(updates.some((u) => u.update.sessionUpdate === "user_message_chunk" &&
+            u.update.content.type === "text" &&
+            u.update.content.text.includes("hi, say one word"))).toBe(true);
+        // …but the TUI-specific "/login" instruction never reaches the client.
+        expect(JSON.stringify(updates)).not.toContain("/login");
+    });
+});
 describe("escape markdown", () => {
     it("should escape markdown characters", () => {
         let text = "Hello *world*!";
@@ -1547,6 +1643,9 @@ describe("permission request cancellation", () => {
             taskState: new Map(),
             toolUseCache: {},
             emittedToolCalls: new Set(),
+            liveBackgroundTasks: new Map(),
+            emittedAssistantText: false,
+            owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
         };
         return agent.sessions[sessionId];
@@ -1657,11 +1756,95 @@ describe("tool_call emitted before permission request", () => {
         expect(notifications).toHaveLength(1);
         expect(notifications[0].update.sessionUpdate).toBe("tool_call_update");
     });
-    it("does not emit a tool_call for suppressed tools (TodoWrite) on a permission request", async () => {
+    it("emits a tool_call for plan-rendered tools (TodoWrite) so the permission request references a known id (issue #851)", async () => {
+        // Strict clients reject (or worse, drop without responding to) a
+        // permission request whose toolCallId they have never seen as a
+        // tool_call, so even tools the stream renders as a plan must surface one
+        // before the request goes out.
         const { agent, events, session } = setup();
         await agent.canUseTool("session-1")("TodoWrite", { todos: [{ content: "x", status: "pending" }] }, { signal: new AbortController().signal, suggestions: [], toolUseID: "todo-1" });
-        expect(events).toEqual(["permission"]);
+        expect(events).toEqual(["update:tool_call", "permission"]);
+        expect(session.emittedToolCalls.has("todo-1")).toBe(true);
+    });
+    it("resolves a permission-surfaced TodoWrite tool_call at tool_result time", () => {
+        // The streamed path renders TodoWrite as `plan` updates and never sends a
+        // tool_call_update for it, so the permission-surfaced tool_call must be
+        // completed when its tool_result arrives or it would stay pending forever.
+        const { session } = setup();
+        session.emittedToolCalls.add("todo-1");
+        session.toolUseCache["todo-1"] = {
+            type: "tool_use",
+            id: "todo-1",
+            name: "TodoWrite",
+            input: { todos: [] },
+        };
+        const notifications = toAcpNotifications([{ type: "tool_result", tool_use_id: "todo-1", content: [{ type: "text", text: "ok" }] }], "user", "session-1", session.toolUseCache, {}, console, { emittedToolCalls: session.emittedToolCalls });
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].update).toMatchObject({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "todo-1",
+            status: "completed",
+        });
         expect(session.emittedToolCalls.has("todo-1")).toBe(false);
+    });
+    it("marks a permission-surfaced TodoWrite tool_call failed on an is_error tool_result", () => {
+        // E.g. the user rejected the permission request: the SDK synthesizes an
+        // is_error tool_result, which must resolve the surfaced call as failed.
+        const { session } = setup();
+        session.emittedToolCalls.add("todo-1");
+        session.toolUseCache["todo-1"] = {
+            type: "tool_use",
+            id: "todo-1",
+            name: "TodoWrite",
+            input: { todos: [] },
+        };
+        const notifications = toAcpNotifications([
+            {
+                type: "tool_result",
+                tool_use_id: "todo-1",
+                is_error: true,
+                content: [{ type: "text", text: "User refused permission to run tool" }],
+            },
+        ], "user", "session-1", session.toolUseCache, {}, console, { emittedToolCalls: session.emittedToolCalls });
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].update).toMatchObject({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "todo-1",
+            status: "failed",
+        });
+    });
+    it("resolves permission-surfaced Task* tool_calls too", () => {
+        // Task* tool_use/tool_result pairs are normally suppressed entirely (their
+        // state surfaces as plan snapshots), so a permission-surfaced tool_call for
+        // them also needs an explicit resolution.
+        const { session } = setup();
+        session.emittedToolCalls.add("task-1");
+        session.toolUseCache["task-1"] = {
+            type: "tool_use",
+            id: "task-1",
+            name: "TaskList",
+            input: {},
+        };
+        const notifications = toAcpNotifications([{ type: "tool_result", tool_use_id: "task-1", content: [{ type: "text", text: "[]" }] }], "user", "session-1", session.toolUseCache, {}, console, { emittedToolCalls: session.emittedToolCalls });
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].update).toMatchObject({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "task-1",
+            status: "completed",
+        });
+    });
+    it("stays silent on a TodoWrite tool_result when no tool_call was surfaced", () => {
+        // The common case: TodoWrite was never permission-gated, so nothing was
+        // emitted for it and its tool_result must remain suppressed as before.
+        const { session } = setup();
+        session.toolUseCache["todo-1"] = {
+            type: "tool_use",
+            id: "todo-1",
+            name: "TodoWrite",
+            input: { todos: [] },
+        };
+        const notifications = toAcpNotifications([{ type: "tool_result", tool_use_id: "todo-1", content: [{ type: "text", text: "ok" }] }], "user", "session-1", session.toolUseCache, {}, console, { emittedToolCalls: session.emittedToolCalls });
+        expect(notifications).toHaveLength(0);
     });
     it("includes Bash terminal_info _meta in the eager tool_call so terminal output can attach", async () => {
         const { agent, updates } = setup();
@@ -1680,15 +1863,223 @@ describe("tool_call emitted before permission request", () => {
             _meta: { terminal_info: { terminal_id: "tool-1" } },
         });
     });
-    it("prunes the emission marker on a tool_result even when the tool_use was never cached", () => {
+    it("prunes the emission marker and resolves the call on a tool_result even when the tool_use was never cached", () => {
         const { session } = setup();
         // Eager-emitted via the permission flow, but the tool_use chunk never
-        // streamed (e.g. cancelled), so toolUseCache has no entry for it.
+        // streamed (e.g. the assistant message was dropped by the cancelled-turn
+        // guard), so toolUseCache has no entry for it. The surfaced tool_call must
+        // still resolve — the eager emission was its only surface — even though the
+        // tool name (and thus claudeCode meta) is unknowable here.
         session.emittedToolCalls.add("tool-1");
-        toAcpNotifications([{ type: "tool_result", tool_use_id: "tool-1", content: [{ type: "text", text: "x" }] }], "user", "session-1", session.toolUseCache, {}, 
+        const notifications = toAcpNotifications([{ type: "tool_result", tool_use_id: "tool-1", content: [{ type: "text", text: "x" }] }], "user", "session-1", session.toolUseCache, {}, 
         // Silence the expected "tool result for tool use that wasn't tracked" log.
         { log: () => { }, error: () => { } }, { emittedToolCalls: session.emittedToolCalls });
         expect(session.emittedToolCalls.has("tool-1")).toBe(false);
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].update).toMatchObject({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tool-1",
+            status: "completed",
+        });
+    });
+    it("does not resolve an uncached tool_result that was never surfaced", () => {
+        // Without an eager emission there is no pending tool_call to settle, so
+        // the untracked-result path must stay silent as before.
+        const { session } = setup();
+        const notifications = toAcpNotifications([{ type: "tool_result", tool_use_id: "tool-1", content: [{ type: "text", text: "x" }] }], "user", "session-1", session.toolUseCache, {}, { log: () => { }, error: () => { } }, { emittedToolCalls: session.emittedToolCalls });
+        expect(notifications).toHaveLength(0);
+    });
+});
+describe("subagent permission attribution (issue #851)", () => {
+    // A background subagent's permission requests reach canUseTool with only an
+    // `agentID`; the streamed subagent messages carry `parent_tool_use_id`
+    // instead. `task_started` bridges the two (for subagent tasks its `task_id`
+    // IS the agent id and its `tool_use_id` is the spawning Agent/Task call), so
+    // the eagerly-emitted tool_call and the permission request can be attributed
+    // to the parent tool call the same way the streamed path attributes updates.
+    function setup() {
+        const updates = [];
+        const requests = [];
+        const log = vi.fn();
+        const mockClient = {
+            sessionUpdate: async (n) => {
+                updates.push(n);
+            },
+            requestPermission: async (params) => {
+                requests.push(params);
+                return { outcome: { outcome: "selected", optionId: "allow" } };
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log, error: () => { } });
+        agent.sessions["session-1"] = mockSessionState();
+        return { agent, updates, requests, log, session: agent.sessions["session-1"] };
+    }
+    it("attributes a subagent tool's eager tool_call and permission request to the spawning tool call", async () => {
+        const { agent, updates, requests, session } = setup();
+        session.liveBackgroundTasks.set("agent-42", {
+            parentToolUseId: "toolu_parent",
+            isSubagent: true,
+        });
+        await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "toolu_sub",
+            agentID: "agent-42",
+        });
+        expect(updates[0].update).toMatchObject({
+            sessionUpdate: "tool_call",
+            toolCallId: "toolu_sub",
+            _meta: { claudeCode: { parentToolUseId: "toolu_parent" } },
+        });
+        // The request's claudeCode meta keeps the shape every other claudeCode
+        // meta has (toolName is required by ToolUpdateMeta).
+        expect(requests[0].toolCall._meta).toMatchObject({
+            claudeCode: { toolName: "Bash", parentToolUseId: "toolu_parent" },
+        });
+    });
+    it("omits the attribution (and logs the miss) when the agent id has no recorded parent", async () => {
+        const { agent, updates, requests, log } = setup();
+        await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "toolu_sub",
+            agentID: "agent-unknown",
+        });
+        const meta = updates[0].update._meta;
+        expect(meta.claudeCode?.parentToolUseId).toBeUndefined();
+        expect(requests[0].toolCall._meta).toBeUndefined();
+        // The task_id === agentID invariant is undocumented SDK behavior; a miss
+        // must be observable so an SDK bump that breaks it doesn't regress silently.
+        expect(log).toHaveBeenCalledWith(expect.stringContaining("agent-unknown"));
+    });
+    it("restores the attribution via the streamed refinement when the eager emission raced task_started", () => {
+        // If canUseTool wins the race against the consumer processing
+        // task_started, the eager tool_call goes out unattributed. The streamed
+        // tool_use chunk — whose message carries parent_tool_use_id — then refines
+        // it with a tool_call_update that restores the parent meta for merging
+        // clients. This recovery is what makes the best-effort lookup acceptable.
+        const { session } = setup();
+        session.emittedToolCalls.add("toolu_sub");
+        const notifications = toAcpNotifications([{ type: "tool_use", id: "toolu_sub", name: "Bash", input: { command: "ls" } }], "assistant", "session-1", session.toolUseCache, {}, console, { emittedToolCalls: session.emittedToolCalls, parentToolUseId: "toolu_parent" });
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].update).toMatchObject({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "toolu_sub",
+            _meta: { claudeCode: { parentToolUseId: "toolu_parent" } },
+        });
+    });
+    function taskStarted(taskId, toolUseId) {
+        return {
+            type: "system",
+            subtype: "task_started",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Investigate",
+            uuid: randomUUID(),
+            session_id: "test-session",
+        };
+    }
+    function successResult() {
+        return {
+            type: "result",
+            subtype: "success",
+            stop_reason: null,
+            is_error: false,
+            result: "",
+            errors: [],
+            duration_ms: 0,
+            duration_api_ms: 0,
+            num_turns: 1,
+            total_cost_usd: 0,
+            usage: {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+            modelUsage: {},
+            permission_denials: [],
+            uuid: randomUUID(),
+            session_id: "test-session",
+        };
+    }
+    /** Replays the prompt's user echo (so the turn activates), then the given
+     *  messages, then settles the turn. */
+    function makeGenerator(messages) {
+        return async function* (input) {
+            const iter = input[Symbol.asyncIterator]();
+            const { value: userMessage, done } = await iter.next();
+            if (!done && userMessage) {
+                yield userEcho(userMessage);
+            }
+            yield* messages;
+            yield { type: "system", subtype: "session_state_changed", state: "idle" };
+        };
+    }
+    it("records task_started's task_id → tool_use_id mapping while consuming the stream", async () => {
+        const agent = new ClaudeAcpAgent({ sessionUpdate: vi.fn(async () => { }) }, {
+            log: () => { },
+            error: () => { },
+        });
+        injectGeneratorSession(agent, makeGenerator([taskStarted("agent-42", "toolu_parent"), successResult()]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        expect(agent.sessions["test-session"].liveBackgroundTasks.get("agent-42")?.parentToolUseId).toBe("toolu_parent");
+    });
+    it("prunes the mapping when the task settles (task_notification)", async () => {
+        const agent = new ClaudeAcpAgent({ sessionUpdate: vi.fn(async () => { }) }, {
+            log: () => { },
+            error: () => { },
+        });
+        injectGeneratorSession(agent, makeGenerator([
+            taskStarted("agent-42", "toolu_parent"),
+            {
+                type: "system",
+                subtype: "task_notification",
+                task_id: "agent-42",
+                tool_use_id: "toolu_parent",
+                status: "completed",
+                output_file: "",
+                summary: "done",
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        expect(agent.sessions["test-session"].liveBackgroundTasks.size).toBe(0);
+    });
+    it("prunes the mapping on a terminal task_updated patch (belt and braces)", async () => {
+        const agent = new ClaudeAcpAgent({ sessionUpdate: vi.fn(async () => { }) }, {
+            log: () => { },
+            error: () => { },
+        });
+        injectGeneratorSession(agent, makeGenerator([
+            taskStarted("agent-42", "toolu_parent"),
+            taskStarted("agent-43", "toolu_parent_2"),
+            {
+                type: "system",
+                subtype: "task_updated",
+                task_id: "agent-42",
+                patch: { status: "completed" },
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            // A non-terminal patch must NOT prune: the task keeps running and its
+            // permission requests still need the attribution.
+            {
+                type: "system",
+                subtype: "task_updated",
+                task_id: "agent-43",
+                patch: { status: "running", is_backgrounded: true },
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        const map = agent.sessions["test-session"].liveBackgroundTasks;
+        expect(map.has("agent-42")).toBe(false);
+        expect(map.get("agent-43")?.parentToolUseId).toBe("toolu_parent_2");
     });
 });
 describe("runPromptWithCancellation", () => {
@@ -2006,6 +2397,38 @@ describe("stop reason propagation", () => {
         expect(response.stopReason).toBe("end_turn");
         expect(response.usage?.inputTokens).toBe(promptResult.usage.input_tokens);
         expect(response.usage?.outputTokens).toBe(promptResult.usage.output_tokens);
+    });
+    it("ignores command_lifecycle frames without logging an unexpected-case error", async () => {
+        // CLIs 2.1.206+ report the fate of every uuid-stamped queued command as
+        // `command_lifecycle` frames (queued/started/completed/...) on the SDK
+        // stream, 2-3 per prompt. They are absent from the SDKMessage union, so
+        // without the pre-switch guard they fall through to `unreachable`'s
+        // error log on every prompt.
+        const errors = [];
+        const mockClient = { sessionUpdate: async () => { } };
+        const agent = new ClaudeAcpAgent(mockClient, {
+            log: () => { },
+            error: (msg) => errors.push(String(msg)),
+        });
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield lifecycleFrame(userMessage.uuid, "queued");
+                yield lifecycleFrame(userMessage.uuid, "started");
+                yield userEcho(userMessage);
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield lifecycleFrame(userMessage.uuid, "completed");
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "test" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        expect(errors.filter((e) => e.includes("Unexpected case"))).toEqual([]);
     });
     it("settles a no-echo command result (e.g. /compact) by promoting the head turn", async () => {
         // Regression: /compact never echoes a user message carrying the prompt's
@@ -2649,6 +3072,9 @@ describe("session/close", () => {
             taskState: new Map(),
             toolUseCache: {},
             emittedToolCalls: new Set(),
+            liveBackgroundTasks: new Map(),
+            emittedAssistantText: false,
+            owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
         };
         return agent.sessions[sessionId];
@@ -2719,6 +3145,9 @@ describe("session/delete", () => {
             taskState: new Map(),
             toolUseCache: {},
             emittedToolCalls: new Set(),
+            liveBackgroundTasks: new Map(),
+            emittedAssistantText: false,
+            owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
         };
         return agent.sessions[sessionId];
@@ -2803,6 +3232,9 @@ describe("getOrCreateSession param change detection", () => {
             taskState: new Map(),
             toolUseCache: {},
             emittedToolCalls: new Set(),
+            liveBackgroundTasks: new Map(),
+            emittedAssistantText: false,
+            owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
         };
         return agent.sessions[sessionId];
@@ -3743,8 +4175,9 @@ describe("usage_update computation", () => {
             { type: "system", subtype: "compact_boundary", session_id: "test-session" },
         ]);
         const session = agent.sessions["test-session"];
-        // A 1M window learned earlier (e.g. from modelUsage) must survive compaction
-        // — getContextUsage's window field under-reports it, so we don't use it.
+        // A 1M window learned earlier (e.g. from modelUsage) must survive
+        // compaction — compaction frees occupancy, it doesn't change the window,
+        // so the handler must not overwrite it from this response.
         session.contextWindowSize = 1000000;
         session.query.getContextUsage = vi
             .fn()
@@ -4196,6 +4629,183 @@ describe("assembled assistant text fallback", () => {
         ]);
         await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
         expect(messageChunkTexts(updates)).toEqual(["answer", "answer"]);
+    });
+    // A cache-replayed turn reports output_tokens: 0 and, on some CLIs, carries
+    // the answer only on the result — no deltas, no consolidated message.
+    function replayedResult(text) {
+        return { ...result(), result: text };
+    }
+    it("forwards the result text when nothing else carried it", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        injectSession(agent, [replayedResult("**3**"), idle]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toEqual(["**3**"]);
+    });
+    it("does not re-emit the result text after the consolidated message delivered it", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        injectSession(agent, [
+            assistantMessage("msg-1", [{ type: "text", text: "**3**" }]),
+            replayedResult("**3**"),
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toEqual(["**3**"]);
+    });
+    it("does not re-emit the result text when the echo lands mid-message", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        // The echo activates the turn after the text has already streamed, and the
+        // consolidated message then dedupes to nothing. The delivery flag survives
+        // that activation, so the result must not re-emit the answer.
+        injectSessionEchoAt(agent, [
+            messageStart("msg-streamed"),
+            textDelta("**3**"),
+            "ECHO",
+            assistantMessage("msg-streamed", [{ type: "text", text: "**3**" }]),
+            replayedResult("**3**"),
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toEqual(["**3**"]);
+    });
+    it("leaves the result text alone when the turn generated output tokens", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        // output_tokens > 0 means the model produced this turn's text through the
+        // stream/assistant paths; the result is their trailing copy, not the only one.
+        injectSession(agent, [
+            { ...replayedResult("**3**"), usage: { ...ZERO_USAGE, output_tokens: 5 } },
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toEqual([]);
+    });
+    it("does not forward the result text of a task-notification followup", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        injectSession(agent, [
+            { ...replayedResult("background output"), origin: { kind: "task-notification" } },
+            result(),
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toEqual([]);
+    });
+    it("does not forward the result text of a turn that only emitted status text", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        // `/compact` carries no echo, so it is promoted at its own result, and its
+        // status text is emitted directly rather than through the forwarding loops.
+        // That text still counts as delivered, so the result must not follow it.
+        injectSession(agent, [
+            { type: "system", subtype: "status", status: "compacting", session_id: "test-session" },
+            replayedResult("conversation summarized"),
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "/compact" }] });
+        expect(messageChunkTexts(updates)).toEqual(["Compacting..."]);
+    });
+    // Like injectSession, but serves two prompts: each turn's echo is yielded
+    // when its prompt arrives, followed by that turn's scripted messages.
+    function injectSessionTwoTurns(agent, first, second) {
+        const input = new Pushable();
+        async function* messageGenerator() {
+            const iter = input[Symbol.asyncIterator]();
+            for (const messages of [first, second]) {
+                const { value: userMessage, done } = await iter.next();
+                if (!done && userMessage) {
+                    yield {
+                        type: "user",
+                        message: userMessage.message,
+                        parent_tool_use_id: null,
+                        uuid: userMessage.uuid,
+                        session_id: "test-session",
+                        isReplay: true,
+                    };
+                }
+                yield* messages;
+            }
+        }
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
+            input,
+        });
+    }
+    it("does not re-emit the result text after an informational notice delivered it", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        // A hook-blocked prompt: the SDK surfaces the block reason as an
+        // informational notice and then repeats it on the result with zero output
+        // tokens. The notice is the turn's delivered text — the fallback must not
+        // emit the reason a second time.
+        injectSession(agent, [
+            {
+                type: "system",
+                subtype: "informational",
+                content: "hook says no",
+                level: "warning",
+                session_id: "test-session",
+            },
+            replayedResult("hook says no"),
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toEqual(["**Warning:** hook says no"]);
+    });
+    it("still forwards the result text after a turn failed without a result", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        // Turn A streams partial text, then the SDK goes idle without ever
+        // emitting its result (issue #825) — the turn fails, and the delivery
+        // record it leaves behind must not suppress the retry's fallback.
+        injectSessionTwoTurns(agent, [messageStart("msg-a"), textDelta("partial answ"), idle], [replayedResult("**3**"), idle]);
+        await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] })).rejects.toThrow();
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toEqual(["partial answ", "**3**"]);
+    });
+    it("does not let a refusal explanation suppress the next turn's fallback", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        // The refusal explanation is emitted while the refused turn's result is
+        // being handled; the stretch must still end at that result, or the next
+        // replayed turn would read the explanation as ITS delivered answer and
+        // end silently.
+        injectSessionTwoTurns(agent, [
+            {
+                type: "system",
+                subtype: "model_refusal_no_fallback",
+                content: "cannot help with that",
+                session_id: "test-session",
+            },
+            { ...result(), stop_reason: "refusal" },
+            idle,
+        ], [replayedResult("**3**"), idle]);
+        const first = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "nope" }],
+        });
+        expect(first.stopReason).toBe("refusal");
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toEqual(["cannot help with that", "**3**"]);
+    });
+    it("forwards the result text when the backend omits output_tokens", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        // Third-party backends have been observed emitting usage token fields as
+        // null (see snapshotFromUsage), and the replay lane of issue #453 was
+        // reported from exactly such a backend — a missing count must not
+        // disable the fallback.
+        injectSession(agent, [
+            { ...replayedResult("**3**"), usage: { ...ZERO_USAGE, output_tokens: null } },
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toEqual(["**3**"]);
+    });
+    it("forwards the result text when only subagent content preceded it", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        // A subagent's image block passes the text/thinking filter but carries
+        // the parentToolUseId meta — it is tool-internal, not the turn's answer,
+        // so the replayed result must still be forwarded.
+        injectSession(agent, [
+            assistantMessage("msg-sub", [{ type: "image", source: { type: "base64", data: "aGk=", media_type: "image/png" } }], "tool-1"),
+            replayedResult("**3**"),
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+        expect(messageChunkTexts(updates)).toContain("**3**");
     });
 });
 describe("emitRawSDKMessages", () => {
@@ -4747,6 +5357,9 @@ describe("post-error recovery", () => {
             taskState: new Map(),
             toolUseCache: {},
             emittedToolCalls: new Set(),
+            liveBackgroundTasks: new Map(),
+            emittedAssistantText: false,
+            owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
         };
         return { interrupt };
@@ -5369,6 +5982,1765 @@ describe("post-error recovery", () => {
         expect(compactResult.usage?.inputTokens).toBe(10);
         await agent.sessions["test-session"]?.consumer;
     });
+    // msg_lifecycle_v1 CLIs (2.1.206+): cancel() tracks orphans per-uuid in
+    // `orphanCommands`, drained by each command's own terminal lifecycle frame
+    // instead of by counting results. (lifecycleInit / lifecycleFrame are the
+    // module-scope helpers next to userEcho.)
+    it("drains BOTH coalesced orphans on their one shared result (one result for two commands)", async () => {
+        // Two cancelled queued turns can be FOLDED into one SDK turn that emits a
+        // single result (observed live against CLI 2.1.206). A count would go
+        // stale at 1 and swallow the /compact result below, hanging its prompt —
+        // the shared result instead covers every "started" map entry at once
+        // (they were all dispatched into the emitting turn), and the trailing
+        // `completed` frames no-op on the already-drained entries.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        const coalescedResult = createResultMessage({
+            subtype: "success",
+            stop_reason: "end_turn",
+            is_error: false,
+        });
+        coalescedResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit; // latch msgLifecycleV1
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued (cancelled below)
+                const u3 = await iter.next(); // turn 3 queued (cancelled below)
+                await gate; // test cancels (orphans u2+u3) and sends /compact
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                yield lifecycleFrame(u2.value.uuid, "started"); // both survivors dispatched
+                yield lifecycleFrame(u3.value.uuid, "started"); // into ONE coalesced turn
+                yield coalescedResult; // the shared orphan result — skipped, drains BOTH entries
+                yield lifecycleFrame(u2.value.uuid, "completed"); // terminal frames no-op
+                yield lifecycleFrame(u3.value.uuid, "completed"); // on the drained entries
+                await iter.next(); // /compact's pushed message — never echoes its uuid
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        const third = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "third" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 3);
+        await agent.cancel({ sessionId: "test-session" });
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(2);
+        // The count lane must be untouched — the map is the only skip source here.
+        expect(agent.sessions["test-session"]?.pendingOrphanResults ?? 0).toBe(0);
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        await expect(third).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        // /compact settled with its own result — the coalesced orphan's 999 was
+        // skipped, draining both map entries it covered.
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(0);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("forgets an orphan whose `cancelled` frame precedes any `started` (dropped, no result coming)", async () => {
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued (cancelled below)
+                await gate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                yield lifecycleFrame(u2.value.uuid, "cancelled"); // dropped before dispatch
+                // NO orphan result — the command never ran.
+                await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 2);
+        await agent.cancel({ sessionId: "test-session" });
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(1);
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("skips a zombie orphan's late result exactly once (`cancelled` after `started`)", async () => {
+        // The orphan was dispatched, then its turn was aborted: `cancelled` after
+        // `started` means no more lifecycle frames come, but the dead turn's
+        // result may still arrive. It must be skipped (not promoted onto
+        // /compact) AND consume the zombie entry so it can't skip forever.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        const zombieResult = createResultMessage({
+            subtype: "error_during_execution",
+            stop_reason: null,
+            is_error: true,
+        });
+        zombieResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued (cancelled below)
+                await gate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                yield lifecycleFrame(u2.value.uuid, "started"); // dispatched...
+                yield lifecycleFrame(u2.value.uuid, "cancelled"); // ...then its turn aborted -> zombie
+                yield zombieResult; // the dead turn's late result — skipped, consumes the zombie
+                await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 2);
+        await agent.cancel({ sessionId: "test-session" });
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(0);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("forgets a pending orphan the interrupt receipt reports dropped (lifecycle lane)", async () => {
+        // Belt-and-suspenders: even if the CLI never emits a `cancelled` frame
+        // for an interrupt-dropped command, the receipt's still_queued removes
+        // the pending entry so /compact's echo-less result isn't swallowed.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                await iter.next(); // turn 2's pushed message (dropped by the interrupt)
+                await gate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                // NO lifecycle frames and NO result for turn 2 — dropped silently.
+                await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        agent.sessions["test-session"].query.interrupt = vi.fn(async () => ({ still_queued: [] }));
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        // Latch the capability before cancel() picks a lane: the init frame above
+        // is only processed once the consumer drains it, which the first
+        // activation already guarantees here.
+        await waitFor(() => !!agent.sessions["test-session"]?.msgLifecycleV1);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 2);
+        await agent.cancel({ sessionId: "test-session" });
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(0);
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("deletes (not zombifies) an orphan whose `cancelled` frame arrives AFTER its error result", async () => {
+        // The live-observed abort ordering is started → error result → cancelled.
+        // The result deletes the "started" entry when it is skipped; the late
+        // `cancelled` must then no-op — a zombie here would be a phantom (its
+        // result already came) that swallows the next echo-less result and hangs
+        // /compact.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        const abortedResult = createResultMessage({
+            subtype: "error_during_execution",
+            stop_reason: null,
+            is_error: true,
+        });
+        abortedResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued (cancelled below)
+                await gate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                yield lifecycleFrame(u2.value.uuid, "started"); // dispatched...
+                yield abortedResult; // ...its turn dies: error result FIRST (observed ordering)
+                yield lifecycleFrame(u2.value.uuid, "cancelled"); // ...terminal frame after — must no-op, not zombify
+                await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 2);
+        await agent.cancel({ sessionId: "test-session" });
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(0);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("drains ALL coalesced orphans of an aborted turn on its single error result", async () => {
+        // Two cancelled queued commands folded into ONE turn that the interrupt
+        // then aborts: one shared error result, then a `cancelled` frame per
+        // command. The result must cover BOTH entries (deleting them so the
+        // cancelled frames no-op) — leaving one as a zombie would swallow
+        // /compact's result and hang it.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        const abortedResult = createResultMessage({
+            subtype: "error_during_execution",
+            stop_reason: null,
+            is_error: true,
+        });
+        abortedResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued (cancelled below)
+                const u3 = await iter.next(); // turn 3 queued (cancelled below)
+                await gate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                yield lifecycleFrame(u2.value.uuid, "started"); // both dispatched into
+                yield lifecycleFrame(u3.value.uuid, "started"); // ONE coalesced turn...
+                yield abortedResult; // ...which aborts: ONE shared error result
+                yield lifecycleFrame(u2.value.uuid, "cancelled"); // per-command terminals
+                yield lifecycleFrame(u3.value.uuid, "cancelled");
+                await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        const third = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "third" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 3);
+        await agent.cancel({ sessionId: "test-session" });
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(2);
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        await expect(third).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(0);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("does not seed an orphan for a queued command whose terminal frame already passed", async () => {
+        // A queued command can fold into the ACTIVE turn and finish (started +
+        // completed frames consumed) while its Turn still sits queued. A later
+        // cancel() must not seed an entry for it: its one-and-only terminal frame
+        // is spent, so nothing would ever drain the entry and it would swallow
+        // /compact's echo-less result.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued...
+                yield lifecycleFrame(u2.value.uuid, "started"); // ...folded into turn 1
+                yield lifecycleFrame(u2.value.uuid, "completed"); // ...and finished pre-cancel
+                await gate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                // NO further frames and NO orphan result for u2 — it is spent.
+                await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        // Wait for the consumer to record u2's terminal frame on the queued Turn
+        // before cancelling, so cancel() sees commandFinished.
+        await waitFor(() => agent.sessions["test-session"]?.turnQueue?.some((t) => t.commandFinished === "completed") === true);
+        await agent.cancel({ sessionId: "test-session" });
+        expect(agent.sessions["test-session"]?.orphanCommands?.size ?? 0).toBe(0);
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("stops blocking on a started orphan whose terminal frame never arrives", async () => {
+        // Crash caveat: a turn that dies by throwing can leak an entry with no
+        // terminal frame. The orphan's own result deletes the "started" entry, so
+        // later echo-less results must FALL THROUGH to head promotion (the
+        // entry's turn already produced its result) instead of being swallowed
+        // one after another — /compact here must settle normally with nothing
+        // left in the map.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        const orphanResult = createResultMessage({
+            subtype: "error_during_execution",
+            stop_reason: null,
+            is_error: true,
+        });
+        orphanResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued (cancelled below)
+                await gate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                yield lifecycleFrame(u2.value.uuid, "started"); // dispatched...
+                yield orphanResult; // ...its result arrives (entry deleted)...
+                // ...and its terminal frame is LOST (turn died by throwing).
+                await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 2);
+        await agent.cancel({ sessionId: "test-session" });
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        // The orphan's own result already deleted the entry.
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(0);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("consumes an orphan's result that arrives while the turn queue is empty", async () => {
+        // The common post-cancel timeline: the active turn settles at the
+        // interrupt's idle, the user hasn't typed yet, and only THEN does the
+        // orphaned command's dead turn flush its frames and error result. The
+        // bookkeeping must run even with nothing to promote — skipping it would
+        // leave a "started" entry that the later `cancelled` frame turns into a
+        // phantom zombie, swallowing the next /compact result.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        const orphanResult = createResultMessage({
+            subtype: "error_during_execution",
+            stop_reason: null,
+            is_error: true,
+        });
+        orphanResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued (cancelled below)
+                await gate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled — queue now EMPTY
+                yield lifecycleFrame(u2.value.uuid, "started"); // dispatched...
+                yield orphanResult; // ...result arrives with an empty queue — must drain the entry
+                yield lifecycleFrame(u2.value.uuid, "cancelled"); // must no-op, not zombify
+                await iter.next(); // /compact's pushed message — only sent once the map drained
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 2);
+        await agent.cancel({ sessionId: "test-session" });
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(1);
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        // The orphan's headless result must have drained its own entry — this
+        // waitFor hangs (and fails the test) if the empty-queue result skipped
+        // the bookkeeping.
+        await waitFor(() => agent.sessions["test-session"]?.orphanCommands?.size === 0);
+        // Only prompt /compact once the queue was provably empty at the orphan
+        // result, so this test pins the headless path specifically.
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("does not zombify a command folded into the active turn whose shared result was the active turn's", async () => {
+        // A queued command can FOLD into the still-active turn. After a cancel
+        // orphans it ("started" entry), the fold's shared result arrives while
+        // the absorbing turn is still active — attributed there, never reaching
+        // the echo-less skip. That result must still cover the orphan's entry;
+        // otherwise the trailing `cancelled` frame zombifies it into a phantom
+        // that swallows /compact's result.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        const sharedResult = createResultMessage({
+            subtype: "success",
+            stop_reason: "end_turn",
+            is_error: false,
+        });
+        sharedResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued...
+                yield lifecycleFrame(u2.value.uuid, "started"); // ...folded into ACTIVE turn 1
+                await gate; // test cancels (orphans u2 as "started")
+                yield sharedResult; // the fold's shared result — turn 1 is still active; must cover u2's entry
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                yield lifecycleFrame(u2.value.uuid, "cancelled"); // must no-op, not zombify
+                await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        // Wait for the fold's "started" frame to latch, so cancel() seeds the
+        // entry as "started" (dispatched, result still coming).
+        await waitFor(() => agent.sessions["test-session"]?.turnQueue?.some((t) => t.commandStarted) === true);
+        await agent.cancel({ sessionId: "test-session" });
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(1);
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        const firstResult = await first;
+        expect(firstResult.stopReason).toBe("cancelled");
+        // The shared result arrived pre-idle, so its usage is the cancelled
+        // turn's spend.
+        expect(firstResult.usage?.inputTokens).toBe(999);
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(0);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("does not seed a zombie for a fold-aborted command whose shared result passed BEFORE the cancel", async () => {
+        // The pre-cancel variant of the fold: turn 1 absorbs the queued command,
+        // then dies — its error result is consumed as turn 1's (rejecting it) and
+        // the command's `cancelled` frame latches commandFinished on the still-
+        // queued turn 2, all before any cancel. cancel() must then seed NOTHING
+        // for turn 2: its result already passed, so a zombie would be a phantom
+        // that swallows /compact's result.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        const abortedResult = createResultMessage({
+            subtype: "error_during_execution",
+            stop_reason: null,
+            is_error: true,
+        });
+        abortedResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                const u2 = await iter.next(); // turn 2 queued...
+                yield lifecycleFrame(u2.value.uuid, "started"); // ...folded into ACTIVE turn 1
+                yield abortedResult; // turn 1 dies: the shared error result rejects it (u2's result has now passed)
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // the error's trailing idle
+                yield lifecycleFrame(u2.value.uuid, "cancelled"); // u2's terminal frame, consumed pre-cancel
+                await gate; // test cancels here — must seed nothing for u2
+                await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        // turn 1's rejection confirms the shared result was consumed.
+        await expect(first).rejects.toThrow();
+        // Wait for u2's terminal frame to latch on the queued turn before
+        // cancelling, so cancel() sees commandFinished === "cancelled" AND
+        // commandResultSeen.
+        await waitFor(() => agent.sessions["test-session"]?.turnQueue?.some((t) => t.commandFinished === "cancelled" && t.commandResultSeen === true) === true);
+        await agent.cancel({ sessionId: "test-session" });
+        expect(agent.sessions["test-session"]?.orphanCommands?.size ?? 0).toBe(0);
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("does not seed an orphan on force-cancel when the wedged turn's result and terminal frame already passed", async () => {
+        // Wedge variant of the spent-frame rule: the interrupt aborts the active
+        // turn and the consumer drains its error result (dropped at the
+        // cancelled guard) and its `cancelled` frame — then the stream wedges
+        // before the trailing idle and the force-cancel backstop settles the
+        // turn. The backstop must seed NOTHING: both the result and the one-and-
+        // only terminal frame are spent, so an entry could never drain and would
+        // swallow /compact's result when the SDK recovers.
+        const agent = createMockAgent();
+        agent.forceCancelGraceMs = 50;
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        let releaseWedge;
+        const wedge = new Promise((resolve) => (releaseWedge = resolve));
+        const abortedResult = createResultMessage({
+            subtype: "error_during_execution",
+            stop_reason: null,
+            is_error: true,
+        });
+        abortedResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                yield lifecycleFrame(u1.value.uuid, "started"); // its own dispatch frame
+                await gate; // test cancels here
+                yield abortedResult; // dropped at the cancelled guard; marks the command's result seen
+                yield lifecycleFrame(u1.value.uuid, "cancelled"); // terminal frame consumed...
+                await wedge; // ...then the stream wedges: no trailing idle; the backstop fires
+                await iter.next(); // SDK "recovers": /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        await waitFor(() => agent.sessions["test-session"]?.turnQueue?.some((t) => t.commandStarted) === true);
+        await agent.cancel({ sessionId: "test-session" });
+        release();
+        // The backstop settles the pending prompt after the grace elapses.
+        const firstResult = await first;
+        expect(firstResult.stopReason).toBe("cancelled");
+        // Nothing seeded on either lane: result and terminal frame were spent.
+        expect(agent.sessions["test-session"]?.orphanCommands?.size ?? 0).toBe(0);
+        expect(agent.sessions["test-session"]?.pendingOrphanResults ?? 0).toBe(0);
+        releaseWedge();
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        await agent.sessions["test-session"]?.consumer;
+    });
+});
+describe("deferred settlement for live background subagents (issues #864/#866)", () => {
+    // A turn whose terminal result arrives while background subagents IT
+    // spawned are still live must NOT settle at that result: ACP allows
+    // out-of-turn session/update, but many clients stop consuming at the
+    // prompt response, so the subagents' remaining output would be dropped
+    // and their permission requests would block on an RPC nobody answers. The turn is held open
+    // across the CLI's idle cycles (observed cadence: user result → idle →
+    // subagent works → task_notification → followup turn → idle) and settles
+    // once its subagents are done — at the followup's terminal result, or at
+    // an idle with none of them left.
+    function createMockAgent() {
+        const mockClient = {
+            sessionUpdate: async () => { },
+        };
+        return new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+    }
+    const waitFor = async (cond) => {
+        for (let i = 0; i < 200; i++) {
+            if (cond())
+                return;
+            await new Promise((r) => setTimeout(r, 0));
+        }
+        throw new Error("waitFor timed out");
+    };
+    function resultMessage(overrides = {}) {
+        return {
+            type: "result",
+            subtype: "success",
+            stop_reason: "end_turn",
+            is_error: false,
+            result: "",
+            errors: [],
+            duration_ms: 0,
+            duration_api_ms: 0,
+            num_turns: 1,
+            total_cost_usd: 0,
+            usage: {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+            modelUsage: {},
+            permission_denials: [],
+            uuid: randomUUID(),
+            session_id: "test-session",
+            ...overrides,
+        };
+    }
+    const stateChanged = (state) => ({
+        type: "system",
+        subtype: "session_state_changed",
+        state,
+        uuid: randomUUID(),
+        session_id: "test-session",
+    });
+    const running = () => stateChanged("running");
+    const idle = () => stateChanged("idle");
+    const requiresAction = () => stateChanged("requires_action");
+    /** Agent whose client records top-level agent_message_chunk texts as
+     *  `chunk:<text>` in the returned events array. */
+    const chunkCapturingAgent = () => {
+        const events = [];
+        const mockClient = {
+            sessionUpdate: async (u) => {
+                if (u.update?.sessionUpdate === "agent_message_chunk") {
+                    events.push(`chunk:${u.update.content?.text}`);
+                }
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        return { agent, events };
+    };
+    /** The issue-#453 cache-replay shape: zero output tokens, no streaming,
+     *  the answer only on the result text. */
+    const replayedResult = (text) => resultMessage({
+        result: text,
+        usage: {
+            input_tokens: 10,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        },
+    });
+    const backgroundTasksChanged = (taskIds) => ({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: taskIds.map((task_id) => ({
+            task_id,
+            task_type: "local_agent",
+            description: "explore",
+        })),
+        uuid: randomUUID(),
+        session_id: "test-session",
+    });
+    /** A background Task/Agent-tool subagent starting (subagent_type set). */
+    const subagentStarted = (taskId) => ({
+        type: "system",
+        subtype: "task_started",
+        task_id: taskId,
+        tool_use_id: `toolu_${taskId}`,
+        description: "Explore the project",
+        subagent_type: "Explore",
+        uuid: randomUUID(),
+        session_id: "test-session",
+    });
+    const taskNotification = (taskId) => ({
+        type: "system",
+        subtype: "task_notification",
+        task_id: taskId,
+        tool_use_id: `toolu_${taskId}`,
+        status: "completed",
+        output_file: "",
+        summary: "done",
+        uuid: randomUUID(),
+        session_id: "test-session",
+    });
+    const assistantText = (text) => ({
+        type: "assistant",
+        parent_tool_use_id: null,
+        uuid: randomUUID(),
+        session_id: "test-session",
+        message: {
+            role: "assistant",
+            model: "claude-sonnet-4-5",
+            stop_reason: "end_turn",
+            usage: {
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+            content: [{ type: "text", text }],
+        },
+    });
+    it("holds the prompt open while a subagent is live and resolves at the followup's result", async () => {
+        const { agent, events } = chunkCapturingAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield subagentStarted("agent-1");
+                // The user turn's terminal result: the subagent is still live, so the
+                // prompt must NOT resolve here.
+                yield resultMessage();
+                // The CLI does not hold its trailing idle for background agents —
+                // it arrives immediately, while the subagent still runs. The hold
+                // must survive it.
+                yield idle();
+                // The subagent finishes; the model wakes and streams the promised
+                // followup summary, which must land inside the still-open turn.
+                yield taskNotification("agent-1");
+                yield assistantText("promised summary");
+                yield resultMessage({ origin: { kind: "task-notification" } });
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const response = await agent
+            .prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "explore" }] })
+            .then((r) => {
+            events.push("resolved");
+            return r;
+        });
+        expect(response.stopReason).toBe("end_turn");
+        // The user turn's own usage — the task-notification followup's tokens are
+        // reported separately, not folded into the prompt response.
+        expect(response.usage?.totalTokens).toBe(15);
+        // The followup summary streamed BEFORE the prompt resolved, i.e. inside
+        // the turn, where every client is still listening.
+        const summaryIndex = events.indexOf("chunk:promised summary");
+        expect(summaryIndex).toBeGreaterThanOrEqual(0);
+        expect(summaryIndex).toBeLessThan(events.indexOf("resolved"));
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("falls back to settling at an idle when no followup comes", async () => {
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage();
+                yield idle(); // the turn's own trailer — still waiting, must hold
+                yield taskNotification("agent-1"); // subagent done, but no followup
+                yield idle(); // nothing left to wait for — settles here
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("resolves at the result when the subagent already settled during the turn", async () => {
+        const agent = createMockAgent();
+        let releaseIdle;
+        const idleGate = new Promise((resolve) => (releaseIdle = resolve));
+        let idleYielded = false;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield taskNotification("agent-1"); // settled before the result
+                yield resultMessage();
+                await idleGate;
+                idleYielded = true;
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "quick" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        expect(idleYielded).toBe(false);
+        releaseIdle();
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("resolves at the result for non-subagent background tasks (run_in_background Bash)", async () => {
+        // A dev server can outlive every turn; deferring on it would only add
+        // settlement latency to each one. Only subagent tasks defer.
+        const agent = createMockAgent();
+        let releaseIdle;
+        const idleGate = new Promise((resolve) => (releaseIdle = resolve));
+        let idleYielded = false;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield {
+                    type: "system",
+                    subtype: "task_started",
+                    task_id: "bash-1",
+                    tool_use_id: "toolu_bash",
+                    description: "npm run dev",
+                    // no subagent_type: a background shell
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                };
+                yield resultMessage();
+                await idleGate;
+                idleYielded = true;
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "start the dev server" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        expect(idleYielded).toBe(false);
+        releaseIdle();
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("settles a deferred turn 'cancelled' immediately at cancel()", async () => {
+        // During the hold the session is typically already idle (its trailer
+        // fired at the result), so the interrupt may never produce a fresh idle
+        // — cancel() must not wait for one (or for the force-cancel backstop).
+        const agent = createMockAgent();
+        let releaseAfterCancel;
+        const afterCancel = new Promise((resolve) => (releaseAfterCancel = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage(); // deferral point
+                yield idle(); // the turn's own trailer — the hold survives it
+                await afterCancel; // nothing more comes until after the cancel
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn?.deferredSettle);
+        await agent.cancel({ sessionId: "test-session" });
+        // Resolved by cancel() itself — no further stream message needed. The
+        // turn's own result already accumulated its usage; the cancelled settle
+        // must still report it (issue #844).
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: expect.objectContaining({ totalTokens: 15 }),
+        });
+        releaseAfterCancel();
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("does not fail a held turn when a followup errors while another subagent is live", async () => {
+        // A followup's is_error must never touch the user-turn lifecycle: the
+        // held turn's own result recorded a success.
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield subagentStarted("agent-2");
+                yield resultMessage(); // defers on both
+                yield idle();
+                yield taskNotification("agent-1");
+                // agent-1's followup errors while agent-2 is still live.
+                yield resultMessage({
+                    origin: { kind: "task-notification" },
+                    is_error: true,
+                    result: "followup blew up",
+                });
+                yield idle();
+                yield taskNotification("agent-2");
+                yield resultMessage({ origin: { kind: "task-notification" } }); // settles
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("does not read a followup's lagged trailing idle as the next prompt being abandoned", async () => {
+        // Settling at the followup's result unblocks the client right before the
+        // followup's own trailing idle; if that idle lags past the next prompt's
+        // echo it must be absorbed, not read as the fresh turn ending without a
+        // result (issue #825's false-fail path).
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage(); // turn 1 defers
+                yield idle(); // turn 1's trailer
+                yield taskNotification("agent-1");
+                yield resultMessage({ origin: { kind: "task-notification" } }); // settles turn 1
+                const u2 = await iter.next();
+                yield userEcho(u2.value); // turn 2 activates...
+                yield idle(); // ...before the followup's lagged trailer arrives
+                yield resultMessage(); // turn 2's own result
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        expect(first.stopReason).toBe("end_turn");
+        const second = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        expect(second.stopReason).toBe("end_turn");
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("hands off a deferred turn with its recorded stop reason when the next prompt's echo arrives", async () => {
+        // The user moving on must not block behind a long-running subagent — the
+        // next echo settles the deferred turn — but the hand-off must report the
+        // outcome its result recorded, not rewrite it to end_turn.
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage({ stop_reason: "max_tokens" }); // turn 1 defers
+                const u2 = await iter.next();
+                yield userEcho(u2.value); // turn 2's echo hands off turn 1
+                // Turn 2 did not spawn agent-1, so it settles at its own result even
+                // though the subagent is still live — an earlier turn's long-running
+                // agent must not stall later prompts.
+                yield resultMessage();
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn?.deferredSettle);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await expect(first).resolves.toEqual(expect.objectContaining({ stopReason: "max_tokens" }));
+        await expect(second).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("hands off a held turn when an echo-less command's result arrives (/context during a hold)", async () => {
+        // An echo-less queued command has no user echo to trigger the hand-off,
+        // so its result must do it: settle the held turn with ITS recorded
+        // outcome and promote the queued turn — not overwrite the held turn's
+        // outcome and leave the queued prompt hanging.
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage({ stop_reason: "max_tokens" }); // turn 1 held
+                yield idle();
+                await iter.next(); // second prompt pushed — echo-less, only a result
+                yield resultMessage();
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn?.deferredSettle);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/context" }],
+        });
+        await expect(first).resolves.toEqual(expect.objectContaining({ stopReason: "max_tokens" }));
+        await expect(second).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("defers a refusal result while the turn's subagent is live", async () => {
+        // A refusal is a normal turn outcome — it must route through the same
+        // deferral gate, or the subagent's remaining work is stranded
+        // out-of-turn through the refusal lane.
+        const agent = createMockAgent();
+        let releaseDrain;
+        const drainGate = new Promise((resolve) => (releaseDrain = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage({ stop_reason: "refusal" }); // held, not settled
+                yield idle();
+                await drainGate;
+                yield taskNotification("agent-1");
+                yield resultMessage({ origin: { kind: "task-notification" } }); // settles
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const response = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        // The refusal result must HOLD the turn (deferredSettle recorded), not
+        // settle it out from under the live subagent.
+        await waitFor(() => agent.sessions["test-session"]?.activeTurn?.deferredSettle?.stopReason === "refusal");
+        releaseDrain();
+        await expect(response).resolves.toEqual(expect.objectContaining({ stopReason: "refusal" }));
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("resolves a held turn with its recorded outcome when the stream dies", async () => {
+        // The held turn's answer already streamed; a stream death during the
+        // post-answer hold is a background failure, not the turn's.
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage(); // held
+                yield idle();
+                throw new Error("subprocess died");
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("absorbs the interrupt's lagged trailer after cancelling a held turn mid-followup", async () => {
+        // Cancelling while a followup cycle is live pre-empts its result, so
+        // the interrupt produces a trailer idle with no counted result; lagging
+        // past the next prompt's echo it must be absorbed, not read as that
+        // fresh turn ending without a result (issue #825's false-fail). (An
+        // already-idle cancel produces no trailer, and pre-counting one there
+        // would mask a future #825 detection — hence the not-idle gate, which
+        // its own test pins below.)
+        const agent = createMockAgent();
+        let releaseAfterCancel;
+        const afterCancel = new Promise((resolve) => (releaseAfterCancel = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage(); // turn 1 held
+                yield idle(); // its trailer, absorbed mid-hold
+                yield taskNotification("agent-1");
+                yield running(); // the followup cycle starts...
+                await afterCancel; // ...and the cancel's interrupt pre-empts it
+                const u2 = await iter.next();
+                yield userEcho(u2.value); // turn 2 activates...
+                yield idle(); // ...before the interrupt's lagged trailer arrives
+                yield resultMessage(); // turn 2's own result
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn?.deferredSettle);
+        await agent.cancel({ sessionId: "test-session" });
+        await expect(first).resolves.toEqual(expect.objectContaining({ stopReason: "cancelled" }));
+        releaseAfterCancel();
+        const second = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "next" }],
+        });
+        expect(second.stopReason).toBe("end_turn");
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("reconciles a leaked subagent entry via background_tasks_changed", async () => {
+        // If a task's settle bookend is lost, the level signal's REPLACE
+        // semantics drop the stale entry so later turns don't defer forever.
+        const agent = createMockAgent();
+        let releaseIdle;
+        const idleGate = new Promise((resolve) => (releaseIdle = resolve));
+        let idleYielded = false;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield subagentStarted("agent-1");
+                // The settle bookend was lost; the level signal says nothing is live.
+                yield backgroundTasksChanged([]);
+                yield resultMessage();
+                await idleGate;
+                idleYielded = true;
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        expect(idleYielded).toBe(false);
+        // The entry survives for permission attribution (a live sync subagent is
+        // legitimately absent from the level's background-only universe) — only
+        // the hold stops waiting on it.
+        const record = agent.sessions["test-session"].liveBackgroundTasks.get("agent-1");
+        expect(record?.parentToolUseId).toBe("toolu_agent-1");
+        expect(record?.endedPerLevel).toBe("ended");
+        releaseIdle();
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("keeps holding through a peer-origin autonomous result", async () => {
+        // A peer/coordinator cycle's result is not the user's; it must neither
+        // settle the held turn as a hand-off nor touch the user-turn lifecycle.
+        const { agent, events } = chunkCapturingAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage(); // held
+                yield idle();
+                // A peer message wakes the model; its cycle's result must not end
+                // the hold (the subagent is still live).
+                yield resultMessage({ origin: { kind: "peer", from: "other-session" } });
+                yield idle();
+                yield assistantText("peer-cycle marker");
+                yield taskNotification("agent-1");
+                yield resultMessage({ origin: { kind: "task-notification" } }); // settles
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const response = await agent
+            .prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "explore" }] })
+            .then((r) => {
+            events.push("resolved");
+            return r;
+        });
+        expect(response.stopReason).toBe("end_turn");
+        // Resolution came after the peer cycle's output — the peer result did
+        // not settle the hold.
+        const markerIndex = events.indexOf("chunk:peer-cycle marker");
+        expect(markerIndex).toBeGreaterThanOrEqual(0);
+        expect(markerIndex).toBeLessThan(events.indexOf("resolved"));
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("closes the delivery stretch when a held turn is handed off by the next echo", async () => {
+        // The held turn's followup summary latched the delivery flag; the echo
+        // hand-off settles the held turn, so the flag must reset or the next
+        // (replayed) turn's issue-#453 result-text fallback is suppressed.
+        // Asserted on the observable: the replayed turn's result text IS
+        // forwarded (a flag check after turn 2's finally would pass vacuously).
+        const { agent, events } = chunkCapturingAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield subagentStarted("agent-2");
+                yield resultMessage(); // held on both
+                yield idle();
+                yield taskNotification("agent-1");
+                yield assistantText("first summary"); // latches the delivery flag
+                yield resultMessage({ origin: { kind: "task-notification" } }); // still holding (agent-2)
+                yield idle();
+                const u2 = await iter.next();
+                yield userEcho(u2.value); // hand-off settles the held turn
+                // Turn 2 is a cache-replayed turn: nothing streams, zero output
+                // tokens, the answer only on the result text (issue #453's shape).
+                yield replayedResult("replayed answer");
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn?.deferredSettle);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "next" }],
+        });
+        await expect(first).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        await expect(second).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        // The hand-off closed the held turn's stretch, so the replayed turn's
+        // fallback fired instead of being suppressed by the followup's text.
+        expect(events).toContain("chunk:replayed answer");
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("re-arms the hold when a later level includes a previously absent task, and sweeps ended entries at activation", async () => {
+        const agent = createMockAgent();
+        let releaseDrain;
+        const drainGate = new Promise((resolve) => (releaseDrain = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield subagentStarted("agent-1");
+                // A racing level omits the live agent (payload built before its
+                // registration) — marks it endedPerLevel...
+                yield backgroundTasksChanged([]);
+                // ...and a later level that INCLUDES it proves it live: un-ended,
+                // so the turn's result defers on it again.
+                yield backgroundTasksChanged(["agent-1"]);
+                yield resultMessage(); // must HOLD (the un-mark re-armed the wait)
+                yield idle();
+                await drainGate; // let the test observe the held state
+                // A second racing level ends it again while held; nothing settles
+                // here (the level precedes the notification in the normal ordering).
+                yield backgroundTasksChanged([]);
+                yield idle(); // the drain fallback settles the now-unwaited hold
+                const u2 = await iter.next();
+                yield userEcho(u2.value); // turn 2 activation ARMS the sweep
+                yield resultMessage();
+                yield idle();
+                const u3 = await iter.next();
+                yield userEcho(u3.value); // turn 3 activation deletes the armed entry
+                yield resultMessage();
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        // Deferral engaged despite the earlier absent-mark — the inclusion
+        // un-ended the entry.
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn?.deferredSettle);
+        releaseDrain();
+        await expect(first).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        const second = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "next" }],
+        });
+        expect(second.stopReason).toBe("end_turn");
+        // The first activation only ARMS the sweep — the entry survives one full
+        // turn so a corrective inclusive level can still rescue a live agent's
+        // attribution (deletion is irreversible).
+        expect(agent.sessions["test-session"].liveBackgroundTasks.get("agent-1")?.endedPerLevel).toBe("sweep-armed");
+        const third = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "again" }],
+        });
+        expect(third.stopReason).toBe("end_turn");
+        // The second activation deletes it (growth bound for lost bookends).
+        expect(agent.sessions["test-session"].liveBackgroundTasks.has("agent-1")).toBe(false);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("rescues a sweep-armed entry when an inclusive level arrives mid-grace", async () => {
+        // The grace's whole point: an entry armed at one activation must be
+        // rescued — attribution intact, sweep disarmed in the same assignment —
+        // by an inclusive level before the next activation deletes it.
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield backgroundTasksChanged([]); // racing payload marks it ended
+                yield resultMessage(); // no hold (ended) — settles at the result
+                yield idle();
+                const u2 = await iter.next();
+                yield userEcho(u2.value); // activation arms the sweep
+                yield resultMessage();
+                yield backgroundTasksChanged(["agent-1"]); // mid-grace rescue
+                yield idle();
+                const u3 = await iter.next();
+                yield userEcho(u3.value); // must NOT delete the rescued entry
+                yield resultMessage();
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        for (const text of ["one", "two", "three"]) {
+            const response = await agent.prompt({
+                sessionId: "test-session",
+                prompt: [{ type: "text", text }],
+            });
+            expect(response.stopReason).toBe("end_turn");
+        }
+        const record = agent.sessions["test-session"].liveBackgroundTasks.get("agent-1");
+        expect(record?.parentToolUseId).toBe("toolu_agent-1");
+        expect(record?.endedPerLevel).toBeUndefined();
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("absorbs the trailer when cancelling a hold blocked on a permission request", async () => {
+        // requires_action is a live cycle too (a followup waiting on a
+        // permission decision — the very scenario users cancel out of);
+        // interrupting it produces a result-less trailer just like running.
+        const agent = createMockAgent();
+        let releaseAfterCancel;
+        const afterCancel = new Promise((resolve) => (releaseAfterCancel = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage(); // turn 1 held
+                yield idle(); // trailer absorbed
+                yield taskNotification("agent-1");
+                yield running();
+                yield requiresAction(); // the followup blocks on a permission request
+                await afterCancel; // the cancel's interrupt pre-empts it
+                const u2 = await iter.next();
+                yield userEcho(u2.value); // turn 2 activates...
+                yield idle(); // ...before the interrupt's lagged trailer arrives
+                yield resultMessage(); // turn 2's own result
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn?.deferredSettle);
+        await agent.cancel({ sessionId: "test-session" });
+        await expect(first).resolves.toEqual(expect.objectContaining({ stopReason: "cancelled" }));
+        releaseAfterCancel();
+        const second = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "next" }],
+        });
+        expect(second.stopReason).toBe("end_turn");
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("closes the stretch after autonomous prose so a replayed prompt still delivers", async () => {
+        // Autonomous prose (a wake's summary) latches the delivery flag; with no
+        // turn in flight or queued, the autonomous result must close the stretch
+        // or the next cache-replayed prompt's issue-#453 fallback is suppressed.
+        const { agent, events } = chunkCapturingAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield resultMessage(); // turn 1 settles normally
+                yield idle();
+                // Autonomous cycle with no turn pending: prose + result.
+                yield assistantText("background note");
+                yield resultMessage({ origin: { kind: "task-notification" } });
+                yield idle();
+                const u2 = await iter.next();
+                yield userEcho(u2.value);
+                // Cache-replayed turn: no streaming, zero output tokens, the answer
+                // only on the result text.
+                yield replayedResult("replayed answer");
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "one" }],
+        });
+        expect(first.stopReason).toBe("end_turn");
+        // The user types AFTER the background note arrived (the real sequence);
+        // prompting before the autonomous result is consumed would race the
+        // queued-turn guard, which deliberately errs toward suppression. Wait
+        // for the prose to land and the autonomous result's clear to follow.
+        await waitFor(() => events.includes("chunk:background note") &&
+            agent.sessions["test-session"].emittedAssistantText === false);
+        const second = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "two" }],
+        });
+        expect(second.stopReason).toBe("end_turn");
+        expect(events).toContain("chunk:replayed answer");
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("preserves a queued turn's streamed answer across an interleaved autonomous result", async () => {
+        // Mid-message echo lag: a queued turn's deltas can stream before its echo
+        // activates it (activeTurn still null). An autonomous result landing in
+        // that window must NOT close the stretch — the flag guards the queued
+        // turn's already-delivered answer, and clearing would re-emit it via the
+        // issue-#453 fallback (the duplicate direction the flag's doc forbids).
+        const { agent, events } = chunkCapturingAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield resultMessage(); // turn 1 settles
+                yield idle();
+                const u2 = await iter.next(); // turn 2 pushed (queued, not yet echoed)
+                // Turn 2's answer streams BEFORE its echo (mid-message echo lag).
+                yield assistantText("streamed answer");
+                // An autonomous result interleaves while activeTurn is null but
+                // turn 2 sits unsettled in the queue.
+                yield resultMessage({ origin: { kind: "task-notification" } });
+                yield userEcho(u2.value); // now the echo activates turn 2
+                // Zero-output result whose text duplicates the streamed answer.
+                yield replayedResult("streamed answer");
+                yield idle();
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "one" }],
+        });
+        expect(first.stopReason).toBe("end_turn");
+        const second = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "two" }],
+        });
+        expect(second.stopReason).toBe("end_turn");
+        // The streamed answer must appear exactly once — the queued-turn guard
+        // kept the flag latched, so the fallback did not re-emit it.
+        expect(events.filter((e) => e === "chunk:streamed answer")).toHaveLength(1);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("does not pre-count an interrupt trailer when cancelling an already-idle hold", async () => {
+        // An already-idle hold's interrupt emits no trailer; a pre-counted debt
+        // would never drain and would absorb the one un-owed idle that is the
+        // issue-#825 detector's signal for a later genuinely-wedged turn.
+        const agent = createMockAgent();
+        let releaseAfterCancel;
+        const afterCancel = new Promise((resolve) => (releaseAfterCancel = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield running();
+                yield subagentStarted("agent-1");
+                yield resultMessage(); // turn 1 held
+                yield idle(); // trailer absorbed; session sits idle
+                await afterCancel; // cancel happens here — no cycle running
+                const u2 = await iter.next();
+                yield userEcho(u2.value); // turn 2 activates
+                yield idle(); // un-owed idle with turn 2 unsettled — the #825 signal
+                yield resultMessage(); // never reached for turn 2's settle
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "explore" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn?.deferredSettle);
+        await agent.cancel({ sessionId: "test-session" });
+        await expect(first).resolves.toEqual(expect.objectContaining({ stopReason: "cancelled" }));
+        releaseAfterCancel();
+        // The #825 detection must still fire for turn 2 — a stale pre-counted
+        // debt from the idle cancel would have absorbed the un-owed idle.
+        await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "next" }] })).rejects.toMatchObject({ code: -32603 });
+        await agent.sessions["test-session"]?.consumer;
+    });
 });
 describe("session/cancel wedge recovery (issue #680)", () => {
     function createMockAgent() {
@@ -5441,6 +7813,9 @@ describe("session/cancel wedge recovery (issue #680)", () => {
             taskState: new Map(),
             toolUseCache: {},
             emittedToolCalls: new Set(),
+            liveBackgroundTasks: new Map(),
+            emittedAssistantText: false,
+            owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
         };
         return { interrupt };
@@ -5776,6 +8151,411 @@ describe("turn abandoned by the SDK (issue #825)", () => {
     });
 });
 describe("streamEventToAcpNotifications", () => {
+    it("refines a tool call as soon as a streamed input field is complete", () => {
+        const toolUseCache = {};
+        const emittedToolCalls = new Set();
+        const streamedToolInputs = new Map();
+        const options = {
+            cwd: "/Users/test/project",
+            emittedToolCalls,
+            streamedToolInputs,
+        };
+        const baseMessage = {
+            type: "stream_event",
+            parent_tool_use_id: null,
+            uuid: randomUUID(),
+            session_id: "test-session",
+        };
+        const start = streamEventToAcpNotifications({
+            ...baseMessage,
+            event: {
+                type: "content_block_start",
+                index: 0,
+                content_block: {
+                    type: "tool_use",
+                    id: "toolu_read",
+                    name: "Read",
+                    input: {},
+                },
+            },
+        }, "test-session", toolUseCache, {}, console, options);
+        expect(start).toHaveLength(1);
+        expect(start[0].update).toMatchObject({
+            sessionUpdate: "tool_call",
+            toolCallId: "toolu_read",
+            title: "Read File",
+            locations: [],
+        });
+        const partial = streamEventToAcpNotifications({
+            ...baseMessage,
+            event: {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "input_json_delta", partial_json: '{"file_' },
+            },
+        }, "test-session", toolUseCache, {}, console, options);
+        expect(partial).toEqual([]);
+        const pathAvailable = streamEventToAcpNotifications({
+            ...baseMessage,
+            event: {
+                type: "content_block_delta",
+                index: 0,
+                delta: {
+                    type: "input_json_delta",
+                    partial_json: 'path":"/Users/test/project/src/ZodiacList.tsx","offset":',
+                },
+            },
+        }, "test-session", toolUseCache, {}, console, options);
+        // The overall JSON is still invalid, but file_path is complete and already
+        // makes this pending read distinguishable from other tool calls.
+        expect(pathAvailable).toHaveLength(1);
+        expect(pathAvailable[0].update).toMatchObject({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "toolu_read",
+            title: "Read src/ZodiacList.tsx",
+            rawInput: { file_path: "/Users/test/project/src/ZodiacList.tsx" },
+            locations: [{ path: "/Users/test/project/src/ZodiacList.tsx", line: 1 }],
+        });
+        expect(streamedToolInputs.size).toBe(1);
+        const completed = streamEventToAcpNotifications({
+            ...baseMessage,
+            event: {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "input_json_delta", partial_json: "10}" },
+            },
+        }, "test-session", toolUseCache, {}, console, options);
+        // Completion emits nothing: the consolidated assistant message replays the
+        // block with its full input and refines the call there — emitting here too
+        // would send a duplicate identical update. The entry is just cleaned up.
+        expect(completed).toEqual([]);
+        expect(streamedToolInputs.size).toBe(0);
+    });
+    describe("partial tool input coverage", () => {
+        function refineFromPartialInput({ name, partialJson, type = "tool_use", }) {
+            const toolUseCache = {};
+            const emittedToolCalls = new Set();
+            const streamedToolInputs = new Map();
+            const options = {
+                cwd: "/Users/test/project",
+                emittedToolCalls,
+                streamedToolInputs,
+            };
+            const baseMessage = {
+                type: "stream_event",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+            };
+            const started = streamEventToAcpNotifications({
+                ...baseMessage,
+                event: {
+                    type: "content_block_start",
+                    index: 0,
+                    content_block: { type, id: "toolu_partial", name, input: {} },
+                },
+            }, "test-session", toolUseCache, {}, console, options);
+            const refined = streamEventToAcpNotifications({
+                ...baseMessage,
+                event: {
+                    type: "content_block_delta",
+                    index: 0,
+                    delta: { type: "input_json_delta", partial_json: partialJson },
+                },
+            }, "test-session", toolUseCache, {}, console, options);
+            return { started, refined, streamedToolInputs };
+        }
+        it.each([
+            {
+                case: "Agent description",
+                name: "Agent",
+                partialJson: '{"description":"Investigate issue","prompt":',
+                title: "Investigate issue",
+                rawInput: { description: "Investigate issue" },
+            },
+            {
+                case: "legacy Task description",
+                name: "Task",
+                partialJson: '{"description":"Research dependencies","prompt":',
+                title: "Research dependencies",
+                rawInput: { description: "Research dependencies" },
+            },
+            {
+                case: "Bash command with comma and escaped quotes",
+                name: "Bash",
+                partialJson: `{"command":${JSON.stringify('sleep 900, then echo "done"')},"timeout":`,
+                title: 'sleep 900, then echo "done"',
+                rawInput: { command: 'sleep 900, then echo "done"' },
+            },
+            {
+                case: "Read file path",
+                name: "Read",
+                partialJson: '{"file_path":"/Users/test/project/src/read.ts","offset":',
+                title: "Read src/read.ts",
+                rawInput: { file_path: "/Users/test/project/src/read.ts" },
+            },
+            {
+                case: "Write file path",
+                name: "Write",
+                partialJson: '{"file_path":"/Users/test/project/src/write.ts","content":',
+                title: "Write src/write.ts",
+                rawInput: { file_path: "/Users/test/project/src/write.ts" },
+            },
+            {
+                case: "Edit file path",
+                name: "Edit",
+                partialJson: '{"file_path":"/Users/test/project/src/edit.ts","old_string":',
+                title: "Edit src/edit.ts",
+                rawInput: { file_path: "/Users/test/project/src/edit.ts" },
+            },
+            {
+                case: "Glob pattern",
+                name: "Glob",
+                partialJson: '{"pattern":"**/*.ts","path":',
+                title: "Find `**/*.ts`",
+                rawInput: { pattern: "**/*.ts" },
+            },
+            {
+                case: "Grep strings, booleans, and numbers",
+                name: "Grep",
+                partialJson: '{"pattern":"TODO, FIXME","-i":true,"-n":true,"-A":2,"-B":1,"-C":3,"output_mode":"files_with_matches","head_limit":10,"glob":"*.ts","type":"ts","multiline":true,"path":',
+                title: 'grep -i -n -A 2 -B 1 -C 3 -l | head -10 --include="*.ts" --type=ts -P "TODO, FIXME"',
+                rawInput: {
+                    pattern: "TODO, FIXME",
+                    "-i": true,
+                    "-n": true,
+                    "-A": 2,
+                    "-B": 1,
+                    "-C": 3,
+                    output_mode: "files_with_matches",
+                    head_limit: 10,
+                    glob: "*.ts",
+                    type: "ts",
+                    multiline: true,
+                },
+            },
+            {
+                case: "WebFetch URL",
+                name: "WebFetch",
+                partialJson: '{"url":"https://example.com/docs","prompt":',
+                title: "Fetch https://example.com/docs",
+                rawInput: { url: "https://example.com/docs" },
+            },
+            {
+                case: "WebSearch query and domain array",
+                name: "WebSearch",
+                type: "server_tool_use",
+                partialJson: '{"query":"ACP tools","allowed_domains":["agentclientprotocol.com","github.com"],"blocked_domains":',
+                title: '"ACP tools" (allowed: agentclientprotocol.com, github.com)',
+                rawInput: {
+                    query: "ACP tools",
+                    allowed_domains: ["agentclientprotocol.com", "github.com"],
+                },
+            },
+            {
+                case: "ReportFindings nested array and object",
+                name: "ReportFindings",
+                partialJson: '{"findings":[{"file":"src/a.ts","line":7,"summary":"Broken","failure_scenario":"Fails"}],"level":',
+                title: "Report 1 finding",
+                rawInput: {
+                    findings: [
+                        {
+                            file: "src/a.ts",
+                            line: 7,
+                            summary: "Broken",
+                            failure_scenario: "Fails",
+                        },
+                    ],
+                },
+            },
+            {
+                case: "generic Other tool",
+                name: "Other",
+                partialJson: '{"query":"custom query","options":',
+                title: "Other",
+                rawInput: { query: "custom query" },
+            },
+            {
+                case: "custom MCP tool",
+                name: "mcp__demo__search",
+                type: "mcp_tool_use",
+                partialJson: '{"query":"custom MCP query","options":',
+                title: "mcp__demo__search",
+                rawInput: { query: "custom MCP query" },
+            },
+        ])("refines $case before the full JSON object completes", (testCase) => {
+            const { refined, streamedToolInputs } = refineFromPartialInput(testCase);
+            expect(refined).toHaveLength(1);
+            expect(refined[0].update).toMatchObject({
+                sessionUpdate: "tool_call_update",
+                toolCallId: "toolu_partial",
+                title: testCase.title,
+                rawInput: testCase.rawInput,
+            });
+            // Refinements never carry `content`: content built from partial input is
+            // misleading (an Edit missing new_string renders as a deletion) or
+            // invalid (a Write diff without content lacks the required newText).
+            expect(refined[0].update).not.toHaveProperty("content");
+            expect(streamedToolInputs.size).toBe(1);
+        });
+        it.each([
+            {
+                case: "ExitPlanMode plan",
+                name: "ExitPlanMode",
+                partialJson: '{"plan":"Implement streamed input"',
+            },
+            {
+                case: "AskUserQuestion questions",
+                name: "AskUserQuestion",
+                partialJson: '{"questions":[{"question":"Which mode?","header":"Mode","options":[{"label":"Fast","description":"Fast mode"},{"label":"Safe","description":"Safe mode"}],"multiSelect":false}]',
+            },
+        ])("waits for the consolidated message when $case is the only field", ({ name, partialJson }) => {
+            // A single-field input has no top-level comma, so its one field only
+            // completes when the whole object does — at which point the
+            // consolidated assistant message refines the call. No early update.
+            const { refined, streamedToolInputs } = refineFromPartialInput({ name, partialJson });
+            expect(refined).toEqual([]);
+            expect(streamedToolInputs.size).toBe(1);
+        });
+        it("keeps streamed TodoWrite input out of the tool feed", () => {
+            // TodoWrite surfaces as `plan` snapshots, not tool_calls; the snapshot is
+            // emitted from the consolidated assistant message once the todos array is
+            // complete, so the streamed lane stays silent.
+            const { started, refined } = refineFromPartialInput({
+                name: "TodoWrite",
+                partialJson: '{"todos":[{"content":"Run tests","status":"in_progress","activeForm":"Running tests"}]',
+            });
+            expect(started).toEqual([]);
+            expect(refined).toEqual([]);
+        });
+        it.each([
+            {
+                name: "TaskCreate",
+                partialJson: '{"subject":"Create tests","description":',
+            },
+            {
+                name: "TaskUpdate",
+                partialJson: '{"taskId":"1","subject":"Update tests","status":',
+            },
+            { name: "TaskList", partialJson: "{}" },
+            { name: "TaskGet", partialJson: '{"taskId":"1"}' },
+        ])("keeps deliberately suppressed $name calls out of the tool feed", (testCase) => {
+            const { started, refined } = refineFromPartialInput(testCase);
+            expect(started).toEqual([]);
+            expect(refined).toEqual([]);
+        });
+        it("does not publish an unfinished string", () => {
+            const { refined } = refineFromPartialInput({
+                name: "Bash",
+                partialJson: '{"command":"sleep 900',
+            });
+            expect(refined).toEqual([]);
+        });
+        it("does not publish an ambiguous number until its delimiter arrives", () => {
+            const first = refineFromPartialInput({ name: "Bash", partialJson: '{"timeout":10' });
+            expect(first.refined).toEqual([]);
+            const delimited = refineFromPartialInput({
+                name: "Bash",
+                partialJson: '{"timeout":100,"command":',
+            });
+            expect(delimited.refined).toHaveLength(1);
+            expect(delimited.refined[0].update).toMatchObject({ rawInput: { timeout: 100 } });
+        });
+        it.each([
+            {
+                label: "boolean",
+                partialJson: '{"run_in_background":true,"command":',
+                rawInput: { run_in_background: true },
+            },
+            { label: "null", partialJson: '{"optional":null,"command":', rawInput: { optional: null } },
+            {
+                label: "array",
+                partialJson: '{"items":[1,"two",false],"command":',
+                rawInput: { items: [1, "two", false] },
+            },
+            {
+                label: "nested object",
+                partialJson: '{"options":{"limit":5,"enabled":true},"command":',
+                rawInput: { options: { limit: 5, enabled: true } },
+            },
+        ])("recovers a completed $label value at a field boundary", ({ partialJson, rawInput }) => {
+            const { refined } = refineFromPartialInput({ name: "CustomTool", partialJson });
+            expect(refined).toHaveLength(1);
+            expect(refined[0].update).toMatchObject({ sessionUpdate: "tool_call_update", rawInput });
+        });
+        it("survives a ping keep-alive arriving mid-stream", () => {
+            const toolUseCache = {};
+            const streamedToolInputs = new Map();
+            const options = { emittedToolCalls: new Set(), streamedToolInputs };
+            const baseMessage = {
+                type: "stream_event",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+            };
+            const send = (event) => streamEventToAcpNotifications({ ...baseMessage, event }, "test-session", toolUseCache, {}, console, options);
+            send({
+                type: "content_block_start",
+                index: 0,
+                content_block: { type: "tool_use", id: "toolu_ping", name: "Bash", input: {} },
+            });
+            send({
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "input_json_delta", partial_json: '{"command":"sleep 900"' },
+            });
+            // The API interleaves ping keep-alives during long generation pauses —
+            // exactly when a large input is streaming. It must not disturb the
+            // in-flight buffer.
+            expect(send({ type: "ping" })).toEqual([]);
+            expect(streamedToolInputs.size).toBe(1);
+            const refined = send({
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "input_json_delta", partial_json: ',"timeout":' },
+            });
+            expect(refined).toHaveLength(1);
+            expect(refined[0].update).toMatchObject({
+                sessionUpdate: "tool_call_update",
+                toolCallId: "toolu_ping",
+                rawInput: { command: "sleep 900" },
+            });
+        });
+        it("drops the buffered input at content_block_stop and message boundaries", () => {
+            const toolUseCache = {};
+            const streamedToolInputs = new Map();
+            const options = { emittedToolCalls: new Set(), streamedToolInputs };
+            const baseMessage = {
+                type: "stream_event",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+            };
+            const send = (event) => streamEventToAcpNotifications({ ...baseMessage, event }, "test-session", toolUseCache, {}, console, options);
+            send({
+                type: "content_block_start",
+                index: 0,
+                content_block: { type: "tool_use", id: "toolu_stop", name: "Bash", input: {} },
+            });
+            send({
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "input_json_delta", partial_json: '{"command":"tr' },
+            });
+            expect(streamedToolInputs.size).toBe(1);
+            send({ type: "content_block_stop", index: 0 });
+            expect(streamedToolInputs.size).toBe(0);
+            send({
+                type: "content_block_start",
+                index: 0,
+                content_block: { type: "tool_use", id: "toolu_stale", name: "Bash", input: {} },
+            });
+            expect(streamedToolInputs.size).toBe(1);
+            // A new message on the lane clears anything a cut-short stream left.
+            send({ type: "message_start", message: {} });
+            expect(streamedToolInputs.size).toBe(0);
+        });
+    });
     it("treats `ping` keep-alive events as no-ops without logging to stderr", () => {
         const errors = [];
         const logger = {
@@ -6036,6 +8816,9 @@ describe("agent selection config option", () => {
                 taskState: new Map(),
                 toolUseCache: {},
                 emittedToolCalls: new Set(),
+                liveBackgroundTasks: new Map(),
+                emittedAssistantText: false,
+                owedTrailingIdles: 0,
                 messageIdToUuid: new Map(),
             };
             return { session: agent.sessions[sessionId], applyFlagSettings };

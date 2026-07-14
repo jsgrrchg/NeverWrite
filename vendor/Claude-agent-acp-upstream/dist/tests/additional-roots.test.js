@@ -3,28 +3,28 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 let capturedOptions;
-vi.mock("@anthropic-ai/claude-agent-sdk", async () => ({
-    ...(await vi.importActual("@anthropic-ai/claude-agent-sdk")),
-    query: ({ options }) => {
-        capturedOptions = options;
-        return {
-            initializationResult: async () => ({
-                models: [
-                    {
-                        value: "claude-sonnet-4-6",
-                        displayName: "Claude Sonnet",
-                        description: "Fast",
-                        supportsAutoMode: true,
-                    },
-                ],
-            }),
-            setModel: async () => { },
-            setPermissionMode: async () => { },
-            supportedCommands: async () => [],
-            [Symbol.asyncIterator]: async function* () { },
-        };
-    },
-}));
+vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
+    const actual = await vi.importActual("@anthropic-ai/claude-agent-sdk");
+    const { makeMockQuery } = await import("./helpers.js");
+    return {
+        ...actual,
+        query: ({ options }) => {
+            capturedOptions = options;
+            return makeMockQuery({
+                initializationResult: async () => ({
+                    models: [
+                        {
+                            value: "claude-sonnet-4-6",
+                            displayName: "Claude Sonnet",
+                            description: "Fast",
+                            supportsAutoMode: true,
+                        },
+                    ],
+                }),
+            });
+        },
+    };
+});
 vi.mock("../tools.js", async () => ({
     ...(await vi.importActual("../tools.js")),
     registerHookCallback: vi.fn(),
