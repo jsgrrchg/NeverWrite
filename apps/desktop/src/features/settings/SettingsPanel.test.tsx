@@ -101,11 +101,13 @@ const aiApiMocks = vi.hoisted(() => ({
     aiResizeAuthTerminalSession: vi.fn(async () => undefined),
     aiLoadSessionHistories: vi.fn(async (): Promise<unknown[]> => []),
     aiMigrateSessionHistories: vi.fn(async () => ({
+        destination_committed: true,
         histories_copied: 0,
         histories_skipped: 0,
         attachments_copied: 0,
         attachments_skipped: 0,
         failures: [],
+        cleanup_warnings: [] as string[],
     })),
     listenToAiAuthTerminalStarted: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalOutput: vi.fn(async () => vi.fn()),
@@ -166,11 +168,13 @@ beforeEach(() => {
     vi.clearAllMocks();
     aiApiMocks.aiLoadSessionHistories.mockResolvedValue([]);
     aiApiMocks.aiMigrateSessionHistories.mockResolvedValue({
+        destination_committed: true,
         histories_copied: 0,
         histories_skipped: 0,
         attachments_copied: 0,
         attachments_skipped: 0,
         failures: [],
+        cleanup_warnings: [],
     });
     getMockCurrentWindow().startDragging.mockClear();
     getMockCurrentWindow().toggleMaximize.mockClear();
@@ -625,7 +629,7 @@ describe("SettingsPanel", () => {
         expect(toggle).toHaveAttribute("aria-checked", "false");
     });
 
-    it("offers to move loaded vault AI chats when disabling vault storage", async () => {
+    it("switches to the destination after a move with cleanup warnings", async () => {
         const initializeMock = vi.fn(async () => ({
             sessionInventoryLoaded: true,
         }));
@@ -654,6 +658,15 @@ describe("SettingsPanel", () => {
         useVaultStore.setState({ vaultPath: "/vault" });
         safeStorageSetItem("neverwrite.ai.storage-scope:/vault", "vault");
         aiApiMocks.aiLoadSessionHistories.mockResolvedValueOnce([]);
+        aiApiMocks.aiMigrateSessionHistories.mockResolvedValueOnce({
+            destination_committed: true,
+            histories_copied: 1,
+            histories_skipped: 0,
+            attachments_copied: 1,
+            attachments_skipped: 0,
+            failures: [],
+            cleanup_warnings: ["source attachment cleanup failed"],
+        });
 
         renderComponent(<SettingsPanel onClose={() => {}} />);
 
@@ -699,6 +712,10 @@ describe("SettingsPanel", () => {
         expect(initializeMock).toHaveBeenCalledWith({
             createDefaultSession: false,
         });
+        expect(
+            useChatStore.getState().sessionsById["persisted:history-1"]
+                .historyStorageScope,
+        ).toBe("device");
     });
 
     it("uses the settings window vault URL when the vault store is not hydrated", async () => {

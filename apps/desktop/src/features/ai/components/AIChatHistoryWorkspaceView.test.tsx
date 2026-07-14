@@ -21,11 +21,13 @@ vi.mock("../chatExport", () => ({
 vi.mock("../api", () => ({
     aiHasVaultSessionHistories: vi.fn().mockResolvedValue(false),
     aiMigrateSessionHistories: vi.fn().mockResolvedValue({
+        destination_committed: true,
         histories_copied: 0,
         histories_skipped: 0,
         attachments_copied: 0,
         attachments_skipped: 0,
         failures: [],
+        cleanup_warnings: [],
     }),
 }));
 
@@ -367,11 +369,13 @@ describe("AIChatHistoryWorkspaceView", () => {
     it("dismisses the legacy vault history notice when only external attachments are skipped", async () => {
         aiHasVaultSessionHistoriesMock.mockResolvedValue(true);
         aiMigrateSessionHistoriesMock.mockResolvedValueOnce({
+            destination_committed: true,
             histories_copied: 1,
             histories_skipped: 0,
             attachments_copied: 0,
             attachments_skipped: 1,
             failures: [],
+            cleanup_warnings: [],
         });
         const initialize = vi.fn().mockResolvedValue(undefined);
         useChatStore.setState((state) => ({

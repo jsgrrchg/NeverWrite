@@ -1072,6 +1072,52 @@ describe("chatStore", () => {
         );
     });
 
+    it("keeps an open transcript in its original scope when the default changes", async () => {
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        const session = {
+            ...createSessionWithTrackedFiles("session-one", []),
+            vaultPath: "/vaults/one",
+            messages: [
+                {
+                    id: "user-1",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "Keep this local",
+                    timestamp: 1,
+                },
+            ],
+        };
+        useChatStore.setState({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+        });
+
+        useChatStore.getState().setAiStorageScope("vault");
+        useChatStore.getState().upsertSession({
+            ...session,
+            historyStorageScope: "vault",
+        });
+        expect(
+            useChatStore.getState().sessionsById[session.sessionId]
+                .historyStorageScope,
+        ).toBe("device");
+
+        invokeMock.mockClear();
+        useChatStore.getState().renameSession(session.sessionId, "Still local");
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vaults/one",
+                storageScope: "device",
+            }),
+        );
+    });
+
     it("persists session history to vault scope when enabled for that vault", async () => {
         localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
         useVaultStore.setState({ vaultPath: "/vaults/one" });

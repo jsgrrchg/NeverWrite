@@ -376,6 +376,12 @@ export interface AIChatMessage {
 export interface AIChatSession {
     sessionId: string;
     historySessionId: string;
+    /**
+     * The durable location that owns this transcript. This is intentionally
+     * independent from the current preference, which only selects where new
+     * chats are stored.
+     */
+    historyStorageScope?: "device" | "vault";
     parentSessionId?: string | null;
     runtimeSessionId?: string | null;
     closedAt?: string | null;

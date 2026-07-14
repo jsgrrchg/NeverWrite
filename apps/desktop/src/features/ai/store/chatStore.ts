@@ -737,6 +737,25 @@ function getRuntimeHistorySessionId(session: AIChatSession) {
     );
 }
 
+function getSessionHistoryStorageScope(
+    session: AIChatSession | null | undefined,
+): AIStorageScope {
+    if (session?.historyStorageScope) {
+        return session.historyStorageScope;
+    }
+
+    return loadAiHistoryStoragePreferences(getSessionVaultPath(session)).storageScope;
+}
+
+function stampSessionHistoryStorageScope(
+    session: AIChatSession,
+    storageScope: AIStorageScope,
+): AIChatSession {
+    return session.historyStorageScope
+        ? session
+        : { ...session, historyStorageScope: storageScope };
+}
+
 function isLiveRuntimeSession(session: AIChatSession) {
     return (
         session.runtimeState === "live" &&
@@ -1052,7 +1071,7 @@ async function ensureSessionAgentCatalogLoaded(
     if (!sessionHasAgentCatalog(session)) {
         const persisted = getPersistedHistoryFromCache(
             getSessionVaultPath(session),
-            useChatStore.getState().aiStorageScope,
+            getSessionHistoryStorageScope(session),
             session.historySessionId,
         );
         if (persisted) {
@@ -1805,6 +1824,11 @@ interface ChatStore {
     setChatFontFamily: (fontFamily: EditorFontFamily) => void;
     setEditDiffZoom: (size: number) => void;
     setAiStorageScope: (scope: AIStorageScope) => void;
+    reassignSessionHistoryStorageScope: (
+        vaultPath: string,
+        fromScope: AIStorageScope,
+        toScope: AIStorageScope,
+    ) => void;
     setHistoryRetentionDays: (days: number) => Promise<void>;
     setScreenshotRetentionSeconds: (seconds: number) => void;
     setToolActivityDisplayMode: (mode: ActivityDisplayMode) => void;
@@ -3007,6 +3031,11 @@ function migrateSessionLocalState(
         }
 
         const localState = snapshotSessionLocalState(state, fromSessionId);
+        const sourceSession = state.sessionsById[fromSessionId];
+        const ownedSession = stampSessionHistoryStorageScope(
+            toSession,
+            getSessionHistoryStorageScope(sourceSession),
+        );
         const nextSessionsById = { ...state.sessionsById };
         delete nextSessionsById[fromSessionId];
 
@@ -3014,14 +3043,14 @@ function migrateSessionLocalState(
             ...state.composerPartsBySessionId,
         };
         delete nextComposerParts[fromSessionId];
-        nextComposerParts[toSession.sessionId] = localState.composerParts;
+        nextComposerParts[ownedSession.sessionId] = localState.composerParts;
 
         const nextQueuedMessagesBySessionId = {
             ...state.queuedMessagesBySessionId,
         };
         delete nextQueuedMessagesBySessionId[fromSessionId];
         if (localState.queuedMessages.length > 0) {
-            nextQueuedMessagesBySessionId[toSession.sessionId] =
+            nextQueuedMessagesBySessionId[ownedSession.sessionId] =
                 localState.queuedMessages;
         }
 
@@ -3030,7 +3059,7 @@ function migrateSessionLocalState(
         };
         delete nextQueuedMessageEditBySessionId[fromSessionId];
         if (localState.queuedMessageEdit) {
-            nextQueuedMessageEditBySessionId[toSession.sessionId] =
+            nextQueuedMessageEditBySessionId[ownedSession.sessionId] =
                 localState.queuedMessageEdit;
         }
 
@@ -3039,7 +3068,7 @@ function migrateSessionLocalState(
         };
         delete nextActiveQueuedMessageBySessionId[fromSessionId];
         if (localState.activeQueuedMessage) {
-            nextActiveQueuedMessageBySessionId[toSession.sessionId] =
+            nextActiveQueuedMessageBySessionId[ownedSession.sessionId] =
                 localState.activeQueuedMessage;
         }
 
@@ -3048,25 +3077,25 @@ function migrateSessionLocalState(
         };
         delete nextPausedQueueBySessionId[fromSessionId];
         if (localState.pausedQueue) {
-            nextPausedQueueBySessionId[toSession.sessionId] =
+            nextPausedQueueBySessionId[ownedSession.sessionId] =
                 localState.pausedQueue;
         }
 
         migrated = true;
 
         return {
-            runtimes: hydrateRuntimesFromSessions(state.runtimes, [toSession]),
+            runtimes: hydrateRuntimesFromSessions(state.runtimes, [ownedSession]),
             sessionsById: {
                 ...nextSessionsById,
-                [toSession.sessionId]: toSession,
+                [ownedSession.sessionId]: ownedSession,
             },
             sessionOrder: touchSessionOrder(
                 state.sessionOrder.filter((id) => id !== fromSessionId),
-                toSession.sessionId,
+                ownedSession.sessionId,
             ),
             activeSessionId:
                 state.activeSessionId === fromSessionId
-                    ? toSession.sessionId
+                    ? ownedSession.sessionId
                     : state.activeSessionId,
             composerPartsBySessionId: nextComposerParts,
             queuedMessagesBySessionId: nextQueuedMessagesBySessionId,
@@ -3383,11 +3412,10 @@ async function replaceEmptySessionForAdditionalRoots(
             () => {},
         );
         if (vaultPath) {
-            const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
             await aiDeleteSessionHistory(
                 vaultPath,
                 replacementSession.historySessionId,
-                storageScope,
+                getSessionHistoryStorageScope(latestSession),
             ).catch(() => {});
         }
         return sessionId;
@@ -3417,11 +3445,10 @@ async function replaceEmptySessionForAdditionalRoots(
     if (!migrated) {
         await aiDeleteRuntimeSession(migratedSession.sessionId).catch(() => {});
         if (vaultPath) {
-            const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
             await aiDeleteSessionHistory(
                 vaultPath,
                 migratedSession.historySessionId,
-                storageScope,
+                getSessionHistoryStorageScope(latestSession),
             ).catch(() => {});
         }
         return sessionId;
@@ -3430,11 +3457,10 @@ async function replaceEmptySessionForAdditionalRoots(
     await persistSessionNow(migratedSession);
     await aiDeleteRuntimeSession(sessionId).catch(() => {});
     if (vaultPath) {
-        const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
         await aiDeleteSessionHistory(
             vaultPath,
             latestSession.historySessionId,
-            storageScope,
+            getSessionHistoryStorageScope(latestSession),
         ).catch(() => {});
     }
 
@@ -5664,6 +5690,7 @@ function createPersistedSession(
     history: PersistedSessionHistory,
     runtimes: AIRuntimeDescriptor[],
     vaultPath: string | null,
+    historyStorageScope = loadAiHistoryStoragePreferences(vaultPath).storageScope,
 ): AIChatSession | null {
     const runtime =
         (history.runtime_id
@@ -5691,6 +5718,7 @@ function createPersistedSession(
         {
             sessionId: `persisted:${history.session_id}`,
             historySessionId: history.session_id,
+            historyStorageScope,
             parentSessionId: history.parent_session_id ?? null,
             closedAt: history.closed_at ?? null,
             runtimeSessionId: null,
@@ -5974,6 +6002,10 @@ function mergeSession(
                 : normalizedExisting.configOptions,
         historySessionId:
             normalizedExisting.historySessionId ?? incoming.historySessionId,
+        // Runtime refreshes do not own transcript placement. Preserve the
+        // location selected when this chat was created or explicitly moved.
+        historyStorageScope:
+            normalizedExisting.historyStorageScope ?? incoming.historyStorageScope,
         parentSessionId:
             incoming.parentSessionId ??
             normalizedExisting.parentSessionId ??
@@ -6376,8 +6408,8 @@ async function persistSessionNow(session: AIChatSession) {
     if (!hasPersistableSessionContent(session)) return;
 
     try {
-        const { storageScope, retentionDays } =
-            loadAiHistoryStoragePreferences(vaultPath);
+        const storageScope = getSessionHistoryStorageScope(session);
+        const { retentionDays } = loadAiHistoryStoragePreferences(vaultPath);
         const history = toPersistedHistory(session);
         await aiSaveSessionHistory(vaultPath, history, storageScope);
         // Restored sessions may have had unsafe legacy metadata sanitized away.
@@ -7098,7 +7130,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         const vaultPath = getSessionVaultPath(session);
         if (!vaultPath) return false;
-        const storageScope = get().aiStorageScope;
+        const storageScope = getSessionHistoryStorageScope(session);
 
         set((state) => ({
             sessionsById: updateSessionById(state, sessionId, (current) => ({
@@ -8101,9 +8133,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const nextSessionsById = sessions.reduce<
                         Record<string, AIChatSession>
                     >((accumulator, session) => {
-                        const scopedSession = stampSessionVaultPath(
-                            session,
-                            vaultPath,
+                        const scopedSession = stampSessionHistoryStorageScope(
+                            stampSessionVaultPath(session, vaultPath),
+                            aiStorageScope,
                         );
                         const existing =
                             state.sessionsById[scopedSession.sessionId] ??
@@ -8157,6 +8189,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             history,
                             hydratedRuntimes,
                             vaultPath,
+                            aiStorageScope,
                         );
                         if (!restored) continue;
                         const existing =
@@ -8681,9 +8714,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const workspaceTabs = selectEditorWorkspaceTabs(
                     useEditorStore.getState(),
                 );
-                const stampedSession = stampSessionVaultPath(
-                    session,
-                    sessionVaultPath,
+                const stampedSession = stampSessionHistoryStorageScope(
+                    stampSessionVaultPath(session, sessionVaultPath),
+                    existing?.historyStorageScope ?? state.aiStorageScope,
                 );
                 const scopedSession = hydrateSessionCatalogFromRuntime(
                     stampedSession,
@@ -12749,9 +12782,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 !isClaudeTerminalRuntimeId(targetSession.runtimeId);
             const historySessionId =
                 targetSession?.historySessionId ?? sessionId;
-            const storageScope = vaultPath
-                ? loadAiHistoryStoragePreferences(vaultPath).storageScope
-                : get().aiStorageScope;
+            const storageScope = getSessionHistoryStorageScope(targetSession);
             clearStaleStreamingCheck(sessionId);
             _pendingStopBySessionId.delete(sessionId);
             if (
@@ -13258,15 +13289,64 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         setAiStorageScope: (scope) => {
             const next = normalizeAiStorageScope(scope);
+            const vaultPath = getAiPreferenceVaultPath();
             set((state) => {
                 if (state.aiStorageScope === next) {
                     return state;
                 }
                 _persistedHistoryCacheKey = null;
                 _persistedHistoryCacheBySessionId.clear();
-                return { aiStorageScope: next };
+                return {
+                    aiStorageScope: next,
+                    // Changing the preference must not relocate already-open
+                    // transcripts. Their owner is fixed until a successful move.
+                    sessionsById: Object.fromEntries(
+                        Object.entries(state.sessionsById).map(
+                            ([sessionId, session]) => [
+                                sessionId,
+                                sessionMatchesVaultPath(session, vaultPath)
+                                    ? stampSessionHistoryStorageScope(
+                                          session,
+                                          state.aiStorageScope,
+                                      )
+                                    : session,
+                            ],
+                        ),
+                    ),
+                };
             });
-            saveAiStorageScopePreference(getAiPreferenceVaultPath(), next);
+            saveAiStorageScopePreference(vaultPath, next);
+        },
+
+        reassignSessionHistoryStorageScope: (
+            vaultPath,
+            fromScope,
+            toScope,
+        ) => {
+            if (fromScope === toScope) return;
+            set((state) => ({
+                sessionsById: Object.fromEntries(
+                    Object.entries(state.sessionsById).map(
+                        ([sessionId, session]) => {
+                            if (!sessionMatchesVaultPath(session, vaultPath)) {
+                                return [sessionId, session];
+                            }
+                            const ownedScope = getSessionHistoryStorageScope(
+                                session,
+                            );
+                            return [
+                                sessionId,
+                                ownedScope === fromScope
+                                    ? {
+                                          ...session,
+                                          historyStorageScope: toScope,
+                                      }
+                                    : session,
+                            ];
+                        },
+                    ),
+                ),
+            }));
         },
 
         setHistoryRetentionDays: async (days) => {
@@ -13310,7 +13390,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             const vaultPath = getSessionVaultPath(session);
             if (!vaultPath) return;
-            const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
+            const storageScope = getSessionHistoryStorageScope(session);
 
             const sourceHistoryId =
                 session.historySessionId ||

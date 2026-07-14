@@ -701,11 +701,13 @@ struct AiSessionsStorage {
 
 #[derive(Default, Serialize)]
 struct AiHistoryMigrationReport {
+    destination_committed: bool,
     histories_copied: usize,
     histories_skipped: usize,
     attachments_copied: usize,
     attachments_skipped: usize,
     failures: Vec<String>,
+    cleanup_warnings: Vec<String>,
 }
 
 struct AiAttachmentMigrationContext {
@@ -1156,9 +1158,21 @@ impl NativeBackend {
             }
         }
 
-        if delete_source_after_copy && report.failures.is_empty() {
+        if report.failures.is_empty() {
+            report.destination_committed = true;
+        }
+
+        if delete_source_after_copy && report.destination_committed {
             for cleanup in pending_source_cleanups {
-                delete_session_history_for_storage(&from_storage, &cleanup.session_id)?;
+                if let Err(error) =
+                    delete_session_history_for_storage(&from_storage, &cleanup.session_id)
+                {
+                    report.cleanup_warnings.push(format!(
+                        "Failed to delete migrated session history {}: {error}",
+                        cleanup.session_id,
+                    ));
+                    continue;
+                }
                 if migrate_attachments {
                     decrement_attachment_ref_counts(
                         &cleanup.attachments,
@@ -3441,7 +3455,7 @@ fn delete_unreferenced_source_attachments(
         }
         if let Err(error) = fs::remove_file(&source) {
             if error.kind() != io::ErrorKind::NotFound {
-                report.failures.push(format!(
+                report.cleanup_warnings.push(format!(
                     "Failed to delete migrated attachment {}: {error}",
                     source.to_string_lossy()
                 ));
@@ -5302,6 +5316,8 @@ mod tests {
 
         assert_eq!(report["histories_copied"], json!(1));
         assert_eq!(report["attachments_skipped"], json!(1));
+        assert_eq!(report["destination_committed"], json!(true));
+        assert_eq!(report["cleanup_warnings"], json!([]));
         let source_histories = invoke(
             &backend,
             "ai_load_session_histories",
@@ -5313,6 +5329,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(source_histories.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn ai_attachment_cleanup_failure_is_a_warning_after_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("attachment-directory");
+        fs::create_dir(&source).unwrap();
+        let mut report = AiHistoryMigrationReport {
+            destination_committed: true,
+            ..Default::default()
+        };
+
+        delete_unreferenced_source_attachments(&[source], &HashMap::new(), &mut report);
+
+        assert!(report.failures.is_empty());
+        assert_eq!(report.cleanup_warnings.len(), 1);
+        assert!(report.destination_committed);
     }
 
     #[test]

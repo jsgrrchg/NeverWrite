@@ -53,6 +53,9 @@ export function ChatHistoryView({
     const historyRetentionDays = useChatStore((s) => s.historyRetentionDays);
     const aiStorageScope = useChatStore((s) => s.aiStorageScope);
     const setAiStorageScope = useChatStore((s) => s.setAiStorageScope);
+    const reassignSessionHistoryStorageScope = useChatStore(
+        (s) => s.reassignSessionHistoryStorageScope,
+    );
     const initializeChat = useChatStore((s) => s.initialize);
     const setHistoryRetentionDays = useChatStore(
         (s) => s.setHistoryRetentionDays,
@@ -139,14 +142,23 @@ export function ChatHistoryView({
             migrateAttachments: true,
         })
             .then(async (report) => {
-                if (report.failures.length > 0) {
+                if (!report.destination_committed || report.failures.length > 0) {
                     setLegacyVaultHistoryWarning(
-                        "AI chats were copied, but the migration needs attention. Some attachments or cleanup steps could not be completed.",
+                        "AI chats could not be moved completely. Existing chats remain in their current location.",
                     );
                 } else {
+                    reassignSessionHistoryStorageScope(
+                        vaultPath,
+                        "vault",
+                        "device",
+                    );
                     saveLegacyVaultHistoryDismissal(vaultPath, true);
                     setLegacyVaultHistoryNotice("hidden");
-                    setLegacyVaultHistoryWarning(null);
+                    setLegacyVaultHistoryWarning(
+                        report.cleanup_warnings.length > 0
+                            ? "AI chats were moved. Some source files could not be removed."
+                            : null,
+                    );
                 }
                 await initializeChat();
             })
@@ -156,7 +168,12 @@ export function ChatHistoryView({
             .finally(() => {
                 setLegacyVaultHistoryAction(null);
             });
-    }, [initializeChat, legacyVaultHistoryAction, vaultPath]);
+    }, [
+        initializeChat,
+        legacyVaultHistoryAction,
+        reassignSessionHistoryStorageScope,
+        vaultPath,
+    ]);
 
     const keepLegacyVaultHistoryInVault = useCallback(() => {
         if (!vaultPath || legacyVaultHistoryAction) return;

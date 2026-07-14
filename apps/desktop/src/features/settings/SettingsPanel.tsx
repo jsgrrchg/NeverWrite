@@ -3947,6 +3947,9 @@ function AISettings({
     );
     const aiStorageScope = useChatStore((s) => s.aiStorageScope);
     const setAiStorageScope = useChatStore((s) => s.setAiStorageScope);
+    const reassignSessionHistoryStorageScope = useChatStore(
+        (s) => s.reassignSessionHistoryStorageScope,
+    );
     const syncVaultScopedAiPreferences = useChatStore(
         (s) => s.syncVaultScopedAiPreferences,
     );
@@ -4228,7 +4231,10 @@ function AISettings({
                                         migrateAttachments: true,
                                     })
                                         .then(async (report) => {
-                                            if (report.failures.length > 0) {
+                                            if (
+                                                !report.destination_committed ||
+                                                report.failures.length > 0
+                                            ) {
                                                 setHistoryMigrationMessage(
                                                     "AI chats could not be moved completely. Existing chats were left in their current location.",
                                                 );
@@ -4238,13 +4244,22 @@ function AISettings({
                                                 return;
                                             }
 
+                                            reassignSessionHistoryStorageScope(
+                                                vaultPath,
+                                                historyMigrationPrompt.fromScope,
+                                                historyMigrationPrompt.toScope,
+                                            );
                                             await applySelectedStorageScope(
                                                 historyMigrationPrompt.toScope,
                                             );
                                             setHistoryMigrationPrompt(null);
                                             setHistoryMigrationMessage(
-                                                report.attachments_skipped > 0
-                                                    ? "AI chats were moved. Some external attachments were left in place."
+                                                report.cleanup_warnings.length >
+                                                    0
+                                                    ? "AI chats were moved. Some source files could not be removed."
+                                                    : report.attachments_skipped >
+                                                        0
+                                                      ? "AI chats were moved. Some external attachments were left in place."
                                                     : null,
                                             );
                                             setHistoryMigrationStatus("idle");

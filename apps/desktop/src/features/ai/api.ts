@@ -806,11 +806,13 @@ export async function aiSaveSessionHistory(
 }
 
 export interface AIHistoryMigrationReport {
+    destination_committed: boolean;
     histories_copied: number;
     histories_skipped: number;
     attachments_copied: number;
     attachments_skipped: number;
     failures: string[];
+    cleanup_warnings: string[];
 }
 
 export async function aiHasVaultSessionHistories(
