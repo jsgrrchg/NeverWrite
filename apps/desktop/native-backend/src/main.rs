@@ -3015,16 +3015,51 @@ fn ai_history_move_journal_path(staging_root: &Path) -> PathBuf {
     staging_root.join("journal.json")
 }
 
+fn ai_history_move_journal_temporary_path(staging_root: &Path) -> PathBuf {
+    ai_history_move_journal_path(staging_root).with_extension("tmp")
+}
+
 fn write_ai_history_move_journal(journal: &AiHistoryMoveJournal) -> Result<(), String> {
     let path = ai_history_move_journal_path(&journal.staging_root);
     let parent = path
         .parent()
         .ok_or_else(|| "AI history journal has no parent directory.".to_string())?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let temporary = path.with_extension("tmp");
+    let temporary = ai_history_move_journal_temporary_path(&journal.staging_root);
     let bytes = serde_json::to_vec_pretty(journal).map_err(|error| error.to_string())?;
     fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
+
+    // Windows does not allow rename to replace an existing destination. Keep the complete
+    // temporary journal in place until the old journal is removed; recovery reads it first
+    // if the process stops in that small window.
+    #[cfg(target_os = "windows")]
+    if path.exists() {
+        fs::remove_file(&path).map_err(|error| error.to_string())?;
+    }
     fs::rename(&temporary, &path).map_err(|error| error.to_string())
+}
+
+fn read_ai_history_move_journal(staging_root: &Path) -> Result<AiHistoryMoveJournal, String> {
+    let canonical = ai_history_move_journal_path(staging_root);
+    let temporary = ai_history_move_journal_temporary_path(staging_root);
+    let mut errors = Vec::new();
+
+    // A valid temporary journal is newer than the canonical file and is the only surviving
+    // copy if Windows stops after removing the old destination but before the final rename.
+    for path in [&temporary, &canonical] {
+        match fs::read(path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(journal) => return Ok(journal),
+                Err(error) => errors.push(format!("{}: {error}", path.to_string_lossy())),
+            },
+            Err(error) => errors.push(format!("{}: {error}", path.to_string_lossy())),
+        }
+    }
+
+    Err(format!(
+        "AI history recovery requires journal repair: {}",
+        errors.join("; ")
+    ))
 }
 
 fn remove_ai_history_move_staging(staging_root: &Path) {
@@ -3494,11 +3529,7 @@ fn recover_ai_history_moves(
     };
     for entry in entries {
         let staging_root = entry.map_err(|error| error.to_string())?.path();
-        let journal_path = ai_history_move_journal_path(&staging_root);
-        let bytes = fs::read(&journal_path)
-            .map_err(|error| format!("AI history recovery requires journal repair: {error}"))?;
-        let mut journal: AiHistoryMoveJournal = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("AI history recovery requires journal repair: {error}"))?;
+        let mut journal = read_ai_history_move_journal(&staging_root)?;
         if journal.vault_key != vault_key {
             return Err("AI history recovery journal belongs to another vault.".to_string());
         }
@@ -5359,6 +5390,50 @@ mod tests {
         );
         assert!(verify_session_history_exists(&destination, "recover-session").is_ok());
         assert!(verify_session_history_exists(&source, "recover-session").is_err());
+        assert!(!prepared.journal.staging_root.exists());
+    }
+
+    #[test]
+    fn recovery_uses_temporary_journal_when_windows_replacement_is_interrupted() {
+        let vault = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let vault_key = vault.path().to_string_lossy().to_string();
+        let source = ai_sessions_storage_for_scope(
+            &vault_key,
+            vault.path(),
+            AiStorageScope::Device,
+            app_data.path(),
+        );
+        let history: PersistedSessionHistory =
+            serde_json::from_value(test_history("temporary-journal-session", None)).unwrap();
+        save_session_history_for_storage(&source, &history).unwrap();
+        let prepared = prepare_ai_history_move_staging(
+            &vault_key,
+            vault.path(),
+            app_data.path(),
+            AiStorageScope::Device,
+            AiStorageScope::Vault,
+        )
+        .unwrap();
+
+        let journal_path = ai_history_move_journal_path(&prepared.journal.staging_root);
+        fs::copy(
+            &journal_path,
+            ai_history_move_journal_temporary_path(&prepared.journal.staging_root),
+        )
+        .unwrap();
+        fs::remove_file(journal_path).unwrap();
+
+        recover_ai_history_moves(&vault_key, vault.path(), app_data.path()).unwrap();
+
+        let destination = ai_sessions_storage_for_scope(
+            &vault_key,
+            vault.path(),
+            AiStorageScope::Vault,
+            app_data.path(),
+        );
+        assert!(verify_session_history_exists(&destination, "temporary-journal-session").is_ok());
+        assert!(verify_session_history_exists(&source, "temporary-journal-session").is_err());
         assert!(!prepared.journal.staging_root.exists());
     }
 
