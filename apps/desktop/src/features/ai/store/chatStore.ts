@@ -14,7 +14,6 @@ import {
     aiForkSessionHistory,
     aiGetTextFileHash,
     aiGetSetupStatus,
-    aiHasVaultSessionHistories,
     aiListSessions,
     aiListRuntimes,
     aiResumeRuntimeSession,
@@ -61,7 +60,6 @@ import {
 import {
     getAiStorageScopeKey,
     getHistoryRetentionStorageKey,
-    getLegacyVaultHistoryDismissedKey,
     getVaultPreferenceScope,
 } from "../../../app/utils/aiVaultPreferenceKeys";
 import {
@@ -438,31 +436,6 @@ export function hasAiStorageScopePreference(vaultPath: string | null): boolean {
     }
 }
 
-export function loadLegacyVaultHistoryDismissal(vaultPath: string | null) {
-    try {
-        return (
-            safeStorageGetItem(getLegacyVaultHistoryDismissedKey(vaultPath)) ===
-            "true"
-        );
-    } catch {
-        return false;
-    }
-}
-
-export function saveLegacyVaultHistoryDismissal(
-    vaultPath: string | null,
-    dismissed: boolean,
-) {
-    try {
-        safeStorageSetItem(
-            getLegacyVaultHistoryDismissedKey(vaultPath),
-            String(dismissed),
-        );
-    } catch {
-        // Legacy-history prompts are advisory; avoid breaking chat flows.
-    }
-}
-
 function saveAiStorageScopePreference(
     vaultPath: string | null,
     scope: AIStorageScope,
@@ -533,27 +506,86 @@ export function getEffectiveAiStorageScopeForVault(
     return savedScope;
 }
 
+export type AIHistoryRecoveryState = {
+    status: "idle" | "checking" | "vault_only" | "required" | "error";
+    vaultHistoryCount: number;
+    deviceHistoryCount: number;
+    conflictSessionIds: string[];
+    recoveryRequired: boolean;
+};
+
+const IDLE_AI_HISTORY_RECOVERY: AIHistoryRecoveryState = {
+    status: "idle",
+    vaultHistoryCount: 0,
+    deviceHistoryCount: 0,
+    conflictSessionIds: [],
+    recoveryRequired: false,
+};
+
+type InitialAiStorageResolution = {
+    storageScope: AIStorageScope;
+    recovery: AIHistoryRecoveryState;
+};
+
+async function inspectLegacyAiHistoryRoots(
+    vaultPath: string,
+): Promise<AIHistoryRecoveryState> {
+    const [deviceHistories, vaultHistories] = await Promise.all([
+        aiLoadSessionHistories(vaultPath, {
+            includeMessages: false,
+            storageScope: "device",
+        }),
+        aiLoadSessionHistories(vaultPath, {
+            includeMessages: false,
+            storageScope: "vault",
+        }),
+    ]);
+    const deviceHistoryCount = deviceHistories.filter(
+        hasPersistedHistoryContent,
+    ).length;
+    const vaultHistoryCount = vaultHistories.filter(
+        hasPersistedHistoryContent,
+    ).length;
+
+    return {
+        status:
+            deviceHistoryCount > 0 && vaultHistoryCount > 0
+                ? "required"
+                : vaultHistoryCount > 0
+                  ? "vault_only"
+                  : "idle",
+        vaultHistoryCount,
+        deviceHistoryCount,
+        conflictSessionIds: [],
+        recoveryRequired: false,
+    };
+}
+
 async function resolveInitialAiStorageScopeForVault(
     vaultPath: string | null,
-): Promise<AIStorageScope> {
+): Promise<InitialAiStorageResolution> {
     const savedScope = loadAiStorageScopePreference(vaultPath);
     if (!vaultPath || hasAiStorageScopePreference(vaultPath)) {
-        return savedScope;
+        return { storageScope: savedScope, recovery: IDLE_AI_HISTORY_RECOVERY };
     }
 
     try {
-        if ((await aiHasVaultSessionHistories(vaultPath)) === true) {
+        const recovery = await inspectLegacyAiHistoryRoots(vaultPath);
+        if (recovery.status === "vault_only") {
             _autoDetectedVaultStorageScopeKey = getVaultPreferenceScope(vaultPath);
-            return "vault";
+            return { storageScope: "vault", recovery };
         }
         if (
             _autoDetectedVaultStorageScopeKey === getVaultPreferenceScope(vaultPath)
         ) {
             _autoDetectedVaultStorageScopeKey = null;
         }
-        return savedScope;
+        return { storageScope: savedScope, recovery };
     } catch {
-        return savedScope;
+        return {
+            storageScope: savedScope,
+            recovery: { ...IDLE_AI_HISTORY_RECOVERY, status: "error" },
+        };
     }
 }
 
@@ -721,6 +753,13 @@ function getPersistedHistoryCacheKey(
     storageScope: AIStorageScope,
 ) {
     return `${vaultPath ?? ""}:${storageScope}`;
+}
+
+function getConflictSessionIds(conflicts: string[]) {
+    return conflicts.map((conflict) => {
+        const separator = conflict.lastIndexOf(":");
+        return separator === -1 ? conflict : conflict.slice(0, separator);
+    });
 }
 
 function getPersistedHistorySessionId(sessionId: string) {
@@ -1592,6 +1631,7 @@ interface ChatStore {
     editDiffZoom: number;
     aiStorageScope: AIStorageScope;
     aiHistoryMoveState: "idle" | "checking" | "moving" | "error";
+    aiHistoryRecovery: AIHistoryRecoveryState;
     historyRetentionDays: number;
     screenshotRetentionSeconds: number;
     toolActivityDisplayMode: ActivityDisplayMode;
@@ -1616,6 +1656,7 @@ interface ChatStore {
     ) => Promise<void>;
     syncAutoContextForVault: (vaultPath: string | null) => void;
     syncVaultScopedAiPreferences: (vaultPath: string | null) => void;
+    refreshAiHistoryRecovery: (vaultPath: string) => Promise<void>;
     setSelectedRuntime: (runtimeId: string | null) => void;
     setDefaultRuntime: (runtimeId: string | null) => void;
     getDefaultNewChatRuntimeId: () => string | null;
@@ -7805,6 +7846,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         editDiffZoom: DEFAULT_AI_PREFERENCES.editDiffZoom,
         aiStorageScope: "device",
         aiHistoryMoveState: "idle",
+        aiHistoryRecovery: IDLE_AI_HISTORY_RECOVERY,
         historyRetentionDays: 0,
         screenshotRetentionSeconds:
             DEFAULT_AI_PREFERENCES.screenshotRetentionSeconds,
@@ -7843,12 +7885,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                     return state.autoContextEnabled === autoContextEnabled &&
                         state.aiStorageScope === aiStorageScope &&
-                        state.historyRetentionDays === historyRetentionDays
+                        state.historyRetentionDays === historyRetentionDays &&
+                        state.aiHistoryRecovery.status === "idle"
                         ? state
                         : {
                               autoContextEnabled,
                               aiStorageScope,
                               historyRetentionDays,
+                              aiHistoryRecovery: IDLE_AI_HISTORY_RECOVERY,
                           };
                 });
                 return;
@@ -7865,7 +7909,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
 
             void resolveInitialAiStorageScopeForVault(vaultPath).then(
-                (resolvedScope) => {
+                ({ storageScope: resolvedScope, recovery }) => {
                     if (
                         getEffectiveAiVaultPath() !== vaultPath ||
                         hasAiStorageScopePreference(vaultPath)
@@ -7874,16 +7918,50 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     }
 
                     set((state) => {
-                        if (state.aiStorageScope === resolvedScope) {
+                        if (
+                            state.aiStorageScope === resolvedScope &&
+                            state.aiHistoryRecovery.status === recovery.status
+                        ) {
                             return state;
                         }
 
                         _persistedHistoryCacheKey = null;
                         _persistedHistoryCacheBySessionId.clear();
-                        return { aiStorageScope: resolvedScope };
+                        return {
+                            aiStorageScope: resolvedScope,
+                            aiHistoryRecovery: recovery,
+                        };
                     });
                 },
             );
+        },
+
+        refreshAiHistoryRecovery: async (vaultPath) => {
+            if (hasAiStorageScopePreference(vaultPath)) {
+                set({ aiHistoryRecovery: IDLE_AI_HISTORY_RECOVERY });
+                return;
+            }
+            set((state) => ({
+                aiHistoryRecovery: {
+                    ...state.aiHistoryRecovery,
+                    status: "checking",
+                },
+            }));
+            try {
+                const recovery = await inspectLegacyAiHistoryRoots(vaultPath);
+                if (normalizeVaultRoot(getEffectiveAiVaultPath()) === normalizeVaultRoot(vaultPath)) {
+                    set({ aiHistoryRecovery: recovery });
+                }
+            } catch {
+                if (normalizeVaultRoot(getEffectiveAiVaultPath()) === normalizeVaultRoot(vaultPath)) {
+                    set({
+                        aiHistoryRecovery: {
+                            ...IDLE_AI_HISTORY_RECOVERY,
+                            status: "error",
+                        },
+                    });
+                }
+            }
         },
 
         setSelectedRuntime: (runtimeId) => {
@@ -8026,14 +8104,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 });
 
                 const vaultPath = getEffectiveAiVaultPath();
-                const aiStorageScope =
-                    await resolveInitialAiStorageScopeForVault(vaultPath);
+                const {
+                    storageScope: aiStorageScope,
+                    recovery: aiHistoryRecovery,
+                } = await resolveInitialAiStorageScopeForVault(vaultPath);
                 const historyRetentionDays =
                     loadHistoryRetentionPreference(vaultPath);
                 set((state) => {
                     if (
                         state.aiStorageScope === aiStorageScope &&
-                        state.historyRetentionDays === historyRetentionDays
+                        state.historyRetentionDays === historyRetentionDays &&
+                        state.aiHistoryRecovery.status === aiHistoryRecovery.status
                     ) {
                         return state;
                     }
@@ -8044,6 +8125,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return {
                         aiStorageScope,
                         historyRetentionDays,
+                        aiHistoryRecovery,
                     };
                 });
                 const sessions = await aiListSessions(vaultPath);
@@ -13312,7 +13394,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     toScope,
                 });
                 if (!result.completed) {
-                    set({ aiHistoryMoveState: "error" });
+                    set((state) => ({
+                        aiHistoryMoveState: "error",
+                        aiHistoryRecovery: {
+                            ...state.aiHistoryRecovery,
+                            status: "required",
+                            conflictSessionIds: getConflictSessionIds(
+                                result.conflicts,
+                            ),
+                            recoveryRequired: result.recovery_required,
+                        },
+                    }));
                     if (result.conflicts.length > 0) {
                         throw new Error(
                             "AI chat history has conflicts that must be resolved before moving.",
@@ -13332,7 +13424,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     normalizeVaultRoot(getEffectiveAiVaultPath()) ===
                     normalizeVaultRoot(vaultPath)
                 ) {
-                    set({ aiStorageScope: toScope });
+                    set({
+                        aiStorageScope: toScope,
+                        aiHistoryRecovery: IDLE_AI_HISTORY_RECOVERY,
+                    });
                     await get().initialize();
                 }
                 set({ aiHistoryMoveState: "idle" });
@@ -13471,6 +13566,7 @@ export function hydrateChatStorePreferences() {
         editDiffZoom: prefs.editDiffZoom,
         aiStorageScope: loadAiStorageScopePreference(vaultPath),
         aiHistoryMoveState: "idle",
+        aiHistoryRecovery: IDLE_AI_HISTORY_RECOVERY,
         historyRetentionDays: loadHistoryRetentionPreference(vaultPath),
         screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
         toolActivityDisplayMode: prefs.toolActivityDisplayMode,

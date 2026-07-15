@@ -846,15 +846,10 @@ describe("chatStore", () => {
         resetChatStore();
 
         invokeMock.mockImplementation(async (command, args) => {
-            if (command === "ai_has_vault_session_histories") {
-                return true;
-            }
             if (command === "ai_load_session_histories") {
-                expect(args).toMatchObject({
-                    vaultPath: "/vaults/legacy",
-                    storageScope: "vault",
-                });
-                return [
+                const scope = (args as { storageScope?: string }).storageScope;
+                return scope === "vault"
+                    ? [
                     {
                         version: 1,
                         session_id: "legacy-history",
@@ -868,7 +863,8 @@ describe("chatStore", () => {
                         message_count: 1,
                         messages: [],
                     },
-                ];
+                ]
+                    : [];
             }
             if (command === "ai_load_session_history_page") {
                 expect(args).toMatchObject({
@@ -918,11 +914,9 @@ describe("chatStore", () => {
         resetChatStore();
 
         invokeMock.mockImplementation(async (command, args) => {
-            if (command === "ai_has_vault_session_histories") {
-                return true;
-            }
             if (command === "ai_load_session_histories") {
-                return [
+                return (args as { storageScope?: string }).storageScope === "vault"
+                    ? [
                     {
                         version: 1,
                         session_id: "legacy-history",
@@ -936,7 +930,8 @@ describe("chatStore", () => {
                         message_count: 1,
                         messages: [],
                     },
-                ];
+                ]
+                    : [];
             }
             if (command === "ai_load_session_history_page") {
                 return {
@@ -983,16 +978,20 @@ describe("chatStore", () => {
     });
 
     it("does not temporarily downgrade storage scope while vault history detection is pending", async () => {
-        const detection = createDeferred<boolean>();
+        const detection = createDeferred<unknown[]>();
         useVaultStore.setState({ vaultPath: "/vaults/legacy", notes: [] });
         resetChatStore();
         useChatStore.setState({ aiStorageScope: "vault" });
         useVaultStore.setState({ vaultPath: "/vaults/new", notes: [] });
         invokeMock.mockImplementation(async (command, args) => {
-            if (command === "ai_has_vault_session_histories") {
+            if (
+                command === "ai_load_session_histories" &&
+                (args as { storageScope?: string }).storageScope === "vault"
+            ) {
                 expect(args).toMatchObject({ vaultPath: "/vaults/new" });
                 return detection.promise;
             }
+            if (command === "ai_load_session_histories") return [];
             return defaultInvokeImplementation(command, args);
         });
 
@@ -1001,7 +1000,7 @@ describe("chatStore", () => {
 
         expect(useChatStore.getState().aiStorageScope).toBe("vault");
 
-        detection.resolve(true);
+        detection.resolve([]);
         await Promise.resolve();
         await Promise.resolve();
 
@@ -1014,6 +1013,7 @@ describe("chatStore", () => {
     it("persists AI storage scope per vault path", () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();
+        invokeMock.mockClear();
 
         useChatStore.getState().setAiStorageScope("vault");
 
@@ -1085,6 +1085,10 @@ describe("chatStore", () => {
         );
         expect(useChatStore.getState().aiStorageScope).toBe("vault");
         expect(useChatStore.getState().aiHistoryMoveState).toBe("error");
+        expect(useChatStore.getState().aiHistoryRecovery).toMatchObject({
+            status: "required",
+            conflictSessionIds: ["history-1"],
+        });
     });
 
     it("keeps the current scope when source cleanup requires recovery", async () => {
@@ -1480,10 +1484,15 @@ describe("chatStore", () => {
         ).toMatchObject({
             runtimeState: "persisted_only",
         });
-        expect(invokeMock).not.toHaveBeenCalledWith(
-            "ai_load_session_histories",
-            expect.objectContaining({ storageScope: "device" }),
-        );
+        expect(
+            invokeMock.mock.calls.some(
+                ([command, args]) =>
+                    command === "ai_load_session_histories" &&
+                    (args as { vaultPath?: string; storageScope?: string })
+                        .vaultPath === "/vaults/one" &&
+                    (args as { storageScope?: string }).storageScope === "device",
+            ),
+        ).toBe(false);
     });
 
     it("prunes session history with the retention of the session vault", async () => {

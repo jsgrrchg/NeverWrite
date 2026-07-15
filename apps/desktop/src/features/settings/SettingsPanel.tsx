@@ -3948,6 +3948,7 @@ function AISettings({
     const aiStorageScope = useChatStore((s) => s.aiStorageScope);
     const setAiStorageScope = useChatStore((s) => s.setAiStorageScope);
     const moveAiHistoryStorage = useChatStore((s) => s.moveAiHistoryStorage);
+    const aiHistoryRecovery = useChatStore((s) => s.aiHistoryRecovery);
     const syncVaultScopedAiPreferences = useChatStore(
         (s) => s.syncVaultScopedAiPreferences,
     );
@@ -4156,6 +4157,19 @@ function AISettings({
                     />
                 }
             />
+            {aiHistoryRecovery.status === "vault_only" ? (
+                <div className="mb-3 rounded-md border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                    Legacy AI chats are currently using this vault. Open Chat History to confirm this location or move all chats to this device.
+                </div>
+            ) : null}
+            {aiHistoryRecovery.status === "required" ? (
+                <div className="mb-3 rounded-md border border-[var(--warning)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                    AI chat history exists in both locations. Open Chat History to choose one canonical location.
+                    {aiHistoryRecovery.conflictSessionIds.length > 0
+                        ? ` Conflicting chats: ${aiHistoryRecovery.conflictSessionIds.join(", ")}.`
+                        : ""}
+                </div>
+            ) : null}
             {historyMigrationPrompt ? (
                 <div
                     role="dialog"
