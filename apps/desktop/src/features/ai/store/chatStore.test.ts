@@ -1458,6 +1458,61 @@ describe("chatStore", () => {
         );
     });
 
+    it("retries a completed turn after another window finishes moving history", async () => {
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        const session = {
+            ...createSessionWithTrackedFiles("session-one", []),
+            vaultPath: "/vaults/one",
+            messages: [
+                {
+                    id: "user-1",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "Keep this turn",
+                    timestamp: 1,
+                },
+            ],
+        };
+        useChatStore.setState({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+        });
+        let saveAttempts = 0;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_save_session_history") {
+                saveAttempts += 1;
+                if (saveAttempts === 1) {
+                    throw new Error("AI history is being moved for this vault.");
+                }
+                expect(args).toMatchObject({
+                    vaultPath: "/vaults/one",
+                    storageScope: "vault",
+                });
+                return null;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().renameSession(session.sessionId, "Pending move");
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+        expect(saveAttempts).toBe(1);
+
+        localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
+        localStorage.setItem(
+            getCanonicalAiHistoryScopeKey("/vaults/one"),
+            "true",
+        );
+        useChatStore
+            .getState()
+            .syncVaultScopedAiPreferences("/vaults/one");
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+        expect(saveAttempts).toBe(2);
+    });
+
     it("does not move history while a screenshot remains in a draft", async () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();

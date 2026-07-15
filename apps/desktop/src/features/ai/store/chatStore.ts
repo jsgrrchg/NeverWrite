@@ -6534,8 +6534,23 @@ async function persistSessionNow(session: AIChatSession) {
             );
         }
     } catch (error) {
+        if (isRetryableAiHistoryPersistenceError(error)) {
+            // Another window can own the backend move lock. Keep this exact
+            // snapshot until its canonical scope notification arrives instead
+            // of silently dropping the completed turn.
+            _pendingSessionPersistence.set(getSessionPersistenceKey(session), session);
+            return;
+        }
         logWarn("chat-store", "Failed to persist session history", error);
     }
+}
+
+function isRetryableAiHistoryPersistenceError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+        message.includes("AI history is being moved for this vault") ||
+        message.includes("AI history scope changed to")
+    );
 }
 
 async function flushPendingSessionPersistence(epoch: number) {
@@ -7983,6 +7998,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                               aiHistoryRecovery: IDLE_AI_HISTORY_RECOVERY,
                           };
                 });
+                if (_pendingSessionPersistence.size > 0) {
+                    void flushPendingSessionPersistence(_sessionPersistenceEpoch);
+                }
                 return;
             }
 
