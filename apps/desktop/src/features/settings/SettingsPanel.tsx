@@ -3966,6 +3966,9 @@ function AISettings({
     const [historyMigrationMessage, setHistoryMigrationMessage] = useState<
         string | null
     >(null);
+    // React state updates are not synchronous, so this also guards repeated
+    // toggle events before the checking state can disable the control.
+    const historyScopeInspectionInFlightRef = useRef(false);
     const hasLoadedMigratableAiChats = () =>
         Object.values(chatSessionsById).some(
             (session) =>
@@ -4100,7 +4103,14 @@ function AISettings({
                 control={
                     <Toggle
                         value={aiStorageScope === "vault"}
+                        disabled={
+                            historyMigrationStatus === "checking" ||
+                            historyMigrationStatus === "moving"
+                        }
                         onChange={(enabled) => {
+                            if (historyScopeInspectionInFlightRef.current) {
+                                return;
+                            }
                             const next: AIStorageScope = enabled
                                 ? "vault"
                                 : "device";
@@ -4114,6 +4124,7 @@ function AISettings({
                                 void applySelectedStorageScope(next);
                                 return;
                             }
+                            historyScopeInspectionInFlightRef.current = true;
                             if (hasLoadedChatsInPreviousScope) {
                                 setHistoryMigrationPrompt({
                                     fromScope: previous,
@@ -4154,6 +4165,10 @@ function AISettings({
                                         error,
                                     );
                                     setHistoryMigrationStatus("error");
+                                })
+                                .finally(() => {
+                                    historyScopeInspectionInFlightRef.current =
+                                        false;
                                 });
                         }}
                     />
