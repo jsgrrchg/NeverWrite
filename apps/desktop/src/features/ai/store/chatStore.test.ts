@@ -55,6 +55,8 @@ const openUrlMock = vi.mocked(openUrl);
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 const AI_STORAGE_SCOPE_KEY_PREFIX = "neverwrite.ai.storage-scope:";
+const AI_HISTORY_SCOPE_CANONICAL_KEY_PREFIX =
+    "neverwrite.ai.history-scope-canonical:";
 const AI_HISTORY_RETENTION_KEY_PREFIX = "neverwrite.ai.history-retention:";
 
 function getAutoContextKey(vaultPath: string | null) {
@@ -63,6 +65,10 @@ function getAutoContextKey(vaultPath: string | null) {
 
 function getAiStorageScopeKey(vaultPath: string | null) {
     return `${AI_STORAGE_SCOPE_KEY_PREFIX}${vaultPath ?? "__global__"}`;
+}
+
+function getCanonicalAiHistoryScopeKey(vaultPath: string | null) {
+    return `${AI_HISTORY_SCOPE_CANONICAL_KEY_PREFIX}${vaultPath ?? "__global__"}`;
 }
 
 function getHistoryRetentionKey(vaultPath: string | null) {
@@ -905,6 +911,116 @@ describe("chatStore", () => {
         ).toBe(false);
     });
 
+    it("recovers the vault scope when an interrupted device move left a stale device preference", async () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/recovered"), "device");
+        localStorage.removeItem(getCanonicalAiHistoryScopeKey("/vaults/recovered"));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_histories") {
+                return (args as { storageScope?: string }).storageScope === "vault"
+                    ? [{
+                        version: 1,
+                        session_id: "recovered-history",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        message_count: 1,
+                        messages: [],
+                    }]
+                    : [];
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useVaultStore.setState({ vaultPath: "/vaults/recovered", notes: [] });
+
+        await useChatStore.getState().initialize({ createDefaultSession: false });
+
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+        expect(useChatStore.getState().aiHistoryRecovery).toMatchObject({
+            status: "vault_only",
+            vaultHistoryCount: 1,
+            deviceHistoryCount: 0,
+        });
+        expect(useChatStore.getState().sessionOrder).toContain(
+            "persisted:recovered-history",
+        );
+    });
+
+    it("recovers the device scope when an interrupted vault move left a stale vault preference", async () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/recovered"), "vault");
+        localStorage.removeItem(getCanonicalAiHistoryScopeKey("/vaults/recovered"));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_histories") {
+                return (args as { storageScope?: string }).storageScope === "device"
+                    ? [{
+                        version: 1,
+                        session_id: "recovered-history",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        message_count: 1,
+                        messages: [],
+                    }]
+                    : [];
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useVaultStore.setState({ vaultPath: "/vaults/recovered", notes: [] });
+
+        await useChatStore.getState().initialize({ createDefaultSession: false });
+
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+        expect(useChatStore.getState().aiHistoryRecovery).toMatchObject({
+            status: "device_only",
+            vaultHistoryCount: 0,
+            deviceHistoryCount: 1,
+        });
+        expect(useChatStore.getState().sessionOrder).toContain(
+            "persisted:recovered-history",
+        );
+    });
+
+    it("requires recovery when both legacy roots contain histories despite a saved preference", async () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/split"), "device");
+        localStorage.removeItem(getCanonicalAiHistoryScopeKey("/vaults/split"));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_histories") {
+                const scope = (args as { storageScope?: string }).storageScope;
+                return [{
+                    version: 1,
+                    session_id: `split-${scope}`,
+                    runtime_id: "codex-acp",
+                    model_id: "test-model",
+                    mode_id: "default",
+                    created_at: 10,
+                    updated_at: 20,
+                    message_count: 1,
+                    messages: [],
+                }];
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useVaultStore.setState({ vaultPath: "/vaults/split", notes: [] });
+
+        await useChatStore.getState().initialize({ createDefaultSession: false });
+
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+        expect(useChatStore.getState().aiHistoryRecovery).toMatchObject({
+            status: "required",
+            vaultHistoryCount: 1,
+            deviceHistoryCount: 1,
+        });
+    });
+
     it("persists with the auto-detected vault storage scope before a preference is saved", async () => {
         useVaultStore.setState({ vaultPath: "/vaults/legacy", notes: [] });
         resetChatStore();
@@ -1090,6 +1206,7 @@ describe("chatStore", () => {
     it("keeps the current scope when source cleanup requires recovery", async () => {
         useVaultStore.setState({ vaultPath: "/vault" });
         localStorage.setItem(getAiStorageScopeKey("/vault"), "device");
+        localStorage.setItem(getCanonicalAiHistoryScopeKey("/vault"), "true");
         useChatStore.setState({
             aiStorageScope: "device",
             aiHistoryMoveState: "idle",
@@ -1120,6 +1237,7 @@ describe("chatStore", () => {
         );
         expect(useChatStore.getState().aiStorageScope).toBe("device");
         expect(useChatStore.getState().aiHistoryMoveState).toBe("error");
+        expect(localStorage.getItem(getCanonicalAiHistoryScopeKey("/vault"))).toBeNull();
     });
 
     it("blocks a second storage move while the first one is active", async () => {
@@ -1218,6 +1336,8 @@ describe("chatStore", () => {
     it("reloads AI storage scope when switching vaults", () => {
         localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
         localStorage.setItem(getAiStorageScopeKey("/vaults/two"), "device");
+        localStorage.setItem(getCanonicalAiHistoryScopeKey("/vaults/one"), "true");
+        localStorage.setItem(getCanonicalAiHistoryScopeKey("/vaults/two"), "true");
 
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();
@@ -1443,6 +1563,7 @@ describe("chatStore", () => {
 
     it("loads histories only from the selected storage scope", async () => {
         localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
+        localStorage.setItem(getCanonicalAiHistoryScopeKey("/vaults/one"), "true");
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();
 
@@ -1625,6 +1746,7 @@ describe("chatStore", () => {
         expect(useChatStore.getState().aiStorageScope).toBe("device");
 
         localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
+        localStorage.setItem(getCanonicalAiHistoryScopeKey("/vaults/one"), "true");
         window.dispatchEvent(
             new StorageEvent("storage", {
                 key: getAiStorageScopeKey("/vaults/one"),

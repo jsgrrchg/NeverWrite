@@ -370,6 +370,33 @@ describe("AIChatHistoryWorkspaceView", () => {
         expect(useChatStore.getState().aiStorageScope).toBe("vault");
     });
 
+    it("shows and can move a recovered device-only history", async () => {
+        useChatStore.setState({
+            sessionsById: {},
+            sessionOrder: [],
+            aiStorageScope: "device",
+            aiHistoryRecovery: {
+                status: "device_only",
+                vaultHistoryCount: 0,
+                deviceHistoryCount: 1,
+                conflictSessionIds: [],
+                recoveryRequired: false,
+            },
+        });
+        renderComponent(<AIChatHistoryWorkspaceView />);
+
+        expect(await screen.findByText("AI chat history was found on this device.")).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Move all chats to vault" }));
+
+        await waitFor(() => {
+            expect(aiMoveAllSessionHistoriesMock).toHaveBeenCalledWith({
+                vaultPath: "/vault",
+                fromScope: "device",
+                toScope: "vault",
+            });
+        });
+    });
+
     it("shows conflicts without merging both legacy roots", () => {
         useChatStore.setState({
             sessionsById: {},

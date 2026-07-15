@@ -657,6 +657,10 @@ describe("SettingsPanel", () => {
         });
         useVaultStore.setState({ vaultPath: "/vault" });
         safeStorageSetItem("neverwrite.ai.storage-scope:/vault", "vault");
+        safeStorageSetItem(
+            "neverwrite.ai.history-scope-canonical:/vault",
+            "true",
+        );
         aiApiMocks.aiLoadSessionHistories.mockResolvedValueOnce([]);
         aiApiMocks.aiMoveAllSessionHistories.mockResolvedValueOnce({
             completed: true,
@@ -679,7 +683,7 @@ describe("SettingsPanel", () => {
 
         expect(
             await screen.findByText(
-                "Move existing vault AI chats to this device?",
+                "Move all AI chats to this device?",
             ),
         ).toBeInTheDocument();
         expect(aiApiMocks.aiLoadSessionHistories).toHaveBeenCalledWith(
@@ -728,6 +732,10 @@ describe("SettingsPanel", () => {
             sessionsById: {},
         });
         safeStorageSetItem("neverwrite.ai.storage-scope:/vault", "vault");
+        safeStorageSetItem(
+            "neverwrite.ai.history-scope-canonical:/vault",
+            "true",
+        );
         aiApiMocks.aiLoadSessionHistories.mockResolvedValueOnce([
             {
                 version: 1,
@@ -757,7 +765,7 @@ describe("SettingsPanel", () => {
 
         expect(
             await screen.findByRole("dialog", {
-                name: "Move existing vault AI chats to this device?",
+                name: "Move all AI chats to this device?",
             }),
         ).toBeInTheDocument();
         expect(aiApiMocks.aiLoadSessionHistories).toHaveBeenCalledWith(

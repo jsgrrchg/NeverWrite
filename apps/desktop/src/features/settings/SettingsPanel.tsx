@@ -4157,9 +4157,12 @@ function AISettings({
                     />
                 }
             />
-            {aiHistoryRecovery.status === "vault_only" ? (
+            {aiHistoryRecovery.status === "vault_only" ||
+            aiHistoryRecovery.status === "device_only" ? (
                 <div className="mb-3 rounded-md border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-                    Legacy AI chats are currently using this vault. Open Chat History to confirm this location or move all chats to this device.
+                    {aiHistoryRecovery.status === "vault_only"
+                        ? "Legacy AI chats are currently using this vault. Open Chat History to confirm this location or move all chats to this device."
+                        : "AI chats were recovered on this device. Open Chat History to confirm this location or move all chats into this vault."}
                 </div>
             ) : null}
             {aiHistoryRecovery.status === "required" ? (
@@ -4201,15 +4204,16 @@ function AISettings({
                             style={{ color: "var(--text-primary)" }}
                         >
                             {historyMigrationPrompt.toScope === "vault"
-                                ? "Move existing local AI chats into this vault?"
-                                : "Move existing vault AI chats to this device?"}
+                                ? "Move all AI chats into this vault?"
+                                : "Move all AI chats to this device?"}
                         </div>
                         <div
                             className="mt-2 leading-relaxed"
                             style={{ color: "var(--text-secondary)" }}
                         >
-                            All existing chats and managed attachments must move
-                            together before the storage location changes.
+                            This moves all saved AI chats and NeverWrite-managed
+                            pasted attachments. The storage setting changes only
+                            after the move succeeds.
                         </div>
                         <div className="mt-4 flex flex-wrap items-center gap-2">
                             <button

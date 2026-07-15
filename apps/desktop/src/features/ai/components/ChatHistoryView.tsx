@@ -86,6 +86,12 @@ export function ChatHistoryView({
             ),
         [selectedHistorySessionId, sessionsById],
     );
+    const recoveredScope =
+        aiHistoryRecovery.status === "vault_only"
+            ? "vault"
+            : aiHistoryRecovery.status === "device_only"
+              ? "device"
+              : null;
 
     useEffect(() => {
         setRecoveryNoticeHidden(false);
@@ -94,11 +100,7 @@ export function ChatHistoryView({
     const resolveLegacyVaultHistory = useCallback((toScope: "device" | "vault") => {
         if (!vaultPath || legacyVaultHistoryAction) return;
         const fromScope =
-            aiHistoryRecovery.status === "vault_only"
-                ? "vault"
-                : toScope === "vault"
-                  ? "device"
-                  : "vault";
+            recoveredScope ?? (toScope === "vault" ? "device" : "vault");
         setLegacyVaultHistoryAction("move");
         void moveAiHistoryStorage(vaultPath, fromScope, toScope)
             .then(() => {
@@ -110,12 +112,13 @@ export function ChatHistoryView({
             .finally(() => {
                 setLegacyVaultHistoryAction(null);
             });
-    }, [aiHistoryRecovery.status, legacyVaultHistoryAction, moveAiHistoryStorage, vaultPath]);
+    }, [legacyVaultHistoryAction, moveAiHistoryStorage, recoveredScope, vaultPath]);
 
-    const confirmVaultHistoryScope = useCallback(() => {
-        setAiStorageScope("vault");
+    const confirmRecoveredHistoryScope = useCallback(() => {
+        if (!recoveredScope) return;
+        setAiStorageScope(recoveredScope);
         setRecoveryNoticeHidden(true);
-    }, [setAiStorageScope]);
+    }, [recoveredScope, setAiStorageScope]);
 
     // --- Resizer state ---
     const [listWidth, setListWidth] = useState(DEFAULT_LIST_WIDTH);
@@ -297,39 +300,53 @@ export function ChatHistoryView({
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
             {!recoveryNoticeHidden &&
-            (aiHistoryRecovery.status === "vault_only" ||
+            (recoveredScope !== null ||
                 aiHistoryRecovery.status === "required") ? (
                 <div className="border-b border-[var(--border)] bg-[var(--bg-primary)] px-4 py-3 text-sm">
                     <div className="font-medium text-[var(--text-primary)]">
-                        {aiHistoryRecovery.status === "vault_only"
-                            ? "AI chat history was found in this vault."
+                        {recoveredScope
+                            ? recoveredScope === "vault"
+                                ? "AI chat history was found in this vault."
+                                : "AI chat history was found on this device."
                             : "AI chat history was found in both storage locations."}
                     </div>
                     <div className="mt-1 text-[var(--text-secondary)]">
-                        {aiHistoryRecovery.status === "vault_only"
-                            ? "Confirm this vault as the chat location, or move all chats to this device."
+                        {recoveredScope
+                            ? `Confirm this ${recoveredScope === "vault" ? "vault" : "device"} as the chat location, or move all chats to the ${recoveredScope === "vault" ? "device" : "vault"}.`
                             : "Choose one location and move all chats there. Histories are not merged automatically."}
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
-                        {aiHistoryRecovery.status === "vault_only" ? (
+                        {recoveredScope ? (
                             <button
                                 type="button"
                                 className="rounded border border-[var(--accent)] px-3 py-1.5 text-[var(--accent)]"
-                                onClick={confirmVaultHistoryScope}
+                                onClick={confirmRecoveredHistoryScope}
                                 disabled={legacyVaultHistoryAction !== null}
                             >
-                                Keep chats in vault
+                                {recoveredScope === "vault"
+                                    ? "Keep chats in vault"
+                                    : "Keep chats on device"}
                             </button>
                         ) : null}
                         <button
                             type="button"
                             className="rounded border border-[var(--accent)] px-3 py-1.5 text-[var(--accent)]"
-                            onClick={() => resolveLegacyVaultHistory("device")}
+                            onClick={() =>
+                                resolveLegacyVaultHistory(
+                                    recoveredScope
+                                        ? recoveredScope === "vault"
+                                            ? "device"
+                                            : "vault"
+                                        : "device",
+                                )
+                            }
                             disabled={legacyVaultHistoryAction !== null}
                         >
                             {legacyVaultHistoryAction === "move"
                                 ? "Moving..."
-                                : "Move all chats to device"}
+                                : recoveredScope === "device"
+                                  ? "Move all chats to vault"
+                                  : "Move all chats to device"}
                         </button>
                         {aiHistoryRecovery.status === "required" ? (
                             <button

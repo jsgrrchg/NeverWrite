@@ -1294,25 +1294,12 @@ impl NativeBackend {
         self.ensure_ai_history_mutation_is_unlocked(&args)?;
         let storage = self.required_ai_sessions_storage(&args)?;
         let session_id = required_string(&args, &["sessionId", "session_id"])?;
-        match storage.scope {
-            AiStorageScope::Vault => {
-                persistence::delete_session_history(&storage.vault_root, &session_id)?
-            }
-            AiStorageScope::Device => {
-                let history = persistence::load_all_session_histories_in_storage_root(
-                    &storage.sessions_root,
-                    true,
-                )?
-                .into_iter()
-                .find(|history| history.session_id == session_id);
-                persistence::delete_session_history_in_storage_root(
-                    &storage.sessions_root,
-                    &session_id,
-                )?;
-                if let Some(history) = history {
-                    cleanup_device_history_attachments(&storage, &[history])?;
-                }
-            }
+        let history = load_session_histories_for_storage(&storage, true)?
+            .into_iter()
+            .find(|history| history.session_id == session_id);
+        delete_session_history_for_storage(&storage, &session_id)?;
+        if let Some(history) = history {
+            cleanup_history_attachments(&storage, &[history])?;
         }
         Ok(json!(null))
     }
@@ -1325,10 +1312,10 @@ impl NativeBackend {
                 persistence::delete_all_session_histories(&storage.vault_root)?
             }
             AiStorageScope::Device => {
-                persistence::delete_all_session_histories_in_storage_root(&storage.sessions_root)?;
-                cleanup_device_attachment_namespace(&storage)?;
+                persistence::delete_all_session_histories_in_storage_root(&storage.sessions_root)?
             }
         }
+        cleanup_attachment_namespace(&storage)?;
         Ok(json!(null))
     }
 
@@ -1336,23 +1323,18 @@ impl NativeBackend {
         self.ensure_ai_history_mutation_is_unlocked(&args)?;
         let storage = self.required_ai_sessions_storage(&args)?;
         let max_age_days = required_u32(&args, &["maxAgeDays", "max_age_days"])?;
+        let pruned_histories =
+            load_expired_session_histories_for_cleanup(&storage.sessions_root, max_age_days)?;
         let deleted = match storage.scope {
             AiStorageScope::Vault => {
                 persistence::prune_expired_session_histories(&storage.vault_root, max_age_days)?
             }
-            AiStorageScope::Device => {
-                let pruned_histories = load_expired_session_histories_for_cleanup(
-                    &storage.sessions_root,
-                    max_age_days,
-                )?;
-                let deleted = persistence::prune_expired_session_histories_in_storage_root(
-                    &storage.sessions_root,
-                    max_age_days,
-                )?;
-                cleanup_device_history_attachments(&storage, &pruned_histories)?;
-                deleted
-            }
+            AiStorageScope::Device => persistence::prune_expired_session_histories_in_storage_root(
+                &storage.sessions_root,
+                max_age_days,
+            )?,
         };
+        cleanup_history_attachments(&storage, &pruned_histories)?;
         Ok(json!(deleted))
     }
 
@@ -3596,15 +3578,22 @@ fn load_expired_session_histories_for_cleanup(
         .collect())
 }
 
-fn cleanup_device_attachment_namespace(storage: &AiSessionsStorage) -> Result<(), String> {
-    let root = resolve_ai_attachments_root(&storage.vault_key, &app_data_dir());
+fn owned_attachment_root_for_storage(storage: &AiSessionsStorage) -> PathBuf {
+    match storage.scope {
+        AiStorageScope::Vault => storage.vault_root.join("assets").join("chat"),
+        AiStorageScope::Device => resolve_ai_attachments_root(&storage.vault_key, &app_data_dir()),
+    }
+}
+
+fn cleanup_attachment_namespace(storage: &AiSessionsStorage) -> Result<(), String> {
+    let root = owned_attachment_root_for_storage(storage);
     if root.exists() {
         fs::remove_dir_all(root).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
 
-fn cleanup_device_history_attachments(
+fn cleanup_history_attachments(
     storage: &AiSessionsStorage,
     histories: &[PersistedSessionHistory],
 ) -> Result<(), String> {
@@ -3612,7 +3601,7 @@ fn cleanup_device_history_attachments(
         return Ok(());
     }
 
-    let root = resolve_ai_attachments_root(&storage.vault_key, &app_data_dir());
+    let root = owned_attachment_root_for_storage(storage);
     let canonical_root = match root.canonicalize() {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -3624,7 +3613,7 @@ fn cleanup_device_history_attachments(
     if !protected_references.unreadable_artifacts.is_empty() {
         for artifact in protected_references.unreadable_artifacts {
             eprintln!(
-                "Preserving device AI attachments because session references could not be inspected: {}",
+                "Preserving owned AI attachments because session references could not be inspected: {}",
                 artifact.to_string_lossy()
             );
         }
@@ -3633,13 +3622,13 @@ fn cleanup_device_history_attachments(
 
     let mut protected_paths = Vec::new();
     for file_path in protected_references.file_paths {
-        collect_device_attachment_file_path(&file_path, &canonical_root, &mut protected_paths);
+        collect_owned_attachment_file_path(&file_path, &canonical_root, &mut protected_paths);
     }
     let protected_paths: HashSet<PathBuf> = protected_paths.into_iter().collect();
 
     let mut file_paths = Vec::new();
     for history in histories {
-        collect_device_history_attachment_file_paths(history, &canonical_root, &mut file_paths);
+        collect_owned_history_attachment_file_paths(history, &canonical_root, &mut file_paths);
     }
 
     file_paths.sort();
@@ -3657,19 +3646,19 @@ fn cleanup_device_history_attachments(
     Ok(())
 }
 
-fn collect_device_history_attachment_file_paths(
+fn collect_owned_history_attachment_file_paths(
     history: &PersistedSessionHistory,
     canonical_root: &Path,
     output: &mut Vec<PathBuf>,
 ) {
     for message in &history.messages {
         if let Some(attachments) = &message.attachments {
-            collect_device_attachment_file_paths(attachments, canonical_root, output);
+            collect_owned_attachment_file_paths(attachments, canonical_root, output);
         }
     }
 }
 
-fn collect_device_attachment_file_paths(
+fn collect_owned_attachment_file_paths(
     value: &Value,
     canonical_root: &Path,
     output: &mut Vec<PathBuf>,
@@ -3677,19 +3666,19 @@ fn collect_device_attachment_file_paths(
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_device_attachment_file_paths(item, canonical_root, output);
+                collect_owned_attachment_file_paths(item, canonical_root, output);
             }
         }
         Value::Object(map) => {
             if let Some(Value::String(file_path)) = map.get("filePath") {
-                collect_device_attachment_file_path(file_path, canonical_root, output);
+                collect_owned_attachment_file_path(file_path, canonical_root, output);
             }
         }
         _ => {}
     }
 }
 
-fn collect_device_attachment_file_path(
+fn collect_owned_attachment_file_path(
     file_path: &str,
     canonical_root: &Path,
     output: &mut Vec<PathBuf>,
@@ -5980,6 +5969,80 @@ mod tests {
     }
 
     #[test]
+    fn ai_delete_vault_history_removes_associated_vault_attachments() {
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+        let attachment_path = vault_dir
+            .path()
+            .join("assets")
+            .join("chat")
+            .join("pasted-image-delete.png");
+        fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+        fs::write(&attachment_path, b"png").unwrap();
+
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "history": test_history("vault-delete-session", Some(&attachment_path))
+            }),
+        )
+        .unwrap();
+
+        invoke(
+            &backend,
+            "ai_delete_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "sessionId": "vault-delete-session"
+            }),
+        )
+        .unwrap();
+
+        assert!(!attachment_path.exists());
+    }
+
+    #[test]
+    fn ai_delete_vault_history_keeps_attachments_referenced_by_remaining_history() {
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+        let attachment_path = vault_dir
+            .path()
+            .join("assets")
+            .join("chat")
+            .join("pasted-image-shared-delete.png");
+        fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+        fs::write(&attachment_path, b"png").unwrap();
+
+        for session_id in ["vault-shared-delete-old", "vault-shared-delete-current"] {
+            invoke(
+                &backend,
+                "ai_save_session_history",
+                json!({
+                    "vaultPath": vault_path,
+                    "storageScope": "vault",
+                    "history": test_history(session_id, Some(&attachment_path))
+                }),
+            )
+            .unwrap();
+        }
+
+        invoke(
+            &backend,
+            "ai_delete_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "sessionId": "vault-shared-delete-old"
+            }),
+        )
+        .unwrap();
+
+        assert!(attachment_path.exists());
+    }
+
+    #[test]
     fn ai_delete_device_history_keeps_attachments_referenced_by_remaining_history() {
         let _env_guard = APP_DATA_ENV_LOCK
             .get_or_init(|| Mutex::new(()))
@@ -6153,6 +6216,38 @@ mod tests {
     }
 
     #[test]
+    fn ai_delete_all_vault_histories_removes_owned_attachment_namespace() {
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+        let attachment_root = vault_dir.path().join("assets").join("chat");
+        let attachment_path = attachment_root.join("pasted-image-delete-all.png");
+        fs::create_dir_all(&attachment_root).unwrap();
+        fs::write(&attachment_path, b"png").unwrap();
+
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "history": test_history("vault-delete-all-session", Some(&attachment_path))
+            }),
+        )
+        .unwrap();
+
+        invoke(
+            &backend,
+            "ai_delete_all_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault"
+            }),
+        )
+        .unwrap();
+
+        assert!(!attachment_root.exists());
+    }
+
+    #[test]
     fn ai_retention_prune_removes_device_attachments_for_pruned_histories() {
         let _env_guard = APP_DATA_ENV_LOCK
             .get_or_init(|| Mutex::new(()))
@@ -6257,7 +6352,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_vault_retention_does_not_delete_unrelated_vault_assets() {
+    fn ai_vault_retention_removes_owned_vault_attachments() {
         let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
         let asset_dir = vault_dir.path().join("assets").join("chat");
         fs::create_dir_all(&asset_dir).unwrap();
@@ -6289,7 +6384,50 @@ mod tests {
         .unwrap();
 
         assert_eq!(pruned.as_u64(), Some(1));
-        assert!(asset_path.exists());
+        assert!(!asset_path.exists());
+    }
+
+    #[test]
+    fn ai_vault_retention_keeps_owned_attachments_used_by_remaining_history() {
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+        let attachment_path = vault_dir
+            .path()
+            .join("assets")
+            .join("chat")
+            .join("pasted-image-shared-prune.png");
+        fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+        fs::write(&attachment_path, b"png").unwrap();
+        let mut old_history = test_history("vault-shared-prune-old", Some(&attachment_path));
+        old_history["updated_at"] = json!(1);
+        let mut current_history = test_history("vault-shared-prune-current", Some(&attachment_path));
+        current_history["updated_at"] = json!(u64::MAX);
+
+        for history in [old_history, current_history] {
+            invoke(
+                &backend,
+                "ai_save_session_history",
+                json!({
+                    "vaultPath": vault_path,
+                    "storageScope": "vault",
+                    "history": history
+                }),
+            )
+            .unwrap();
+        }
+
+        let pruned = invoke(
+            &backend,
+            "ai_prune_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "maxAgeDays": 1
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(pruned.as_u64(), Some(1));
+        assert!(attachment_path.exists());
     }
 
     #[test]

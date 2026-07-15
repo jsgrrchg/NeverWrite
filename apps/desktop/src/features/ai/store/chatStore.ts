@@ -58,6 +58,7 @@ import {
     pathsMatchVaultScoped,
 } from "../../../app/utils/vaultPaths";
 import {
+    getAiHistoryScopeCanonicalKey,
     getAiStorageScopeKey,
     getHistoryRetentionStorageKey,
     getVaultPreferenceScope,
@@ -436,16 +437,49 @@ export function hasAiStorageScopePreference(vaultPath: string | null): boolean {
     }
 }
 
+function hasCanonicalAiHistoryScope(vaultPath: string | null): boolean {
+    try {
+        return (
+            safeStorageGetItem(getAiHistoryScopeCanonicalKey(vaultPath)) ===
+            "true"
+        );
+    } catch {
+        return false;
+    }
+}
+
+function saveCanonicalAiHistoryScope(vaultPath: string | null) {
+    try {
+        safeStorageSetItem(getAiHistoryScopeCanonicalKey(vaultPath), "true");
+    } catch {
+        // The next launch can safely inspect legacy roots again if this fails.
+    }
+}
+
+function clearCanonicalAiHistoryScope(vaultPath: string | null) {
+    try {
+        safeStorageRemoveItem(getAiHistoryScopeCanonicalKey(vaultPath));
+    } catch {
+        // Re-inspecting legacy roots is safe if the marker cannot be cleared.
+    }
+}
+
 function saveAiStorageScopePreference(
     vaultPath: string | null,
     scope: AIStorageScope,
 ) {
     try {
         _autoDetectedVaultStorageScopeKey = null;
-        safeStorageSetItem(
+        // Write the canonical marker first so another renderer that receives
+        // the scope storage event never mistakes this confirmed change for
+        // legacy split history.
+        saveCanonicalAiHistoryScope(vaultPath);
+        if (!safeStorageSetItem(
             getAiStorageScopeKey(vaultPath),
             normalizeAiStorageScope(scope),
-        );
+        )) {
+            safeStorageRemoveItem(getAiHistoryScopeCanonicalKey(vaultPath));
+        }
     } catch {
         // AI storage scope persistence is best-effort; default remains local.
     }
@@ -498,16 +532,23 @@ export function getEffectiveAiStorageScopeForVault(
         _autoDetectedVaultStorageScopeKey === getVaultPreferenceScope(vaultPath) &&
         getVaultPreferenceScope(vaultPath) ===
             getVaultPreferenceScope(activeVaultPath) &&
-        useChatStore.getState().aiStorageScope === "vault"
+        (useChatStore.getState().aiStorageScope === "vault" ||
+            useChatStore.getState().aiStorageScope === "device")
     ) {
-        return "vault";
+        return useChatStore.getState().aiStorageScope;
     }
 
     return savedScope;
 }
 
 export type AIHistoryRecoveryState = {
-    status: "idle" | "checking" | "vault_only" | "required" | "error";
+    status:
+        | "idle"
+        | "checking"
+        | "vault_only"
+        | "device_only"
+        | "required"
+        | "error";
     vaultHistoryCount: number;
     deviceHistoryCount: number;
     conflictSessionIds: string[];
@@ -553,6 +594,8 @@ async function inspectLegacyAiHistoryRoots(
                 ? "required"
                 : vaultHistoryCount > 0
                   ? "vault_only"
+                  : deviceHistoryCount > 0
+                    ? "device_only"
                   : "idle",
         vaultHistoryCount,
         deviceHistoryCount,
@@ -565,16 +608,35 @@ async function resolveInitialAiStorageScopeForVault(
     vaultPath: string | null,
 ): Promise<InitialAiStorageResolution> {
     const savedScope = loadAiStorageScopePreference(vaultPath);
-    if (!vaultPath || hasAiStorageScopePreference(vaultPath)) {
+    if (!vaultPath) {
+        return { storageScope: savedScope, recovery: IDLE_AI_HISTORY_RECOVERY };
+    }
+
+    const hasSavedScope = hasAiStorageScopePreference(vaultPath);
+    if (hasSavedScope && hasCanonicalAiHistoryScope(vaultPath)) {
         return { storageScope: savedScope, recovery: IDLE_AI_HISTORY_RECOVERY };
     }
 
     try {
         const recovery = await inspectLegacyAiHistoryRoots(vaultPath);
-        if (recovery.status === "vault_only") {
-            _autoDetectedVaultStorageScopeKey = getVaultPreferenceScope(vaultPath);
-            return { storageScope: "vault", recovery };
+        const detectedScope =
+            recovery.status === "vault_only"
+                ? "vault"
+                : recovery.status === "device_only"
+                  ? "device"
+                  : null;
+        if (recovery.status === "required") {
+            return { storageScope: savedScope, recovery };
         }
+        if (detectedScope && savedScope !== detectedScope) {
+            _autoDetectedVaultStorageScopeKey = getVaultPreferenceScope(vaultPath);
+            return { storageScope: detectedScope, recovery };
+        }
+        if (!hasSavedScope && detectedScope === "vault") {
+            _autoDetectedVaultStorageScopeKey = getVaultPreferenceScope(vaultPath);
+            return { storageScope: detectedScope, recovery };
+        }
+        saveCanonicalAiHistoryScope(vaultPath);
         if (
             _autoDetectedVaultStorageScopeKey === getVaultPreferenceScope(vaultPath)
         ) {
@@ -7872,10 +7934,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const autoContextEnabled = loadAutoContextPreference(vaultPath);
             const historyRetentionDays =
                 loadHistoryRetentionPreference(vaultPath);
-            const hasExplicitStorageScope =
-                !vaultPath || hasAiStorageScopePreference(vaultPath);
-
-            if (hasExplicitStorageScope) {
+            const hasCanonicalScope =
+                !vaultPath ||
+                (hasAiStorageScopePreference(vaultPath) &&
+                    hasCanonicalAiHistoryScope(vaultPath));
+            if (hasCanonicalScope) {
                 const aiStorageScope = loadAiStorageScopePreference(vaultPath);
                 set((state) => {
                     if (state.aiStorageScope !== aiStorageScope) {
@@ -7910,9 +7973,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             void resolveInitialAiStorageScopeForVault(vaultPath).then(
                 ({ storageScope: resolvedScope, recovery }) => {
+                    if (getEffectiveAiVaultPath() !== vaultPath) {
+                        return;
+                    }
                     if (
-                        getEffectiveAiVaultPath() !== vaultPath ||
-                        hasAiStorageScopePreference(vaultPath)
+                        recovery.status === "idle" &&
+                        !hasAiStorageScopePreference(vaultPath)
                     ) {
                         return;
                     }
@@ -7937,10 +8003,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         refreshAiHistoryRecovery: async (vaultPath) => {
-            if (hasAiStorageScopePreference(vaultPath)) {
-                set({ aiHistoryRecovery: IDLE_AI_HISTORY_RECOVERY });
-                return;
-            }
             set((state) => ({
                 aiHistoryRecovery: {
                     ...state.aiHistoryRecovery,
@@ -7948,9 +8010,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 },
             }));
             try {
-                const recovery = await inspectLegacyAiHistoryRoots(vaultPath);
+                const { storageScope, recovery } =
+                    await resolveInitialAiStorageScopeForVault(vaultPath);
                 if (normalizeVaultRoot(getEffectiveAiVaultPath()) === normalizeVaultRoot(vaultPath)) {
-                    set({ aiHistoryRecovery: recovery });
+                    set({
+                        aiStorageScope: storageScope,
+                        aiHistoryRecovery: recovery,
+                    });
                 }
             } catch {
                 if (normalizeVaultRoot(getEffectiveAiVaultPath()) === normalizeVaultRoot(vaultPath)) {
@@ -13347,15 +13413,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const next = normalizeAiStorageScope(scope);
             const vaultPath = getAiPreferenceVaultPath();
             set((state) => {
-                if (state.aiStorageScope === next) {
+                if (
+                    state.aiStorageScope === next &&
+                    state.aiHistoryRecovery.status === "idle"
+                ) {
                     return state;
                 }
-                _persistedHistoryCacheKey = null;
-                _persistedHistoryCacheBySessionId.clear();
+                if (state.aiStorageScope !== next) {
+                    _persistedHistoryCacheKey = null;
+                    _persistedHistoryCacheBySessionId.clear();
+                }
                 return {
                     aiStorageScope: next,
+                    aiHistoryRecovery: IDLE_AI_HISTORY_RECOVERY,
                 };
             });
+            _autoDetectedVaultStorageScopeKey = null;
             saveAiStorageScopePreference(vaultPath, next);
         },
 
@@ -13383,6 +13456,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
             set({ aiHistoryMoveState: "checking" });
             try {
+                // A crash after publication can leave the old preference
+                // pointing at an empty source. Reinspect both roots until a
+                // successful move establishes a new canonical location.
+                clearCanonicalAiHistoryScope(vaultPath);
                 await aiLoadSessionHistories(vaultPath, {
                     includeMessages: false,
                     storageScope: fromScope,
