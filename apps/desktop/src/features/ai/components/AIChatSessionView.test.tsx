@@ -713,6 +713,64 @@ describe("AIChatSessionView", () => {
         );
     });
 
+    it("keeps pasted images in an open chat's original scope after changing the setting", async () => {
+        setupWorkspaceSession();
+        useChatStore.getState().setAiStorageScope("device");
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "session-a": {
+                    ...state.sessionsById["session-a"]!,
+                    vaultPath: "/vault",
+                    historyStorageScope: "device",
+                },
+            },
+        }));
+        useChatStore.getState().setAiStorageScope("vault");
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_save_attachment") {
+                return {
+                    path: "/app-data/ai/attachments/vault-hash/session-a/pasted-image.png",
+                    relative_path: "session-a/pasted-image.png",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            return undefined;
+        });
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(
+            useChatStore.getState().sessionsById["session-a"]
+                ?.historyStorageScope,
+        ).toBe("device");
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_attachment",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                sessionId: "session-a",
+            }),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "save_vault_binary_file",
+            expect.anything(),
+        );
+    });
+
     it("stores pasted images in vault assets when vault scope was auto-detected", async () => {
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_has_vault_session_histories") {

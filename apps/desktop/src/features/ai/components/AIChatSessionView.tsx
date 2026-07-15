@@ -445,6 +445,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 const sessionVaultPath =
                     session?.vaultPath ?? useVaultStore.getState().vaultPath;
                 const storageScope =
+                    session?.historyStorageScope ??
                     getEffectiveAiStorageScopeForVault(sessionVaultPath);
                 const saved = await vaultInvoke<{
                     path: string;
@@ -525,6 +526,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         [
             chatActions,
             refreshEntries,
+            session?.historyStorageScope,
             session?.runtimeId,
             session?.vaultPath,
             sessionId,

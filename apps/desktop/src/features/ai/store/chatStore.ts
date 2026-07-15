@@ -8117,7 +8117,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 } catch {
                                     // A secondary storage location can be unavailable
                                     // without preventing the selected location from loading.
-                                    return [storageScope, []] as const;
+                                    return [
+                                        storageScope,
+                                        [] as PersistedSessionHistory[],
+                                    ] as const;
                                 }
                             }),
                         );
