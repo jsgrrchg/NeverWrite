@@ -713,25 +713,15 @@ describe("AIChatSessionView", () => {
         );
     });
 
-    it("keeps pasted images in an open chat's original scope after changing the setting", async () => {
+    it("stores pasted images in the active scope", async () => {
         setupWorkspaceSession();
         useChatStore.getState().setAiStorageScope("device");
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                "session-a": {
-                    ...state.sessionsById["session-a"]!,
-                    vaultPath: "/vault",
-                    historyStorageScope: "device",
-                },
-            },
-        }));
         useChatStore.getState().setAiStorageScope("vault");
         invokeMock.mockImplementation(async (command) => {
-            if (command === "ai_save_attachment") {
+            if (command === "save_vault_binary_file") {
                 return {
-                    path: "/app-data/ai/attachments/vault-hash/session-a/pasted-image.png",
-                    relative_path: "session-a/pasted-image.png",
+                    path: "/vault/assets/chat/pasted-image.png",
+                    relative_path: "assets/chat/pasted-image.png",
                     file_name: "pasted-image.png",
                     mime_type: "image/png",
                 };
@@ -754,19 +744,14 @@ describe("AIChatSessionView", () => {
                 | void);
         });
 
-        expect(
-            useChatStore.getState().sessionsById["session-a"]
-                ?.historyStorageScope,
-        ).toBe("device");
         expect(invokeMock).toHaveBeenCalledWith(
-            "ai_save_attachment",
+            "save_vault_binary_file",
             expect.objectContaining({
-                vaultPath: "/vault",
-                sessionId: "session-a",
+                relativeDir: "assets/chat",
             }),
         );
         expect(invokeMock).not.toHaveBeenCalledWith(
-            "save_vault_binary_file",
+            "ai_save_attachment",
             expect.anything(),
         );
     });

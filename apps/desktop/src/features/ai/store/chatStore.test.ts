@@ -1266,7 +1266,7 @@ describe("chatStore", () => {
         );
     });
 
-    it("keeps an open transcript in its original scope when the default changes", async () => {
+    it("persists an open transcript to the active scope", async () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();
         const session = {
@@ -1289,14 +1289,6 @@ describe("chatStore", () => {
         });
 
         useChatStore.getState().setAiStorageScope("vault");
-        useChatStore.getState().upsertSession({
-            ...session,
-            historyStorageScope: "vault",
-        });
-        expect(
-            useChatStore.getState().sessionsById[session.sessionId]
-                .historyStorageScope,
-        ).toBe("device");
 
         invokeMock.mockClear();
         useChatStore.getState().renameSession(session.sessionId, "Still local");
@@ -1307,8 +1299,42 @@ describe("chatStore", () => {
             "ai_save_session_history",
             expect.objectContaining({
                 vaultPath: "/vaults/one",
-                storageScope: "device",
+                storageScope: "vault",
             }),
+        );
+    });
+
+    it("does not flush session persistence while history is moving", async () => {
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        const session = {
+            ...createSessionWithTrackedFiles("session-one", []),
+            vaultPath: "/vaults/one",
+            messages: [
+                {
+                    id: "user-1",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "Wait for the move",
+                    timestamp: 1,
+                },
+            ],
+        };
+        useChatStore.setState({
+            aiHistoryMoveState: "moving",
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+        });
+        invokeMock.mockClear();
+
+        useChatStore.getState().renameSession(session.sessionId, "Pending");
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.anything(),
         );
     });
 
@@ -1415,7 +1441,7 @@ describe("chatStore", () => {
         expect(useChatStore.getState().activeSessionId).toBeNull();
     });
 
-    it("keeps histories from the non-selected storage scope visible", async () => {
+    it("loads histories only from the selected storage scope", async () => {
         localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();
@@ -1423,11 +1449,11 @@ describe("chatStore", () => {
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_load_session_histories") {
                 const scope = (args as { storageScope?: string }).storageScope;
-                if (scope === "device") {
+                if (scope === "vault") {
                     return [
                         {
                             version: 1,
-                            session_id: "device-history",
+                            session_id: "vault-history",
                             runtime_id: "codex-acp",
                             model_id: "test-model",
                             mode_id: "default",
@@ -1450,11 +1476,14 @@ describe("chatStore", () => {
             .initialize({ createDefaultSession: false });
 
         expect(
-            useChatStore.getState().sessionsById["persisted:device-history"],
+            useChatStore.getState().sessionsById["persisted:vault-history"],
         ).toMatchObject({
-            historyStorageScope: "device",
             runtimeState: "persisted_only",
         });
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_load_session_histories",
+            expect.objectContaining({ storageScope: "device" }),
+        );
     });
 
     it("prunes session history with the retention of the session vault", async () => {
@@ -16942,22 +16971,16 @@ describe("chatStore", () => {
         });
     });
 
-    it("deletes histories from every scope owned by chats in the active vault", async () => {
+    it("deletes histories only from the active storage scope", async () => {
         useChatStore.setState({
             aiStorageScope: "vault",
             sessionsById: {
-                "device-chat": {
-                    ...createSessionWithTrackedFiles("device-chat", []),
-                    vaultPath: "/vault",
-                    historyStorageScope: "device",
-                },
                 "vault-chat": {
                     ...createSessionWithTrackedFiles("vault-chat", []),
                     vaultPath: "/vault",
-                    historyStorageScope: "vault",
                 },
             },
-            sessionOrder: ["device-chat", "vault-chat"],
+            sessionOrder: ["vault-chat"],
             activeSessionId: "vault-chat",
         });
 
@@ -16972,7 +16995,7 @@ describe("chatStore", () => {
             )
             .sort();
 
-        expect(deletedScopes).toEqual(["device", "vault"]);
+        expect(deletedScopes).toEqual(["vault"]);
     });
 
     it("applies agent changes while the session is busy", async () => {
