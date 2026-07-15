@@ -176,15 +176,18 @@ describe("ElectronVaultBackend vault classification", () => {
     });
 });
 
-describe("ElectronVaultBackend AI history migration", () => {
-    it("routes migration to the native persistence layer", async () => {
+describe("ElectronVaultBackend AI history move", () => {
+    it("routes the all-history move to the native persistence layer", async () => {
         const nativeBackend: NativeBackendBridge & {
             invoke: ReturnType<typeof vi.fn>;
         } = {
             supports: vi.fn(
-                (command: string) => command === "ai_migrate_session_histories",
+                (command: string) =>
+                    command === "ai_move_all_session_histories",
             ),
-            invoke: vi.fn(() => Promise.resolve({ histories_copied: 1 })),
+            invoke: vi.fn(() =>
+                Promise.resolve({ completed: true, histories_moved: 1 }),
+            ),
             dispose: vi.fn(),
         };
         const backend = new ElectronVaultBackend(
@@ -199,10 +202,10 @@ describe("ElectronVaultBackend AI history migration", () => {
         };
 
         await expect(
-            backend.invoke("ai_migrate_session_histories", args),
-        ).resolves.toEqual({ histories_copied: 1 });
+            backend.invoke("ai_move_all_session_histories", args),
+        ).resolves.toEqual({ completed: true, histories_moved: 1 });
         expect(nativeBackend.invoke).toHaveBeenCalledWith(
-            "ai_migrate_session_histories",
+            "ai_move_all_session_histories",
             args,
         );
     });
@@ -211,7 +214,7 @@ describe("ElectronVaultBackend AI history migration", () => {
         const backend = new ElectronVaultBackend(vi.fn(), createUpdater(), null);
 
         await expect(
-            backend.invoke("ai_migrate_session_histories", {
+            backend.invoke("ai_move_all_session_histories", {
                 vaultPath: "/vault",
                 fromScope: "device",
                 toScope: "vault",

@@ -8,7 +8,7 @@ import {
     saveLegacyVaultHistoryDismissal,
     useChatStore,
 } from "../store/chatStore";
-import { aiHasVaultSessionHistories, aiMigrateSessionHistories } from "../api";
+import { aiHasVaultSessionHistories } from "../api";
 import { exportChatSessionToVaultNote } from "../chatExport";
 import { findSessionForHistorySelection } from "../sessionPresentation";
 import { HistorySessionList } from "./HistorySessionList";
@@ -52,11 +52,7 @@ export function ChatHistoryView({
     );
     const historyRetentionDays = useChatStore((s) => s.historyRetentionDays);
     const aiStorageScope = useChatStore((s) => s.aiStorageScope);
-    const setAiStorageScope = useChatStore((s) => s.setAiStorageScope);
-    const reassignSessionHistoryStorageScope = useChatStore(
-        (s) => s.reassignSessionHistoryStorageScope,
-    );
-    const initializeChat = useChatStore((s) => s.initialize);
+    const moveAiHistoryStorage = useChatStore((s) => s.moveAiHistoryStorage);
     const setHistoryRetentionDays = useChatStore(
         (s) => s.setHistoryRetentionDays,
     );
@@ -76,9 +72,8 @@ export function ChatHistoryView({
     const [legacyVaultHistoryNotice, setLegacyVaultHistoryNotice] = useState<
         "checking" | "visible" | "hidden"
     >("checking");
-    const [legacyVaultHistoryAction, setLegacyVaultHistoryAction] = useState<
-        "move" | "keep" | null
-    >(null);
+    const [legacyVaultHistoryAction, setLegacyVaultHistoryAction] =
+        useState<"move" | null>(null);
     const [legacyVaultHistoryWarning, setLegacyVaultHistoryWarning] = useState<
         string | null
     >(null);
@@ -134,56 +129,22 @@ export function ChatHistoryView({
     const moveLegacyVaultHistoryToDevice = useCallback(() => {
         if (!vaultPath || legacyVaultHistoryAction) return;
         setLegacyVaultHistoryAction("move");
-        void aiMigrateSessionHistories({
-            vaultPath,
-            fromScope: "vault",
-            toScope: "device",
-            deleteSourceAfterCopy: true,
-            migrateAttachments: true,
-        })
-            .then(async (report) => {
-                if (!report.destination_committed || report.failures.length > 0) {
-                    setLegacyVaultHistoryWarning(
-                        "AI chats could not be moved completely. Existing chats remain in their current location.",
-                    );
-                } else {
-                    reassignSessionHistoryStorageScope(
-                        vaultPath,
-                        "vault",
-                        "device",
-                    );
-                    saveLegacyVaultHistoryDismissal(vaultPath, true);
-                    setLegacyVaultHistoryNotice("hidden");
-                    setLegacyVaultHistoryWarning(
-                        report.cleanup_warnings.length > 0
-                            ? "AI chats were moved. Some source files could not be removed."
-                            : null,
-                    );
-                }
-                await initializeChat();
+        void moveAiHistoryStorage(vaultPath, "vault", "device")
+            .then(() => {
+                saveLegacyVaultHistoryDismissal(vaultPath, true);
+                setLegacyVaultHistoryNotice("hidden");
+                setLegacyVaultHistoryWarning(null);
             })
             .catch((error) => {
                 console.error("Failed to move AI chat history:", error);
+                setLegacyVaultHistoryWarning(
+                    "AI chats could not be moved completely. Existing chats remain in their current location.",
+                );
             })
             .finally(() => {
                 setLegacyVaultHistoryAction(null);
             });
-    }, [
-        initializeChat,
-        legacyVaultHistoryAction,
-        reassignSessionHistoryStorageScope,
-        vaultPath,
-    ]);
-
-    const keepLegacyVaultHistoryInVault = useCallback(() => {
-        if (!vaultPath || legacyVaultHistoryAction) return;
-        setLegacyVaultHistoryAction("keep");
-        setAiStorageScope("vault");
-        saveLegacyVaultHistoryDismissal(vaultPath, true);
-        setLegacyVaultHistoryNotice("hidden");
-        setLegacyVaultHistoryWarning(null);
-        setLegacyVaultHistoryAction(null);
-    }, [legacyVaultHistoryAction, setAiStorageScope, vaultPath]);
+    }, [legacyVaultHistoryAction, moveAiHistoryStorage, vaultPath]);
 
     const dismissLegacyVaultHistoryNotice = useCallback(() => {
         if (vaultPath) {
@@ -389,15 +350,7 @@ export function ChatHistoryView({
                         >
                             {legacyVaultHistoryAction === "move"
                                 ? "Moving..."
-                                : "Move to this device"}
-                        </button>
-                        <button
-                            type="button"
-                            className="rounded border border-[var(--border)] px-3 py-1.5 text-[var(--text-primary)]"
-                            onClick={keepLegacyVaultHistoryInVault}
-                            disabled={legacyVaultHistoryAction !== null}
-                        >
-                            Keep in vault
+                                : "Move all chats"}
                         </button>
                         <button
                             type="button"
@@ -405,7 +358,7 @@ export function ChatHistoryView({
                             onClick={dismissLegacyVaultHistoryNotice}
                             disabled={legacyVaultHistoryAction !== null}
                         >
-                            Not now
+                            Cancel
                         </button>
                     </div>
                     {legacyVaultHistoryWarning ? (

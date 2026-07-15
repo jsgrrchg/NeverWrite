@@ -805,14 +805,14 @@ export async function aiSaveSessionHistory(
     await invoke("ai_save_session_history", { vaultPath, history, storageScope });
 }
 
-export interface AIHistoryMigrationReport {
-    destination_committed: boolean;
-    histories_copied: number;
-    histories_skipped: number;
-    attachments_copied: number;
-    attachments_skipped: number;
-    failures: string[];
-    cleanup_warnings: string[];
+export interface AIHistoryMoveResult {
+    completed: boolean;
+    from_scope: "device" | "vault";
+    to_scope: "device" | "vault";
+    histories_moved: number;
+    histories_deduplicated: number;
+    conflicts: string[];
+    recovery_required: boolean;
 }
 
 export async function aiHasVaultSessionHistories(
@@ -821,14 +821,12 @@ export async function aiHasVaultSessionHistories(
     return invoke<boolean>("ai_has_vault_session_histories", { vaultPath });
 }
 
-export async function aiMigrateSessionHistories(args: {
+export async function aiMoveAllSessionHistories(args: {
     vaultPath: string;
     fromScope: "device" | "vault";
     toScope: "device" | "vault";
-    deleteSourceAfterCopy: boolean;
-    migrateAttachments: boolean;
-}): Promise<AIHistoryMigrationReport> {
-    return invoke<AIHistoryMigrationReport>("ai_migrate_session_histories", args);
+}): Promise<AIHistoryMoveResult> {
+    return invoke<AIHistoryMoveResult>("ai_move_all_session_histories", args);
 }
 
 export async function aiLoadSessionHistories(

@@ -230,7 +230,7 @@ const VAULT_EDITOR_COMMANDS = new Set([
     "ai_save_attachment",
     "ai_delete_attachment",
     "ai_has_vault_session_histories",
-    "ai_migrate_session_histories",
+    "ai_move_all_session_histories",
     "read_note",
     "save_note",
     "create_note",
@@ -264,7 +264,7 @@ const VAULT_EDITOR_COMMANDS = new Set([
 // Session histories use an indexed on-disk format. Only the Rust persistence
 // layer may rewrite them, so transcript and index files stay in sync.
 const NATIVE_ONLY_COMMANDS = new Set([
-    "ai_migrate_session_histories",
+    "ai_move_all_session_histories",
 ]);
 
 function isStrictSidecarMode() {

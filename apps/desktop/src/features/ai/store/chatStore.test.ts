@@ -476,6 +476,18 @@ async function defaultInvokeImplementation(command: string, args?: unknown) {
         return false;
     }
 
+    if (command === "ai_move_all_session_histories") {
+        return {
+            completed: true,
+            from_scope: "vault",
+            to_scope: "device",
+            histories_moved: 0,
+            histories_deduplicated: 0,
+            conflicts: [],
+            recovery_required: false,
+        };
+    }
+
     if (command === "ai_load_session_history_page") {
         return {
             session_id: "history-1",
@@ -1010,6 +1022,188 @@ describe("chatStore", () => {
             "vault",
         );
         expect(localStorage.getItem(AI_PREFS_KEY)).toBeNull();
+    });
+
+    it("moves all history before committing the destination scope", async () => {
+        useVaultStore.setState({ vaultPath: "/vault" });
+        localStorage.setItem(getAiStorageScopeKey("/vault"), "vault");
+        useChatStore.setState({
+            aiStorageScope: "vault",
+            aiHistoryMoveState: "idle",
+        });
+
+        const result = await useChatStore
+            .getState()
+            .moveAiHistoryStorage("/vault", "vault", "device");
+
+        expect(result.completed).toBe(true);
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_move_all_session_histories",
+            {
+                vaultPath: "/vault",
+                fromScope: "vault",
+                toScope: "device",
+            },
+        );
+        expect(localStorage.getItem(getAiStorageScopeKey("/vault"))).toBe(
+            "device",
+        );
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+        expect(useChatStore.getState().aiHistoryMoveState).toBe("idle");
+    });
+
+    it("keeps the current scope when the all-history move conflicts", async () => {
+        useVaultStore.setState({ vaultPath: "/vault" });
+        localStorage.setItem(getAiStorageScopeKey("/vault"), "vault");
+        useChatStore.setState({
+            aiStorageScope: "vault",
+            aiHistoryMoveState: "idle",
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_move_all_session_histories") {
+                return {
+                    completed: false,
+                    from_scope: "vault",
+                    to_scope: "device",
+                    histories_moved: 0,
+                    histories_deduplicated: 0,
+                    conflicts: ["history-1:different_content"],
+                    recovery_required: false,
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await expect(
+            useChatStore
+                .getState()
+                .moveAiHistoryStorage("/vault", "vault", "device"),
+        ).rejects.toThrow("conflicts");
+
+        expect(localStorage.getItem(getAiStorageScopeKey("/vault"))).toBe(
+            "vault",
+        );
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+        expect(useChatStore.getState().aiHistoryMoveState).toBe("error");
+    });
+
+    it("keeps the current scope when source cleanup requires recovery", async () => {
+        useVaultStore.setState({ vaultPath: "/vault" });
+        localStorage.setItem(getAiStorageScopeKey("/vault"), "device");
+        useChatStore.setState({
+            aiStorageScope: "device",
+            aiHistoryMoveState: "idle",
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_move_all_session_histories") {
+                return {
+                    completed: false,
+                    from_scope: "device",
+                    to_scope: "vault",
+                    histories_moved: 1,
+                    histories_deduplicated: 0,
+                    conflicts: [],
+                    recovery_required: true,
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await expect(
+            useChatStore
+                .getState()
+                .moveAiHistoryStorage("/vault", "device", "vault"),
+        ).rejects.toThrow("requires recovery");
+
+        expect(localStorage.getItem(getAiStorageScopeKey("/vault"))).toBe(
+            "device",
+        );
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+        expect(useChatStore.getState().aiHistoryMoveState).toBe("error");
+    });
+
+    it("blocks a second storage move while the first one is active", async () => {
+        const move = createDeferred<{
+            completed: boolean;
+            from_scope: string;
+            to_scope: string;
+            histories_moved: number;
+            histories_deduplicated: number;
+            conflicts: string[];
+            recovery_required: boolean;
+        }>();
+        useChatStore.setState({ aiHistoryMoveState: "idle" });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_move_all_session_histories") {
+                return move.promise;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        const first = useChatStore
+            .getState()
+            .moveAiHistoryStorage("/vault", "device", "vault");
+        await Promise.resolve();
+        await Promise.resolve();
+
+        await expect(
+            useChatStore
+                .getState()
+                .moveAiHistoryStorage("/vault", "device", "vault"),
+        ).rejects.toThrow("already being moved");
+
+        move.resolve({
+            completed: true,
+            from_scope: "device",
+            to_scope: "vault",
+            histories_moved: 0,
+            histories_deduplicated: 0,
+            conflicts: [],
+            recovery_required: false,
+        });
+        await first;
+    });
+
+    it("does not reload a different vault after a move finishes", async () => {
+        const completedMove = {
+            completed: true,
+            from_scope: "device",
+            to_scope: "vault",
+            histories_moved: 1,
+            histories_deduplicated: 0,
+            conflicts: [] as string[],
+            recovery_required: false,
+        };
+        const move = createDeferred<typeof completedMove>();
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        useChatStore.setState({
+            aiStorageScope: "device",
+            aiHistoryMoveState: "idle",
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_move_all_session_histories") {
+                return move.promise;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        const pending = useChatStore
+            .getState()
+            .moveAiHistoryStorage("/vaults/one", "device", "vault");
+        await Promise.resolve();
+        await Promise.resolve();
+        useVaultStore.setState({ vaultPath: "/vaults/two" });
+        invokeMock.mockClear();
+
+        move.resolve(completedMove);
+        await pending;
+
+        expect(
+            localStorage.getItem(getAiStorageScopeKey("/vaults/one")),
+        ).toBe("vault");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_list_runtimes",
+            ),
+        ).toBe(false);
     });
 
     it("normalizes unknown AI storage scope values back to device", () => {

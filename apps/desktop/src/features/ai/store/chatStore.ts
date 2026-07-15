@@ -21,6 +21,7 @@ import {
     aiLoadSession,
     aiLoadSessionHistoryPage,
     aiLoadSessionHistories,
+    aiMoveAllSessionHistories,
     aiPruneSessionHistories,
     aiRespondPermission,
     aiRespondUrlElicitation,
@@ -34,6 +35,7 @@ import {
     aiSetModel,
     aiUpdateSetup,
     aiRegisterFileBaseline,
+    type AIHistoryMoveResult,
 } from "../api";
 import {
     isFileTab,
@@ -1615,6 +1617,7 @@ interface ChatStore {
     chatFontFamily: EditorFontFamily;
     editDiffZoom: number;
     aiStorageScope: AIStorageScope;
+    aiHistoryMoveState: "idle" | "checking" | "moving" | "error";
     historyRetentionDays: number;
     screenshotRetentionSeconds: number;
     toolActivityDisplayMode: ActivityDisplayMode;
@@ -1831,11 +1834,11 @@ interface ChatStore {
     setChatFontFamily: (fontFamily: EditorFontFamily) => void;
     setEditDiffZoom: (size: number) => void;
     setAiStorageScope: (scope: AIStorageScope) => void;
-    reassignSessionHistoryStorageScope: (
+    moveAiHistoryStorage: (
         vaultPath: string,
         fromScope: AIStorageScope,
         toScope: AIStorageScope,
-    ) => void;
+    ) => Promise<AIHistoryMoveResult>;
     setHistoryRetentionDays: (days: number) => Promise<void>;
     setScreenshotRetentionSeconds: (seconds: number) => void;
     setToolActivityDisplayMode: (mode: ActivityDisplayMode) => void;
@@ -7835,6 +7838,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         chatFontFamily: DEFAULT_AI_PREFERENCES.chatFontFamily,
         editDiffZoom: DEFAULT_AI_PREFERENCES.editDiffZoom,
         aiStorageScope: "device",
+        aiHistoryMoveState: "idle",
         historyRetentionDays: 0,
         screenshotRetentionSeconds:
             DEFAULT_AI_PREFERENCES.screenshotRetentionSeconds,
@@ -13389,6 +13393,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setAiStorageScope: (scope) => {
+            if (
+                get().aiHistoryMoveState === "checking" ||
+                get().aiHistoryMoveState === "moving"
+            ) {
+                return;
+            }
             const next = normalizeAiStorageScope(scope);
             const vaultPath = getAiPreferenceVaultPath();
             set((state) => {
@@ -13419,35 +13429,72 @@ export const useChatStore = create<ChatStore>((set, get) => {
             saveAiStorageScopePreference(vaultPath, next);
         },
 
-        reassignSessionHistoryStorageScope: (
+        moveAiHistoryStorage: async (
             vaultPath,
             fromScope,
             toScope,
         ) => {
-            if (fromScope === toScope) return;
-            set((state) => ({
-                sessionsById: Object.fromEntries(
-                    Object.entries(state.sessionsById).map(
-                        ([sessionId, session]) => {
-                            if (!sessionMatchesVaultPath(session, vaultPath)) {
-                                return [sessionId, session];
-                            }
-                            const ownedScope = getSessionHistoryStorageScope(
-                                session,
-                            );
-                            return [
-                                sessionId,
-                                ownedScope === fromScope
-                                    ? {
-                                          ...session,
-                                          historyStorageScope: toScope,
-                                      }
-                                    : session,
-                            ];
-                        },
-                    ),
-                ),
-            }));
+            if (fromScope === toScope) {
+                return {
+                    completed: true,
+                    from_scope: fromScope,
+                    to_scope: toScope,
+                    histories_moved: 0,
+                    histories_deduplicated: 0,
+                    conflicts: [],
+                    recovery_required: false,
+                };
+            }
+            if (
+                get().aiHistoryMoveState === "checking" ||
+                get().aiHistoryMoveState === "moving"
+            ) {
+                throw new Error("AI chat history is already being moved.");
+            }
+            set({ aiHistoryMoveState: "checking" });
+            try {
+                await aiLoadSessionHistories(vaultPath, {
+                    includeMessages: false,
+                    storageScope: fromScope,
+                });
+                set({ aiHistoryMoveState: "moving" });
+                const result = await aiMoveAllSessionHistories({
+                    vaultPath,
+                    fromScope,
+                    toScope,
+                });
+                if (!result.completed) {
+                    set({ aiHistoryMoveState: "error" });
+                    if (result.conflicts.length > 0) {
+                        throw new Error(
+                            "AI chat history has conflicts that must be resolved before moving.",
+                        );
+                    }
+                    if (result.recovery_required) {
+                        throw new Error(
+                            "AI chat history move requires recovery before retrying.",
+                        );
+                    }
+                    throw new Error("AI chat history could not be moved.");
+                }
+                clearPersistedHistoryCache(vaultPath, fromScope);
+                clearPersistedHistoryCache(vaultPath, toScope);
+                saveAiStorageScopePreference(vaultPath, toScope);
+                if (
+                    normalizeVaultRoot(getEffectiveAiVaultPath()) ===
+                    normalizeVaultRoot(vaultPath)
+                ) {
+                    set({ aiStorageScope: toScope });
+                    await get().initialize();
+                }
+                set({ aiHistoryMoveState: "idle" });
+                return result;
+            } catch (error) {
+                if (get().aiHistoryMoveState !== "error") {
+                    set({ aiHistoryMoveState: "error" });
+                }
+                throw error;
+            }
         },
 
         setHistoryRetentionDays: async (days) => {
@@ -13575,6 +13622,7 @@ export function hydrateChatStorePreferences() {
         chatFontFamily: prefs.chatFontFamily,
         editDiffZoom: prefs.editDiffZoom,
         aiStorageScope: loadAiStorageScopePreference(vaultPath),
+        aiHistoryMoveState: "idle",
         historyRetentionDays: loadHistoryRetentionPreference(vaultPath),
         screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
         toolActivityDisplayMode: prefs.toolActivityDisplayMode,

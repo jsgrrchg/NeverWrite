@@ -56,7 +56,7 @@ import { MarkdownContent } from "../ai/components/MarkdownContent";
 import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
 import { SCREENSHOT_RETENTION_OPTIONS } from "../ai/screenshotRetention";
 import { PROVIDER_CATALOG } from "../ai/utils/runtimeMetadata";
-import { aiLoadSessionHistories, aiMigrateSessionHistories } from "../ai/api";
+import { aiLoadSessionHistories } from "../ai/api";
 import type { PersistedSessionHistory } from "../ai/types";
 import { AIProvidersSettings } from "./AIProvidersSettings";
 import { ExtensionFilterInput } from "./ExtensionFilterInput";
@@ -3947,9 +3947,7 @@ function AISettings({
     );
     const aiStorageScope = useChatStore((s) => s.aiStorageScope);
     const setAiStorageScope = useChatStore((s) => s.setAiStorageScope);
-    const reassignSessionHistoryStorageScope = useChatStore(
-        (s) => s.reassignSessionHistoryStorageScope,
-    );
+    const moveAiHistoryStorage = useChatStore((s) => s.moveAiHistoryStorage);
     const syncVaultScopedAiPreferences = useChatStore(
         (s) => s.syncVaultScopedAiPreferences,
     );
@@ -4196,9 +4194,8 @@ function AISettings({
                             className="mt-2 leading-relaxed"
                             style={{ color: "var(--text-secondary)" }}
                         >
-                            New chats will use the selected storage location.
-                            Existing chats stay where they are unless you move
-                            them.
+                            All existing chats and managed attachments must move
+                            together before the storage location changes.
                         </div>
                         <div className="mt-4 flex flex-wrap items-center gap-2">
                             <button
@@ -4222,46 +4219,14 @@ function AISettings({
                                 onClick={() => {
                                     if (!vaultPath) return;
                                     setHistoryMigrationStatus("moving");
-                                    void aiMigrateSessionHistories({
+                                    void moveAiHistoryStorage(
                                         vaultPath,
-                                        fromScope:
-                                            historyMigrationPrompt.fromScope,
-                                        toScope: historyMigrationPrompt.toScope,
-                                        deleteSourceAfterCopy: true,
-                                        migrateAttachments: true,
-                                    })
-                                        .then(async (report) => {
-                                            if (
-                                                !report.destination_committed ||
-                                                report.failures.length > 0
-                                            ) {
-                                                setHistoryMigrationMessage(
-                                                    "AI chats could not be moved completely. Existing chats were left in their current location.",
-                                                );
-                                                setHistoryMigrationStatus(
-                                                    "error",
-                                                );
-                                                return;
-                                            }
-
-                                            reassignSessionHistoryStorageScope(
-                                                vaultPath,
-                                                historyMigrationPrompt.fromScope,
-                                                historyMigrationPrompt.toScope,
-                                            );
-                                            await applySelectedStorageScope(
-                                                historyMigrationPrompt.toScope,
-                                            );
+                                        historyMigrationPrompt.fromScope,
+                                        historyMigrationPrompt.toScope,
+                                    )
+                                        .then(() => {
                                             setHistoryMigrationPrompt(null);
-                                            setHistoryMigrationMessage(
-                                                report.cleanup_warnings.length >
-                                                    0
-                                                    ? "AI chats were moved. Some source files could not be removed."
-                                                    : report.attachments_skipped >
-                                                        0
-                                                      ? "AI chats were moved. Some external attachments were left in place."
-                                                    : null,
-                                            );
+                                            setHistoryMigrationMessage(null);
                                             setHistoryMigrationStatus("idle");
                                         })
                                         .catch((error) => {
@@ -4275,41 +4240,7 @@ function AISettings({
                             >
                                 {historyMigrationStatus === "moving"
                                     ? "Moving..."
-                                    : "Move"}
-                            </button>
-                            <button
-                                type="button"
-                                className="nw-dialog-btn rounded-md px-3 py-2"
-                                style={{
-                                    border: "1px solid var(--border)",
-                                    backgroundColor: "var(--bg-secondary)",
-                                    color: "var(--text-primary)",
-                                    opacity:
-                                        historyMigrationStatus === "moving"
-                                            ? 0.5
-                                            : 1,
-                                }}
-                                disabled={historyMigrationStatus === "moving"}
-                                onClick={() => {
-                                    setHistoryMigrationStatus("moving");
-                                    void applySelectedStorageScope(
-                                        historyMigrationPrompt.toScope,
-                                    )
-                                        .then(() => {
-                                            setHistoryMigrationPrompt(null);
-                                            setHistoryMigrationMessage(null);
-                                            setHistoryMigrationStatus("idle");
-                                        })
-                                        .catch((error) => {
-                                            console.error(
-                                                "Failed to update AI chat storage:",
-                                                error,
-                                            );
-                                            setHistoryMigrationStatus("error");
-                                        });
-                                }}
-                            >
-                                Keep existing chats where they are
+                                    : "Move all chats"}
                             </button>
                             <button
                                 type="button"

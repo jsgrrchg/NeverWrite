@@ -100,14 +100,14 @@ const aiApiMocks = vi.hoisted(() => ({
     aiWriteAuthTerminalSession: vi.fn(async () => undefined),
     aiResizeAuthTerminalSession: vi.fn(async () => undefined),
     aiLoadSessionHistories: vi.fn(async (): Promise<unknown[]> => []),
-    aiMigrateSessionHistories: vi.fn(async () => ({
-        destination_committed: true,
-        histories_copied: 0,
-        histories_skipped: 0,
-        attachments_copied: 0,
-        attachments_skipped: 0,
-        failures: [],
-        cleanup_warnings: [] as string[],
+    aiMoveAllSessionHistories: vi.fn(async () => ({
+        completed: true,
+        from_scope: "vault" as const,
+        to_scope: "device" as const,
+        histories_moved: 0,
+        histories_deduplicated: 0,
+        conflicts: [] as string[],
+        recovery_required: false,
     })),
     listenToAiAuthTerminalStarted: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalOutput: vi.fn(async () => vi.fn()),
@@ -167,14 +167,14 @@ function setNavigatorIdentity(userAgent: string, platform: string) {
 beforeEach(() => {
     vi.clearAllMocks();
     aiApiMocks.aiLoadSessionHistories.mockResolvedValue([]);
-    aiApiMocks.aiMigrateSessionHistories.mockResolvedValue({
-        destination_committed: true,
-        histories_copied: 0,
-        histories_skipped: 0,
-        attachments_copied: 0,
-        attachments_skipped: 0,
-        failures: [],
-        cleanup_warnings: [],
+    aiApiMocks.aiMoveAllSessionHistories.mockResolvedValue({
+        completed: true,
+        from_scope: "vault",
+        to_scope: "device",
+        histories_moved: 0,
+        histories_deduplicated: 0,
+        conflicts: [],
+        recovery_required: false,
     });
     getMockCurrentWindow().startDragging.mockClear();
     getMockCurrentWindow().toggleMaximize.mockClear();
@@ -658,14 +658,14 @@ describe("SettingsPanel", () => {
         useVaultStore.setState({ vaultPath: "/vault" });
         safeStorageSetItem("neverwrite.ai.storage-scope:/vault", "vault");
         aiApiMocks.aiLoadSessionHistories.mockResolvedValueOnce([]);
-        aiApiMocks.aiMigrateSessionHistories.mockResolvedValueOnce({
-            destination_committed: true,
-            histories_copied: 1,
-            histories_skipped: 0,
-            attachments_copied: 1,
-            attachments_skipped: 0,
-            failures: [],
-            cleanup_warnings: ["source attachment cleanup failed"],
+        aiApiMocks.aiMoveAllSessionHistories.mockResolvedValueOnce({
+            completed: true,
+            from_scope: "vault",
+            to_scope: "device",
+            histories_moved: 1,
+            histories_deduplicated: 0,
+            conflicts: [],
+            recovery_required: false,
         });
 
         renderComponent(<SettingsPanel onClose={() => {}} />);
@@ -693,15 +693,15 @@ describe("SettingsPanel", () => {
             safeStorageGetItem("neverwrite.ai.storage-scope:/vault"),
         ).toBe("vault");
 
-        fireEvent.click(screen.getByRole("button", { name: "Move" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "Move all chats" }),
+        );
 
         await waitFor(() =>
-            expect(aiApiMocks.aiMigrateSessionHistories).toHaveBeenCalledWith({
+            expect(aiApiMocks.aiMoveAllSessionHistories).toHaveBeenCalledWith({
                 vaultPath: "/vault",
                 fromScope: "vault",
                 toScope: "device",
-                deleteSourceAfterCopy: true,
-                migrateAttachments: true,
             }),
         );
         await waitFor(() =>
@@ -709,13 +709,7 @@ describe("SettingsPanel", () => {
                 safeStorageGetItem("neverwrite.ai.storage-scope:/vault"),
             ).toBe("device"),
         );
-        expect(initializeMock).toHaveBeenCalledWith({
-            createDefaultSession: false,
-        });
-        expect(
-            useChatStore.getState().sessionsById["persisted:history-1"]
-                .historyStorageScope,
-        ).toBe("device");
+        expect(initializeMock).toHaveBeenCalled();
     });
 
     it("uses the settings window vault URL when the vault store is not hydrated", async () => {
@@ -777,15 +771,15 @@ describe("SettingsPanel", () => {
             safeStorageGetItem("neverwrite.ai.storage-scope:/vault"),
         ).toBe("vault");
 
-        fireEvent.click(screen.getByRole("button", { name: "Move" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "Move all chats" }),
+        );
 
         await waitFor(() =>
-            expect(aiApiMocks.aiMigrateSessionHistories).toHaveBeenCalledWith({
+            expect(aiApiMocks.aiMoveAllSessionHistories).toHaveBeenCalledWith({
                 vaultPath: "/vault",
                 fromScope: "vault",
                 toScope: "device",
-                deleteSourceAfterCopy: true,
-                migrateAttachments: true,
             }),
         );
         expect(
@@ -794,9 +788,7 @@ describe("SettingsPanel", () => {
         expect(
             safeStorageGetItem("neverwrite.ai.storage-scope:__global__"),
         ).toBeNull();
-        expect(initializeMock).toHaveBeenCalledWith({
-            createDefaultSession: false,
-        });
+        expect(initializeMock).toHaveBeenCalled();
     });
 
     it("renders, persists, and searches the global tool activity display setting", () => {

@@ -4,7 +4,7 @@ import { useEditorStore } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
-import { aiHasVaultSessionHistories, aiMigrateSessionHistories } from "../api";
+import { aiHasVaultSessionHistories, aiMoveAllSessionHistories } from "../api";
 import { exportChatSessionToVaultNote } from "../chatExport";
 import type { AIChatSession } from "../types";
 import { AIChatHistoryWorkspaceView } from "./AIChatHistoryWorkspaceView";
@@ -20,19 +20,20 @@ vi.mock("../chatExport", () => ({
 
 vi.mock("../api", () => ({
     aiHasVaultSessionHistories: vi.fn().mockResolvedValue(false),
-    aiMigrateSessionHistories: vi.fn().mockResolvedValue({
-        destination_committed: true,
-        histories_copied: 0,
-        histories_skipped: 0,
-        attachments_copied: 0,
-        attachments_skipped: 0,
-        failures: [],
-        cleanup_warnings: [],
+    aiLoadSessionHistories: vi.fn().mockResolvedValue([]),
+    aiMoveAllSessionHistories: vi.fn().mockResolvedValue({
+        completed: true,
+        from_scope: "vault",
+        to_scope: "device",
+        histories_moved: 0,
+        histories_deduplicated: 0,
+        conflicts: [],
+        recovery_required: false,
     }),
 }));
 
 const aiHasVaultSessionHistoriesMock = vi.mocked(aiHasVaultSessionHistories);
-const aiMigrateSessionHistoriesMock = vi.mocked(aiMigrateSessionHistories);
+const aiMoveAllSessionHistoriesMock = vi.mocked(aiMoveAllSessionHistories);
 
 function createSession(
     sessionId: string,
@@ -344,16 +345,14 @@ describe("AIChatHistoryWorkspaceView", () => {
         ).toBeInTheDocument();
 
         fireEvent.click(
-            screen.getByRole("button", { name: "Move to this device" }),
+            screen.getByRole("button", { name: "Move all chats" }),
         );
 
         await waitFor(() => {
-            expect(aiMigrateSessionHistoriesMock).toHaveBeenCalledWith({
+            expect(aiMoveAllSessionHistoriesMock).toHaveBeenCalledWith({
                 vaultPath: "/vault",
                 fromScope: "vault",
                 toScope: "device",
-                deleteSourceAfterCopy: true,
-                migrateAttachments: true,
             });
             expect(initialize).toHaveBeenCalled();
         });
@@ -366,16 +365,42 @@ describe("AIChatHistoryWorkspaceView", () => {
         });
     });
 
-    it("dismisses the legacy vault history notice when only external attachments are skipped", async () => {
+    it("cancels the legacy history prompt without changing storage", async () => {
         aiHasVaultSessionHistoriesMock.mockResolvedValue(true);
-        aiMigrateSessionHistoriesMock.mockResolvedValueOnce({
-            destination_committed: true,
-            histories_copied: 1,
-            histories_skipped: 0,
-            attachments_copied: 0,
-            attachments_skipped: 1,
-            failures: [],
-            cleanup_warnings: [],
+        useChatStore.setState({
+            sessionsById: {},
+            sessionOrder: [],
+            aiStorageScope: "vault",
+        });
+
+        renderComponent(<AIChatHistoryWorkspaceView />);
+        expect(
+            await screen.findByText(
+                "AI chat history is currently stored in this vault.",
+            ),
+        ).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+        expect(aiMoveAllSessionHistoriesMock).not.toHaveBeenCalled();
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+        expect(
+            screen.queryByText(
+                "AI chat history is currently stored in this vault.",
+            ),
+        ).toBeNull();
+    });
+
+    it("dismisses the legacy vault history notice after a complete move", async () => {
+        aiHasVaultSessionHistoriesMock.mockResolvedValue(true);
+        aiMoveAllSessionHistoriesMock.mockResolvedValueOnce({
+            completed: true,
+            from_scope: "vault",
+            to_scope: "device",
+            histories_moved: 1,
+            histories_deduplicated: 0,
+            conflicts: [],
+            recovery_required: false,
         });
         const initialize = vi.fn().mockResolvedValue(undefined);
         useChatStore.setState((state) => ({
@@ -395,7 +420,7 @@ describe("AIChatHistoryWorkspaceView", () => {
         ).toBeInTheDocument();
 
         fireEvent.click(
-            screen.getByRole("button", { name: "Move to this device" }),
+            screen.getByRole("button", { name: "Move all chats" }),
         );
 
         await waitFor(() => {
