@@ -1634,6 +1634,29 @@ pub fn load_all_session_histories_in_storage_root(
     Ok(histories)
 }
 
+/// Loads a staged lazy history without suppressing malformed metadata, index, or transcript
+/// errors. Migration staging uses this before publication so a partially readable session never
+/// becomes the destination's canonical copy.
+pub fn validate_session_history_in_storage_root(
+    sessions_root: &Path,
+    session_id: &str,
+) -> Result<PersistedSessionHistory, String> {
+    let session_dir = storage_session_dir_in_root(sessions_root, session_id);
+    if !session_dir.is_dir() {
+        return Err(format!("Staged session history is missing: {session_id}"));
+    }
+
+    let history = load_history_from_session_dir(&session_dir, true)?;
+    let expected_message_count = history.message_count.unwrap_or(history.messages.len());
+    if history.messages.len() != expected_message_count {
+        return Err(format!(
+            "Staged session history message count is inconsistent: {session_id}"
+        ));
+    }
+
+    Ok(history)
+}
+
 // Attachment cleanup must not depend on the fully validated history loader. A damaged
 // metadata or index sidecar can make a recoverable transcript invisible to that loader.
 pub fn inspect_session_attachment_references_in_storage_root(
