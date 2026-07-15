@@ -716,7 +716,7 @@ describe("SettingsPanel", () => {
         expect(initializeMock).toHaveBeenCalled();
     });
 
-    it("uses the settings window vault URL when the vault store is not hydrated", async () => {
+    it("migrates a closed history from the settings window vault URL", async () => {
         const initializeMock = vi.fn(async () => ({
             sessionInventoryLoaded: true,
         }));
@@ -745,7 +745,8 @@ describe("SettingsPanel", () => {
                 mode_id: "default",
                 created_at: 1,
                 updated_at: 2,
-                message_count: 1,
+                message_count: 0,
+                closed_at: "2026-07-15T12:00:00.000Z",
                 messages: [],
             },
         ]);

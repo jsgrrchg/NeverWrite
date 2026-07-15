@@ -81,7 +81,9 @@ import {
 function hasMigratableHistoryContent(history: PersistedSessionHistory) {
     return (
         (history.message_count ?? history.messages.length) > 0 ||
-        history.parent_session_id != null
+        history.parent_session_id != null ||
+        history.closed_at != null ||
+        Boolean(history.custom_title?.trim())
     );
 }
 
