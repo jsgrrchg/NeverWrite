@@ -3980,7 +3980,7 @@ function AISettings({
                     session.parentSessionId != null),
         );
     const applySelectedStorageScope = async (scope: AIStorageScope) => {
-        setAiStorageScope(scope);
+        await setAiStorageScope(scope);
         await initializeChat({ createDefaultSession: false });
     };
     const sendShortcut = formatPrimaryShortcut("Enter", getDesktopPlatform());

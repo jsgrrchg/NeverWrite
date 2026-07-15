@@ -116,16 +116,22 @@ export function ChatHistoryView({
 
     const confirmRecoveredHistoryScope = useCallback(() => {
         if (!recoveredScope) return;
-        setAiStorageScope(recoveredScope);
-        setRecoveryNoticeHidden(true);
+        void setAiStorageScope(recoveredScope)
+            .then(() => setRecoveryNoticeHidden(true))
+            .catch((error) => {
+                console.error("Failed to confirm AI chat history scope:", error);
+            });
     }, [recoveredScope, setAiStorageScope]);
 
     const keepConflictingHistoryScope = useCallback(
         (scope: "device" | "vault") => {
             // Conflicting session IDs cannot be merged safely. Selecting a
             // canonical scope is explicit and leaves the other copy intact.
-            setAiStorageScope(scope);
-            setRecoveryNoticeHidden(true);
+            void setAiStorageScope(scope)
+                .then(() => setRecoveryNoticeHidden(true))
+                .catch((error) => {
+                    console.error("Failed to select AI chat history scope:", error);
+                });
         },
         [setAiStorageScope],
     );

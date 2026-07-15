@@ -1122,12 +1122,12 @@ describe("chatStore", () => {
         ).toBeNull();
     });
 
-    it("persists AI storage scope per vault path", () => {
+    it("persists AI storage scope per vault path", async () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();
         invokeMock.mockClear();
 
-        useChatStore.getState().setAiStorageScope("vault");
+        await useChatStore.getState().setAiStorageScope("vault");
 
         expect(useChatStore.getState().aiStorageScope).toBe("vault");
         expect(localStorage.getItem(getAiStorageScopeKey("/vaults/one"))).toBe(
@@ -1408,7 +1408,7 @@ describe("chatStore", () => {
             activeSessionId: session.sessionId,
         });
 
-        useChatStore.getState().setAiStorageScope("vault");
+        await useChatStore.getState().setAiStorageScope("vault");
 
         invokeMock.mockClear();
         useChatStore.getState().renameSession(session.sessionId, "Still local");

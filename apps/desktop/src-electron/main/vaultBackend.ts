@@ -240,6 +240,7 @@ const VAULT_EDITOR_COMMANDS = new Set([
 // Session histories use an indexed on-disk format. Only the Rust persistence
 // layer may rewrite them, so transcript and index files stay in sync.
 const NATIVE_ONLY_COMMANDS = new Set([
+    "ai_set_history_scope",
     "ai_move_all_session_histories",
 ]);
 

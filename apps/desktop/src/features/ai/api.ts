@@ -805,6 +805,18 @@ export async function aiSaveSessionHistory(
     await invoke("ai_save_session_history", { vaultPath, history, storageScope });
 }
 
+export async function aiSetHistoryScope(
+    vaultPath: string,
+    storageScope: "device" | "vault",
+    expectedScope: "device" | "vault",
+): Promise<{ scope: "device" | "vault"; revision: number }> {
+    return invoke("ai_set_history_scope", {
+        vaultPath,
+        storageScope,
+        expectedScope,
+    });
+}
+
 export interface AIHistoryMoveResult {
     completed: boolean;
     from_scope: "device" | "vault";

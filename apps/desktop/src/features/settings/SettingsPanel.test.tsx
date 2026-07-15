@@ -100,6 +100,10 @@ const aiApiMocks = vi.hoisted(() => ({
     aiWriteAuthTerminalSession: vi.fn(async () => undefined),
     aiResizeAuthTerminalSession: vi.fn(async () => undefined),
     aiLoadSessionHistories: vi.fn(async (): Promise<unknown[]> => []),
+    aiSetHistoryScope: vi.fn(async () => ({
+        scope: "device" as const,
+        revision: 1,
+    })),
     aiMoveAllSessionHistories: vi.fn(async () => ({
         completed: true,
         from_scope: "vault" as const,

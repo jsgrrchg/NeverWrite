@@ -27,6 +27,7 @@ import {
     aiRespondUserInput,
     aiRestoreTextFile,
     aiSaveSessionHistory,
+    aiSetHistoryScope,
     aiSendMessage,
     aiStartAuth,
     aiSetConfigOption,
@@ -1910,7 +1911,7 @@ interface ChatStore {
     setComposerFontFamily: (fontFamily: EditorFontFamily) => void;
     setChatFontFamily: (fontFamily: EditorFontFamily) => void;
     setEditDiffZoom: (size: number) => void;
-    setAiStorageScope: (scope: AIStorageScope) => void;
+    setAiStorageScope: (scope: AIStorageScope) => Promise<void>;
     moveAiHistoryStorage: (
         vaultPath: string,
         fromScope: AIStorageScope,
@@ -13427,7 +13428,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             saveAiPreferences({ editDiffZoom: next });
         },
 
-        setAiStorageScope: (scope) => {
+        setAiStorageScope: async (scope) => {
             if (
                 get().aiHistoryMoveState === "checking" ||
                 get().aiHistoryMoveState === "moving"
@@ -13436,6 +13437,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
             const next = normalizeAiStorageScope(scope);
             const vaultPath = getAiPreferenceVaultPath();
+            if (vaultPath) {
+                await aiSetHistoryScope(vaultPath, next, get().aiStorageScope);
+            }
             set((state) => {
                 if (
                     state.aiStorageScope === next &&
