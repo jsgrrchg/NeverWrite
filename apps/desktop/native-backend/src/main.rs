@@ -3717,14 +3717,12 @@ fn verify_session_history_exists(
 
 fn has_persisted_history_content_native(history: &PersistedSessionHistory) -> bool {
     history.message_count.unwrap_or(history.messages.len()) > 0
+        || history.parent_session_id.is_some()
+        || history.closed_at.is_some()
         || history
-            .title
+            .custom_title
             .as_deref()
             .is_some_and(|title| !title.trim().is_empty())
-        || history
-            .preview
-            .as_deref()
-            .is_some_and(|preview| !preview.trim().is_empty())
 }
 
 fn resolve_ai_sessions_root(
@@ -4896,6 +4894,43 @@ mod tests {
         )
         .is_ok());
         assert!(verify_session_history_exists(&source, "staged-session").is_ok());
+    }
+
+    #[test]
+    fn migrates_metadata_only_histories() {
+        let vault = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let vault_key = vault.path().to_string_lossy().to_string();
+        let source = ai_sessions_storage_for_scope(
+            &vault_key,
+            vault.path(),
+            AiStorageScope::Vault,
+            app_data.path(),
+        );
+        let mut history: PersistedSessionHistory =
+            serde_json::from_value(test_history("metadata-only-session", None)).unwrap();
+        history.messages.clear();
+        history.title = None;
+        history.preview = None;
+        history.custom_title = Some("Child task".to_string());
+        history.parent_session_id = Some("parent-session".to_string());
+        history.closed_at = Some("123".to_string());
+        save_session_history_for_storage(&source, &history).unwrap();
+
+        let prepared = prepare_ai_history_move_staging(
+            &vault_key,
+            vault.path(),
+            app_data.path(),
+            AiStorageScope::Vault,
+            AiStorageScope::Device,
+        )
+        .unwrap();
+
+        assert_eq!(prepared.staged_histories.len(), 1);
+        assert_eq!(
+            prepared.staged_histories[0].parent_session_id.as_deref(),
+            Some("parent-session")
+        );
     }
 
     #[test]

@@ -120,6 +120,16 @@ export function ChatHistoryView({
         setRecoveryNoticeHidden(true);
     }, [recoveredScope, setAiStorageScope]);
 
+    const keepConflictingHistoryScope = useCallback(
+        (scope: "device" | "vault") => {
+            // Conflicting session IDs cannot be merged safely. Selecting a
+            // canonical scope is explicit and leaves the other copy intact.
+            setAiStorageScope(scope);
+            setRecoveryNoticeHidden(true);
+        },
+        [setAiStorageScope],
+    );
+
     // --- Resizer state ---
     const [listWidth, setListWidth] = useState(DEFAULT_LIST_WIDTH);
     const sessionRef = useRef<ResizeSession | null>(null);
@@ -313,7 +323,9 @@ export function ChatHistoryView({
                     <div className="mt-1 text-[var(--text-secondary)]">
                         {recoveredScope
                             ? `Confirm this ${recoveredScope === "vault" ? "vault" : "device"} as the chat location, or move all chats to the ${recoveredScope === "vault" ? "device" : "vault"}.`
-                            : "Choose one location and move all chats there. Histories are not merged automatically."}
+                            : aiHistoryRecovery.conflictSessionIds.length > 0
+                              ? "The conflicting chats cannot be merged safely. Choose the copy to use; the other copy will be left untouched."
+                              : "Choose one location and move all chats there. Histories are not merged automatically."}
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                         {recoveredScope ? (
@@ -328,6 +340,24 @@ export function ChatHistoryView({
                                     : "Keep chats on device"}
                             </button>
                         ) : null}
+                        {aiHistoryRecovery.conflictSessionIds.length > 0 ? (
+                            <>
+                                <button
+                                    type="button"
+                                    className="rounded border border-[var(--accent)] px-3 py-1.5 text-[var(--accent)]"
+                                    onClick={() => keepConflictingHistoryScope("vault")}
+                                >
+                                    Use vault copies
+                                </button>
+                                <button
+                                    type="button"
+                                    className="rounded border border-[var(--border)] px-3 py-1.5 text-[var(--text-primary)]"
+                                    onClick={() => keepConflictingHistoryScope("device")}
+                                >
+                                    Use device copies
+                                </button>
+                            </>
+                        ) : (
                         <button
                             type="button"
                             className="rounded border border-[var(--accent)] px-3 py-1.5 text-[var(--accent)]"
@@ -348,7 +378,8 @@ export function ChatHistoryView({
                                   ? "Move all chats to vault"
                                   : "Move all chats to device"}
                         </button>
-                        {aiHistoryRecovery.status === "required" ? (
+                        )}
+                        {aiHistoryRecovery.status === "required" && aiHistoryRecovery.conflictSessionIds.length === 0 ? (
                             <button
                                 type="button"
                                 className="rounded border border-[var(--border)] px-3 py-1.5 text-[var(--text-primary)]"

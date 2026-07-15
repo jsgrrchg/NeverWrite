@@ -397,7 +397,7 @@ describe("AIChatHistoryWorkspaceView", () => {
         });
     });
 
-    it("shows conflicts without merging both legacy roots", () => {
+    it("lets the user select a canonical copy when legacy roots conflict", () => {
         useChatStore.setState({
             sessionsById: {},
             sessionOrder: [],
@@ -414,7 +414,10 @@ describe("AIChatHistoryWorkspaceView", () => {
 
         expect(screen.getByText("AI chat history was found in both storage locations.")).toBeInTheDocument();
         expect(screen.getByText("Conflicting chats were left unchanged: session-conflict.")).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Move all chats to device" })).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Move all chats to vault" })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Use vault copies" }));
+
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+        expect(useChatStore.getState().aiHistoryRecovery.status).toBe("idle");
+        expect(aiMoveAllSessionHistoriesMock).not.toHaveBeenCalled();
     });
 });

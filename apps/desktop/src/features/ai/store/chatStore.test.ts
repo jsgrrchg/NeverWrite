@@ -1458,6 +1458,42 @@ describe("chatStore", () => {
         );
     });
 
+    it("does not move history while a screenshot remains in a draft", async () => {
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        const session = {
+            ...createSessionWithTrackedFiles("session-one", []),
+            vaultPath: "/vaults/one",
+        };
+        useChatStore.setState({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+            composerPartsBySessionId: {
+                [session.sessionId]: [
+                    {
+                        id: "draft-shot",
+                        type: "screenshot",
+                        filePath: "/tmp/pasted-image-draft.png",
+                        mimeType: "image/png",
+                        label: "Screenshot",
+                    },
+                ],
+            },
+        });
+        invokeMock.mockClear();
+
+        await expect(
+            useChatStore
+                .getState()
+                .moveAiHistoryStorage("/vaults/one", "device", "vault"),
+        ).rejects.toThrow("screenshot drafts");
+
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_move_all_session_histories",
+            expect.anything(),
+        );
+    });
+
     it("persists session history to vault scope when enabled for that vault", async () => {
         localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
         useVaultStore.setState({ vaultPath: "/vaults/one" });

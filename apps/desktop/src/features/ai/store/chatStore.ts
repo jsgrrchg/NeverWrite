@@ -5591,7 +5591,27 @@ function needsFullResumeContextTranscript(session: AIChatSession) {
 }
 
 function hasPersistedHistoryContent(history: PersistedSessionHistory) {
-    return getPersistedHistoryMessageCount(history) > 0;
+    return (
+        getPersistedHistoryMessageCount(history) > 0 ||
+        history.parent_session_id != null ||
+        history.closed_at != null ||
+        Boolean(history.custom_title?.trim())
+    );
+}
+
+function hasScreenshotDraftForVault(vaultPath: string) {
+    const state = useChatStore.getState();
+    return Object.values(state.sessionsById).some((session) => {
+        if (
+            normalizeVaultRoot(getSessionVaultPath(session)) !==
+            normalizeVaultRoot(vaultPath)
+        ) {
+            return false;
+        }
+        return (state.composerPartsBySessionId[session.sessionId] ?? []).some(
+            (part) => part.type === "screenshot",
+        );
+    });
 }
 
 function hasOlderPersistedMessages(session: AIChatSession) {
@@ -6466,7 +6486,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
 
 function hasPersistableSessionContent(session: AIChatSession) {
     const history = toPersistedHistory(session);
-    return history.messages.length > 0 || history.parent_session_id != null;
+    return hasPersistedHistoryContent(history);
 }
 
 const _queueDrainLocks = new Set<string>();
@@ -6480,7 +6500,12 @@ function getSessionPersistenceKey(session: AIChatSession) {
 }
 
 async function persistSessionNow(session: AIChatSession) {
-    if (useChatStore.getState().aiHistoryMoveState === "moving") return;
+    if (useChatStore.getState().aiHistoryMoveState === "moving") {
+        // Preserve the latest snapshot so a turn that finishes during a move
+        // is persisted immediately after the new scope becomes canonical.
+        _pendingSessionPersistence.set(getSessionPersistenceKey(session), session);
+        return;
+    }
     const vaultPath = getSessionVaultPath(session);
     if (!vaultPath) return;
     if (!hasPersistableSessionContent(session)) return;
@@ -6528,9 +6553,8 @@ async function flushPendingSessionPersistence(epoch: number) {
 
 function scheduleSessionPersistence(session: AIChatSession) {
     if (!hasPersistableSessionContent(session)) return;
-    if (useChatStore.getState().aiHistoryMoveState === "moving") return;
-
     _pendingSessionPersistence.set(getSessionPersistenceKey(session), session);
+    if (useChatStore.getState().aiHistoryMoveState === "moving") return;
     if (_sessionPersistenceFlushScheduled) {
         return;
     }
@@ -13454,6 +13478,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             ) {
                 throw new Error("AI chat history is already being moved.");
             }
+            if (hasScreenshotDraftForVault(vaultPath)) {
+                throw new Error(
+                    "Send or remove screenshot drafts before moving chat history.",
+                );
+            }
             set({ aiHistoryMoveState: "checking" });
             try {
                 // A crash after publication can leave the old preference
@@ -13508,11 +13537,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     await get().initialize();
                 }
                 set({ aiHistoryMoveState: "idle" });
+                await flushPendingSessionPersistence(_sessionPersistenceEpoch);
                 return result;
             } catch (error) {
                 if (get().aiHistoryMoveState !== "error") {
                     set({ aiHistoryMoveState: "error" });
                 }
+                await flushPendingSessionPersistence(_sessionPersistenceEpoch);
                 throw error;
             }
         },
