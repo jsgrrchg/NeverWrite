@@ -19,6 +19,7 @@ import {
 } from "../imageAttachments";
 import { getMentionSuggestions } from "../chatMentionSearch";
 import { AIChatComposer } from "./AIChatComposer";
+import { getComposerPrimaryAction } from "./chatComposerPrimaryAction";
 import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { getChatPillMetrics } from "./chatPillMetrics";
@@ -136,6 +137,18 @@ function setCaret(node: Node, offset: number) {
     selection?.removeAllRanges();
     selection?.addRange(range);
 }
+
+describe("getComposerPrimaryAction", () => {
+    it.each([
+        [{ hasDraft: false, hasPendingSubmitAfterStop: false, isStopping: false, isStreaming: false }, "send"],
+        [{ hasDraft: true, hasPendingSubmitAfterStop: false, isStopping: false, isStreaming: true }, "queue"],
+        [{ hasDraft: false, hasPendingSubmitAfterStop: false, isStopping: false, isStreaming: true }, "stop"],
+        [{ hasDraft: true, hasPendingSubmitAfterStop: false, isStopping: true, isStreaming: true }, "stopping"],
+        [{ hasDraft: true, hasPendingSubmitAfterStop: true, isStopping: true, isStreaming: false }, "waiting"],
+    ] as const)("returns %s for the composer state", (input, expected) => {
+        expect(getComposerPrimaryAction(input)).toBe(expected);
+    });
+});
 
 describe("AIChatComposer mention picker", () => {
     it("finds files through path segments and fuzzy file-name matches", () => {
@@ -1162,9 +1175,7 @@ describe("AIChatComposer mention picker", () => {
 
         expect(onSubmit).toHaveBeenCalledTimes(1);
         expect(onStop).not.toHaveBeenCalled();
-        expect(
-            screen.getByRole("button", { name: "Stop" }),
-        ).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     });
 
     it("stops the run when streaming and there is no draft to queue", async () => {
@@ -1180,7 +1191,7 @@ describe("AIChatComposer mention picker", () => {
 
         expect(onStop).toHaveBeenCalledTimes(1);
         expect(onSubmit).not.toHaveBeenCalled();
-        expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
+        expect(screen.queryByRole("button", { name: "Queue" })).toBeNull();
     });
 
     it("shows stop progress feedback while the next message is waiting for stop", () => {
@@ -1196,7 +1207,6 @@ describe("AIChatComposer mention picker", () => {
         expect(
             screen.getByRole("button", { name: "Waiting for stop" }),
         ).toBeDisabled();
-        expect(screen.getByRole("button", { name: "Stopping" })).toBeDisabled();
     });
 
     it("opens a mention pill in a new tab from the context menu", async () => {
