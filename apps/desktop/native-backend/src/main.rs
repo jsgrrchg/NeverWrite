@@ -1754,6 +1754,9 @@ impl NativeBackend {
 
     fn save_vault_binary_file(&mut self, args: Value) -> Result<Value, String> {
         let relative_dir = required_string(&args, &["relativeDir", "relative_dir"])?;
+        if is_ai_owned_vault_attachment_dir(&relative_dir) {
+            self.ensure_ai_history_mutation_is_unlocked(&args)?;
+        }
         let file_name = required_string(&args, &["fileName", "file_name"])?;
         let bytes = bytes_arg(&args, "bytes")?;
         let op_id = optional_string(&args, &["opId", "op_id"]);
@@ -3019,6 +3022,15 @@ fn ai_attachment_root_for_scope(
     }
 }
 
+fn is_ai_owned_vault_attachment_dir(relative_dir: &str) -> bool {
+    // Other vault assets remain user-owned and must not be coupled to AI history moves.
+    relative_dir
+        .replace('\\', "/")
+        .trim_matches('/')
+        .trim_start_matches("./")
+        == "assets/chat"
+}
+
 fn ai_history_move_root(normalized_vault_key: &str, app_data_root: &Path) -> PathBuf {
     app_data_root
         .join("ai")
@@ -3937,14 +3949,14 @@ fn resolve_ai_owned_attachment_source(
             resolve_ai_attachments_root(&context.vault_key, &context.app_data_root)
         }
     };
-    if !source.is_file() {
-        if source.starts_with(&source_root) {
-            return Err(format!(
-                "NeverWrite-managed attachment is missing: {}",
-                source.to_string_lossy()
-            ));
-        }
+    if !source.starts_with(&source_root) {
         return Ok(None);
+    }
+    if !source.is_file() {
+        return Err(format!(
+            "NeverWrite-managed attachment is missing: {}",
+            source.to_string_lossy()
+        ));
     }
     let canonical_source_root = source_root
         .canonicalize()
@@ -5155,6 +5167,52 @@ mod tests {
     }
 
     #[test]
+    fn moving_history_preserves_external_attachment_paths() {
+        let vault = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let vault_key = vault.path().to_string_lossy().to_string();
+        let external_attachment = vault
+            .path()
+            .join("docs")
+            .join("pasted-image-external.png");
+        fs::create_dir_all(external_attachment.parent().unwrap()).unwrap();
+        fs::write(&external_attachment, [137, 80, 78, 71]).unwrap();
+        let source = ai_sessions_storage_for_scope(
+            &vault_key,
+            vault.path(),
+            AiStorageScope::Vault,
+            app_data.path(),
+        );
+        let history: PersistedSessionHistory = serde_json::from_value(test_history(
+            "external-attachment-session",
+            Some(&external_attachment),
+        ))
+        .unwrap();
+        save_session_history_for_storage(&source, &history).unwrap();
+
+        let mut prepared = prepare_ai_history_move_staging(
+            &vault_key,
+            vault.path(),
+            app_data.path(),
+            AiStorageScope::Vault,
+            AiStorageScope::Device,
+        )
+        .unwrap();
+
+        assert!(prepared.copied_attachments.is_empty());
+        assert_eq!(
+            prepared.staged_histories[0].messages[0].attachments.as_ref().unwrap()[0]
+                ["filePath"],
+            json!(external_attachment.to_string_lossy().to_string())
+        );
+
+        publish_prepared_ai_history_move(&mut prepared.journal, vault.path(), app_data.path())
+            .unwrap();
+
+        assert!(external_attachment.is_file());
+    }
+
+    #[test]
     fn attachment_publication_reuses_the_same_target_after_interruption() {
         let vault = tempfile::tempdir().unwrap();
         let app_data = tempfile::tempdir().unwrap();
@@ -5303,6 +5361,31 @@ mod tests {
             &backend,
             "ai_delete_all_session_histories",
             json!({ "vaultPath": vault_path }),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("being moved"));
+    }
+
+    #[test]
+    fn blocks_vault_owned_attachment_writes_while_a_vault_move_is_active() {
+        let (backend, _vault, vault_path) = test_backend_with_open_vault();
+        let vault_key = normalize_vault_path(&vault_path).unwrap();
+        backend
+            .lock()
+            .unwrap()
+            .active_ai_history_moves
+            .insert(vault_key);
+
+        let error = invoke(
+            &backend,
+            "save_vault_binary_file",
+            json!({
+                "vaultPath": vault_path,
+                "relativeDir": "assets/chat",
+                "fileName": "pasted-image.png",
+                "bytes": [137, 80, 78, 71],
+            }),
         )
         .unwrap_err();
 

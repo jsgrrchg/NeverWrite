@@ -40,7 +40,6 @@ import {
     type QueuedChatMessage,
 } from "../types";
 import {
-    getEffectiveAiStorageScopeForVault,
     REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
     useChatStore,
 } from "../store/chatStore";
@@ -157,6 +156,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     const chatActions = useRef(useChatStore.getState()).current;
     const refreshEntries = useVaultStore((state) => state.refreshEntries);
     const aiStorageScope = useChatStore((state) => state.aiStorageScope);
+    const aiHistoryMoveState = useChatStore(
+        (state) => state.aiHistoryMoveState,
+    );
 
     // Session data
     const {
@@ -412,6 +414,12 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     const handlePasteImage = useCallback(
         async (file: File) => {
             if (!sessionId) return;
+            if (aiHistoryMoveState === "moving") {
+                setImageAttachmentNotice(
+                    "Chat history is moving. Try again when it finishes.",
+                );
+                return;
+            }
             const currentParts =
                 useChatStore.getState().composerPartsBySessionId[sessionId] ??
                 createEmptyComposerParts();
@@ -444,8 +452,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 const fileName = `pasted-image-${ts}.${ext}`;
                 const sessionVaultPath =
                     session?.vaultPath ?? useVaultStore.getState().vaultPath;
-                const storageScope =
-                    getEffectiveAiStorageScopeForVault(sessionVaultPath);
+                const storageScope = aiStorageScope;
                 const saved = await vaultInvoke<{
                     path: string;
                     relative_path?: string;
@@ -523,6 +530,8 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             }
         },
         [
+            aiHistoryMoveState,
+            aiStorageScope,
             chatActions,
             refreshEntries,
             session?.runtimeId,

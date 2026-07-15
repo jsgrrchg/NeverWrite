@@ -756,6 +756,38 @@ describe("AIChatSessionView", () => {
         );
     });
 
+    it("does not save pasted images while history is moving", async () => {
+        setupWorkspaceSession();
+        useChatStore.setState({ aiHistoryMoveState: "moving" });
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_save_attachment",
+            expect.anything(),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "save_vault_binary_file",
+            expect.anything(),
+        );
+        expect(
+            screen.getByText("Chat history is moving. Try again when it finishes."),
+        ).toBeInTheDocument();
+        useChatStore.setState({ aiHistoryMoveState: "idle" });
+    });
+
     it("stores pasted images in vault assets when vault scope was auto-detected", async () => {
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_has_vault_session_histories") {
