@@ -167,29 +167,6 @@ export function resolveElectronAiAttachmentsRoot(vaultPath: string) {
     );
 }
 
-function aiSessionsRoot(vaultPath: string, scope: "device" | "vault") {
-    const normalizedVaultPath = toStableVaultKeyPath(vaultPath);
-    if (scope === "vault") {
-        return path.join(normalizedVaultPath, ".neverwrite", "sessions");
-    }
-    return path.join(
-        app.getPath("userData"),
-        "ai",
-        "sessions",
-        sha256Hex(normalizedVaultPath),
-        "sessions",
-    );
-}
-
-async function directoryHasEntries(dir: string) {
-    try {
-        const entries = await fs.readdir(dir);
-        return entries.some((entry) => entry !== ".DS_Store");
-    } catch {
-        return false;
-    }
-}
-
 async function uniqueFilePath(dir: string, fileName: string) {
     const candidate = path.join(dir, fileName);
     try {
@@ -229,7 +206,6 @@ const VAULT_EDITOR_COMMANDS = new Set([
     "save_vault_binary_file",
     "ai_save_attachment",
     "ai_delete_attachment",
-    "ai_has_vault_session_histories",
     "ai_move_all_session_histories",
     "read_note",
     "save_note",
@@ -1083,10 +1059,6 @@ export class ElectronVaultBackend {
                 return this.saveAiAttachment(args);
             case "ai_delete_attachment":
                 return this.deleteAiAttachment(args);
-            case "ai_has_vault_session_histories":
-                return directoryHasEntries(
-                    aiSessionsRoot(String(args.vaultPath ?? ""), "vault"),
-                );
             case "read_note":
                 return readNoteDetail(String(args.vaultPath ?? ""), String(args.noteId ?? args.note_id ?? ""));
             case "save_note":

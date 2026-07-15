@@ -815,12 +815,6 @@ export interface AIHistoryMoveResult {
     recovery_required: boolean;
 }
 
-export async function aiHasVaultSessionHistories(
-    vaultPath: string,
-): Promise<boolean> {
-    return invoke<boolean>("ai_has_vault_session_histories", { vaultPath });
-}
-
 export async function aiMoveAllSessionHistories(args: {
     vaultPath: string;
     fromScope: "device" | "vault";

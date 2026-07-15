@@ -1,12 +1,13 @@
 # AI Session History And Crash Recovery
 
-NeverWrite stores AI chat history inside the currently open vault. This keeps
-conversation recovery local-first and lets the app reconnect or reconstruct a
-saved chat after a renderer reload, runtime crash, or full app restart.
+NeverWrite stores AI chat history in one active location per vault: either the
+local device or the vault. This keeps conversation recovery local-first and
+lets the app reconnect or reconstruct a saved chat after a renderer reload,
+runtime crash, or full app restart.
 
 ## Disk Layout
 
-Session history is stored under:
+When vault storage is active, session history is stored under:
 
 ```text
 <vault>/.neverwrite/sessions/session-<sha256(session_id)>/
@@ -25,6 +26,28 @@ inspect it from a terminal, if you need to audit the stored history directly.
 
 NeverWrite may also have `.neverwrite-cache/` in the vault for derived cache
 data. Chat recovery uses `.neverwrite/sessions/`.
+
+When local device storage is active, the same session layout is kept in
+NeverWrite's application data instead of the vault. The active location is
+selected in `Chat History`; changing it moves the complete history as one
+operation, rather than splitting future chats across both locations.
+
+## Storage Moves And Interrupted Recovery
+
+NeverWrite copies, verifies, and then removes the source history when moving
+between local device and vault storage. The active location does not change
+until that operation completes.
+
+If the app closes or loses permission during a move, reopen the vault and use
+the recovery action shown in `Chat History`. NeverWrite resumes the recorded
+operation before allowing another move. Until recovery succeeds, it keeps the
+previous active location and leaves the source history intact, so a partial
+move cannot silently hide or split chats.
+
+For older data that exists in both locations, `Chat History` asks where to keep
+the complete history. It does not merge roots automatically. Sessions with the
+same ID but different content remain unchanged and are listed as conflicts for
+manual review.
 
 ## Sessions, Sidebar Entries, And Workspace Views
 
@@ -86,9 +109,9 @@ send a new message so NeverWrite can continue with the stored transcript.
 
 ## Retention And Privacy Notes
 
-- Session history is local to the vault and follows the chat history retention setting in `Chat History`.
+- Session history is local to the selected storage location and follows the chat history retention setting in `Chat History`.
 - `transcript.jsonl` is stored as local plaintext JSONL while retained.
 - Deleting a conversation from `Chat History` deletes its saved history from `.neverwrite/sessions/`.
-- If a recovered chat is missing, confirm you reopened the same vault and that the retention window did not prune the conversation.
+- If a recovered chat is missing, confirm you reopened the same vault, selected the expected storage location, and that the retention window did not prune the conversation.
 
-Last updated: July 11, 2026.
+Last updated: July 15, 2026.

@@ -472,10 +472,6 @@ async function defaultInvokeImplementation(command: string, args?: unknown) {
         return [];
     }
 
-    if (command === "ai_has_vault_session_histories") {
-        return false;
-    }
-
     if (command === "ai_move_all_session_histories") {
         return {
             completed: true,

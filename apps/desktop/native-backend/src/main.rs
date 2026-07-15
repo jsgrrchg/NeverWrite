@@ -978,7 +978,6 @@ impl NativeBackend {
             }
             "ai_register_file_baseline" => self.ai.register_file_baseline(&args),
             "ai_save_session_history" => self.ai_save_session_history(args),
-            "ai_has_vault_session_histories" => self.ai_has_vault_session_histories(args),
             "ai_move_all_session_histories" => self.ai_move_all_session_histories(args),
             "ai_load_session_histories" => self.ai_load_session_histories(args),
             "ai_load_session_history_page" => self.ai_load_session_history_page(args),
@@ -1220,14 +1219,6 @@ impl NativeBackend {
         })();
         self.active_ai_history_moves.remove(&vault_key);
         result
-    }
-
-    fn ai_has_vault_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let histories = persistence::load_all_session_histories(&vault_root, false)?;
-        Ok(json!(histories
-            .iter()
-            .any(has_persisted_history_content_native)))
     }
 
     fn ai_load_session_histories(&self, args: Value) -> Result<Value, String> {

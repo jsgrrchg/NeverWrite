@@ -789,9 +789,11 @@ describe("AIChatSessionView", () => {
     });
 
     it("stores pasted images in vault assets when vault scope was auto-detected", async () => {
-        invokeMock.mockImplementation(async (command) => {
-            if (command === "ai_has_vault_session_histories") {
-                return true;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_histories") {
+                return args?.storageScope === "vault"
+                    ? [{ message_count: 1, messages: [] }]
+                    : [];
             }
             if (command === "save_vault_binary_file") {
                 return {
