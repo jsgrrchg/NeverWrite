@@ -680,6 +680,7 @@ struct VaultRuntimeState {
 
 struct NativeBackend {
     vaults: HashMap<String, VaultRuntimeState>,
+    active_ai_history_moves: HashSet<String>,
     ai: NativeAi,
     devtools: DevTerminalManager,
     spellcheck: SpellcheckState,
@@ -724,6 +725,7 @@ enum AiHistoryMoveJournalState {
     Prepared,
     Publishing,
     CleanupPending,
+    Completed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -738,6 +740,14 @@ struct AiHistoryMoveJournal {
     staged_sessions_root: PathBuf,
     staged_attachments_root: PathBuf,
     session_ids: Vec<String>,
+    #[serde(default)]
+    published_session_ids: Vec<String>,
+    #[serde(default)]
+    publishing_session_id: Option<String>,
+    #[serde(default)]
+    cleanup_attachment_paths: Vec<PathBuf>,
+    #[serde(default)]
+    cleanup_manifest_ready: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -775,6 +785,7 @@ impl NativeBackend {
     fn new(event_tx: Sender<RpcOutput>) -> Self {
         Self {
             vaults: HashMap::new(),
+            active_ai_history_moves: HashSet::new(),
             ai: NativeAi::new(event_tx.clone()),
             devtools: DevTerminalManager::new(event_tx.clone()),
             spellcheck: SpellcheckState::new(),
@@ -1048,6 +1059,18 @@ impl NativeBackend {
         Ok(Some(state.vault.root.clone()))
     }
 
+    fn ensure_ai_history_mutation_is_unlocked(&self, args: &Value) -> Result<(), String> {
+        let vault_path = required_string(args, &["vaultPath", "vault_path"])?;
+        let vault_key = normalize_vault_path(&vault_path)?;
+        if self.active_ai_history_moves.contains(&vault_key) {
+            return Err(
+                "AI history is being moved for this vault. Try again after recovery completes."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
     fn required_open_vault_root(&self, args: &Value) -> Result<(String, PathBuf), String> {
         let vault_path = required_string(args, &["vaultPath", "vault_path"])?;
         let root = normalize_vault_path(&vault_path)?;
@@ -1090,6 +1113,7 @@ impl NativeBackend {
     }
 
     fn ai_save_session_history(&self, args: Value) -> Result<Value, String> {
+        self.ensure_ai_history_mutation_is_unlocked(&args)?;
         let storage = self.required_ai_sessions_storage(&args)?;
         let history: PersistedSessionHistory = serde_json::from_value(
             args.get("history")
@@ -1292,6 +1316,7 @@ impl NativeBackend {
     }
 
     fn ai_fork_session_history(&self, args: Value) -> Result<Value, String> {
+        self.ensure_ai_history_mutation_is_unlocked(&args)?;
         let storage = self.required_ai_sessions_storage(&args)?;
         let source_session_id = required_string(&args, &["sourceSessionId", "source_session_id"])?;
         let forked_id = match storage.scope {
@@ -1307,6 +1332,7 @@ impl NativeBackend {
     }
 
     fn ai_delete_session_history(&self, args: Value) -> Result<Value, String> {
+        self.ensure_ai_history_mutation_is_unlocked(&args)?;
         let storage = self.required_ai_sessions_storage(&args)?;
         let session_id = required_string(&args, &["sessionId", "session_id"])?;
         match storage.scope {
@@ -1333,6 +1359,7 @@ impl NativeBackend {
     }
 
     fn ai_delete_all_session_histories(&self, args: Value) -> Result<Value, String> {
+        self.ensure_ai_history_mutation_is_unlocked(&args)?;
         let storage = self.required_ai_sessions_storage_for_existing_vault_path(&args)?;
         match storage.scope {
             AiStorageScope::Vault => {
@@ -1347,6 +1374,7 @@ impl NativeBackend {
     }
 
     fn ai_prune_session_histories(&self, args: Value) -> Result<Value, String> {
+        self.ensure_ai_history_mutation_is_unlocked(&args)?;
         let storage = self.required_ai_sessions_storage(&args)?;
         let max_age_days = required_u32(&args, &["maxAgeDays", "max_age_days"])?;
         let deleted = match storage.scope {
@@ -1665,6 +1693,7 @@ impl NativeBackend {
         let root = normalize_vault_path(&path)?;
         let started_at_ms = now_ms();
         let vault = Vault::open(PathBuf::from(&root)).map_err(|error| error.to_string())?;
+        recover_ai_history_moves(&root, &vault.root, &app_data_dir())?;
         let scan_started_at = now_ms();
         let notes = vault.scan().map_err(|error| error.to_string())?;
         let entries = vault
@@ -3116,7 +3145,12 @@ fn prepare_ai_history_move_staging(
         session_ids: histories_to_stage
             .iter()
             .map(|history| history.session_id.clone())
+            .chain(deduplicated_session_ids.iter().cloned())
             .collect(),
+        published_session_ids: Vec::new(),
+        publishing_session_id: None,
+        cleanup_attachment_paths: Vec::new(),
+        cleanup_manifest_ready: false,
     };
     write_ai_history_move_journal(&journal)?;
 
@@ -3186,6 +3220,272 @@ fn prepare_ai_history_move_staging(
         copied_attachments,
         deduplicated_session_ids,
     })
+}
+
+/// Publishes only validated staging data. The source remains untouched until every destination
+/// session is readable; a retained journal makes cleanup retryable after an interruption.
+fn publish_prepared_ai_history_move(
+    journal: &mut AiHistoryMoveJournal,
+    vault_root: &Path,
+    app_data_root: &Path,
+) -> Result<(), String> {
+    if journal.state == AiHistoryMoveJournalState::Completed {
+        return Ok(());
+    }
+    let from_storage = ai_sessions_storage_for_scope(
+        &journal.vault_key,
+        vault_root,
+        journal.from_scope,
+        app_data_root,
+    );
+    let to_storage = ai_sessions_storage_for_scope(
+        &journal.vault_key,
+        vault_root,
+        journal.to_scope,
+        app_data_root,
+    );
+    let destination_attachments = ai_attachment_root_for_scope(
+        &journal.vault_key,
+        vault_root,
+        journal.to_scope,
+        app_data_root,
+    );
+    journal.state = AiHistoryMoveJournalState::Publishing;
+    write_ai_history_move_journal(journal)?;
+
+    for session_id in &journal.session_ids {
+        if journal.published_session_ids.contains(session_id) {
+            continue;
+        }
+        let mut history = match persistence::validate_session_history_in_storage_root(
+            &journal.staged_sessions_root,
+            session_id,
+        ) {
+            Ok(history) => history,
+            // A deduplicated session has no staged artifact; the destination was verified during
+            // preparation, so it is already published for this operation.
+            Err(error) => {
+                if let Ok(destination) = persistence::validate_session_history_in_storage_root(
+                    &to_storage.sessions_root,
+                    session_id,
+                ) {
+                    let source = load_session_histories_for_storage(&from_storage, true)?
+                        .into_iter()
+                        .find(|item| item.session_id == *session_id);
+                    if source.as_ref().is_some_and(|source| histories_have_same_content(source, &destination).unwrap_or(false)) {
+                    journal.published_session_ids.push(session_id.clone());
+                    write_ai_history_move_journal(journal)?;
+                    continue;
+                    }
+                }
+                return Err(error);
+            }
+        };
+        let existing = load_session_histories_for_storage(&to_storage, false)?;
+        if existing.iter().any(|item| item.session_id == *session_id) {
+            if journal.publishing_session_id.as_deref() != Some(session_id) {
+                return Err(format!(
+                    "AI history move destination changed while publishing: {session_id}"
+                ));
+            }
+            let destination = persistence::validate_session_history_in_storage_root(
+                &to_storage.sessions_root,
+                session_id,
+            )?;
+            if !histories_match_published_destination(
+                &history,
+                &destination,
+                &journal.staged_attachments_root,
+                &destination_attachments,
+            )? {
+                return Err(format!("AI history move destination changed while publishing: {session_id}"));
+            }
+            journal.published_session_ids.push(session_id.clone());
+            journal.publishing_session_id = None;
+            write_ai_history_move_journal(journal)?;
+            continue;
+        }
+        publish_staged_attachment_paths(
+            &mut history,
+            &journal.staged_attachments_root,
+            &destination_attachments,
+        )?;
+        journal.publishing_session_id = Some(session_id.clone());
+        write_ai_history_move_journal(journal)?;
+        save_session_history_for_storage(&to_storage, &history)?;
+        verify_session_history_exists(&to_storage, session_id)?;
+        journal.published_session_ids.push(session_id.clone());
+        journal.publishing_session_id = None;
+        write_ai_history_move_journal(journal)?;
+    }
+
+    journal.state = AiHistoryMoveJournalState::CleanupPending;
+    write_ai_history_move_journal(journal)?;
+    let source_histories = load_session_histories_for_storage(&from_storage, true)?;
+    let attachment_context = AiAttachmentMigrationContext {
+        vault_root: vault_root.to_path_buf(),
+        app_data_root: app_data_root.to_path_buf(),
+        vault_key: journal.vault_key.clone(),
+        from_scope: journal.from_scope,
+        target_attachments_root: PathBuf::new(),
+    };
+    if !journal.cleanup_manifest_ready {
+        let mut remaining_refs =
+            build_ai_owned_attachment_source_ref_counts(&source_histories, &attachment_context);
+        let mut attachments_to_remove = Vec::new();
+        for session_id in &journal.session_ids {
+            if let Some(history) = source_histories
+                .iter()
+                .find(|item| item.session_id == *session_id)
+            {
+                let sources = collect_ai_owned_attachment_sources(history, &attachment_context);
+                decrement_attachment_ref_counts(&sources, &mut remaining_refs);
+                attachments_to_remove.extend(sources);
+            }
+        }
+        attachments_to_remove.sort();
+        attachments_to_remove.dedup();
+        journal.cleanup_attachment_paths = attachments_to_remove
+            .into_iter()
+            .filter(|path| !remaining_refs.contains_key(path))
+            .collect();
+        journal.cleanup_manifest_ready = true;
+        write_ai_history_move_journal(journal)?;
+    }
+    for session_id in &journal.session_ids {
+        if source_histories.iter().any(|item| item.session_id == *session_id) {
+            delete_session_history_for_storage(&from_storage, session_id)?;
+        }
+    }
+    for path in &journal.cleanup_attachment_paths {
+        if path.exists() {
+            fs::remove_file(path).map_err(|error| format!(
+                "AI history destination was published but source cleanup needs recovery: {}",
+                error
+            ))?;
+        }
+    }
+    journal.state = AiHistoryMoveJournalState::Completed;
+    write_ai_history_move_journal(journal)?;
+    remove_ai_history_move_staging(&journal.staging_root);
+    Ok(())
+}
+
+fn histories_match_published_destination(
+    staged: &PersistedSessionHistory,
+    destination: &PersistedSessionHistory,
+    staged_attachments_root: &Path,
+    destination_attachments_root: &Path,
+) -> Result<bool, String> {
+    fn normalize(value: &mut Value, owned_root: &Path) {
+        match value {
+            Value::Array(items) => for item in items { normalize(item, owned_root); },
+            Value::Object(map) => {
+                if let Some(Value::String(file_path)) = map.get_mut("filePath") {
+                    let path = PathBuf::from(file_path.as_str());
+                    if path.starts_with(owned_root) {
+                        *file_path = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_string();
+                    }
+                }
+                for (key, child) in map { if key != "filePath" { normalize(child, owned_root); } }
+            }
+            _ => {}
+        }
+    }
+    let mut staged = serde_json::to_value(staged).map_err(|error| error.to_string())?;
+    let mut destination = serde_json::to_value(destination).map_err(|error| error.to_string())?;
+    normalize(&mut staged, staged_attachments_root);
+    normalize(&mut destination, destination_attachments_root);
+    canonicalize_json_value(&mut staged);
+    canonicalize_json_value(&mut destination);
+    Ok(staged == destination)
+}
+
+fn publish_staged_attachment_paths(
+    history: &mut PersistedSessionHistory,
+    staged_root: &Path,
+    destination_root: &Path,
+) -> Result<(), String> {
+    fn rewrite(
+        value: &mut Value,
+        staged_root: &Path,
+        destination_root: &Path,
+    ) -> Result<(), String> {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    rewrite(item, staged_root, destination_root)?;
+                }
+            }
+            Value::Object(map) => {
+                if let Some(Value::String(file_path)) = map.get("filePath") {
+                    let source = PathBuf::from(file_path);
+                    if source.starts_with(staged_root) {
+                        let name = source
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .ok_or_else(|| "Staged AI attachment has no file name.".to_string())?;
+                        let target = copy_to_unique_file(
+                            &source,
+                            destination_root,
+                            &sanitize_ai_attachment_file_name(name)?,
+                        )?;
+                        map.insert(
+                            "filePath".to_string(),
+                            Value::String(target.to_string_lossy().to_string()),
+                        );
+                    }
+                }
+                for (key, child) in map {
+                    if key != "filePath" {
+                        rewrite(child, staged_root, destination_root)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    for message in &mut history.messages {
+        if let Some(attachments) = message.attachments.as_mut() {
+            rewrite(attachments, staged_root, destination_root)?;
+        }
+    }
+    Ok(())
+}
+
+fn recover_ai_history_moves(
+    vault_key: &str,
+    vault_root: &Path,
+    app_data_root: &Path,
+) -> Result<(), String> {
+    let move_root = ai_history_move_root(vault_key, app_data_root);
+    let entries = match fs::read_dir(&move_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries {
+        let staging_root = entry.map_err(|error| error.to_string())?.path();
+        let journal_path = ai_history_move_journal_path(&staging_root);
+        let bytes = fs::read(&journal_path)
+            .map_err(|error| format!("AI history recovery requires journal repair: {error}"))?;
+        let mut journal: AiHistoryMoveJournal = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("AI history recovery requires journal repair: {error}"))?;
+        if journal.vault_key != vault_key {
+            return Err("AI history recovery journal belongs to another vault.".to_string());
+        }
+        match journal.state {
+            AiHistoryMoveJournalState::Preparing => remove_ai_history_move_staging(&staging_root),
+            AiHistoryMoveJournalState::Prepared
+            | AiHistoryMoveJournalState::Publishing
+            | AiHistoryMoveJournalState::CleanupPending => {
+                publish_prepared_ai_history_move(&mut journal, vault_root, app_data_root)?;
+            }
+            AiHistoryMoveJournalState::Completed => remove_ai_history_move_staging(&staging_root),
+        }
+    }
+    Ok(())
 }
 
 fn load_session_histories_for_storage(
@@ -4846,6 +5146,103 @@ mod tests {
             .unwrap();
         assert_eq!(PathBuf::from(attachment_path), *staged_attachment);
         assert!(source_attachment.is_file());
+    }
+
+    #[test]
+    fn publishes_staged_history_then_removes_its_source_and_attachment() {
+        let vault = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let vault_key = vault.path().to_string_lossy().to_string();
+        let attachment = vault.path().join("assets/chat/pasted-image-move.png");
+        fs::create_dir_all(attachment.parent().unwrap()).unwrap();
+        fs::write(&attachment, b"image").unwrap();
+        let source = ai_sessions_storage_for_scope(
+            &vault_key,
+            vault.path(),
+            AiStorageScope::Vault,
+            app_data.path(),
+        );
+        let history: PersistedSessionHistory =
+            serde_json::from_value(test_history("move-session", Some(&attachment))).unwrap();
+        save_session_history_for_storage(&source, &history).unwrap();
+        let mut prepared = prepare_ai_history_move_staging(
+            &vault_key,
+            vault.path(),
+            app_data.path(),
+            AiStorageScope::Vault,
+            AiStorageScope::Device,
+        )
+        .unwrap();
+
+        publish_prepared_ai_history_move(&mut prepared.journal, vault.path(), app_data.path())
+            .unwrap();
+
+        let destination = ai_sessions_storage_for_scope(
+            &vault_key,
+            vault.path(),
+            AiStorageScope::Device,
+            app_data.path(),
+        );
+        assert!(verify_session_history_exists(&destination, "move-session").is_ok());
+        assert!(verify_session_history_exists(&source, "move-session").is_err());
+        assert!(!attachment.exists());
+        assert!(!prepared.journal.staging_root.exists());
+    }
+
+    #[test]
+    fn recovery_resumes_a_prepared_history_move() {
+        let vault = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let vault_key = vault.path().to_string_lossy().to_string();
+        let source = ai_sessions_storage_for_scope(
+            &vault_key,
+            vault.path(),
+            AiStorageScope::Device,
+            app_data.path(),
+        );
+        let history: PersistedSessionHistory =
+            serde_json::from_value(test_history("recover-session", None)).unwrap();
+        save_session_history_for_storage(&source, &history).unwrap();
+        let prepared = prepare_ai_history_move_staging(
+            &vault_key,
+            vault.path(),
+            app_data.path(),
+            AiStorageScope::Device,
+            AiStorageScope::Vault,
+        )
+        .unwrap();
+
+        recover_ai_history_moves(&vault_key, vault.path(), app_data.path()).unwrap();
+
+        let destination = ai_sessions_storage_for_scope(
+            &vault_key,
+            vault.path(),
+            AiStorageScope::Vault,
+            app_data.path(),
+        );
+        assert!(verify_session_history_exists(&destination, "recover-session").is_ok());
+        assert!(verify_session_history_exists(&source, "recover-session").is_err());
+        assert!(!prepared.journal.staging_root.exists());
+    }
+
+    #[test]
+    fn blocks_history_mutations_while_a_vault_move_is_active() {
+        let (backend, _vault, vault_path) = test_backend_with_open_vault();
+        let vault_key = normalize_vault_path(&vault_path).unwrap();
+        backend
+            .lock()
+            .unwrap()
+            .active_ai_history_moves
+            .insert(vault_key);
+
+        let error = invoke(
+            &backend,
+            "ai_delete_all_session_histories",
+            json!({ "vaultPath": vault_path }),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("being moved"));
     }
 
     #[test]
