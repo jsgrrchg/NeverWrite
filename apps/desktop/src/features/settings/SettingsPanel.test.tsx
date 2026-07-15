@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { getAllWebviewWindows, listen, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
@@ -714,6 +714,39 @@ describe("SettingsPanel", () => {
             ).toBe("device"),
         );
         expect(initializeMock).toHaveBeenCalled();
+    });
+
+    it("does not start a second history inspection while the storage scope is checking", async () => {
+        let resolveHistories: (histories: unknown[]) => void;
+        aiApiMocks.aiLoadSessionHistories.mockImplementationOnce(
+            () =>
+                new Promise<unknown[]>((resolve) => {
+                    resolveHistories = resolve;
+                }),
+        );
+        useChatStore.setState({
+            aiStorageScope: "device",
+            sessionsById: {},
+        });
+        useVaultStore.setState({ vaultPath: "/vault" });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "AI" }));
+        const label = screen.getByText("Store AI chats inside this vault");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+        const toggle = within(row as HTMLElement).getByRole("switch");
+
+        aiApiMocks.aiLoadSessionHistories.mockClear();
+        let inspectionCount = 0;
+        await act(async () => {
+            fireEvent.click(toggle);
+            fireEvent.click(toggle);
+            inspectionCount = aiApiMocks.aiLoadSessionHistories.mock.calls.length;
+            resolveHistories!([]);
+        });
+        expect(inspectionCount).toBe(1);
     });
 
     it("migrates a closed history from the settings window vault URL", async () => {
