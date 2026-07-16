@@ -10,14 +10,13 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod ai;
+mod ai_history;
 mod devtools;
 mod spellcheck;
 
 use ai::NativeAi;
+use ai_history::AiHistoryStorageService;
 use devtools::DevTerminalManager;
-use neverwrite_ai::persistence::{
-    self, PersistedSessionHistory, PersistedSessionHistoryPage, SessionSearchResult,
-};
 use neverwrite_index::VaultIndex;
 use neverwrite_types::{
     AdvancedSearchParams, BacklinkDto, NoteDetailDto, NoteDocument, NoteDto, NoteId, NoteMetadata,
@@ -677,6 +676,7 @@ struct VaultRuntimeState {
 struct NativeBackend {
     vaults: HashMap<String, VaultRuntimeState>,
     ai: NativeAi,
+    ai_history: AiHistoryStorageService,
     devtools: DevTerminalManager,
     spellcheck: SpellcheckState,
     event_tx: Sender<RpcOutput>,
@@ -687,6 +687,7 @@ impl NativeBackend {
         Self {
             vaults: HashMap::new(),
             ai: NativeAi::new(event_tx.clone()),
+            ai_history: AiHistoryStorageService,
             devtools: DevTerminalManager::new(event_tx.clone()),
             spellcheck: SpellcheckState::new(),
             event_tx,
@@ -874,14 +875,10 @@ impl NativeBackend {
                 self.ai.delete_runtime_sessions_for_vault(vault_root)
             }
             "ai_register_file_baseline" => self.ai.register_file_baseline(&args),
-            "ai_save_session_history" => self.ai_save_session_history(args),
-            "ai_load_session_histories" => self.ai_load_session_histories(args),
-            "ai_load_session_history_page" => self.ai_load_session_history_page(args),
-            "ai_search_session_content" => self.ai_search_session_content(args),
-            "ai_fork_session_history" => self.ai_fork_session_history(args),
-            "ai_delete_session_history" => self.ai_delete_session_history(args),
-            "ai_delete_all_session_histories" => self.ai_delete_all_session_histories(args),
-            "ai_prune_session_histories" => self.ai_prune_session_histories(args),
+            command if AiHistoryStorageService::handles(command) => {
+                let vault_root = self.required_open_vault_root(&args)?;
+                self.ai_history.invoke(command, &vault_root, args)
+            }
             "ai_get_text_file_hash" => self.ai_get_text_file_hash(args),
             "ai_restore_text_file" => self.ai_restore_text_file(args),
             "ai_start_auth_terminal_session" => self.ai.start_auth_terminal_session(&args),
@@ -954,85 +951,14 @@ impl NativeBackend {
         Ok(Some(state.vault.root.clone()))
     }
 
-    fn required_open_vault_root(&self, args: &Value) -> Result<(String, PathBuf), String> {
+    fn required_open_vault_root(&self, args: &Value) -> Result<PathBuf, String> {
         let vault_path = required_string(args, &["vaultPath", "vault_path"])?;
         let root = normalize_vault_path(&vault_path)?;
         let state = self
             .vaults
             .get(&root)
             .ok_or_else(|| "Vault not open".to_string())?;
-        Ok((root, state.vault.root.clone()))
-    }
-
-    fn ai_save_session_history(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let history: PersistedSessionHistory = serde_json::from_value(
-            args.get("history")
-                .cloned()
-                .ok_or_else(|| "Missing argument: history".to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        persistence::save_session_history(&vault_root, &history)?;
-        Ok(json!(null))
-    }
-
-    fn ai_load_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let include_messages = bool_arg(&args, "includeMessages")
-            .or_else(|| bool_arg(&args, "include_messages"))
-            .unwrap_or(true);
-        let histories: Vec<PersistedSessionHistory> =
-            persistence::load_all_session_histories(&vault_root, include_messages)?;
-        Ok(json!(histories))
-    }
-
-    fn ai_load_session_history_page(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let session_id = required_string(&args, &["sessionId", "session_id"])?;
-        let start_index = required_usize(&args, &["startIndex", "start_index"])?;
-        let limit = required_usize(&args, &["limit"])?;
-        let page: PersistedSessionHistoryPage =
-            persistence::load_session_history_page(&vault_root, &session_id, start_index, limit)?;
-        Ok(json!(page))
-    }
-
-    fn ai_search_session_content(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let query = required_string(&args, &["query"])?;
-        let results: Vec<SessionSearchResult> =
-            persistence::search_session_content(&vault_root, &query)?;
-        Ok(json!(results))
-    }
-
-    fn ai_fork_session_history(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let source_session_id = required_string(&args, &["sourceSessionId", "source_session_id"])?;
-        Ok(json!(persistence::fork_session_history(
-            &vault_root,
-            &source_session_id
-        )?))
-    }
-
-    fn ai_delete_session_history(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let session_id = required_string(&args, &["sessionId", "session_id"])?;
-        persistence::delete_session_history(&vault_root, &session_id)?;
-        Ok(json!(null))
-    }
-
-    fn ai_delete_all_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        persistence::delete_all_session_histories(&vault_root)?;
-        Ok(json!(null))
-    }
-
-    fn ai_prune_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let max_age_days = required_u32(&args, &["maxAgeDays", "max_age_days"])?;
-        Ok(json!(persistence::prune_expired_session_histories(
-            &vault_root,
-            max_age_days
-        )?))
+        Ok(state.vault.root.clone())
     }
 
     fn ai_get_text_file_hash(&self, args: Value) -> Result<Value, String> {
@@ -2679,28 +2605,6 @@ fn build_web_clipper_relative_note_path(
     Err("Could not find a free filename for the clip.".to_string())
 }
 
-fn required_usize(args: &Value, names: &[&str]) -> Result<usize, String> {
-    names
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_u64))
-        .map(|value| {
-            usize::try_from(value).map_err(|_| format!("Argument out of range: {}", names[0]))
-        })
-        .transpose()?
-        .ok_or_else(|| format!("Missing argument: {}", names[0]))
-}
-
-fn required_u32(args: &Value, names: &[&str]) -> Result<u32, String> {
-    names
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_u64))
-        .map(|value| {
-            u32::try_from(value).map_err(|_| format!("Argument out of range: {}", names[0]))
-        })
-        .transpose()?
-        .ok_or_else(|| format!("Missing argument: {}", names[0]))
-}
-
 fn bool_arg(args: &Value, name: &str) -> Option<bool> {
     args.get(name).and_then(Value::as_bool)
 }
@@ -3291,6 +3195,109 @@ mod tests {
             .unwrap()
             .iter()
             .any(|note| note.get("id").and_then(Value::as_str) == Some("Notes/B")));
+    }
+
+    #[test]
+    fn ai_history_rpc_contracts_keep_using_the_existing_vault_layout() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        let history = json!({
+            "version": 1,
+            "session_id": "session-1",
+            "runtime_id": "codex-acp",
+            "model_id": "test-model",
+            "mode_id": "default",
+            "created_at": 10,
+            "updated_at": 20,
+            "message_count": 1,
+            "start_index": 0,
+            "messages": [{
+                "id": "message-1",
+                "role": "user",
+                "kind": "text",
+                "content": "searchable content",
+                "timestamp": 10
+            }]
+        });
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({ "vaultPath": vault_path, "history": history }),
+        )
+        .unwrap();
+        assert!(vault_dir.path().join(".neverwrite/sessions").is_dir());
+
+        let histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({ "vaultPath": vault_path, "includeMessages": false }),
+        )
+        .unwrap();
+        assert_eq!(histories.as_array().unwrap().len(), 1);
+        assert_eq!(histories[0]["session_id"], "session-1");
+
+        let page = invoke(
+            &backend,
+            "ai_load_session_history_page",
+            json!({
+                "vaultPath": vault_path,
+                "sessionId": "session-1",
+                "startIndex": 0,
+                "limit": 20
+            }),
+        )
+        .unwrap();
+        assert_eq!(page["total_messages"], 1);
+
+        let search = invoke(
+            &backend,
+            "ai_search_session_content",
+            json!({ "vaultPath": vault_path, "query": "searchable" }),
+        )
+        .unwrap();
+        assert_eq!(search.as_array().unwrap().len(), 1);
+
+        let fork_id = invoke(
+            &backend,
+            "ai_fork_session_history",
+            json!({ "vaultPath": vault_path, "sourceSessionId": "session-1" }),
+        )
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+        invoke(
+            &backend,
+            "ai_delete_session_history",
+            json!({ "vaultPath": vault_path, "sessionId": fork_id }),
+        )
+        .unwrap();
+
+        let pruned = invoke(
+            &backend,
+            "ai_prune_session_histories",
+            json!({ "vaultPath": vault_path, "maxAgeDays": 0 }),
+        )
+        .unwrap();
+        assert_eq!(pruned, 0);
+
+        invoke(
+            &backend,
+            "ai_delete_all_session_histories",
+            json!({ "vaultPath": vault_path }),
+        )
+        .unwrap();
+        let histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({ "vaultPath": vault_path }),
+        )
+        .unwrap();
+        assert!(histories.as_array().unwrap().is_empty());
     }
 
     #[test]
