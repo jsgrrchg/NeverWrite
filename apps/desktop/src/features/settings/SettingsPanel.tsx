@@ -3979,6 +3979,21 @@ function AISettings({
                     0 ||
                     session.parentSessionId != null),
         );
+    const hasScreenshotDrafts = () => {
+        const state = useChatStore.getState();
+        return Object.values(state.sessionsById).some((session) => {
+            if (
+                vaultPath &&
+                session.vaultPath &&
+                session.vaultPath !== vaultPath
+            ) {
+                return false;
+            }
+            return (
+                state.composerPartsBySessionId[session.sessionId] ?? []
+            ).some((part) => part.type === "screenshot");
+        });
+    };
     const applySelectedStorageScope = async (scope: AIStorageScope) => {
         await setAiStorageScope(scope);
         await initializeChat({ createDefaultSession: false });
@@ -4120,6 +4135,12 @@ function AISettings({
                             setHistoryMigrationPrompt(null);
                             setHistoryMigrationMessage(null);
                             if (previous === next) return;
+                            if (hasScreenshotDrafts()) {
+                                setHistoryMigrationMessage(
+                                    "Send or remove screenshot drafts before changing AI chat storage.",
+                                );
+                                return;
+                            }
                             if (!vaultPath) {
                                 void applySelectedStorageScope(next);
                                 return;
@@ -4326,6 +4347,20 @@ function AISettings({
                             </div>
                         ) : null}
                     </div>
+                </div>
+            ) : historyMigrationMessage ? (
+                <div
+                    role="status"
+                    className="mb-3 rounded-md border px-3 py-2 text-xs"
+                    style={{
+                        borderColor:
+                            "color-mix(in srgb, #f59e0b 40%, var(--border))",
+                        backgroundColor:
+                            "color-mix(in srgb, #f59e0b 12%, var(--bg-secondary))",
+                        color: "#f59e0b",
+                    }}
+                >
+                    {historyMigrationMessage}
                 </div>
             ) : historyMigrationStatus === "checking" ? (
                 <div className="mb-3 text-sm text-[var(--text-secondary)]">

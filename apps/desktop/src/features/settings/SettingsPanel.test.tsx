@@ -753,6 +753,61 @@ describe("SettingsPanel", () => {
         expect(inspectionCount).toBe(1);
     });
 
+    it("keeps the current storage scope while a screenshot draft is pending", async () => {
+        useChatStore.setState({
+            aiStorageScope: "device",
+            sessionsById: {
+                "session-a": {
+                    sessionId: "session-a",
+                    historySessionId: "session-a",
+                    vaultPath: "/vault",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "live",
+                },
+            },
+            composerPartsBySessionId: {
+                "session-a": [
+                    {
+                        id: "screenshot-1",
+                        type: "screenshot",
+                        filePath: "/app-data/pasted-image.png",
+                        mimeType: "image/png",
+                        label: "Screenshot",
+                    },
+                ],
+            },
+        });
+        useVaultStore.setState({ vaultPath: "/vault" });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "AI" }));
+        const label = screen.getByText("Store AI chats inside this vault");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+        aiApiMocks.aiLoadSessionHistories.mockClear();
+        aiApiMocks.aiSetHistoryScope.mockClear();
+
+        fireEvent.click(within(row as HTMLElement).getByRole("switch"));
+
+        expect(
+            await screen.findByText(
+                "Send or remove screenshot drafts before changing AI chat storage.",
+            ),
+        ).toBeInTheDocument();
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+        expect(aiApiMocks.aiLoadSessionHistories).not.toHaveBeenCalled();
+        expect(aiApiMocks.aiSetHistoryScope).not.toHaveBeenCalled();
+    });
+
     it("migrates a closed history from the settings window vault URL", async () => {
         const initializeMock = vi.fn(async () => ({
             sessionInventoryLoaded: true,
