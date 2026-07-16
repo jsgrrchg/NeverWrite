@@ -3116,13 +3116,32 @@ fn ai_history_scope_state_path(normalized_vault_key: &str, app_data_root: &Path)
         ))
 }
 
+fn ai_history_scope_state_temporary_path(
+    normalized_vault_key: &str,
+    app_data_root: &Path,
+) -> PathBuf {
+    ai_history_scope_state_path(normalized_vault_key, app_data_root).with_extension("tmp")
+}
+
 fn load_ai_history_scope_state(
     normalized_vault_key: &str,
     app_data_root: &Path,
 ) -> Option<AiHistoryScopeState> {
-    let path = ai_history_scope_state_path(normalized_vault_key, app_data_root);
-    let bytes = fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    let canonical = ai_history_scope_state_path(normalized_vault_key, app_data_root);
+    let temporary = ai_history_scope_state_temporary_path(normalized_vault_key, app_data_root);
+
+    // A complete temporary file is the newest state and may be the only copy left when
+    // Windows stops between removing the old destination and renaming its replacement.
+    for path in [&temporary, &canonical] {
+        let Ok(bytes) = fs::read(path) else {
+            continue;
+        };
+        if let Ok(state) = serde_json::from_slice(&bytes) {
+            return Some(state);
+        }
+    }
+
+    None
 }
 
 fn write_ai_history_scope_state(
@@ -3135,7 +3154,7 @@ fn write_ai_history_scope_state(
         .parent()
         .ok_or_else(|| "AI history scope state has no parent directory.".to_string())?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let temporary = path.with_extension("tmp");
+    let temporary = ai_history_scope_state_temporary_path(normalized_vault_key, app_data_root);
     let bytes = serde_json::to_vec(&state).map_err(|error| error.to_string())?;
     fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
     #[cfg(target_os = "windows")]
@@ -5119,6 +5138,57 @@ mod tests {
     #[test]
     fn ai_storage_scope_rejects_unknown_values() {
         assert!(ai_storage_scope_arg(&json!({ "storageScope": "shared" })).is_err());
+    }
+
+    #[test]
+    fn history_scope_state_recovers_an_interrupted_windows_replacement() {
+        let app_data = tempfile::tempdir().unwrap();
+        let vault_key = "scope-recovery-vault";
+        let canonical = ai_history_scope_state_path(vault_key, app_data.path());
+        let temporary = ai_history_scope_state_temporary_path(vault_key, app_data.path());
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        fs::write(
+            &temporary,
+            serde_json::to_vec(&AiHistoryScopeState {
+                scope: AiStorageScope::Device,
+                revision: 2,
+                enforced: true,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let recovered = load_ai_history_scope_state(vault_key, app_data.path()).unwrap();
+
+        assert_eq!(recovered.scope, AiStorageScope::Device);
+        assert_eq!(recovered.revision, 2);
+        assert!(recovered.enforced);
+    }
+
+    #[test]
+    fn history_scope_state_ignores_a_corrupt_temporary_file() {
+        let app_data = tempfile::tempdir().unwrap();
+        let vault_key = "scope-corrupt-temporary-vault";
+        write_ai_history_scope_state(
+            vault_key,
+            app_data.path(),
+            AiHistoryScopeState {
+                scope: AiStorageScope::Vault,
+                revision: 1,
+                enforced: true,
+            },
+        )
+        .unwrap();
+        fs::write(
+            ai_history_scope_state_temporary_path(vault_key, app_data.path()),
+            b"not-json",
+        )
+        .unwrap();
+
+        let recovered = load_ai_history_scope_state(vault_key, app_data.path()).unwrap();
+
+        assert_eq!(recovered.scope, AiStorageScope::Vault);
+        assert_eq!(recovered.revision, 1);
     }
 
     #[test]
