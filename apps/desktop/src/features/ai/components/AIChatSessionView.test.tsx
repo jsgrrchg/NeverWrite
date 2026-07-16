@@ -654,7 +654,9 @@ describe("AIChatSessionView", () => {
 
     it("stores pasted images in vault assets when vault scope is enabled", async () => {
         setupWorkspaceSession();
-        useChatStore.getState().setAiStorageScope("vault");
+        await act(async () => {
+            await useChatStore.getState().setAiStorageScope("vault");
+        });
         invokeMock.mockImplementation(async (command) => {
             if (command === "save_vault_binary_file") {
                 return {
@@ -715,8 +717,10 @@ describe("AIChatSessionView", () => {
 
     it("stores pasted images in the active scope", async () => {
         setupWorkspaceSession();
-        useChatStore.getState().setAiStorageScope("device");
-        useChatStore.getState().setAiStorageScope("vault");
+        await act(async () => {
+            await useChatStore.getState().setAiStorageScope("device");
+            await useChatStore.getState().setAiStorageScope("vault");
+        });
         invokeMock.mockImplementation(async (command) => {
             if (command === "save_vault_binary_file") {
                 return {
@@ -904,7 +908,9 @@ describe("AIChatSessionView", () => {
 
     it("removes a vault pasted image file when the final attachment validation loses a race", async () => {
         setupWorkspaceSession();
-        useChatStore.getState().setAiStorageScope("vault");
+        await act(async () => {
+            await useChatStore.getState().setAiStorageScope("vault");
+        });
         invokeMock.mockImplementation(async (command) => {
             if (command === "save_vault_binary_file") {
                 useChatStore.setState((state) => ({
