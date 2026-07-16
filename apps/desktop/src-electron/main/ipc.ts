@@ -203,7 +203,7 @@ function registerAppLogHandlers() {
     });
 }
 
-function registerInvokeHandler() {
+function createBackend() {
     const emitRuntimeEvent = (eventName: string, payload: unknown) => {
         for (const window of BrowserWindow.getAllWindows()) {
             if (window.isDestroyed()) continue;
@@ -218,7 +218,10 @@ function registerInvokeHandler() {
     );
     installWebClipperRuntime(backend, emitRuntimeEvent);
     installDeepLinkRuntime(emitRuntimeEvent);
+    return backend;
+}
 
+function registerInvokeHandler(backend: ElectronVaultBackend) {
     ipcMain.handle(ELECTRON_IPC.invoke, async (_event, rawEnvelope) => {
         const envelope = asRecord(rawEnvelope) as Partial<IpcInvokeEnvelope>;
         if (typeof envelope.command !== "string" || !envelope.command) {
@@ -229,6 +232,9 @@ function registerInvokeHandler() {
         // pure TS backend.
         if (envelope.command === "get_system_username") {
             return getSystemUsername();
+        }
+        if (envelope.command === "ai_resolve_managed_attachment_path") {
+            throw new Error("Private backend command.");
         }
         return backend.invoke(envelope.command, asRecord(envelope.args));
     });
@@ -323,16 +329,41 @@ export async function resolveCodexGeneratedImagePreviewPath(
     return null;
 }
 
-export function registerPreviewProtocolHandler() {
+export function registerPreviewProtocolHandler(
+    backend: Pick<ElectronVaultBackend, "invoke">,
+) {
     return async (request: Request) => {
         try {
             const url = new URL(request.url);
             const segments = url.pathname.split("/");
             const [, scope, encodedVaultPath, encodedRelativePath] = segments;
+            if (
+                scope === "ai-attachment" &&
+                encodedVaultPath &&
+                encodedRelativePath
+            ) {
+                const vaultPath = decodeBase64UrlSegment(encodedVaultPath);
+                const attachmentId = decodeURIComponent(encodedRelativePath);
+                const result = (await backend.invoke(
+                    "ai_read_managed_attachment",
+                    { vaultPath, attachmentId },
+                )) as { data_base64: string; mime_type: string };
+                const data = Buffer.from(result.data_base64, "base64");
+                return new Response(new Uint8Array(data), {
+                    headers: {
+                        "content-type": result.mime_type,
+                        "cache-control": "no-store",
+                    },
+                });
+            }
+
             if (scope === "vault" && encodedVaultPath && encodedRelativePath) {
                 const vaultPath = decodeBase64UrlSegment(encodedVaultPath);
                 const relativePath =
                     decodeBase64UrlSegment(encodedRelativePath);
+                if (relativePath.split(/[\\/]/).some((part) => part.toLowerCase() === ".neverwrite-managed")) {
+                    throw new Error("Managed attachment storage is private.");
+                }
                 const filePath = resolvePreviewFilePath(
                     vaultPath,
                     relativePath,
@@ -352,6 +383,9 @@ export function registerPreviewProtocolHandler() {
                     .slice(3)
                     .map((segment) => decodeURIComponent(segment))
                     .join("/");
+                if (relativePath.split("/").some((part) => part.toLowerCase() === ".neverwrite-managed")) {
+                    throw new Error("Managed attachment storage is private.");
+                }
                 const filePath = resolvePreviewFilePath(
                     vaultPath,
                     relativePath,
@@ -405,10 +439,12 @@ export function registerPreviewProtocolHandler() {
 }
 
 export function registerIpcHandlers() {
-    registerInvokeHandler();
+    const backend = createBackend();
+    registerInvokeHandler(backend);
     registerDialogHandlers();
     registerOpenerHandlers();
     registerWindowHandlers();
     registerRuntimeEventHandlers();
     registerAppLogHandlers();
+    return backend;
 }

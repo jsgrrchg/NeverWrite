@@ -18,13 +18,16 @@ type VaultEntryForTest = {
 const electronAppMock = vi.hoisted(() => ({
     isPackaged: true,
 }));
+const showItemInFolderMock = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
     app: electronAppMock,
+    shell: { showItemInFolder: showItemInFolderMock },
 }));
 
 function createNativeBackend(): NativeBackendBridge & {
     invoke: ReturnType<typeof vi.fn>;
+    supports: ReturnType<typeof vi.fn>;
 } {
     return {
         supports: vi.fn((command: string) =>
@@ -124,7 +127,79 @@ describe("ElectronVaultBackend updater routing", () => {
     });
 });
 
+describe("ElectronVaultBackend managed attachment routing", () => {
+    it("resolves managed attachment paths inside Electron before revealing", async () => {
+        const nativeBackend = createNativeBackend();
+        nativeBackend.supports.mockImplementation(
+            (command: string) =>
+                command === "ai_resolve_managed_attachment_path",
+        );
+        nativeBackend.invoke.mockResolvedValue({
+            path: "/vault/assets/chat/.neverwrite-managed/v1/blobs/id/blob",
+        });
+        const backend = new ElectronVaultBackend(
+            vi.fn(),
+            createUpdater(),
+            nativeBackend,
+        );
+
+        await backend.invoke("ai_reveal_managed_attachment", {
+            vaultPath: "/vault",
+            attachmentId: "ma_0123456789abcdef0123456789abcdef",
+        });
+
+        expect(nativeBackend.invoke).toHaveBeenCalledWith(
+            "ai_resolve_managed_attachment_path",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                attachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+            }),
+        );
+        expect(showItemInFolderMock).toHaveBeenCalledWith(
+            "/vault/assets/chat/.neverwrite-managed/v1/blobs/id/blob",
+        );
+    });
+});
+
 describe("ElectronVaultBackend vault classification", () => {
+    it("hides the managed attachment namespace in the fallback backend", async () => {
+        const vaultPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-managed-assets-"),
+        );
+        const managedRoot = path.join(
+            vaultPath,
+            "assets/chat/.neverwrite-managed/v1/blobs/id",
+        );
+        await fs.mkdir(managedRoot, { recursive: true });
+        await fs.writeFile(path.join(managedRoot, "blob"), "private", "utf8");
+        await fs.writeFile(
+            path.join(vaultPath, "visible.md"),
+            "# Visible\n",
+            "utf8",
+        );
+
+        const backend = new ElectronVaultBackend(
+            vi.fn(),
+            createUpdater(),
+            null,
+        );
+
+        await backend.invoke("start_open_vault", { path: vaultPath });
+        const entries = (await backend.invoke("list_vault_entries", {
+            vaultPath,
+        })) as Array<VaultEntryForTest & { relative_path?: string }>;
+
+        expect(entries.some((entry) => entry.file_name === "visible.md")).toBe(
+            true,
+        );
+        expect(
+            entries.some((entry) =>
+                entry.relative_path?.includes(".neverwrite-managed"),
+            ),
+        ).toBe(false);
+    });
+
     it("classifies Mermaid files as in-app diagram files in the fallback backend", async () => {
         const vaultPath = await fs.mkdtemp(
             path.join(os.tmpdir(), "neverwrite-mermaid-"),

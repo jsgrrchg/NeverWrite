@@ -110,6 +110,17 @@ describe("chatExport", () => {
                             filePath: "/vault/assets/chat/screenshot.png",
                             mimeType: "image/png",
                         },
+                        {
+                            id: "attachment-managed",
+                            type: "file",
+                            noteId: null,
+                            label: "Pasted image",
+                            path: null,
+                            managedAttachmentId:
+                                "ma_0123456789abcdef0123456789abcdef",
+                            fileName: "pasted-image.png",
+                            mimeType: "image/png",
+                        },
                     ],
                 },
             ],
@@ -125,6 +136,9 @@ describe("chatExport", () => {
         expect(markdown).toContain("Attachments:");
         expect(markdown).toContain(
             "- File: Screenshot 10:32 (/vault/assets/chat/screenshot.png)",
+        );
+        expect(markdown).toContain(
+            "- File: Pasted image (pasted-image.png; managed:ma_0123456789abcdef0123456789abcdef)",
         );
     });
 });

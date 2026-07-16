@@ -702,6 +702,9 @@ impl NativeBackend {
         args: Value,
         backend_ref: &Arc<Mutex<NativeBackend>>,
     ) -> Result<Value, String> {
+        if !command.starts_with("ai_") {
+            reject_private_managed_paths(&args)?;
+        }
         match command {
             "ping" => Ok(json!({ "ok": true })),
             "open_vault" => {
@@ -2452,6 +2455,26 @@ fn normalize_vault_path(raw: &str) -> Result<String, String> {
         .to_string())
 }
 
+fn reject_private_managed_paths(args: &Value) -> Result<(), String> {
+    const PATH_KEYS: &[&str] = &[
+        "relativePath", "relative_path", "newRelativePath", "new_relative_path",
+        "relativeDir", "relative_dir", "targetFolder", "target_folder", "noteId",
+        "note_id", "fileName", "file_name", "path", "filePath", "file_path",
+        "vaultPath", "vault_path",
+    ];
+    let Some(object) = args.as_object() else { return Ok(()); };
+    for key in PATH_KEYS {
+        let Some(value) = object.get(*key).and_then(Value::as_str) else { continue; };
+        if value
+            .split(['/', '\\'])
+            .any(|component| component.eq_ignore_ascii_case(".neverwrite-managed"))
+        {
+            return Err("Managed attachment storage is private.".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn required_string(args: &Value, names: &[&str]) -> Result<String, String> {
     optional_string(args, names).ok_or_else(|| format!("Missing argument: {}", names[0]))
 }
@@ -3298,6 +3321,55 @@ mod tests {
         )
         .unwrap();
         assert!(histories.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn managed_attachment_commands_require_an_open_vault_and_never_accept_paths_as_ids() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        let create_args = json!({
+            "vaultPath": vault_path,
+            "fileName": "pasted-image.png",
+            "mimeType": "image/png",
+            "bytes": b"\x89PNG\r\n\x1a\nmanaged-image",
+        });
+
+        let error = invoke(
+            &backend,
+            "ai_create_managed_attachment",
+            create_args.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Vault not open");
+
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+        let created = invoke(&backend, "ai_create_managed_attachment", create_args).unwrap();
+        let attachment_id = created["attachment_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(attachment_id.starts_with("ma_"));
+
+        let error = invoke(
+            &backend,
+            "read_vault_file",
+            json!({
+                "vaultPath": vault_path,
+                "relativePath": format!("assets/chat/.neverwrite-managed/v1/blobs/{attachment_id}/blob")
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Managed attachment storage is private.");
+
+        let error = invoke(
+            &backend,
+            "ai_read_managed_attachment",
+            json!({ "vaultPath": vault_path, "attachmentId": "../secret" }),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Invalid managed attachment ID.");
     }
 
     #[test]

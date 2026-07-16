@@ -352,6 +352,12 @@ struct AiAttachmentInput {
     file_path: Option<String>,
     #[serde(rename = "mimeType")]
     mime_type: Option<String>,
+    #[serde(rename = "managedAttachmentId")]
+    managed_attachment_id: Option<String>,
+    #[serde(rename = "fileName")]
+    file_name: Option<String>,
+    #[serde(skip)]
+    managed_bytes: Option<Vec<u8>>,
     transcription: Option<String>,
     #[serde(rename = "startLine")]
     start_line: Option<u32>,
@@ -1667,7 +1673,7 @@ impl NativeAi {
             .get("attachments")
             .cloned()
             .unwrap_or_else(|| Value::Array(vec![]));
-        let attachments: Vec<AiAttachmentInput> =
+        let mut attachments: Vec<AiAttachmentInput> =
             serde_json::from_value(attachments).map_err(|error| error.to_string())?;
 
         let (prompt, handle) = {
@@ -1689,6 +1695,7 @@ impl NativeAi {
                 .runtime_handle
                 .clone()
                 .ok_or_else(|| "AI runtime session is not connected.".to_string())?;
+            resolve_managed_attachment_inputs(&mut attachments, managed.vault_root.as_deref())?;
             let prompt = build_prompt_blocks_with_attachments(
                 &content,
                 &attachments,
@@ -2306,6 +2313,46 @@ impl NativeAi {
     fn emit_json(&self, event_name: &str, payload: Value) {
         emit_event(&self.event_tx, event_name, payload);
     }
+}
+
+fn resolve_managed_attachment_inputs(
+    attachments: &mut [AiAttachmentInput],
+    vault_root: Option<&Path>,
+) -> Result<(), String> {
+    for attachment in attachments {
+        let Some(attachment_id) = attachment.managed_attachment_id.as_deref() else {
+            continue;
+        };
+        if attachment.attachment_type.as_deref() != Some("file") {
+            return Err("Managed attachments must use the file attachment type.".to_string());
+        }
+        if attachment.file_path.is_some()
+            || attachment.path.is_some()
+            || attachment.content.is_some()
+        {
+            return Err(
+                "Managed attachments cannot include a physical path or inline content.".to_string(),
+            );
+        }
+        let vault_root = vault_root
+            .ok_or_else(|| "Managed attachments require an open vault session.".to_string())?;
+        let (bytes, file_name, mime_type) =
+            crate::ai_history::resolve_managed_attachment_for_runtime(vault_root, attachment_id)?;
+        if let Some(declared_file_name) = attachment.file_name.as_deref() {
+            if declared_file_name != file_name {
+                return Err("Managed attachment file name does not match its blob.".to_string());
+            }
+        }
+        if let Some(declared_mime_type) = attachment.mime_type.as_deref() {
+            if declared_mime_type != mime_type {
+                return Err("Managed attachment MIME type does not match its blob.".to_string());
+            }
+        }
+        attachment.file_name = Some(file_name);
+        attachment.mime_type = Some(mime_type);
+        attachment.managed_bytes = Some(bytes);
+    }
+    Ok(())
 }
 
 struct CreatedAcpSession {
@@ -3784,9 +3831,7 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
             }
         };
         let result = match flavor {
-            AcpProtocolFlavor::Current => {
-                runtime.block_on(run_acp_auth_inner(spec, auth_command))
-            }
+            AcpProtocolFlavor::Current => runtime.block_on(run_acp_auth_inner(spec, auth_command)),
             AcpProtocolFlavor::Legacy12 => {
                 runtime.block_on(run_acp12_auth_inner(spec, auth_command))
             }
@@ -8238,6 +8283,15 @@ fn build_prompt_with_attachments(
                 }
             }
             Some("file") => {
+                if let Some(bytes) = attachment.managed_bytes.as_deref() {
+                    context_parts.push(format!(
+                        "<attached_image name=\"{}\" type=\"{}\" size=\"{}\" />",
+                        attachment.label,
+                        attachment.mime_type.as_deref().unwrap_or("application/octet-stream"),
+                        bytes.len()
+                    ));
+                    continue;
+                }
                 if let Some(file_path) = attachment
                     .file_path
                     .as_deref()
@@ -8351,6 +8405,34 @@ fn build_prompt_blocks_with_attachments(
                 }
             }
             Some("file") => {
+                if let Some(bytes) = attachment.managed_bytes.as_deref() {
+                    let mime = attachment
+                        .mime_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream");
+                    if bytes.len() as u64 > image_limits.max_bytes {
+                        return Err(format!(
+                            "Image attachment is too large for {}: {} exceeds the {} byte limit.",
+                            image_limits.runtime_label,
+                            bytes.len(),
+                            image_limits.max_bytes
+                        ));
+                    }
+                    if capabilities.image {
+                        blocks.push(ContentBlock::Image(
+                            ImageContent::new(BASE64_STANDARD.encode(bytes), mime.to_string())
+                                .uri(attachment_resource_uri(attachment, "attachment")),
+                        ));
+                    } else {
+                        text_context_parts.push(format!(
+                            "<attached_image name=\"{}\" type=\"{}\" size=\"{}\" />",
+                            attachment.label,
+                            mime,
+                            bytes.len()
+                        ));
+                    }
+                    continue;
+                }
                 if let Some(file_path) = attachment
                     .file_path
                     .as_deref()
@@ -8661,6 +8743,9 @@ fn text_attachment_mime(attachment: &AiAttachmentInput) -> Option<String> {
 }
 
 fn attachment_resource_uri(attachment: &AiAttachmentInput, fallback_kind: &str) -> String {
+    if let Some(attachment_id) = attachment.managed_attachment_id.as_deref() {
+        return format!("neverwrite://ai-attachment/{attachment_id}");
+    }
     let source = attachment
         .file_path
         .as_deref()
@@ -12314,10 +12399,7 @@ mod tests {
             KILO_RUNTIME_ID,
             OPENCODE_RUNTIME_ID,
         ] {
-            assert_eq!(
-                acp_protocol_flavor(runtime_id),
-                AcpProtocolFlavor::Current
-            );
+            assert_eq!(acp_protocol_flavor(runtime_id), AcpProtocolFlavor::Current);
         }
     }
 
@@ -12713,7 +12795,10 @@ mod tests {
 
         assert_eq!(option.label, "Grid layout");
         assert_eq!(option.value, "Grid layout");
-        assert_eq!(option.description.as_deref(), Some("Structured description"));
+        assert_eq!(
+            option.description.as_deref(),
+            Some("Structured description")
+        );
     }
 
     #[test]
@@ -13642,6 +13727,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(outside_file.display().to_string()),
                 mime_type: Some("text/plain".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -13656,6 +13744,49 @@ mod tests {
     }
 
     #[test]
+    fn managed_attachment_ids_resolve_to_verified_bytes_without_exposing_a_path() {
+        let vault = tempfile::tempdir().unwrap();
+        let service = crate::ai_history::AiHistoryStorageService;
+        let created = service
+            .invoke(
+                "ai_create_managed_attachment",
+                vault.path(),
+                json!({
+                    "fileName": "pasted-image.png",
+                    "mimeType": "image/png",
+                    "bytes": b"\x89PNG\r\n\x1a\nmanaged-image",
+                }),
+            )
+            .unwrap();
+        let attachment_id = created["attachment_id"].as_str().unwrap().to_string();
+        let mut attachments = vec![AiAttachmentInput {
+            label: "Screenshot".to_string(),
+            path: None,
+            content: None,
+            attachment_type: Some("file".to_string()),
+            note_id: None,
+            file_path: None,
+            mime_type: Some("image/png".to_string()),
+            managed_attachment_id: Some(attachment_id.clone()),
+            file_name: Some("pasted-image.png".to_string()),
+            managed_bytes: None,
+            transcription: None,
+            start_line: None,
+            end_line: None,
+        }];
+
+        resolve_managed_attachment_inputs(&mut attachments, Some(vault.path())).unwrap();
+
+        assert_eq!(
+            attachments[0].managed_bytes.as_deref(),
+            Some(b"\x89PNG\r\n\x1a\nmanaged-image".as_slice())
+        );
+        assert!(attachments[0].file_path.is_none());
+        assert_eq!(attachments[0].mime_type.as_deref(), Some("image/png"));
+        assert!(attachments[0].path.is_none());
+    }
+
+    #[test]
     fn prompt_blocks_embed_selection_context_without_textual_wrapper() {
         let selection_path = "/Users/example/vault/cuento.md";
         let attachments = vec![AiAttachmentInput {
@@ -13666,6 +13797,9 @@ mod tests {
             note_id: None,
             file_path: None,
             mime_type: None,
+            managed_attachment_id: None,
+            file_name: None,
+            managed_bytes: None,
             transcription: None,
             start_line: Some(30),
             end_line: Some(30),
@@ -13720,6 +13854,9 @@ mod tests {
             note_id: None,
             file_path: None,
             mime_type: None,
+            managed_attachment_id: None,
+            file_name: None,
+            managed_bytes: None,
             transcription: None,
             start_line: Some(30),
             end_line: Some(30),
@@ -13765,6 +13902,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -13812,6 +13952,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -13856,6 +13999,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -13891,6 +14037,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -13927,6 +14076,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -13961,6 +14113,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/webp".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -13995,6 +14150,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/svg+xml".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -14029,6 +14187,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,

@@ -98,8 +98,11 @@ if (!hasLock) {
     void app.whenReady().then(() => {
         writeAppLog("main", "info", "Electron app ready");
         installYouTubeEmbedIdentityHeaders(session.defaultSession);
-        protocol.handle("neverwrite-file", registerPreviewProtocolHandler());
-        registerIpcHandlers();
+        const backend = registerIpcHandlers();
+        protocol.handle(
+            "neverwrite-file",
+            registerPreviewProtocolHandler(backend),
+        );
         void installNativeMenus();
         createAppWindow("main");
         for (const url of extractDeepLinksFromArgv(process.argv)) {

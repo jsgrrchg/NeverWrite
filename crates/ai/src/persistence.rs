@@ -133,6 +133,7 @@ pub struct InspectedHistory {
     pub format: InspectedHistoryFormat,
     pub content_fingerprint: String,
     pub artifact_fingerprint: String,
+    pub managed_attachment_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -770,6 +771,47 @@ impl From<std::io::Error> for StrictTranscriptInspectionError {
 struct StrictTranscriptFingerprints {
     artifact: [u8; 32],
     content: String,
+    managed_attachment_ids: Vec<String>,
+}
+
+fn collect_managed_attachment_ids(
+    message: &PersistedMessage,
+    ids: &mut HashSet<String>,
+) -> Result<(), String> {
+    let Some(attachments) = message.attachments.as_ref() else {
+        return Ok(());
+    };
+    let attachments = attachments
+        .as_array()
+        .ok_or_else(|| "Persisted message attachments are not an array.".to_string())?;
+
+    for attachment in attachments {
+        let Some(object) = attachment.as_object() else {
+            return Err("Persisted message contains a non-object attachment.".to_string());
+        };
+        let Some(value) = object.get("managedAttachmentId") else {
+            continue;
+        };
+        let id = value
+            .as_str()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| "Persisted managed attachment contains an invalid ID.".to_string())?;
+        ids.insert(id.to_string());
+    }
+
+    Ok(())
+}
+
+pub fn managed_attachment_ids_in_history(
+    history: &PersistedSessionHistory,
+) -> Result<Vec<String>, String> {
+    let mut ids = HashSet::new();
+    for message in &history.messages {
+        collect_managed_attachment_ids(message, &mut ids)?;
+    }
+    let mut ids = ids.into_iter().collect::<Vec<_>>();
+    ids.sort();
+    Ok(ids)
 }
 
 fn inspect_strict_transcript_file(
@@ -822,6 +864,7 @@ fn inspect_strict_transcript_file(
     let history = history_from_metadata(metadata.clone(), Vec::new());
     let mut content_hasher =
         history_content_hasher(&history).map_err(StrictTranscriptInspectionError::Corrupt)?;
+    let mut managed_attachment_ids = HashSet::new();
     let mut transcript = File::open(transcript_path)?;
     let transcript_length = transcript.metadata()?.len();
     for position in 0..index.message_offsets.len() {
@@ -874,13 +917,19 @@ fn inspect_strict_transcript_file(
                 "Persisted transcript entry {position} does not match its index hash."
             )));
         }
+        collect_managed_attachment_ids(&message, &mut managed_attachment_ids)
+            .map_err(StrictTranscriptInspectionError::Corrupt)?;
         update_history_content_field(&mut content_hasher, "message", &message)
             .map_err(StrictTranscriptInspectionError::Corrupt)?;
     }
 
+    let mut managed_attachment_ids = managed_attachment_ids.into_iter().collect::<Vec<_>>();
+    managed_attachment_ids.sort();
+
     Ok(StrictTranscriptFingerprints {
         artifact: artifact_hasher.finalize().into(),
         content: digest_hex(&content_hasher.finalize().into()),
+        managed_attachment_ids,
     })
 }
 
@@ -1270,6 +1319,7 @@ fn inspect_session_directory(
             index_artifact.fingerprint,
             transcript_fingerprints.artifact,
         ]),
+        managed_attachment_ids: transcript_fingerprints.managed_attachment_ids,
     });
 }
 
@@ -1350,6 +1400,13 @@ fn inspect_legacy_json_history(
     }
 
     let history = normalize_legacy_history(history);
+    let managed_attachment_ids = match managed_attachment_ids_in_history(&history) {
+        Ok(ids) => ids,
+        Err(error) => {
+            push_corrupt_artifact(inventory, fingerprint, relative_path, error);
+            return;
+        }
+    };
     let content_fingerprint = match persisted_history_content_fingerprint(&history) {
         Ok(fingerprint) => fingerprint,
         Err(error) => {
@@ -1368,6 +1425,7 @@ fn inspect_legacy_json_history(
         format: InspectedHistoryFormat::LegacyJson,
         content_fingerprint,
         artifact_fingerprint: digest_hex(&artifact_fingerprint),
+        managed_attachment_ids,
     });
 }
 
@@ -3577,6 +3635,39 @@ mod tests {
 
         let histories = load_all_session_histories(&dir, true).expect("full history should load");
         assert_eq!(histories[0].messages[0].attachments, expected_attachments);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn inspector_and_fork_preserve_managed_attachment_ids() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.messages[0].attachments = Some(serde_json::json!([{
+            "id": "ui-attachment",
+            "type": "file",
+            "noteId": null,
+            "label": "Screenshot",
+            "path": null,
+            "managedAttachmentId": "ma_0123456789abcdef0123456789abcdef",
+            "fileName": "pasted-image.png",
+            "mimeType": "image/png"
+        }]));
+        save_session_history(&dir, &history).expect("history should persist");
+
+        let inventory = inspect_history_storage(&dir);
+        assert_eq!(
+            inventory.histories.sessions[0].managed_attachment_ids,
+            vec!["ma_0123456789abcdef0123456789abcdef"]
+        );
+
+        let fork_id = fork_session_history(&dir, &history.session_id).expect("history should fork");
+        let fork =
+            load_session_history_page(&dir, &fork_id, 0, 20).expect("forked history should load");
+        assert_eq!(
+            fork.messages[0].attachments,
+            history.messages[0].attachments
+        );
 
         fs::remove_dir_all(dir).ok();
     }

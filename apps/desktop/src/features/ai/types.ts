@@ -185,6 +185,11 @@ export type AIAttachmentType =
 
 export type AIAttachmentStatus = "pending" | "processing" | "ready" | "error";
 
+declare const managedAttachmentIdBrand: unique symbol;
+export type ManagedAttachmentId = string & {
+    readonly [managedAttachmentIdBrand]: true;
+};
+
 export interface AIChatAttachment {
     id: string;
     type: AIAttachmentType;
@@ -193,6 +198,8 @@ export interface AIChatAttachment {
     path: string | null;
     content?: string;
     filePath?: string;
+    managedAttachmentId?: ManagedAttachmentId;
+    fileName?: string;
     mimeType?: string;
     transcription?: string;
     status?: AIAttachmentStatus;
@@ -685,11 +692,21 @@ export type AIComposerPart =
     | {
           id: string;
           type: "screenshot";
-          filePath: string;
           mimeType: string;
           label: string;
           createdAt?: number;
-      }
+      } & (
+          | {
+                managedAttachmentId: ManagedAttachmentId;
+                fileName: string;
+                filePath?: never;
+            }
+          | {
+                filePath: string;
+                managedAttachmentId?: never;
+                fileName?: string;
+            }
+      )
     | {
           id: string;
           type: "file_attachment";

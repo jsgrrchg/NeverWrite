@@ -13,6 +13,7 @@ import type {
     AIChatAttachment,
     AIChatSession,
     AIComposerPart,
+    ManagedAttachmentId,
     QueuedChatMessage,
 } from "../types";
 import { deriveReviewItems } from "../diff/editedFilesPresentationModel";
@@ -1517,6 +1518,50 @@ describe("chatStore", () => {
                 mimeType: "image/png",
             }),
         ]);
+    });
+
+    it("keeps managed screenshot IDs through queue payloads without persisting a path", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [],
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                managedAttachmentId:
+                    "ma_0123456789abcdef0123456789abcdef" as ManagedAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const queuedMessage =
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[0];
+        expect(queuedMessage?.attachments).toEqual([
+            expect.objectContaining({
+                managedAttachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+            }),
+        ]);
+        expect(queuedMessage?.attachments[0]).not.toHaveProperty("filePath");
     });
 
     it("normalizes image file attachment parts into the same file attachment shape", async () => {
@@ -14524,6 +14569,63 @@ describe("chatStore", () => {
                 mimeType: "image/png",
             }),
         ]);
+    });
+
+    it("persists managed attachment identity without its physical path", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    messages: [
+                        {
+                            id: "user-with-managed-screenshot",
+                            role: "user",
+                            kind: "text",
+                            content: "Inspect this screenshot",
+                            timestamp: 10,
+                            attachments: [
+                                {
+                                    id: "attachment-1",
+                                    type: "file",
+                                    noteId: null,
+                                    label: "Screenshot",
+                                    path: null,
+                                    managedAttachmentId:
+                                        "ma_0123456789abcdef0123456789abcdef" as ManagedAttachmentId,
+                                    fileName: "pasted-image.png",
+                                    mimeType: "image/png",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applySessionError({
+            session_id: activeSessionId,
+            message: "Trigger persistence",
+        });
+        await Promise.resolve();
+
+        const historyCall = invokeMock.mock.calls.find(
+            ([command]) => command === "ai_save_session_history",
+        );
+        const history = (historyCall?.[1] as {
+            history?: { messages?: Array<{ attachments?: AIChatAttachment[] }> };
+        })?.history;
+        const attachment = history?.messages?.[0]?.attachments?.[0];
+        expect(attachment).toMatchObject({
+            managedAttachmentId:
+                "ma_0123456789abcdef0123456789abcdef",
+            fileName: "pasted-image.png",
+            mimeType: "image/png",
+        });
+        expect(attachment).not.toHaveProperty("filePath");
     });
 
     it("coalesces repeated history persistence requests in the same microtask", async () => {

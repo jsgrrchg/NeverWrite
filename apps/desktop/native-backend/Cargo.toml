@@ -7,7 +7,9 @@ edition = "2021"
 agent-client-protocol = { version = "=1.2.0", features = ["unstable"] }
 acp12 = { package = "agent-client-protocol-legacy", path = "../../../vendor/acp12/agent-client-protocol", features = ["unstable"] }
 base64 = "0.22.1"
+cap-std = "3"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-async-persistent", "async-io", "crypto-rust"] }
+libc = "0.2"
 neverwrite-diff = { path = "../../../crates/diff" }
 neverwrite-ai = { path = "../../../crates/ai" }
 neverwrite-index = { path = "../../../crates/index" }
@@ -22,6 +24,7 @@ sha2 = "0.10.9"
 spellbook = "0.4.0"
 tokio = { version = "1", features = ["rt", "sync", "process", "io-util", "time", "macros"] }
 tokio-util = { version = "0.7", features = ["compat"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -6,7 +6,7 @@ import { useEditorStore } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
-import type { AIChatSession } from "../types";
+import type { AIChatSession, ManagedAttachmentId } from "../types";
 import {
     MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
     MAX_IMAGE_ATTACHMENT_BYTES,
@@ -237,7 +237,9 @@ describe("AIChatSessionView", () => {
                     {
                         id: "shot-1",
                         type: "screenshot",
-                        filePath: "/vault/assets/chat/old.png",
+                        managedAttachmentId:
+                            "ma_0123456789abcdef0123456789abcdef" as ManagedAttachmentId,
+                        fileName: "old.png",
                         mimeType: "image/png",
                         label: "Screenshot 10:42 hrs",
                         createdAt: Date.now() - 61_000,
@@ -254,6 +256,14 @@ describe("AIChatSessionView", () => {
                 useChatStore.getState().composerPartsBySessionId["session-a"],
             ).toEqual([{ id: "text-1", type: "text", text: "Review  please" }]);
         });
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_managed_attachment_if_unreferenced",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                attachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+            }),
+        );
     });
 
     it("keeps sent timeline image attachments when composer screenshots expire", async () => {
@@ -557,7 +567,7 @@ describe("AIChatSessionView", () => {
             "Codex supports images up to 10 MB",
         );
         expect(invokeMock).not.toHaveBeenCalledWith(
-            "save_vault_binary_file",
+            "ai_create_managed_attachment",
             expect.anything(),
         );
     });
@@ -621,10 +631,59 @@ describe("AIChatSessionView", () => {
         );
     });
 
-    it("removes a pasted image file when the final attachment validation loses a race", async () => {
+    it("stores pasted images as managed attachments without physical paths", async () => {
         setupWorkspaceSession();
         invokeMock.mockImplementation(async (command) => {
-            if (command === "save_vault_binary_file") {
+            if (command === "ai_create_managed_attachment") {
+                return {
+                    attachment_id:
+                        "ma_0123456789abcdef0123456789abcdef",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            return undefined;
+        });
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(
+            useChatStore.getState().composerPartsBySessionId["session-a"],
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    type: "screenshot",
+                    managedAttachmentId:
+                        "ma_0123456789abcdef0123456789abcdef",
+                    fileName: "pasted-image.png",
+                    mimeType: "image/png",
+                }),
+            ]),
+        );
+        expect(
+            useChatStore.getState().composerPartsBySessionId["session-a"],
+        ).not.toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ filePath: expect.any(String) }),
+            ]),
+        );
+    });
+
+    it("removes a managed attachment when final validation loses a race", async () => {
+        setupWorkspaceSession();
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_create_managed_attachment") {
                 useChatStore.setState((state) => ({
                     ...state,
                     composerPartsBySessionId: {
@@ -641,13 +700,16 @@ describe("AIChatSessionView", () => {
                     },
                 }));
                 return {
-                    path: "/vault/assets/chat/pasted-image.png",
-                    relative_path: "assets/chat/pasted-image.png",
+                    attachment_id:
+                        "ma_0123456789abcdef0123456789abcdef",
                     file_name: "pasted-image.png",
                     mime_type: "image/png",
                 };
             }
-            if (command === "move_vault_entry_to_trash") {
+            if (
+                command ===
+                "ai_delete_managed_attachment_if_unreferenced"
+            ) {
                 return undefined;
             }
             if (command === "list_vault_entries") {
@@ -671,9 +733,10 @@ describe("AIChatSessionView", () => {
         });
 
         expect(invokeMock).toHaveBeenCalledWith(
-            "move_vault_entry_to_trash",
+            "ai_delete_managed_attachment_if_unreferenced",
             expect.objectContaining({
-                relativePath: "assets/chat/pasted-image.png",
+                attachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
             }),
         );
         expect(screen.getByRole("status")).toHaveTextContent(

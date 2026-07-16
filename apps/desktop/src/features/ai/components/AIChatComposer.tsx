@@ -40,6 +40,7 @@ import type {
     AIChatSessionStatus,
     AIComposerPart,
     AIMentionSuggestion,
+    ManagedAttachmentId,
 } from "../types";
 import type {
     MouseEvent as ReactMouseEvent,
@@ -351,7 +352,12 @@ function createScreenshotNode(
 ) {
     const element = document.createElement("span");
     element.dataset.kind = "screenshot";
-    element.dataset.filePath = part.filePath;
+    if (part.managedAttachmentId) {
+        element.dataset.managedAttachmentId = part.managedAttachmentId;
+        element.dataset.fileName = part.fileName;
+    } else {
+        element.dataset.filePath = part.filePath;
+    }
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
     if (part.createdAt != null) {
@@ -481,20 +487,31 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
 
     if (
         node.dataset.kind === "screenshot" &&
-        node.dataset.filePath &&
         node.dataset.mimeType &&
-        node.dataset.label
+        node.dataset.label &&
+        ((node.dataset.managedAttachmentId && node.dataset.fileName) ||
+            node.dataset.filePath)
     ) {
-        parts.push({
+        const common = {
             id: crypto.randomUUID(),
-            type: "screenshot",
-            filePath: node.dataset.filePath,
+            type: "screenshot" as const,
             mimeType: node.dataset.mimeType,
             label: node.dataset.label,
             createdAt: node.dataset.createdAt
                 ? Number(node.dataset.createdAt)
                 : undefined,
-        });
+        };
+        parts.push(
+            node.dataset.managedAttachmentId && node.dataset.fileName
+                ? {
+                      ...common,
+                      managedAttachmentId:
+                          node.dataset
+                              .managedAttachmentId as ManagedAttachmentId,
+                      fileName: node.dataset.fileName,
+                  }
+                : { ...common, filePath: node.dataset.filePath! },
+        );
         return;
     }
 
@@ -595,7 +612,9 @@ function getComposerPartsDomSignature(parts: AIComposerPart[]) {
             if (part.type === "screenshot") {
                 return {
                     type: part.type,
-                    filePath: part.filePath,
+                    filePath: part.filePath ?? null,
+                    managedAttachmentId: part.managedAttachmentId ?? null,
+                    fileName: part.fileName ?? null,
                     mimeType: part.mimeType,
                     label: part.label,
                     createdAt: part.createdAt ?? null,

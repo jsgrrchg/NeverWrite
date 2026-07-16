@@ -2594,6 +2594,18 @@ type ComposerFileBackedPart = Extract<
 function composerFilePartToAttachment(
     part: ComposerFileBackedPart,
 ): AIChatAttachment {
+    if (part.type === "screenshot" && part.managedAttachmentId) {
+        return {
+            id: crypto.randomUUID(),
+            type: "file",
+            noteId: null,
+            label: part.label,
+            path: null,
+            managedAttachmentId: part.managedAttachmentId,
+            fileName: part.fileName,
+            mimeType: part.mimeType,
+        };
+    }
     return {
         id: crypto.randomUUID(),
         type: "file",
@@ -2626,7 +2638,12 @@ function isComposerOwnedQueuedAttachment(
     }
 
     if (attachment.type !== "file" || attachment.path || !attachment.filePath) {
-        return false;
+        if (!attachment.managedAttachmentId) return false;
+        return composerParts.some(
+            (part) =>
+                part.type === "screenshot" &&
+                part.managedAttachmentId === attachment.managedAttachmentId,
+        );
     }
 
     const attachmentPath = normalizeComparablePath(attachment.filePath);
@@ -2634,6 +2651,7 @@ function isComposerOwnedQueuedAttachment(
         (part) =>
             (part.type === "screenshot" ||
                 part.type === "file_attachment") &&
+            typeof part.filePath === "string" &&
             normalizeComparablePath(part.filePath) === attachmentPath &&
             (!attachment.mimeType || part.mimeType === attachment.mimeType),
     );
@@ -2690,6 +2708,9 @@ function getParentDirectory(path: string) {
 function getAdditionalRootCandidateForAttachment(
     attachment: AIChatAttachment,
 ): string | null {
+    if (attachment.managedAttachmentId) {
+        return null;
+    }
     if (attachment.type === "folder") {
         const folderPath = attachment.noteId ?? attachment.path;
         if (!folderPath || !isAbsoluteVaultPath(folderPath)) {
