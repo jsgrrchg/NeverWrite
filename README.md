@@ -1,278 +1,73 @@
-
 # NeverWrite
 
-<img width="2693" height="1211" alt="Captura de pantalla 2026-04-30 a las 5 03 43" src="https://github.com/user-attachments/assets/83968dc3-cfb9-41b5-ad99-bfea4305447b" />
+<p align="center">
+  <img width="100%" alt="NeverWrite workspace" src="https://github.com/user-attachments/assets/83968dc3-cfb9-41b5-ad99-bfea4305447b" />
+</p>
 
-[Important note about Claude subscription usage in NeverWrite starting June 15, 2026](https://github.com/jsgrrchg/NeverWrite/discussions/83)
-  - Update: Claude delayed their decision, you can continue to use claude native integration inside NeverWrite. More info in the linked discussion.
+<p align="center">
+  <strong>A local-first workspace for writing and thinking with AI agents.</strong><br />
+  Keep your vault, documents, agents, review, and research in the same place.
+</p>
 
-**Gemini ACP support has been removed from NeverWrite.** Google redirected Gemini CLI subscription usage toward Antigravity, which is closed source and does not expose ACP support for third-party apps. You can still use Antigravity manually from a terminal, but NeverWrite no longer registers a Gemini ACP runtime. If you have a Gemini API key, you can still use Gemini models through Kilo or OpenCode.
-For more information, please read this discussion: [https://github.com/jsgrrchg/NeverWrite/discussions/241]
+<p align="center">
+  <a href="https://github.com/jsgrrchg/NeverWrite/issues">Report a bug</a>
+  ·
+  <a href="https://github.com/jsgrrchg/NeverWrite/discussions">Discuss</a>
+  ·
+  <a href="LICENSE">Apache-2.0</a>
+</p>
 
-<a href="https://trendshift.io/repositories/27680?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-27680" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/27680/daily?language=TypeScript" alt="jsgrrchg%2FNeverWrite | Trendshift" width="250" height="55"/></a>
+## Your knowledge stays local
 
-----
+NeverWrite is an agentic markdown workspace for people who work with a local vaults and multiple AI agents. It combines a Markdown-first editor, knowledge navigation, agent sessions, and explicit change review in one multipane app.
 
-NeverWrite is a local-first knowledge workspace for people who need to handle workflows with multiple parallel agents and subagents. Built like a code editor, but for markdown. It has inline review changes, like Cursor and others. Please help me test it!
+## Built for the whole thinking loop
 
-Today the repository combines:
+- **Write in the format that fits.** Edit Markdown, Mermaid, CSV, text/code files, PDFs, images, and Excalidraw concept maps in the same workspace.
+- **Navigate connected knowledge.** Follow wikilinks, backlinks, tags, advanced search, bookmarks, and 2D or 3D graph views.
+- **Work with your preferred agent.** Run Codex, Claude, Grok, Kilo, or OpenCode sessions with attachments, saved transcripts, and local history.
+- **Review AI changes deliberately.** Inspect tracked edits inline, in chat, or in a dedicated review tab, then keep or reject complete files and individual hunks.
+- **Capture the web into your vault.** Use the companion browser extension to clip pages, selections, or URLs directly to the desktop app.
 
-- An Electron desktop app with a Rust sidecar that opens a local vault and keeps working state on disk.
-- A Markdown, CSV, Mermaid, and text/code editing workflow with wikilinks, live preview, frontmatter editing, OKF document status hints, spellcheck, and grammar checking.
-- Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view.
-- An ACP-based AI layer with Codex, Claude, Grok, Kilo, and OpenCode runtimes.
-- An explicit AI change-review system with inline review inside the editor and a dedicated surface in chat and a tab with changes pending approval.
-- A separate browser web clipper that can save directly into the desktop app through a local API, with deep-link fallback. Compatible with both Firefox and Chromium.
-
-## What NeverWrite Is Today
-
-The current product already includes:
-
-- Local vault opening with progress reporting, persisted snapshots, filesystem watching, and incremental re-sync
-- A desktop workspace with tabs, sidebars, command palette, quick switcher, detached windows, and first-class terminal tabs
-- Native-feeling editing for Markdown notes, Mermaid diagrams, CSV files, PDFs, images, HTML previews, and generic text/code files
-- Embedded Excalidraw-based concept maps stored as `.excalidraw` files in the vault. The map format is visible and editable by agents.
-- A graph view with global, local, and overview modes plus 2D and 3D rendering
-- AI chat sessions with attachments from the vault, slash commands, transcript persistence, and runtime-specific capabilities
-- A real AI review pipeline so generated edits are not silently committed
-
-Saved AI conversations are stored locally under each vault's hidden `.neverwrite/sessions/` directory.
-See [AI session history and crash recovery](docs/ai-session-history.md) for the disk layout and recovery flow.
-NeverWrite also writes local diagnostic logs under the app data `logs/` directory; see [App logs](docs/app-logs.md) for platform-specific paths and privacy notes.
-NeverWrite has partial Open Knowledge Format support for `status`, `type`, and vault-level `okf_version`; see [Open Knowledge Format (OKF)](docs/okf.md).
-
-## Why It Is Different
-
-- AI edits stay reviewable through an accumulated action log, inline controls, and a dedicated review tab. It is much more than a chat.
-- The desktop app is not limited to Markdown notes; it already handles CSV files, PDFs, images, text/code files, and maps in the same workspace.
-- It features a best-in-class multipane experience that lets the user parallelize multiple lines of work with agents while simultaneously reading and editing documents in the same window.
-- The web clipper allows saving web articles quickly, securely, and efficiently.
-
-## Current Capabilities
-
-### Vault and workspace
-
-- Open, index, and watch a local vault.
-- Recent vaults, pinned vaults, reopen-last-vault behavior
-- File tree with drag and drop, multi-selection, sorting, and context actions
-- File tree modes for curated writing/media files, all vault files, or an explicit extension allowlist
-- Persistent bookmarks per vault
-- Persistent tabs and window session restore
-- Per-pane tab display modes, including stacked tabs for scanning several open documents in one pane
-- Detached note windows and separate vault windows
-- First-class terminal tabs with themed xterm rendering, persistent workspace state, search, and Claude Code integration in the Agents sidebar
-
-### Editing and reading
-
-- Markdown editing with CodeMirror 6
-- Optional Vim key bindings for modal editing, with Vim-style ex commands and relative line numbers
-- Wikilink suggestions, resolution, and navigation
-- Live preview with tasks, tables, embeds, math, Mermaid diagrams, and YouTube previews
-- Frontmatter/properties editing
-- OKF-style document status support with editor badges, trust banners, and file tree dots
-- Mermaid diagram files with source editing and preview switching
-- CSV editing with table and raw fallback views
-- Editable text/code files with syntax highlighting and autosave
-- Sandboxed in-app HTML viewing for `.html` and `.htm` files
-- PDF viewing with visual filters
-- Internal image viewing with fit and zoom
-- App-owned Hunspell-based spellcheck with bundled `en-US` and `es-ES`
-- Grammar/style checks through LanguageTool
-
-### Knowledge navigation
-
-- Backlinks and outgoing links
-- Tags extracted from content and frontmatter
-- Advanced search with query builder, regex, negation, `OR`, and property filters
-- Graph view in 2D and 3D
-- Concept maps in `.excalidraw`
-
-### AI and change control
-
-- ACP runtime integration for Codex, Claude, Grok, Kilo, and OpenCode
-- Attachment flows for notes, folders, files, PDFs, audio, images, and screenshots
-- Session history, transcript viewing, session export, fork, resume, and rename flows
-- Crash recovery for saved chats through `Chat History` and local `.neverwrite/sessions/` transcripts
-- File-based app diagnostics for Electron, renderer, and native backend logs
-- Inline review inside the editor when the tracked file has a reliable base
-- A dedicated `Review` tab plus an `Edits` surface for keep/reject workflows
-- Rust/WASM-backed diffing and change tracking
-
-### Web clipper
-
-- Dedicated browser extension in `apps/web-clipper`
-- Full page, selection, and URL-only clipping modes
-- Markdown preview before save
-- Template system with vault and domain scoping
-- Local clip history
-- Direct desktop save through `http://127.0.0.1:32145/api/web-clipper`
-- Deep-link fallback when the desktop API is unavailable
-
-## Monorepo Layout
-
-```text
-apps/
-  desktop/          Main Electron + React desktop application
-  web-clipper/      Browser extension built with WXT + React
-
-crates/
-  ai/               Shared AI domain types
-  diff/             Rust diff engine, plus WASM bindings for review flows
-  index/            Vault indexing, link resolution, and search primitives
-  types/            Shared DTOs and domain models
-  vault/            Vault scanning, parsing, filesystem watching, and PDF discovery
-```
-
-## Stack
-
-- **Desktop shell**: Electron 41, React 19, TypeScript 6, Vite 8, Tailwind CSS 4, CodeMirror 6, Excalidraw, PDF.js, electron-updater
-- **Desktop native backend**: Rust 2021, Tokio, `notify`, `portable-pty`, `reqwest`, `spellbook`, app-owned spellcheck runtime
-- **Desktop main process**: Electron IPC plus a Node HTTP server for the local web clipper API
-- **Shared Rust crates**: vault parsing, indexing, search, diff, DTOs
-- **Browser extension**: WXT, React, TypeScript, Chrome MV3 and Firefox MV3 targets
-
-## Development
-
-**Important**: there is no top-level JavaScript workspace package. JavaScript dependencies are installed per app.
+## Get started
 
 ### Requirements
 
+- Node.js 22.12 or later and npm
 - Rust and Cargo
-- Node.js 22.12.0+ and npm for `apps/desktop`
-- Node.js 22+ and pnpm for `apps/web-clipper` (`packageManager` is pinned to `pnpm@10.33.0`)
+- pnpm 10.33.0 for the web clipper
 
-CI and release workflows are pinned to Node.js 22. Use Node 22.12.0 or newer for desktop work so Electron's install tooling matches the declared engine.
-
-### Desktop app
+### Run locally
 
 ```bash
-cd apps/desktop
+git clone https://github.com/jsgrrchg/NeverWrite.git
+cd NeverWrite/apps/desktop
 npm install
 npm run dev
 ```
 
-That starts the Electron desktop app plus the local renderer dev server.
+The first start builds the native backend. Configure your preferred agent from the app settings; some providers require their own CLI login or API key.
 
-If you only need the renderer dev server:
-
-```bash
-cd apps/desktop
-npm run renderer:dev
-```
-
-### Web clipper
+## Development
 
 ```bash
-cd apps/web-clipper
-pnpm install
-pnpm dev
-```
-
-Build unpacked extension artifacts:
-
-```bash
-cd apps/web-clipper
-pnpm build
-```
-
-This produces:
-
-- `apps/web-clipper/dist/chrome-mv3/`
-- `apps/web-clipper/dist/firefox-mv3/`
-
-### Rust workspace
-
-```bash
+cd apps/desktop && npm test
+cd apps/web-clipper && pnpm check
 cargo test
 ```
-
-## Validation
-
-Desktop frontend tests:
-
-```bash
-cd apps/desktop
-npm test
-```
-
-Web clipper validation:
-
-```bash
-cd apps/web-clipper
-pnpm check
-```
-
-Rust workspace tests:
-
-```bash
-cargo test
-```
-
-The repository already contains broad Vitest coverage in the desktop app and web clipper, plus Rust integration tests for vault and index behavior.
-
-## AI Runtime Notes
-
-NeverWrite currently wires five ACP runtimes:
-
-- `codex-acp`
-- `claude-acp`
-- `grok-acp`
-- `kilo-acp`
-- `opencode-acp`
-
-Current packaging status:
-
-- Codex is intended to be bundled as a sidecar binary in desktop release builds.
-- Claude is intended to be bundled through an embedded Node runtime plus vendored runtime files.
-- Grok is integrated in the app, but not bundled by default today.
-- Kilo is integrated in the app, but not bundled by default today.
-- OpenCode is integrated in the app, but not bundled by default today.
-
-Useful runtime overrides during development:
-
-- `NEVERWRITE_CODEX_ACP_BIN`
-- `NEVERWRITE_CLAUDE_ACP_BIN`
-- `NEVERWRITE_GROK_ACP_BIN`
-- `NEVERWRITE_KILO_ACP_BIN`
-- `NEVERWRITE_OPENCODE_ACP_BIN`
-
-For release builds, see `apps/desktop/scripts/stage-electron-sidecar.mjs` and `release/appcast/README.md`.
-
-## Web Clipper Notes
-
-The web clipper talks to the desktop app through a local HTTP API on port `32145`.
-
-When developing against an unpacked extension build, the desktop app blocks arbitrary extension origins by default. To explicitly allow a local extension origin, start the desktop app with:
-
-```bash
-cd apps/desktop
-NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run dev
-```
-
-Use exact origins only. Wildcards are intentionally unsupported.
-
-## Project Status
-
-NeverWrite is in a polish and hardening phase. Core systems already exist, but the project is still pre-`1.0`, in the process of resolving edge cases — help me find them!!
-
-The areas with the highest product sensitivity right now are:
-
-- AI review and change control
-- Inline review and merge behavior
-- Session persistence and multi-window workflows
-- Desktop-to-clipper integration
-- Using the 3D graph on large vaults has memory leaks; after using it, prefer restarting the application.
 
 ## Star History
 
 <a href="https://www.star-history.com/?repos=jsgrrchg%2FNeverWrite&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jsgrrchg/NeverWrite&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jsgrrchg/NeverWrite&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jsgrrchg/NeverWrite&type=date&legend=top-left" />
- </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jsgrrchg/NeverWrite&type=date&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jsgrrchg/NeverWrite&type=date&legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jsgrrchg/NeverWrite&type=date&legend=top-left" />
+  </picture>
 </a>
+
+<a href="https://trendshift.io/repositories/27680?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-27680" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/27680/daily?language=TypeScript" alt="jsgrrchg%2FNeverWrite | Trendshift" width="250" height="55" /></a>
 
 ## License
 
-Apache-2.0. See [`LICENSE`](LICENSE).
+NeverWrite is released under the [Apache License 2.0](LICENSE).
