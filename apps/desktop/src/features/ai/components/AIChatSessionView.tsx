@@ -29,12 +29,15 @@ import {
 } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
-import { vaultInvoke } from "../../../app/utils/vaultInvoke";
+import {
+    vaultInvoke,
+    vaultInvokeForPath,
+} from "../../../app/utils/vaultInvoke";
 import {
     type AIComposerPart,
     type AIChatMessage,
     type AIRuntimeConnectionState,
-    type ManagedAttachmentId,
+    type DraftAttachmentId,
     type QueuedChatMessage,
 } from "../types";
 import {
@@ -92,7 +95,17 @@ function managedAttachmentIds(parts: AIComposerPart[]) {
     );
 }
 
-function cleanupRemovedManagedAttachments(
+function draftAttachmentIds(parts: AIComposerPart[]) {
+    return new Set(
+        parts.flatMap((part) =>
+            part.type === "screenshot" && part.draftAttachmentId
+                ? [part.draftAttachmentId]
+                : [],
+        ),
+    );
+}
+
+function cleanupRemovedScreenshotAttachments(
     sessionId: string,
     previousParts: AIComposerPart[],
     nextParts: AIComposerPart[],
@@ -108,8 +121,10 @@ function cleanupRemovedManagedAttachments(
     const containsId = (value: unknown, attachmentId: string): boolean => {
         if (!value || typeof value !== "object") return false;
         if (
-            "managedAttachmentId" in value &&
-            value.managedAttachmentId === attachmentId
+            ("managedAttachmentId" in value &&
+                value.managedAttachmentId === attachmentId) ||
+            ("draftAttachmentId" in value &&
+                value.draftAttachmentId === attachmentId)
         ) {
             return true;
         }
@@ -127,6 +142,22 @@ function cleanupRemovedManagedAttachments(
             attachmentId,
         }).catch((error) => {
             console.error("[chat] Failed to clean up managed attachment:", error);
+        });
+    }
+    const nextDraftIds = draftAttachmentIds(nextParts);
+    for (const draftAttachmentId of draftAttachmentIds(previousParts)) {
+        if (nextDraftIds.has(draftAttachmentId)) continue;
+        if (
+            retainedQueueState.some((value) =>
+                containsId(value, draftAttachmentId),
+            )
+        ) {
+            continue;
+        }
+        void vaultInvoke("ai_delete_draft_attachment", {
+            draftAttachmentId,
+        }).catch((error) => {
+            console.error("[chat] Failed to clean up draft attachment:", error);
         });
     }
 }
@@ -409,6 +440,10 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     const handlePasteImage = useCallback(
         async (file: File) => {
             if (!sessionId) return;
+            const vaultPathAtStart = useVaultStore.getState().vaultPath;
+            const sessionAtStart =
+                useChatStore.getState().sessionsById[sessionId];
+            if (!vaultPathAtStart || !sessionAtStart) return;
             const currentParts =
                 useChatStore.getState().composerPartsBySessionId[sessionId] ??
                 createEmptyComposerParts();
@@ -439,15 +474,39 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                     String(now.getSeconds()).padStart(2, "0"),
                 ].join("");
                 const fileName = `pasted-image-${ts}.${ext}`;
-                const saved = await vaultInvoke<{
-                    attachment_id: ManagedAttachmentId;
+                const saved = await vaultInvokeForPath<{
+                    draft_attachment_id: DraftAttachmentId;
                     file_name: string;
                     mime_type: string;
-                }>("ai_create_managed_attachment", {
-                    fileName,
-                    mimeType: file.type,
-                    bytes,
-                });
+                }>(
+                    "ai_create_draft_attachment",
+                    vaultPathAtStart,
+                    {
+                        fileName,
+                        mimeType: file.type,
+                        bytes,
+                    },
+                );
+                const currentSession =
+                    useChatStore.getState().sessionsById[sessionId];
+                const stillOwnsDraft =
+                    useVaultStore.getState().vaultPath === vaultPathAtStart &&
+                    currentSession?.runtimeId === sessionAtStart.runtimeId &&
+                    currentSession?.historySessionId ===
+                        sessionAtStart.historySessionId;
+                if (!stillOwnsDraft) {
+                    await vaultInvokeForPath(
+                        "ai_delete_draft_attachment",
+                        vaultPathAtStart,
+                        { draftAttachmentId: saved.draft_attachment_id },
+                    ).catch((cleanupError) => {
+                        console.error(
+                            "[chat] Failed to remove detached pasted image:",
+                            cleanupError,
+                        );
+                    });
+                    return;
+                }
                 const timeLabel = `Screenshot ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} hrs`;
                 const latestParts =
                     useChatStore.getState().composerPartsBySessionId[
@@ -459,9 +518,10 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                     runtimeId,
                 );
                 if (!latestValidation.ok) {
-                    await vaultInvoke(
-                        "ai_delete_managed_attachment_if_unreferenced",
-                        { attachmentId: saved.attachment_id },
+                    await vaultInvokeForPath(
+                        "ai_delete_draft_attachment",
+                        vaultPathAtStart,
+                        { draftAttachmentId: saved.draft_attachment_id },
                     ).catch((cleanupError) => {
                         console.error(
                             "[chat] Failed to remove rejected pasted image:",
@@ -478,7 +538,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 }
                 chatActions.setComposerParts(
                     appendScreenshotPart(latestParts, {
-                        managedAttachmentId: saved.attachment_id,
+                        draftAttachmentId: saved.draft_attachment_id,
                         fileName: saved.file_name,
                         mimeType: saved.mime_type,
                         label: timeLabel,
@@ -518,7 +578,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         );
 
         if (prunedParts !== composerParts) {
-            cleanupRemovedManagedAttachments(sessionId, composerParts, prunedParts);
+            cleanupRemovedScreenshotAttachments(
+                sessionId,
+                composerParts,
+                prunedParts,
+            );
             chatActions.setComposerParts(prunedParts, sessionId);
             return;
         }
@@ -548,7 +612,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             );
 
             if (nextParts !== currentParts) {
-                cleanupRemovedManagedAttachments(sessionId, currentParts, nextParts);
+                cleanupRemovedScreenshotAttachments(
+                    sessionId,
+                    currentParts,
+                    nextParts,
+                );
                 state.setComposerParts(nextParts, sessionId);
             }
         }, nextDelay);
@@ -1114,7 +1182,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                         </div>
                     }
                     onChange={(parts) => {
-                        cleanupRemovedManagedAttachments(
+                        cleanupRemovedScreenshotAttachments(
                             sessionId,
                             composerParts,
                             parts,

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { AIChatSession, AIRuntimeOption } from "./types";
+import type {
+    AIChatSession,
+    AIRuntimeOption,
+    ManagedAttachmentId,
+} from "./types";
 import { buildChatExportMarkdown, buildChatExportNoteName } from "./chatExport";
 
 function createSession(
@@ -117,7 +121,7 @@ describe("chatExport", () => {
                             label: "Pasted image",
                             path: null,
                             managedAttachmentId:
-                                "ma_0123456789abcdef0123456789abcdef",
+                                "ma_0123456789abcdef0123456789abcdef" as ManagedAttachmentId,
                             fileName: "pasted-image.png",
                             mimeType: "image/png",
                         },

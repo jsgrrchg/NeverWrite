@@ -7208,7 +7208,7 @@ fn home_dir() -> Option<PathBuf> {
     }
 }
 
-fn app_data_dir() -> PathBuf {
+pub(crate) fn app_data_dir() -> PathBuf {
     if let Ok(path) = std::env::var("NEVERWRITE_APP_DATA_DIR") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
@@ -13746,7 +13746,7 @@ mod tests {
     #[test]
     fn managed_attachment_ids_resolve_to_verified_bytes_without_exposing_a_path() {
         let vault = tempfile::tempdir().unwrap();
-        let service = crate::ai_history::AiHistoryStorageService;
+        let service = crate::ai_history::AiHistoryStorageService::default();
         let created = service
             .invoke(
                 "ai_create_managed_attachment",

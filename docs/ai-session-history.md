@@ -26,6 +26,35 @@ inspect it from a terminal, if you need to audit the stored history directly.
 NeverWrite may also have `.neverwrite-cache/` in the vault for derived cache
 data. Chat recovery uses `.neverwrite/sessions/`.
 
+## Screenshot Attachment Lifecycle
+
+Pasted screenshots have a separate draft and durable lifecycle. Before send,
+the original image is stored as a plaintext local draft under:
+
+```text
+<app-data>/ai-history/v1/vaults/<sha256(canonical-vault-path)>/drafts/<draft-id>/
+```
+
+The hash identifies the vault namespace without placing the vault path in the
+directory name; it does not encrypt the image. Drafts released by the composer,
+queue, or queue editor are deleted immediately when possible. Crash-orphaned
+drafts are eligible for best-effort startup cleanup after seven days.
+
+Sending atomically acquires the composer snapshot, promotes each draft, and only
+then inserts and persists the optimistic user message. Promotion writes a
+managed blob inside the vault:
+
+```text
+<vault>/assets/chat/.neverwrite-managed/v1/blobs/<managed-attachment-id>/
+```
+
+History stores the opaque managed attachment ID and descriptive metadata, not a
+physical draft or blob path. Saving history marks referenced managed blobs as
+committed. Uncommitted promotions receive a seven-day grace period so a crash
+between promotion and history persistence does not leave an immediately broken
+reference. Deleting or pruning histories removes a managed blob only after its
+last retained history reference is gone.
+
 ## Sessions, Sidebar Entries, And Workspace Views
 
 For ACP chats, the Agents sidebar owns the durable live-session entry. Editor
@@ -90,5 +119,7 @@ send a new message so NeverWrite can continue with the stored transcript.
 - `transcript.jsonl` is stored as local plaintext JSONL while retained.
 - Deleting a conversation from `Chat History` deletes its saved history from `.neverwrite/sessions/`.
 - If a recovered chat is missing, confirm you reopened the same vault and that the retention window did not prune the conversation.
+- Pasted screenshot drafts and managed blobs are plaintext local image files;
+  review them before sharing app data or a vault archive.
 
-Last updated: July 11, 2026.
+Last updated: July 16, 2026.

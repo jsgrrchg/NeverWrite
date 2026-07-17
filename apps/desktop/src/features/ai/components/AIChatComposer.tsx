@@ -40,6 +40,7 @@ import type {
     AIChatSessionStatus,
     AIComposerPart,
     AIMentionSuggestion,
+    DraftAttachmentId,
     ManagedAttachmentId,
 } from "../types";
 import type {
@@ -352,7 +353,10 @@ function createScreenshotNode(
 ) {
     const element = document.createElement("span");
     element.dataset.kind = "screenshot";
-    if (part.managedAttachmentId) {
+    if (part.draftAttachmentId) {
+        element.dataset.draftAttachmentId = part.draftAttachmentId;
+        element.dataset.fileName = part.fileName;
+    } else if (part.managedAttachmentId) {
         element.dataset.managedAttachmentId = part.managedAttachmentId;
         element.dataset.fileName = part.fileName;
     } else {
@@ -489,7 +493,8 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
         node.dataset.kind === "screenshot" &&
         node.dataset.mimeType &&
         node.dataset.label &&
-        ((node.dataset.managedAttachmentId && node.dataset.fileName) ||
+        ((node.dataset.draftAttachmentId && node.dataset.fileName) ||
+            (node.dataset.managedAttachmentId && node.dataset.fileName) ||
             node.dataset.filePath)
     ) {
         const common = {
@@ -502,7 +507,15 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
                 : undefined,
         };
         parts.push(
-            node.dataset.managedAttachmentId && node.dataset.fileName
+            node.dataset.draftAttachmentId && node.dataset.fileName
+                ? {
+                      ...common,
+                      draftAttachmentId:
+                          node.dataset
+                              .draftAttachmentId as DraftAttachmentId,
+                      fileName: node.dataset.fileName,
+                  }
+                : node.dataset.managedAttachmentId && node.dataset.fileName
                 ? {
                       ...common,
                       managedAttachmentId:
@@ -613,6 +626,7 @@ function getComposerPartsDomSignature(parts: AIComposerPart[]) {
                 return {
                     type: part.type,
                     filePath: part.filePath ?? null,
+                    draftAttachmentId: part.draftAttachmentId ?? null,
                     managedAttachmentId: part.managedAttachmentId ?? null,
                     fileName: part.fileName ?? null,
                     mimeType: part.mimeType,

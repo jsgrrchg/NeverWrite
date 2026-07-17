@@ -1,4 +1,8 @@
-import type { AIComposerPart, ManagedAttachmentId } from "./types";
+import type {
+    AIComposerPart,
+    DraftAttachmentId,
+    ManagedAttachmentId,
+} from "./types";
 import {
     getChatVaultReferenceBasename,
     getChatVaultReferenceLabel,
@@ -327,6 +331,10 @@ export function appendScreenshotPart(
         label: string;
         createdAt?: number;
     } & (
+        | {
+              draftAttachmentId: DraftAttachmentId;
+              fileName: string;
+          }
         | {
               managedAttachmentId: ManagedAttachmentId;
               fileName: string;

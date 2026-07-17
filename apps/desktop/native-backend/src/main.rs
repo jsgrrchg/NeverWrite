@@ -687,7 +687,7 @@ impl NativeBackend {
         Self {
             vaults: HashMap::new(),
             ai: NativeAi::new(event_tx.clone()),
-            ai_history: AiHistoryStorageService,
+            ai_history: AiHistoryStorageService::default(),
             devtools: DevTerminalManager::new(event_tx.clone()),
             spellcheck: SpellcheckState::new(),
             event_tx,

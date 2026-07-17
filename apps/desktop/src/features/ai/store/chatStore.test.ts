@@ -13,6 +13,7 @@ import type {
     AIChatAttachment,
     AIChatSession,
     AIComposerPart,
+    DraftAttachmentId,
     ManagedAttachmentId,
     QueuedChatMessage,
 } from "../types";
@@ -55,6 +56,34 @@ const invokeMock = vi.mocked(invoke);
 const openUrlMock = vi.mocked(openUrl);
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
+
+function createDraftScreenshotPart(
+    draftAttachmentId: DraftAttachmentId,
+): AIComposerPart {
+    return {
+        id: `screenshot-${draftAttachmentId}`,
+        type: "screenshot",
+        draftAttachmentId,
+        fileName: "pasted-image.png",
+        mimeType: "image/png",
+        label: "Screenshot 10:32",
+        createdAt: 123,
+    };
+}
+
+function createQueuedDraftMessage(
+    id: string,
+    draftAttachmentId: DraftAttachmentId,
+): QueuedChatMessage {
+    return {
+        ...createQueuedMessage(id, "Inspect screenshot"),
+        composerParts: [
+            { id: `text-${id}`, type: "text", text: "Inspect " },
+            createDraftScreenshotPart(draftAttachmentId),
+        ],
+        attachments: [],
+    };
+}
 
 function getAutoContextKey(vaultPath: string | null) {
     return `${AI_AUTO_CONTEXT_KEY_PREFIX}${vaultPath ?? "__global__"}`;
@@ -1562,6 +1591,776 @@ describe("chatStore", () => {
             }),
         ]);
         expect(queuedMessage?.attachments[0]).not.toHaveProperty("filePath");
+    });
+
+    it("keeps draft screenshot identity in a queue without treating it as durable", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [],
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId:
+                    "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const queuedMessage =
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[0];
+        expect(queuedMessage?.composerParts).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    draftAttachmentId:
+                        "da_0123456789abcdef0123456789abcdef",
+                }),
+            ]),
+        );
+        expect(queuedMessage?.attachments).toEqual([]);
+    });
+
+    it("releases queue-owned drafts when messages are removed or the queue is cleared", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const removedDraftId =
+            "da_11111111111111111111111111111111" as DraftAttachmentId;
+        const clearedDraftId =
+            "da_22222222222222222222222222222222" as DraftAttachmentId;
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedDraftMessage("remove-draft", removedDraftId),
+            );
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedDraftMessage("clear-draft", clearedDraftId),
+            );
+
+        useChatStore
+            .getState()
+            .removeQueuedMessage(activeSessionId, "remove-draft");
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId: removedDraftId }),
+        );
+
+        useChatStore.getState().clearSessionQueue(activeSessionId);
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId: clearedDraftId }),
+        );
+    });
+
+    it("releases the removed draft when a queued edit is confirmed", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_33333333333333333333333333333333" as DraftAttachmentId;
+        const queuedItem = createQueuedDraftMessage(
+            "edited-draft",
+            draftAttachmentId,
+        );
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+        useChatStore
+            .getState()
+            .setComposerParts([{ id: "text-edited", type: "text", text: "No image" }]);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId }),
+        );
+    });
+
+    it("releases a newly pasted draft when a queued edit is cancelled", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_88888888888888888888888888888888" as DraftAttachmentId;
+        const queuedItem = createQueuedMessage("cancel-new-draft", "Original");
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+        useChatStore.getState().setComposerParts([
+            { id: "text-cancel", type: "text", text: "Changed " },
+            createDraftScreenshotPart(draftAttachmentId),
+        ]);
+
+        useChatStore.getState().cancelQueuedMessageEdit(activeSessionId);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId }),
+        );
+    });
+
+    it("promotes a retained queued-edit draft before releasing its local file", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_66666666666666666666666666666666" as DraftAttachmentId;
+        const queuedItem = createQueuedDraftMessage(
+            "retained-edit-draft",
+            draftAttachmentId,
+        );
+        const lifecycle: string[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                lifecycle.push("promote");
+                return {
+                    attachment_id:
+                        "ma_66666666666666666666666666666666",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "ai_delete_draft_attachment") {
+                lifecycle.push("delete");
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(lifecycle).toEqual(["promote", "delete"]);
+    });
+
+    it("keeps a retained queued-edit draft owned while a stop is pending", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_77777777777777777777777777777777" as DraftAttachmentId;
+        const queuedItem = createQueuedDraftMessage(
+            "pending-stop-draft",
+            draftAttachmentId,
+        );
+        let resolveCancel!: (session: typeof sessionPayload) => void;
+        const cancelResult = new Promise<typeof sessionPayload>((resolve) => {
+            resolveCancel = resolve;
+        });
+        const lifecycle: string[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_cancel_turn") {
+                return cancelResult;
+            }
+            if (command === "ai_promote_draft_attachment") {
+                lifecycle.push("promote");
+                return {
+                    attachment_id:
+                        "ma_77777777777777777777777777777777",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "ai_delete_draft_attachment") {
+                lifecycle.push("delete");
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+        }));
+
+        const stopping = useChatStore
+            .getState()
+            .stopStreaming(activeSessionId);
+        await useChatStore.getState().sendMessage(activeSessionId);
+        expect(lifecycle).toEqual([]);
+
+        resolveCancel({ ...sessionPayload, status: "idle" });
+        await stopping;
+        await vi.waitFor(() => expect(lifecycle).toEqual(["promote", "delete"]));
+    });
+
+    it("releases session-owned drafts when deleting one or all sessions", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const firstSessionId = getActiveSessionId();
+        const firstDraftId =
+            "da_44444444444444444444444444444444" as DraftAttachmentId;
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [firstSessionId]: [createDraftScreenshotPart(firstDraftId)],
+            },
+        }));
+
+        await useChatStore.getState().deleteSession(firstSessionId);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId: firstDraftId }),
+        );
+
+        const replacementSessionId = getActiveSessionId();
+        const secondDraftId =
+            "da_55555555555555555555555555555555" as DraftAttachmentId;
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [replacementSessionId]: [
+                    createDraftScreenshotPart(secondDraftId),
+                ],
+            },
+        }));
+
+        await useChatStore.getState().deleteAllSessions();
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId: secondDraftId }),
+        );
+    });
+
+    it("promotes drafts before optimistic persistence and runtime send", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const commandOrder: string[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            commandOrder.push(command);
+            if (command === "ai_promote_draft_attachment") {
+                return {
+                    attachment_id:
+                        "ma_0123456789abcdef0123456789abcdef",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_delete_draft_attachment"
+            ) {
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId:
+                    "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+        await vi.waitFor(() => {
+            expect(commandOrder).toContain("ai_save_session_history");
+        });
+
+        const promotionIndex = commandOrder.indexOf(
+            "ai_promote_draft_attachment",
+        );
+        expect(promotionIndex).toBeGreaterThanOrEqual(0);
+        expect(promotionIndex).toBeLessThan(
+            commandOrder.indexOf("ai_save_session_history"),
+        );
+        expect(promotionIndex).toBeLessThan(
+            commandOrder.indexOf("ai_send_message"),
+        );
+        const userMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) => message.role === "user",
+            );
+        expect(userMessage?.attachments).toEqual([
+            expect.objectContaining({
+                managedAttachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+            }),
+        ]);
+        expect(userMessage?.attachments?.[0]).not.toHaveProperty(
+            "draftAttachmentId",
+        );
+        expect(userMessage?.attachments?.[0]).not.toHaveProperty("filePath");
+    });
+
+    it("keeps the composer untouched when draft promotion fails", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftParts: AIComposerPart[] = [
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId:
+                    "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                throw new Error("disk full");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts(draftParts);
+
+        await useChatStore.getState().sendMessage();
+
+        expect(
+            useChatStore.getState().composerPartsBySessionId[activeSessionId],
+        ).toEqual(draftParts);
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.some(
+                    (message) => message.role === "user",
+                ),
+        ).toBe(false);
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_send_message",
+            expect.anything(),
+        );
+        const savedHistories = invokeMock.mock.calls
+            .filter(([command]) => command === "ai_save_session_history")
+            .map(([, args]) => JSON.stringify(args));
+        expect(savedHistories).not.toEqual(
+            expect.arrayContaining([
+                expect.stringContaining(
+                    "da_0123456789abcdef0123456789abcdef",
+                ),
+            ]),
+        );
+    });
+
+    it("owns the composer snapshot while promotion is pending", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const sentDraftId =
+            "da_99999999999999999999999999999999" as DraftAttachmentId;
+        const newDraftId =
+            "da_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab" as DraftAttachmentId;
+        let resolvePromotion!: (value: {
+            attachment_id: ManagedAttachmentId;
+            file_name: string;
+            mime_type: string;
+        }) => void;
+        const promotion = new Promise<{
+            attachment_id: ManagedAttachmentId;
+            file_name: string;
+            mime_type: string;
+        }>((resolve) => {
+            resolvePromotion = resolve;
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") return promotion;
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts([
+            { id: "text-preflight", type: "text", text: "Send this " },
+            createDraftScreenshotPart(sentDraftId),
+        ]);
+
+        const firstSend = useChatStore.getState().sendMessage(activeSessionId);
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ] ?? [],
+            ),
+        ).toBe("");
+
+        const duplicateSend = useChatStore
+            .getState()
+            .sendMessage(activeSessionId);
+        useChatStore.getState().setComposerParts([
+            { id: "text-after-preflight", type: "text", text: "Next message " },
+            createDraftScreenshotPart(newDraftId),
+        ]);
+        resolvePromotion({
+            attachment_id:
+                "ma_99999999999999999999999999999999" as ManagedAttachmentId,
+            file_name: "pasted-image.png",
+            mime_type: "image/png",
+        });
+        await Promise.all([firstSend, duplicateSend]);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_promote_draft_attachment",
+            ),
+        ).toHaveLength(1);
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toHaveLength(1);
+        expect(
+            useChatStore.getState().composerPartsBySessionId[activeSessionId],
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ text: "Next message " }),
+                expect.objectContaining({ draftAttachmentId: newDraftId }),
+            ]),
+        );
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.filter(
+                    (message) => message.role === "user",
+                ),
+        ).toHaveLength(1);
+    });
+
+    it("merges edits made while a failed promotion is pending", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as DraftAttachmentId;
+        let rejectPromotion!: (reason: Error) => void;
+        const promotion = new Promise<never>((_, reject) => {
+            rejectPromotion = reject;
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") return promotion;
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts([
+            { id: "text-original", type: "text", text: "Original " },
+            createDraftScreenshotPart(draftAttachmentId),
+        ]);
+
+        const sending = useChatStore.getState().sendMessage(activeSessionId);
+        useChatStore.getState().setComposerParts([
+            { id: "text-new", type: "text", text: "New input" },
+        ]);
+        rejectPromotion(new Error("disk full"));
+        await sending;
+
+        const restored =
+            useChatStore.getState().composerPartsBySessionId[activeSessionId];
+        expect(restored).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ text: "Original " }),
+                expect.objectContaining({ draftAttachmentId }),
+                expect.objectContaining({ text: "New input" }),
+            ]),
+        );
+    });
+
+    it("serializes queued promotion against a concurrent manual send", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_dddddddddddddddddddddddddddddddd" as DraftAttachmentId;
+        let resolvePromotion!: (value: {
+            attachment_id: ManagedAttachmentId;
+            file_name: string;
+            mime_type: string;
+        }) => void;
+        const promotion = new Promise<{
+            attachment_id: ManagedAttachmentId;
+            file_name: string;
+            mime_type: string;
+        }>((resolve) => {
+            resolvePromotion = resolve;
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") return promotion;
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedDraftMessage("queued-preflight", draftAttachmentId),
+            );
+
+        const draining = useChatStore
+            .getState()
+            .tryDrainQueue(activeSessionId);
+        await vi.waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith(
+                "ai_promote_draft_attachment",
+                expect.objectContaining({ draftAttachmentId }),
+            );
+        });
+        useChatStore
+            .getState()
+            .setComposerParts([{ id: "manual", type: "text", text: "Manual" }]);
+        const manualSend = useChatStore
+            .getState()
+            .sendMessage(activeSessionId);
+        resolvePromotion({
+            attachment_id:
+                "ma_dddddddddddddddddddddddddddddddd" as ManagedAttachmentId,
+            file_name: "pasted-image.png",
+            mime_type: "image/png",
+        });
+        await Promise.all([draining, manualSend]);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toHaveLength(1);
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ] ?? [],
+            ),
+        ).toBe("Manual");
+    });
+
+    it("keeps draft identity stable when queued promotion fails and is retried", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+        await useChatStore.getState().sendMessage();
+        const queuedId = useChatStore.getState().queuedMessagesBySessionId[
+            activeSessionId
+        ]?.[0]?.id;
+        expect(queuedId).toBeTruthy();
+
+        let failPromotion = true;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                if (failPromotion) throw new Error("disk full");
+                return {
+                    attachment_id:
+                        "ma_0123456789abcdef0123456789abcdef",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_delete_draft_attachment"
+            ) {
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "idle",
+                },
+            },
+        }));
+
+        await useChatStore
+            .getState()
+            .retryQueuedMessage(activeSessionId, queuedId!);
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId]?.[0],
+        ).toMatchObject({
+            status: "failed",
+            composerParts: expect.arrayContaining([
+                expect.objectContaining({ draftAttachmentId }),
+            ]),
+        });
+
+        failPromotion = false;
+        await useChatStore
+            .getState()
+            .retryQueuedMessage(activeSessionId, queuedId!);
+
+        const promotionCalls = invokeMock.mock.calls.filter(
+            ([command]) => command === "ai_promote_draft_attachment",
+        );
+        expect(promotionCalls).toHaveLength(2);
+        expect(promotionCalls.map(([, args]) => args)).toEqual([
+            expect.objectContaining({ draftAttachmentId }),
+            expect.objectContaining({ draftAttachmentId }),
+        ]);
+        const userMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) => message.role === "user",
+            );
+        expect(userMessage?.attachments).toEqual([
+            expect.objectContaining({
+                managedAttachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+            }),
+        ]);
+    });
+
+    it("restores a send-now queue item when draft promotion fails", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId;
+        const queuedItem: QueuedChatMessage = {
+            ...createQueuedMessage("queued-draft", "Inspect screenshot"),
+            composerParts: [
+                { id: "text-1", type: "text", text: "Inspect " },
+                {
+                    id: "screenshot-1",
+                    type: "screenshot",
+                    draftAttachmentId,
+                    fileName: "pasted-image.png",
+                    mimeType: "image/png",
+                    label: "Screenshot 10:32",
+                    createdAt: 123,
+                },
+            ],
+            attachments: [],
+        };
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                throw new Error("disk full");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .sendQueuedMessageNow(activeSessionId, queuedItem.id);
+
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
+        ).toEqual([
+            expect.objectContaining({
+                id: queuedItem.id,
+                status: "failed",
+                composerParts: expect.arrayContaining([
+                    expect.objectContaining({ draftAttachmentId }),
+                ]),
+            }),
+        ]);
+    });
+
+    it("restores queued edit state when draft promotion fails", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId;
+        const queuedItem: QueuedChatMessage = {
+            ...createQueuedMessage("queued-edit-draft", "Inspect screenshot"),
+            composerParts: [
+                { id: "text-1", type: "text", text: "Inspect " },
+                {
+                    id: "screenshot-1",
+                    type: "screenshot",
+                    draftAttachmentId,
+                    fileName: "pasted-image.png",
+                    mimeType: "image/png",
+                    label: "Screenshot 10:32",
+                    createdAt: 123,
+                },
+            ],
+            attachments: [],
+        };
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                throw new Error("disk full");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(
+            useChatStore.getState().queuedMessageEditBySessionId[activeSessionId],
+        ).toMatchObject({
+            item: {
+                id: queuedItem.id,
+                composerParts: expect.arrayContaining([
+                    expect.objectContaining({ draftAttachmentId }),
+                ]),
+            },
+        });
+        expect(
+            useChatStore.getState().composerPartsBySessionId[activeSessionId],
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ draftAttachmentId }),
+            ]),
+        );
     });
 
     it("normalizes image file attachment parts into the same file attachment shape", async () => {
@@ -6012,15 +6811,12 @@ describe("chatStore", () => {
                 .queuedMessagesBySessionId[
                     activeSessionId
                 ]?.map((item) => item.id),
-        ).toEqual(["queued-2"]);
+        ).toEqual(["queued-1", "queued-2"]);
         expect(
             useChatStore.getState().activeQueuedMessageBySessionId[
                 activeSessionId
-            ]?.item,
-        ).toMatchObject({
-            id: "queued-1",
-            status: "sending",
-        });
+            ],
+        ).toBeUndefined();
         expect(
             useChatStore.getState().pausedQueueBySessionId[activeSessionId],
         ).toBeUndefined();
@@ -6243,6 +7039,79 @@ describe("chatStore", () => {
                     payload.content === "First send should stick",
             ),
         ).toHaveLength(1);
+    });
+
+    it("restores an interrupted composer when draft promotion fails", async () => {
+        const cancelTurn = createDeferred<typeof sessionPayload>();
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_cancel_turn") {
+                return await cancelTurn.promise;
+            }
+            if (command === "ai_promote_draft_attachment") {
+                throw new Error("disk full");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+        }));
+        const draftAttachmentId =
+            "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId;
+        const stopPromise = useChatStore
+            .getState()
+            .stopStreaming(activeSessionId);
+        await Promise.resolve();
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+        await useChatStore.getState().sendMessage(activeSessionId);
+        expect(
+            useChatStore.getState().composerPartsBySessionId[activeSessionId],
+        ).toMatchObject([{ type: "text", text: "" }]);
+
+        cancelTurn.resolve({
+            ...sessionPayload,
+            session_id: activeSessionId,
+            status: "idle",
+        });
+        await stopPromise;
+        await vi.waitFor(() => {
+            expect(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ],
+            ).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({ draftAttachmentId }),
+                ]),
+            );
+        });
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.some(
+                    (message) => message.role === "user",
+                ),
+        ).toBe(false);
     });
 
     it("drops buffered assistant deltas from a stopped turn before the next turn starts", async () => {
@@ -13702,15 +14571,32 @@ describe("chatStore", () => {
                     ? claudeSessionPayload
                     : replacementClaudeSessionPayload;
             }
+            if (command === "ai_promote_draft_attachment") {
+                expect(args).toMatchObject({
+                    vaultPath: "/vault",
+                    draftAttachmentId:
+                        "da_cccccccccccccccccccccccccccccccc",
+                });
+                return {
+                    attachment_id:
+                        "ma_cccccccccccccccccccccccccccccccc",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
             if (command === "ai_send_message") {
                 expect(args).toMatchObject({
                     sessionId: "claude-session-2",
-                    attachments: [
+                    attachments: expect.arrayContaining([
                         expect.objectContaining({
                             filePath:
                                 "/home/user/projects/NeverWrite/README.md",
                         }),
-                    ],
+                        expect.objectContaining({
+                            managedAttachmentId:
+                                "ma_cccccccccccccccccccccccccccccccc",
+                        }),
+                    ]),
                 });
                 return {
                     ...replacementClaudeSessionPayload,
@@ -13737,7 +14623,12 @@ describe("chatStore", () => {
             );
         useChatStore
             .getState()
-            .setComposerParts(createTextParts("Review this"));
+            .setComposerParts([
+                { id: "text-replacement", type: "text", text: "Review this " },
+                createDraftScreenshotPart(
+                    "da_cccccccccccccccccccccccccccccccc" as DraftAttachmentId,
+                ),
+            ]);
 
         await useChatStore.getState().sendMessage();
 
@@ -13779,6 +14670,20 @@ describe("chatStore", () => {
                     ),
             ),
         ).toBe(true);
+        const replacementUserMessage = state.sessionsById[
+            "claude-session-2"
+        ]?.messages.find((message) => message.role === "user");
+        expect(replacementUserMessage?.attachments).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    managedAttachmentId:
+                        "ma_cccccccccccccccccccccccccccccccc",
+                }),
+            ]),
+        );
+        expect(JSON.stringify(replacementUserMessage)).not.toContain(
+            "draftAttachmentId",
+        );
     });
 
     it("reuses approved additionalRoots when reconnecting a persisted Claude session", async () => {
