@@ -8,6 +8,8 @@ use neverwrite_ai::persistence::{self, PersistedSessionHistory};
 use serde_json::{Value, json};
 
 mod attachments;
+#[allow(dead_code)]
+mod migration;
 mod storage;
 
 const COMMANDS: &[&str] = &[

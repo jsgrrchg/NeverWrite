@@ -796,7 +796,7 @@ pub(crate) fn delete_validated(
     Ok(true)
 }
 
-fn managed_root(vault_root: &Path) -> PathBuf {
+pub(super) fn managed_root(vault_root: &Path) -> PathBuf {
     MANAGED_ROOT_COMPONENTS
         .iter()
         .fold(vault_root.to_path_buf(), |path, component| {
