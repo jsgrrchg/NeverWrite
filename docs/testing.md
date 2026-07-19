@@ -81,6 +81,7 @@ pnpm run check
 | --- | --- | --- |
 | Rust crates under `crates/` | `cargo test` from repo root | `cargo test -p <crate-name>` while iterating, then full `cargo test` before handoff |
 | Native backend under `apps/desktop/native-backend/` | `cargo test` and `cargo build -p neverwrite-native-backend` from repo root | From `apps/desktop`: `npm run electron:vault-editor:smoke` and `npm run electron:ai-runtime:smoke` |
+| AI history storage, transactional recovery, or managed attachments | `cargo test -p neverwrite-native-backend ai_history --no-fail-fast` | Verify the `AI history recovery (Windows)` CI job; perform the Windows packaged-app smoke below before a desktop release |
 | Desktop React/TypeScript under `apps/desktop/src/` | From `apps/desktop`: `npm run lint`, `npm test`, `npm run build` | Add `npm run electron:build` when Electron preload/main boundaries or runtime imports may be affected |
 | Desktop Electron main/preload under `apps/desktop/src-electron/` | From `apps/desktop`: `npm run lint`, `npm test`, `npm run electron:build` | Add native sidecar build plus both Electron sidecar smokes |
 | AI runtime setup, ACP integration, session history, or change-control plumbing | From `apps/desktop`: `npm test` and `npm run electron:ai-runtime:smoke` | Add `cargo test` and `npm run electron:build` when native commands or Electron IPC are involved |
@@ -125,6 +126,29 @@ NEVERWRITE_ELECTRON_DIST_ARCH=x64
 ```
 
 For custom paths, use `NEVERWRITE_PACKAGED_APP_EXECUTABLE` or `NEVERWRITE_PACKAGED_SIDECAR_PATH`.
+
+## Windows AI History Release Smoke
+
+The `AI history recovery (Windows)` CI job executes the transaction and recovery
+suite on a real Windows runner. Configure that check as required in GitHub branch
+protection for `main`.
+
+Before releasing a desktop build that changes AI history storage, validate the
+packaged app manually on a Windows machine. This is a release check, not a
+per-PR blocker: filesystem tools, endpoint protection, sync clients, and local
+ACLs cannot be simulated reliably in unit tests.
+
+Use a disposable vault and record the result with the release validation:
+
+- [ ] Open a new vault and confirm new AI history uses device storage.
+- [ ] Move storage from device to vault and back to device.
+- [ ] Paste an image into a chat and confirm the move preserves its preview.
+- [ ] Start a move, force-close the app, then reopen the same vault.
+- [ ] Confirm Settings shows recovery when needed and that neither history nor
+  the managed pasted attachment is silently lost.
+
+If recovery is required, do not choose a root by timestamp or delete the
+journal. Preserve the diagnostic and follow the recovery UI before continuing.
 
 ## Deep Link QA
 
@@ -245,9 +269,10 @@ cargo build -p neverwrite-native-backend
 
 ## CI Parity
 
-The main PR workflow in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) has three jobs:
+The main PR workflow in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) has four jobs:
 
 - Rust: `cargo test`
+- AI history recovery (Windows): `cargo test -p neverwrite-native-backend ai_history::migration --no-fail-fast`
 - Desktop: `npm ci`, `npm run lint`, `npm test`, `npm run electron:build`, `cargo build -p neverwrite-native-backend`, and both debug sidecar smokes
 - Web Clipper: `pnpm install --frozen-lockfile` and `pnpm run check`
 
