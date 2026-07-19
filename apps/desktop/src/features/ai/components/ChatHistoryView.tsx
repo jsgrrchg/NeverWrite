@@ -7,7 +7,6 @@ import { exportChatSessionToVaultNote } from "../chatExport";
 import { findSessionForHistorySelection } from "../sessionPresentation";
 import { HistorySessionList } from "./HistorySessionList";
 import { HistoryTranscriptViewer } from "./HistoryTranscriptViewer";
-import { AIHistoryStorageControl } from "./AIHistoryStorageControl";
 
 const MIN_LIST_WIDTH = 220;
 const MAX_LIST_WIDTH = 480;
@@ -36,7 +35,6 @@ export function ChatHistoryView({
     onRequestClose,
     showBackButton = true,
 }: ChatHistoryViewProps) {
-    const vaultPath = useVaultStore((s) => s.vaultPath);
     const sessionsById = useChatStore((s) => s.sessionsById);
     const sessionOrder = useChatStore((s) => s.sessionOrder);
     const runtimes = useChatStore((s) => s.runtimes);
@@ -323,8 +321,6 @@ export function ChatHistoryView({
                     <option value={365}>1 year</option>
                 </select>
             </div>
-
-            <AIHistoryStorageControl vaultPath={vaultPath} compact />
 
             {/* Master-detail body */}
             <div className="flex min-h-0 flex-1">
