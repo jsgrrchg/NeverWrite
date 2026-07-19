@@ -2597,13 +2597,15 @@ describe("editorStore tab management", () => {
         expect(state.activeTabId).toBe("tab-a");
     });
 
-    it("blocks and closes review tabs when AI change review is disabled", () => {
+    it("closes review tabs when AI change review is disabled by a synced settings update", () => {
         useEditorStore.getState().openReview("session-1");
         expect(
             useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
         ).toBe(true);
 
-        useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+        // Settings normally change in a separate window, which applies this
+        // update through storage synchronization instead of setSetting().
+        useSettingsStore.setState({ aiReviewEnabled: false });
 
         expect(
             useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),

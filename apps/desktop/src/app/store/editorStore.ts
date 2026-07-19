@@ -183,8 +183,8 @@ useEditorStore.subscribe((state) => {
     }, 500);
 });
 
-// Review tabs are a transient decision surface. Do not leave a stale tab open
-// when the active vault disables AI change review through Settings.
+// Review tabs are a transient decision surface. Settings emits this event for
+// every local, synchronized, and vault-scoped transition to disabled.
 if (typeof window !== "undefined") {
     window.addEventListener(AI_REVIEW_DISABLED_EVENT, () => {
         useEditorStore.getState().closeAllReviewTabs();

@@ -1278,6 +1278,51 @@ describe("FileTabView", () => {
         expect(view!.state.doc.toString()).toBe('name = "NeverWrite"');
     });
 
+    it("clears merge view for text files when AI change review is turned off", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "text-tab-1",
+                    kind: "file",
+                    relativePath: "src/config.toml",
+                    title: "config.toml",
+                    path: "/vault/src/config.toml",
+                    mimeType: "application/toml",
+                    viewer: "text",
+                    content: 'name = "NeverWrite"',
+                },
+            ],
+            "text-tab-1",
+        );
+        seedTrackedDiff(
+            "/vault/src/config.toml",
+            'name = "Old"',
+            'name = "NeverWrite"',
+        );
+
+        await act(async () => {
+            renderComponent(<FileTabView />);
+            await Promise.resolve();
+        });
+        let view = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(view).not.toBeNull();
+        expect(getChunks(view!.state)?.chunks.length).toBe(1);
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+            await Promise.resolve();
+        });
+
+        view = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(view).not.toBeNull();
+        expect(getChunks(view!.state)).toBeNull();
+        expect(view!.state.doc.toString()).toBe('name = "NeverWrite"');
+    });
+
     it("does not leak edits from one text file tab into a different text file tab", async () => {
         vi.useFakeTimers();
         setEditorTabs(

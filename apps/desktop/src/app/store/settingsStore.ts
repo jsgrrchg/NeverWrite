@@ -844,14 +844,9 @@ function readInitialVaultPath(): string | null {
     }
 }
 
-export const useSettingsStore = create<SettingsStore>()((set, get) => ({
+export const useSettingsStore = create<SettingsStore>()((set) => ({
     ...defaults,
-    setSetting: (key, value) => {
-        const shouldCloseReviewTabs =
-            key === "aiReviewEnabled" &&
-            value === false &&
-            get().aiReviewEnabled;
-
+    setSetting: (key, value) =>
         set((state) => {
             if (
                 key === "spellcheckPrimaryLanguage" ||
@@ -880,14 +875,18 @@ export const useSettingsStore = create<SettingsStore>()((set, get) => ({
             }
 
             return { [key]: value } as Partial<Settings>;
-        });
-
-        if (shouldCloseReviewTabs) {
-            notifyAiReviewDisabled();
-        }
-    },
+        }),
     reset: () => set(defaults),
 }));
+
+// Settings can be changed directly, synchronized from another window, or
+// reloaded for a different vault. Emit the transition in the receiving window
+// so review tabs are consistently closed regardless of the update source.
+useSettingsStore.subscribe((state, previousState) => {
+    if (previousState.aiReviewEnabled && !state.aiReviewEnabled) {
+        notifyAiReviewDisabled();
+    }
+});
 
 // Track the current vault path so the save subscriber always writes to the right key
 let _currentVaultPath: string | null = null;
