@@ -202,6 +202,7 @@ impl AiHistoryStorageService {
         }
         let vault_key =
             storage::remove_device_namespace_for_known_path(&self.app_data_root, vault_path)?;
+        log_storage_event(&vault_key, None, "housekeeping", "forget_device_data");
         self.validated_scopes
             .lock()
             .map_err(|error| format!("AI history validation state error: {error}"))?
@@ -309,6 +310,13 @@ impl AiHistoryStorageService {
             return Ok(());
         };
 
+        log_storage_event(
+            &layout.vault_key,
+            Some(&operation.operation_id),
+            "recovery",
+            "started",
+        );
+
         if matches!(
             storage::read_state(layout),
             storage::StateRead::Valid(storage::CanonicalState {
@@ -318,6 +326,12 @@ impl AiHistoryStorageService {
         ) && !migration::has_pending(&self.app_data_root)?
         {
             storage::remove_operation(layout)?;
+            log_storage_event(
+                &layout.vault_key,
+                Some(&operation.operation_id),
+                "recovery",
+                "completed",
+            );
             return Ok(());
         }
 
@@ -342,7 +356,14 @@ impl AiHistoryStorageService {
                 .map_err(|error| format!("AI history validation state error: {error}"))?
                 .insert(layout.vault_key.clone(), operation.to);
         }
-        storage::remove_operation(layout)
+        storage::remove_operation(layout)?;
+        log_storage_event(
+            &layout.vault_key,
+            Some(&operation.operation_id),
+            "recovery",
+            if recovered { "completed" } else { "not_needed" },
+        );
+        Ok(())
     }
 
     fn resolve_canonical(
@@ -835,6 +856,12 @@ impl AiHistoryStorageService {
             operation_source_vault_key,
         );
         storage::write_operation(layout, &operation)?;
+        log_storage_event(
+            &layout.vault_key,
+            Some(&operation.operation_id),
+            "prepare",
+            "completed",
+        );
 
         let moving = StorageStatusSnapshot::Moving {
             vault_key: layout.vault_key.clone(),
@@ -856,6 +883,12 @@ impl AiHistoryStorageService {
         let result = match result {
             Ok(result) => result,
             Err(error) => {
+                log_storage_event(
+                    &layout.vault_key,
+                    Some(&operation.operation_id),
+                    "reconcile",
+                    "failed",
+                );
                 if !migration::has_pending(&self.app_data_root).unwrap_or(true) {
                     storage::remove_operation(layout).ok();
                 }
@@ -864,12 +897,36 @@ impl AiHistoryStorageService {
                 return Err(error);
             }
         };
+        log_storage_event(
+            &layout.vault_key,
+            Some(&operation.operation_id),
+            "validate",
+            "completed",
+        );
+        log_storage_event(
+            &layout.vault_key,
+            Some(&operation.operation_id),
+            "publish",
+            "completed",
+        );
+        log_storage_event(
+            &layout.vault_key,
+            Some(&operation.operation_id),
+            "withdraw",
+            "completed",
+        );
         storage::remove_operation(layout)?;
         self.validated_scopes
             .lock()
             .map_err(|error| format!("AI history validation state error: {error}"))?
             .insert(layout.vault_key.clone(), target);
         let status = self.snapshot_for_resolution(layout, CanonicalResolution::Ready(target))?;
+        log_storage_event(
+            &layout.vault_key,
+            Some(&operation.operation_id),
+            "commit",
+            "completed",
+        );
         self.emit_snapshot(&status);
         Ok(json!({
             "completed": true,
@@ -1120,12 +1177,26 @@ impl AiHistoryStorageService {
         drop(housekept);
 
         let now = attachments::now_ms();
+        // The owner is a filesystem path, so it intentionally never appears in
+        // diagnostics. This process-local marker keeps housekeeping observable
+        // without leaking vault names or attachment metadata.
+        eprintln!("ai_history phase=housekeeping outcome=started");
         attachments::cleanup_expired_managed_staging(attachment_owner, now);
         let inventory = attachment_gc_snapshot(storage_root);
         if inventory.safe {
             attachments::cleanup_expired_promotions(attachment_owner, &inventory.all_ids(), now);
         }
+        eprintln!("ai_history phase=housekeeping outcome=completed");
     }
+}
+
+/// Emits only opaque identifiers. Do not include paths, transcript content,
+/// prompts, attachment names, or raw error text in this diagnostic channel.
+fn log_storage_event(vault_key: &str, operation_id: Option<&str>, phase: &str, outcome: &str) {
+    let operation_id = operation_id.unwrap_or("none");
+    eprintln!(
+        "ai_history vault_key={vault_key} operation_id={operation_id} phase={phase} outcome={outcome}"
+    );
 }
 
 #[derive(Debug, Default)]

@@ -75,7 +75,20 @@ without reviewing them first.
 
 ## AI Session History
 
-AI chat history is stored inside the currently open vault:
+Each vault has one backend-owned canonical AI history scope. New vaults store
+history on the current device by default; existing vault history is adopted as
+vault scope. The user can explicitly move the complete managed history between
+the two scopes with **Store AI chats inside this vault**. The preference is
+committed only after the destination has been validated and the source has been
+withdrawn successfully.
+
+Device-local history is stored under:
+
+```text
+<app-data>/ai-history/v1/vaults/<vault-key>/history/session-<sha256(session_id)>/
+```
+
+Vault-scoped history is stored under:
 
 ```text
 <vault>/.neverwrite/sessions/session-<sha256(session_id)>/
@@ -95,8 +108,15 @@ prompts, AI responses, tool activity, permission requests, plans, diffs, file
 paths, snippets, and metadata from attached vault files. Session directory names
 hash the logical session id, but the transcript content itself is not encrypted.
 
-Deleting a conversation from Chat History deletes its saved history from
-`.neverwrite/sessions/`. Retention pruning also operates on this directory.
+Deleting a conversation from Chat History deletes its saved history from the
+active scope. Retention pruning operates on that same canonical scope.
+
+The device namespace is derived by the native backend from the canonical vault
+path. It is not encryption and it is local to one app-data installation.
+Renaming or moving a vault therefore uses a visible import/recovery flow rather
+than silently reusing a namespace. Separate devices do not share a canonical
+scope state: synced vault changes are treated as external filesystem changes and
+are checked during initialization, recovery, and an explicit scope move.
 
 ### AI Screenshot Drafts And Managed Blobs
 
@@ -120,9 +140,11 @@ seven-day TTL. Cleanup is best-effort, so backups, filesystem snapshots, or an
 app that is never reopened can retain the files longer.
 
 Before a screenshot is added to a sent message, NeverWrite promotes it to an
-app-owned managed blob inside the current vault:
+app-owned managed blob in the current canonical scope:
 
 ```text
+<app-data>/ai-history/v1/vaults/<vault-key>/assets/chat/.neverwrite-managed/v1/blobs/<managed-attachment-id>/
+# or, when vault storage is active:
 <vault>/assets/chat/.neverwrite-managed/v1/blobs/<managed-attachment-id>/
 ```
 
@@ -132,6 +154,10 @@ blob that has not been committed is protected from immediate cleanup for seven
 days so a crash between promotion and history persistence does not create a
 broken message reference. Managed blobs referenced by retained histories are
 deleted only after their last retained reference is removed.
+
+Removing a vault from Recents clears local registration, drafts, and
+device-local AI history. It never deletes sessions or managed blobs stored
+inside the vault; deleting those requires the explicit Chat History action.
 
 ## App Logs
 

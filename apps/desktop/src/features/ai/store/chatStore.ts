@@ -13703,8 +13703,15 @@ let chatRuntimeInitialized = false;
 let stopChatStorageSync: (() => void) | null = null;
 let stopChatVaultSync: (() => void) | null = null;
 let stopAiHistoryStorageListener: (() => void) | null = null;
+let stopAiHistoryStorageFocusSync: (() => void) | null = null;
 let aiPrefsSyncTimer: number | null = null;
 let autoContextSyncTimer: number | null = null;
+
+function refreshActiveAiHistoryStorageStatus() {
+    const vaultPath = useVaultStore.getState().vaultPath;
+    if (!vaultPath) return;
+    void useChatStore.getState().refreshAiHistoryStorageStatus(vaultPath);
+}
 
 export function hydrateChatStorePreferences() {
     const prefs = getNormalizedAiPreferences();
@@ -13733,7 +13740,13 @@ export function initializeChatStoreRuntime() {
 
     void listenToAiHistoryStorageChanged((snapshot) => {
         const current = useChatStore.getState().historyStorageStatus;
-        if (!current || current.vaultKey !== snapshot.vaultKey) return;
+        if (!current || current.vaultKey !== snapshot.vaultKey) {
+            // A detached window can receive a broadcast before its initial
+            // status request completes. Re-read its active vault rather than
+            // adopting a snapshot that cannot be tied to a vault path here.
+            refreshActiveAiHistoryStorageStatus();
+            return;
+        }
         if (!applyAiHistoryStorageSnapshot(snapshot)) return;
         if (snapshot.status === "ready") {
             const vaultPath = useVaultStore.getState().vaultPath;
@@ -13755,6 +13768,11 @@ export function initializeChatStoreRuntime() {
         }
         stopAiHistoryStorageListener = unlisten;
     });
+
+    const refreshOnFocus = () => refreshActiveAiHistoryStorageStatus();
+    window.addEventListener("focus", refreshOnFocus);
+    stopAiHistoryStorageFocusSync = () =>
+        window.removeEventListener("focus", refreshOnFocus);
 
     stopChatStorageSync = subscribeSafeStorage((event) => {
         if (event.key === AI_PREFS_KEY) {
@@ -13890,9 +13908,11 @@ export function disposeChatStoreRuntime() {
     stopChatStorageSync?.();
     stopChatVaultSync?.();
     stopAiHistoryStorageListener?.();
+    stopAiHistoryStorageFocusSync?.();
     stopChatStorageSync = null;
     stopChatVaultSync = null;
     stopAiHistoryStorageListener = null;
+    stopAiHistoryStorageFocusSync = null;
     if (typeof window !== "undefined" && aiPrefsSyncTimer != null) {
         window.clearTimeout(aiPrefsSyncTimer);
     }

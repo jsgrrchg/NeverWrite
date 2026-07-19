@@ -1,4 +1,4 @@
-import { invoke, openUrl } from "@neverwrite/runtime";
+import { invoke, listen, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isChatTab,
@@ -665,6 +665,89 @@ describe("chatStore", () => {
         await refresh;
 
         expect(useChatStore.getState().historyStorageStatus).toBeNull();
+    });
+
+    it("refreshes the active vault when a detached window receives an early storage event", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        let onStorageChanged:
+            | ((event: {
+                  payload: {
+                      vaultKey: string;
+                      generation: number;
+                      status: "ready";
+                      scope: "device" | "vault";
+                      orphanedDeviceHistories: [];
+                  };
+              }) => void)
+            | undefined;
+        vi.mocked(listen).mockImplementationOnce(async (_event, callback) => {
+            onStorageChanged = callback as typeof onStorageChanged;
+            return () => undefined;
+        });
+        invokeMock.mockImplementation((command) => {
+            if (command === "ai_get_history_storage_status") {
+                return Promise.resolve({
+                    vaultKey: "active-vault",
+                    generation: 5,
+                    status: "ready",
+                    scope: "vault",
+                    orphanedDeviceHistories: [],
+                });
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        initializeChatStoreRuntime();
+        await Promise.resolve();
+        onStorageChanged?.({
+            payload: {
+                vaultKey: "other-window-vault",
+                generation: 9,
+                status: "ready",
+                scope: "device",
+                orphanedDeviceHistories: [],
+            },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_get_history_storage_status",
+            { vaultPath: "/vault" },
+        );
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            vaultKey: "active-vault",
+            generation: 5,
+            scope: "vault",
+        });
+    });
+
+    it("refreshes the active vault when the window regains focus", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        invokeMock.mockImplementation((command) => {
+            if (command === "ai_get_history_storage_status") {
+                return Promise.resolve({
+                    vaultKey: "vault-key",
+                    generation: 2,
+                    status: "ready",
+                    scope: "device",
+                    orphanedDeviceHistories: [],
+                });
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        initializeChatStoreRuntime();
+
+        window.dispatchEvent(new Event("focus"));
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_get_history_storage_status",
+            { vaultPath: "/vault" },
+        );
     });
 
     it("changes the storage projection only after reconcile completes", async () => {
