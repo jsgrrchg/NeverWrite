@@ -3946,7 +3946,13 @@ function ShortcutsSettings({
     );
 }
 
-function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
+function AISettings({
+    searchQuery,
+    vaultPath,
+}: {
+    searchQuery: SettingsSearchQuery;
+    vaultPath: string | null;
+}) {
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const setSetting = useSettingsStore((s) => s.setSetting);
     const requireCmdEnterToSend = useChatStore((s) => s.requireCmdEnterToSend);
@@ -4096,7 +4102,7 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                 "vault",
                 "sync",
             ) ? (
-                <AIHistoryStorageControl />
+                <AIHistoryStorageControl vaultPath={vaultPath} />
             ) : null}
             <SearchableRow
                 searchQuery={searchQuery}
@@ -4848,7 +4854,9 @@ export function SettingsPanel({
     );
     const updateSearchStatus = useAppUpdateStore((state) => state.status);
     const updateSearchError = useAppUpdateStore((state) => state.error);
-    const currentVaultPath = useVaultStore((state) => state.vaultPath);
+    const openVaultPath = useVaultStore((state) => state.vaultPath);
+    const currentVaultPath =
+        openVaultPath ?? (standalone ? readSearchParam("vault") : null);
     const sectionFromUrl = standalone ? readSearchParam("section") : null;
     const resolvedInitialCategory =
         initialCategory && isCategory(initialCategory)
@@ -5380,7 +5388,10 @@ export function SettingsPanel({
                             )}
                         {filteredCategories.length > 0 &&
                             activeCategory === "ai" && (
-                                <AISettings searchQuery={activeSearchQuery} />
+                                <AISettings
+                                    searchQuery={activeSearchQuery}
+                                    vaultPath={currentVaultPath}
+                                />
                             )}
                     </div>
                 </div>

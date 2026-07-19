@@ -538,9 +538,11 @@ function applyAiHistoryStorageSnapshot(
     snapshot: AIHistoryStorageStatus,
     expectedVaultPath?: string,
 ) {
+    const activeVaultPath = useVaultStore.getState().vaultPath;
     if (
         expectedVaultPath != null &&
-        useVaultStore.getState().vaultPath !== expectedVaultPath
+        (useChatStore.getState().historyStorageVaultPath !== expectedVaultPath ||
+            (activeVaultPath != null && activeVaultPath !== expectedVaultPath))
     ) {
         return false;
     }
@@ -558,6 +560,22 @@ function applyAiHistoryStorageSnapshot(
         return { historyStorageStatus: snapshot };
     });
     return applied;
+}
+
+function activateAiHistoryStorageContext(vaultPath: string) {
+    const activeVaultPath = useVaultStore.getState().vaultPath;
+    useChatStore.setState((state) => {
+        if (state.historyStorageVaultPath === vaultPath) return state;
+        const canAdoptActiveProjection =
+            state.historyStorageVaultPath === null &&
+            activeVaultPath === vaultPath;
+        return {
+            historyStorageVaultPath: vaultPath,
+            historyStorageStatus: canAdoptActiveProjection
+                ? state.historyStorageStatus
+                : null,
+        };
+    });
 }
 
 async function refreshPersistedHistoryInventory(vaultPath: string) {
@@ -1483,6 +1501,7 @@ interface ChatStore {
     selectedRuntimeId: string | null;
     isInitializing: boolean;
     sessionInventoryLoaded: boolean;
+    historyStorageVaultPath: string | null;
     historyStorageStatus: AIHistoryStorageStatus | null;
     notePickerOpen: boolean;
     autoContextEnabled: boolean;
@@ -8137,6 +8156,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedRuntimeId: null,
         isInitializing: false,
         sessionInventoryLoaded: false,
+        historyStorageVaultPath: null,
         historyStorageStatus: null,
         notePickerOpen: false,
         autoContextEnabled: false,
@@ -8169,11 +8189,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         refreshAiHistoryStorageStatus: async (vaultPath) => {
+            activateAiHistoryStorageContext(vaultPath);
             try {
                 const snapshot = await getAiHistoryStorageStatus(vaultPath);
                 applyAiHistoryStorageSnapshot(snapshot, vaultPath);
             } catch (error) {
-                if (useVaultStore.getState().vaultPath !== vaultPath) return;
+                if (get().historyStorageVaultPath !== vaultPath) return;
                 logWarn(
                     "chat-store",
                     "Failed to refresh AI history storage status",
@@ -8187,6 +8208,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             targetScope,
             sourceVaultKey,
         ) => {
+            activateAiHistoryStorageContext(vaultPath);
             try {
                 const result = await reconcileAiHistoryStorage(
                     vaultPath,
@@ -8195,7 +8217,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 );
                 applyAiHistoryStorageSnapshot(result.status, vaultPath);
                 if (!result.completed) return false;
-                await refreshPersistedHistoryInventory(vaultPath);
+                if (useVaultStore.getState().vaultPath === vaultPath) {
+                    await refreshPersistedHistoryInventory(vaultPath);
+                }
                 return true;
             } catch (error) {
                 await get().refreshAiHistoryStorageStatus(vaultPath);
@@ -8349,7 +8373,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const vaultPath = useVaultStore.getState().vaultPath;
                 if (vaultPath) {
                     await get().refreshAiHistoryStorageStatus(vaultPath);
-                } else {
+                } else if (!get().historyStorageVaultPath) {
                     set({ historyStorageStatus: null });
                 }
                 const sessions = await aiListSessions(vaultPath);
@@ -13708,7 +13732,9 @@ let aiPrefsSyncTimer: number | null = null;
 let autoContextSyncTimer: number | null = null;
 
 function refreshActiveAiHistoryStorageStatus() {
-    const vaultPath = useVaultStore.getState().vaultPath;
+    const vaultPath =
+        useChatStore.getState().historyStorageVaultPath ??
+        useVaultStore.getState().vaultPath;
     if (!vaultPath) return;
     void useChatStore.getState().refreshAiHistoryStorageStatus(vaultPath);
 }
@@ -13829,7 +13855,10 @@ export function initializeChatStoreRuntime() {
         }
 
         useChatStore.getState().syncAutoContextForVault(state.vaultPath);
-        useChatStore.setState({ historyStorageStatus: null });
+        useChatStore.setState({
+            historyStorageVaultPath: state.vaultPath,
+            historyStorageStatus: null,
+        });
         if (state.vaultPath) {
             void useChatStore
                 .getState()
@@ -13879,6 +13908,7 @@ export function resetChatStore() {
         selectedRuntimeId: null,
         isInitializing: false,
         sessionInventoryLoaded: false,
+        historyStorageVaultPath: null,
         historyStorageStatus: null,
         notePickerOpen: false,
         autoContextEnabled: loadAutoContextPreference(

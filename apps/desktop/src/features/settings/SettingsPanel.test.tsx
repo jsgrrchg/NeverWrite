@@ -168,6 +168,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    window.history.replaceState({}, "", "/");
     setNavigatorIdentity(originalUserAgent, originalPlatform);
     localStorage.clear();
     mockInvoke().mockReset();
@@ -177,6 +178,31 @@ afterEach(() => {
 });
 
 describe("SettingsPanel", () => {
+    it("uses the standalone window vault for AI history storage", async () => {
+        window.history.replaceState(
+            {},
+            "",
+            "/?window=settings&section=ai&vault=%2Fvaults%2FProject%20Notes",
+        );
+        useVaultStore.setState({ vaultPath: null });
+        useChatStore.setState({
+            historyStorageVaultPath: null,
+            historyStorageStatus: null,
+        });
+        aiApiMocks.getAiHistoryStorageStatus.mockClear();
+
+        renderComponent(<SettingsPanel onClose={() => {}} standalone />);
+
+        expect(
+            await screen.findByRole("switch", {
+                name: "Store AI chats inside this vault",
+            }),
+        ).toBeInTheDocument();
+        expect(aiApiMocks.getAiHistoryStorageStatus).toHaveBeenCalledWith(
+            "/vaults/Project Notes",
+        );
+    });
+
     it("renders AI providers management inside AI settings", async () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 

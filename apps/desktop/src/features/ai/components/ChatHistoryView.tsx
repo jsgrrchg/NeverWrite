@@ -36,6 +36,7 @@ export function ChatHistoryView({
     onRequestClose,
     showBackButton = true,
 }: ChatHistoryViewProps) {
+    const vaultPath = useVaultStore((s) => s.vaultPath);
     const sessionsById = useChatStore((s) => s.sessionsById);
     const sessionOrder = useChatStore((s) => s.sessionOrder);
     const runtimes = useChatStore((s) => s.runtimes);
@@ -323,7 +324,7 @@ export function ChatHistoryView({
                 </select>
             </div>
 
-            <AIHistoryStorageControl compact />
+            <AIHistoryStorageControl vaultPath={vaultPath} compact />
 
             {/* Master-detail body */}
             <div className="flex min-h-0 flex-1">

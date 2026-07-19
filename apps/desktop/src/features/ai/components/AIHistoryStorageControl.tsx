@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { confirm, revealItemInDir } from "@neverwrite/runtime";
-import { useVaultStore } from "../../../app/store/vaultStore";
 import {
     getAiHistoryRecoveryDiagnostic,
     getAiHistoryRecoveryRevealPath,
@@ -14,12 +13,17 @@ import type {
 } from "../api";
 
 export function AIHistoryStorageControl({
+    vaultPath,
     compact = false,
 }: {
+    vaultPath: string | null;
     compact?: boolean;
 }) {
-    const vaultPath = useVaultStore((state) => state.vaultPath);
-    const status = useChatStore((state) => state.historyStorageStatus);
+    const status = useChatStore((state) =>
+        state.historyStorageVaultPath === vaultPath
+            ? state.historyStorageStatus
+            : null,
+    );
     const refreshStatus = useChatStore(
         (state) => state.refreshAiHistoryStorageStatus,
     );

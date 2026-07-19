@@ -1,7 +1,6 @@
 import { confirm, invoke, revealItemInDir } from "@neverwrite/runtime";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent } from "../../../test/test-utils";
 import { useChatStore } from "../store/chatStore";
 import { AIHistoryStorageControl } from "./AIHistoryStorageControl";
@@ -9,8 +8,8 @@ import { AIHistoryStorageControl } from "./AIHistoryStorageControl";
 describe("AIHistoryStorageControl", () => {
     beforeEach(() => {
         vi.mocked(confirm).mockResolvedValue(true);
-        useVaultStore.setState({ vaultPath: "/vault" });
         useChatStore.setState({
+            historyStorageVaultPath: "/vault",
             historyStorageStatus: {
                 vaultKey: "vault-key",
                 generation: 1,
@@ -24,7 +23,7 @@ describe("AIHistoryStorageControl", () => {
     });
 
     it("confirms the full move before requesting a scope change", async () => {
-        renderComponent(<AIHistoryStorageControl />);
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
 
         fireEvent.click(
             screen.getByRole("switch", {
@@ -50,7 +49,7 @@ describe("AIHistoryStorageControl", () => {
 
     it("keeps the current projection when the user cancels", async () => {
         vi.mocked(confirm).mockResolvedValue(false);
-        renderComponent(<AIHistoryStorageControl />);
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
 
         fireEvent.click(
             screen.getByRole("switch", {
@@ -69,7 +68,7 @@ describe("AIHistoryStorageControl", () => {
 
     it("recovers a missed storage event by refreshing on window focus", async () => {
         const refresh = useChatStore.getState().refreshAiHistoryStorageStatus;
-        renderComponent(<AIHistoryStorageControl />);
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
         await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
 
         window.dispatchEvent(new Event("focus"));
@@ -92,7 +91,7 @@ describe("AIHistoryStorageControl", () => {
                 ],
             },
         });
-        renderComponent(<AIHistoryStorageControl />);
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
 
         expect(
             screen.getByRole("combobox", { name: "Previous vault path" }),
@@ -154,7 +153,7 @@ describe("AIHistoryStorageControl", () => {
             },
         });
 
-        renderComponent(<AIHistoryStorageControl />);
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
 
         expect(
             screen.queryByRole("button", { name: "Use this device" }),
