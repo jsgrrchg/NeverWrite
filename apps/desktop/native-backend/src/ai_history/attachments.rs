@@ -239,6 +239,9 @@ pub(crate) fn promote_draft(
 ) -> Result<ManagedAttachmentMetadata, String> {
     let (draft, bytes) = read_draft(app_data_root, draft_root, draft_id)?;
     let draft_dir = existing_local_item_dir(app_data_root, draft_root, draft_id.as_str())?;
+    // A promotion marker makes retries idempotent: reuse and verify the same
+    // managed blob rather than creating a new ID that the pending transcript
+    // would not reference.
     if let Some(promotion) = read_draft_promotion(&draft_dir, draft_id)? {
         let (managed, managed_bytes) = read(vault_root, &promotion.attachment_id)?;
         if managed.file_name != draft.file_name
@@ -505,6 +508,8 @@ pub(crate) fn delete_if_unreferenced(
     now: u64,
 ) -> Result<UnreferencedDeletion, String> {
     let (metadata, _) = read(vault_root, attachment_id)?;
+    // This is not normal retention. The grace period covers the interval
+    // between draft promotion and durable transcript persistence or a retry.
     if let Some(promoted_at_ms) = metadata.promoted_at_ms {
         let marker = committed_marker_state(vault_root, attachment_id)?;
         if !marker && now.saturating_sub(promoted_at_ms) < PROMOTED_GRACE_PERIOD_MS {

@@ -379,14 +379,17 @@ fn reconcile_internal(
         destination_managed_existed,
         legacy_withdrawals,
     };
-    // Persisting the journal makes the prepared transaction durable, which is
-    // the first boundary of publishing it. Keep Publish active if that write
-    // or an immediate durable-boundary check fails.
+    // Persisting the journal makes the prepared transaction durable before any
+    // destination publication. It records recovery intent, not success; keep
+    // Publish active if that write or an immediate durable-boundary check fails.
     observer.phase_started(ReconciliationPhase::Publish);
     persist_journal(app_data_root, &journal)?;
     failures.check(Failpoint::AfterPrepared)?;
     failures.check(Failpoint::BeforePublish)?;
 
+    // Withdrawal has not started yet, so a changed source or destination can
+    // still roll back safely. Once withdrawal begins, recovery must continue
+    // from the journal instead of guessing which side should win.
     if let Err(error) = assert_source_unchanged(&journal).and_then(|()| {
         assert_component_original(journal.history_component())?;
         assert_component_original(journal.managed_component())
@@ -412,6 +415,9 @@ fn reconcile_internal(
 
     observer.phase_started(ReconciliationPhase::Commit);
     failures.check(Failpoint::BeforeCommit)?;
+    // This durable marker is the recovery boundary: after source withdrawal,
+    // the published destination must be completed as canonical rather than
+    // restoring a source that may already have been partially retired.
     mark_withdrawn(app_data_root, &journal)?;
     failures.check(Failpoint::AfterCommit)?;
     finish_critical_cleanup(&journal, failures)?;
@@ -809,6 +815,9 @@ fn convert_legacy_attachment_value(
                         return Err("Legacy owned attachment is not a regular file.".into());
                     }
                     let canonical = path.canonicalize().map_err(|error| error.to_string())?;
+                    // Only files canonically inside the legacy owned root are
+                    // migrated. External attachment paths stay external and
+                    // are never copied or deleted by AI history storage.
                     if canonical.starts_with(legacy_root) {
                         let bytes = fs::read(&canonical).map_err(|error| error.to_string())?;
                         let file_name = object
@@ -1158,6 +1167,9 @@ fn drive_component(component: TransactionComponent<'_>) -> Result<(), String> {
         return Err("AI history staging no longer matches its journal.".into());
     }
 
+    // Fingerprints and a backup turn publication into a compare-and-swap-like
+    // operation. A synced vault changed by another installation is rejected
+    // instead of being overwritten by this transaction.
     let destination_is_original =
         fingerprint_matches(component.destination, component.destination_fingerprint)?;
     let backup_is_original =
@@ -1246,6 +1258,8 @@ fn withdraw_source(
     journal: &MigrationJournal,
     failures: &mut dyn FailureInjector,
 ) -> Result<(), String> {
+    // Withdrawal is a rename to quarantine, not deletion. That makes this
+    // phase idempotent and leaves recovery evidence until logical commit.
     withdraw_component(journal.history_component())?;
     failures.check(Failpoint::AfterHistoryWithdrawn)?;
     withdraw_component(journal.managed_component())?;

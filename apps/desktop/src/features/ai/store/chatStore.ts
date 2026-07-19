@@ -538,6 +538,9 @@ function applyAiHistoryStorageSnapshot(
     snapshot: AIHistoryStorageStatus,
     expectedVaultPath?: string,
 ) {
+    // Generations are backend-issued per-vault ordering tokens, not timestamps.
+    // They prevent delayed responses or events from restoring an older storage
+    // projection after a vault switch or focus recovery.
     const activeVaultPath = useVaultStore.getState().vaultPath;
     if (
         expectedVaultPath != null &&
@@ -580,6 +583,8 @@ function activateAiHistoryStorageContext(vaultPath: string) {
 
 function canAccessAiHistoryStorageForVault(vaultPath: string) {
     const state = useChatStore.getState();
+    // Moving and recovery states block normal history I/O so a renderer cannot
+    // load from or persist to a root that is not yet canonical.
     return (
         state.historyStorageVaultPath !== vaultPath ||
         state.historyStorageStatus === null ||
@@ -8226,6 +8231,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             targetScope,
             sourceVaultKey,
         ) => {
+            // The store never flips a local preference optimistically. The
+            // backend snapshot is the sole confirmation that the canonical
+            // scope changed, and inventory reload waits for completed movement.
             activateAiHistoryStorageContext(vaultPath);
             try {
                 const result = await reconcileAiHistoryStorage(

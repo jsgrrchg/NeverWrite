@@ -178,6 +178,9 @@ pub(super) fn resolve_layout(
     }
 
     let normalized = normalized_vault_path(&canonical_vault);
+    // The path-derived key intentionally changes when a vault is moved or renamed.
+    // Reusing the old device namespace silently would attach local chat data to a
+    // different user-visible vault location; recovery makes that adoption explicit.
     let vault_key = hex_sha256(normalized.as_bytes());
     let filesystem_identity = filesystem_identity(&canonical_vault, &metadata, &normalized);
     let namespace = app_data_root
@@ -222,6 +225,10 @@ pub(super) fn read_state(layout: &VaultStorageLayout) -> StateRead {
             state.version
         ));
     }
+    // The key, canonical path, and filesystem identity each catch a different
+    // mismatch: namespace reuse, path aliases, and a new directory replacing an
+    // old vault at the same path. Accepting only one would make local history
+    // adoption ambiguous after filesystem changes.
     if state.vault_key != layout.vault_key {
         return StateRead::Invalid("AI history state belongs to another vault key.".to_string());
     }
@@ -554,6 +561,9 @@ fn write_json_atomically<T: Serialize>(
     ensure_private_namespace(namespace)?;
     let temporary = destination.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+    // Never overwrite a leftover temporary file. It may be evidence of an
+    // interrupted write or another process; only the same logical state can
+    // safely be completed here.
     if let Some(temporary_bytes) = read_optional_regular_file(&temporary)? {
         let expected: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;

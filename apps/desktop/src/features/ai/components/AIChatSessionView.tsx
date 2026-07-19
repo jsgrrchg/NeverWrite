@@ -489,6 +489,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 );
                 const currentSession =
                     useChatStore.getState().sessionsById[sessionId];
+                // The IPC call can outlive a vault or session change. Do not
+                // attach a draft created for the previous ownership context to
+                // whichever session now happens to have this ID.
                 const stillOwnsDraft =
                     useVaultStore.getState().vaultPath === vaultPathAtStart &&
                     currentSession?.runtimeId === sessionAtStart.runtimeId &&

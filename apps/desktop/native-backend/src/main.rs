@@ -902,6 +902,9 @@ impl NativeBackend {
                 Ok(json!(null))
             }
             command if AiHistoryStorageService::handles(command) => {
+                // AI history commands enter through this boundary so the
+                // backend, rather than a renderer-selected path, resolves the
+                // single canonical storage root for the open vault.
                 let vault_root = self.required_open_vault_root(&args)?;
                 self.ai_history.invoke(command, &vault_root, args)
             }
@@ -2479,6 +2482,8 @@ fn normalize_vault_path(raw: &str) -> Result<String, String> {
 }
 
 fn reject_private_managed_paths(args: &Value) -> Result<(), String> {
+    // General vault commands must not access internal managed blobs by path.
+    // AI history commands use validated logical IDs at their dedicated boundary.
     const PATH_KEYS: &[&str] = &[
         "relativePath",
         "relative_path",

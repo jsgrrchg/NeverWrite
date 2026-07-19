@@ -344,6 +344,9 @@ impl AiHistoryStorageService {
         &self,
         layout: &storage::VaultStorageLayout,
     ) -> Result<(), String> {
+        // The per-vault operation links the physical migration journal to the
+        // canonical-state update for this vault, even after the original
+        // renderer or backend process has gone away.
         let operation = storage::read_operation(layout)?;
         let Some(operation) = operation else {
             if migration::has_pending(&self.app_data_root)? {
@@ -507,6 +510,9 @@ impl AiHistoryStorageService {
             }
         }
 
+        // New vaults default to device storage, while a vault-only legacy root
+        // is adopted in place. Two non-empty roots are never resolved by a
+        // heuristic: recovery requires an explicit reconciliation instead.
         let scope = match (device.empty, vault.empty) {
             (true, true) | (false, true) => Some(storage::AIStorageScope::Device),
             (true, false) => Some(storage::AIStorageScope::Vault),
@@ -1020,6 +1026,9 @@ impl AiHistoryStorageService {
                 attachments::delete_draft(&self.app_data_root, &layout.draft_root, &draft_id)?;
             return Ok(json!({ "deleted": deleted }));
         }
+        // Every normal history command resolves its root here. Renderers pass a
+        // vault, never a scope or filesystem path, so only this service can
+        // choose the canonical storage location.
         let scope = self.resolve_ready_scope(&layout)?;
         let scope_layout = layout.scope(scope);
         let storage_root = scope_layout.histories.clone();
@@ -1036,6 +1045,9 @@ impl AiHistoryStorageService {
                     validate_managed_attachment_shapes(attachment_owner, &history_value)?;
                 let history: PersistedSessionHistory =
                     serde_json::from_value(history_value).map_err(|error| error.to_string())?;
+                // Validate and promote blobs before publishing the transcript;
+                // mark them committed only after the durable history reference
+                // exists, so cleanup can protect interrupted promotions.
                 persistence::save_session_history(&storage_root, &history)?;
                 for attachment_id in managed_attachment_ids {
                     attachments::mark_committed(attachment_owner, &attachment_id)?;
