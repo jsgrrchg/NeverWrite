@@ -314,11 +314,10 @@ describe("multi-session review integration", () => {
         expect(secondA).toBe(firstA);
     });
 
-    it("preserves pending changes and inline preference across an AI review transition", async () => {
+    it("clears pending changes while preserving inline preference across an AI review transition", async () => {
         const session = createSession("session-transition", [
             createTrackedFile("/vault/notes/transition.md", 10),
         ]);
-        const originalActionLog = session.actionLog;
 
         renderComponent(<MultiSessionReviewHarness />);
 
@@ -349,7 +348,7 @@ describe("multi-session review integration", () => {
         ).toBe(false);
         expect(
             useChatStore.getState().sessionsById[session.sessionId]?.actionLog,
-        ).toBe(originalActionLog);
+        ).toBeUndefined();
 
         await act(async () => {
             useSettingsStore.getState().setSetting("aiReviewEnabled", true);
@@ -359,7 +358,7 @@ describe("multi-session review integration", () => {
         expect(shouldEnableInlineReviewMergeView("source")).toBe(true);
         expect(
             useChatStore.getState().sessionsById[session.sessionId]?.actionLog,
-        ).toBe(originalActionLog);
+        ).toBeUndefined();
         expect(
             useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
         ).toBe(true);

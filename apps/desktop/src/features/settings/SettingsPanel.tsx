@@ -3941,7 +3941,7 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         [
             [
                 "AI change review",
-                "Show the Edits panel, Review tabs, and inline accept/reject controls. Chat diff updates remain visible.",
+                "Track AI file changes for review. Turning this off accepts and clears pending review changes. Chat diff updates remain visible.",
                 "review",
                 "edits",
                 "changes",
@@ -4022,7 +4022,7 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                 searchQuery={searchQuery}
                 section="Context"
                 label="AI change review"
-                description="Show the Edits panel, Review tabs, and inline accept/reject controls. Chat diff updates remain visible."
+                description="Track AI file changes for review. Turning this off accepts and clears pending review changes. Chat diff updates remain visible."
                 keywords={["review", "edits", "changes", "accept", "reject"]}
                 control={
                     <Toggle

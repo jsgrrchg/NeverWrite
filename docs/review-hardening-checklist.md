@@ -81,8 +81,8 @@ back to the agent.
 - [ ] Disable inline review for the vault and confirm Review tab/Edits panel
       still work while inline controls stay hidden.
 - [ ] Disable AI change review for the vault and confirm existing Review tabs
-      close, Edits and inline controls disappear, and pending changes are not
-      accepted or rejected implicitly.
+      close, Edits and inline controls disappear, and pending changes are
+      accepted and cleared without changing file content.
 - [ ] While AI change review is disabled, run an agent edit and confirm the
       chat timeline still shows its streamed diff.
 - [ ] Re-enable AI change review and confirm pending changes and the previous

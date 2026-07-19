@@ -113,8 +113,10 @@ There are three review surfaces:
 
 The Review tab and Edits surface are available only while the current vault's
 `aiReviewEnabled` setting is enabled. Disabling it closes open Review tabs,
-hides Edits, and disables inline decisions without mutating pending ActionLog
-state. Chat activity rows remain available so streamed diffs stay visible.
+hides Edits, and accepts then clears pending ActionLog state without writing
+the current file content back to disk. New agent changes are not added to the
+ActionLog while review is disabled. Chat activity rows remain available so
+streamed diffs stay visible.
 
 The Review tab and Edits surface render shared rows through
 [`EditedFilesReviewList.tsx`](../apps/desktop/src/features/ai/components/EditedFilesReviewList.tsx)
