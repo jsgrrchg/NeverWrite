@@ -363,6 +363,24 @@ fn mark_committed_from_directory_handles(
 }
 
 #[cfg(not(unix))]
+fn sync_cap_directory(directory: cap_std::fs::Dir) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // Windows does not provide a portable directory fsync. The marker is
+        // flushed before publication, and renames use MOVEFILE_WRITE_THROUGH.
+        let _ = directory;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        directory
+            .into_std_file()
+            .sync_all()
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(not(unix))]
 fn mark_committed_from_capability_handles(
     vault_root: &Path,
     attachment_id: &ManagedAttachmentId,
@@ -392,7 +410,7 @@ fn mark_committed_from_capability_handles(
         .write_all(now_ms().to_string().as_bytes())
         .map_err(|error| error.to_string())?;
     marker.sync_all().map_err(|error| error.to_string())?;
-    directory.sync_all().map_err(|error| error.to_string())
+    sync_cap_directory(directory)
 }
 
 pub(crate) fn cleanup_expired_drafts(app_data_root: &Path, draft_root: &Path, now: u64) {

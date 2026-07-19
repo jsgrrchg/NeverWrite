@@ -1995,7 +1995,11 @@ mod tests {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let vault = parent.path().join("vault");
+        let replacement = parent.path().join("replacement");
         fs::create_dir(&vault).unwrap();
+        // Allocate the replacement before deleting the original so this test
+        // does not depend on a filesystem's inode reuse policy.
+        fs::create_dir(&replacement).unwrap();
         let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
         service
             .invoke(
@@ -2006,7 +2010,7 @@ mod tests {
             .unwrap();
 
         fs::remove_dir_all(&vault).unwrap();
-        fs::create_dir(&vault).unwrap();
+        fs::rename(&replacement, &vault).unwrap();
 
         let status = service
             .invoke("ai_get_history_storage_status", &vault, json!({}))
@@ -2027,7 +2031,11 @@ mod tests {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let original = parent.path().join("original");
+        let moved = parent.path().join("moved-on-another-volume");
         fs::create_dir(&original).unwrap();
+        // Keep the candidate directory alive while the original exists so its
+        // identity cannot be reused after the original is removed.
+        fs::create_dir(&moved).unwrap();
         let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
         service
             .invoke(
@@ -2039,8 +2047,6 @@ mod tests {
         let old_layout = storage::resolve_layout(app_data.path(), &original).unwrap();
         let previous_path = old_layout.canonical_vault_path.clone();
         fs::remove_dir_all(&original).unwrap();
-        let moved = parent.path().join("moved-on-another-volume");
-        fs::create_dir(&moved).unwrap();
 
         let status = service
             .invoke("ai_get_history_storage_status", &moved, json!({}))

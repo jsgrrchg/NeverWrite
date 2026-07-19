@@ -755,11 +755,8 @@ fn filesystem_identity(path: &Path, metadata: &fs::Metadata, _normalized_path: &
     };
     #[cfg(windows)]
     let identity = {
-        use std::os::windows::fs::MetadataExt;
-        match (metadata.volume_serial_number(), metadata.file_index()) {
-            (Some(volume), Some(index)) => format!("windows:{volume}:{index}"),
-            _ => format!("path:{_normalized_path}"),
-        }
+        let _ = metadata;
+        windows_file_identity(path).unwrap_or_else(|| format!("path:{_normalized_path}"))
     };
     #[cfg(not(any(unix, windows)))]
     let identity = {
@@ -768,6 +765,30 @@ fn filesystem_identity(path: &Path, metadata: &fs::Metadata, _normalized_path: &
     };
     let _ = path;
     hex_sha256(identity.as_bytes())
+}
+
+#[cfg(windows)]
+fn windows_file_identity(path: &Path) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let directory = File::open(path).ok()?;
+    let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    let succeeded = unsafe {
+        GetFileInformationByHandle(directory.as_raw_handle() as isize, information.as_mut_ptr())
+    };
+    if succeeded == 0 {
+        return None;
+    }
+    let information = unsafe { information.assume_init() };
+    let index =
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+    Some(format!(
+        "windows:{}:{index}",
+        information.dwVolumeSerialNumber
+    ))
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
