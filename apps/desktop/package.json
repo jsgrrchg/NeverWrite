@@ -9,6 +9,7 @@
         "node": ">=22.12.0"
     },
     "scripts": {
+        "preinstall": "node scripts/require-npm.mjs",
         "dev": "node scripts/run-electron-dev.mjs",
         "renderer:dev": "vite",
         "build": "tsc -b && vite build",
