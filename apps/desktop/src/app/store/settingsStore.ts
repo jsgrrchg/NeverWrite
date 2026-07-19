@@ -21,6 +21,7 @@ export interface Settings {
     editorActiveLineHighlight: boolean;
     justifyText: boolean;
     livePreviewEnabled: boolean;
+    aiReviewEnabled: boolean;
     inlineReviewEnabled: boolean;
     hoverPreviewEnabled: boolean;
     hoverPreviewDelayMs: number; // 0–2000
@@ -194,6 +195,7 @@ const defaults: Settings = {
     editorActiveLineHighlight: true,
     justifyText: false,
     livePreviewEnabled: true,
+    aiReviewEnabled: true,
     inlineReviewEnabled: true,
     hoverPreviewEnabled: true,
     hoverPreviewDelayMs: 300,
@@ -482,6 +484,8 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             justifyText: parsed.state.justifyText ?? defaults.justifyText,
             livePreviewEnabled:
                 parsed.state.livePreviewEnabled ?? defaults.livePreviewEnabled,
+            aiReviewEnabled:
+                parsed.state.aiReviewEnabled ?? defaults.aiReviewEnabled,
             inlineReviewEnabled:
                 parsed.state.inlineReviewEnabled ??
                 defaults.inlineReviewEnabled,
@@ -620,6 +624,7 @@ function pickSettings(state: SettingsStore): Settings {
         editorActiveLineHighlight: state.editorActiveLineHighlight,
         justifyText: state.justifyText,
         livePreviewEnabled: state.livePreviewEnabled,
+        aiReviewEnabled: state.aiReviewEnabled,
         inlineReviewEnabled: state.inlineReviewEnabled,
         hoverPreviewEnabled: state.hoverPreviewEnabled,
         hoverPreviewDelayMs: state.hoverPreviewDelayMs,

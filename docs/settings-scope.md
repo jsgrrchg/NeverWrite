@@ -83,7 +83,8 @@ the same Settings stores.
 | Editor / Preview | `hoverPreviewDelayMs` | Global | `300` | `neverwrite:settings` | Open delay for the hover preview; clamped to `0..2000`. |
 | Editor / Layout | `editorContentWidth` | Per-vault | `940` | `neverwrite:settings:<vault-path>` | Clamped to `600..1200`. |
 | PDF toolbar | `pdfFilter` | Per-vault | `none` | `neverwrite:settings:<vault-path>` | Cycled from the PDF tab toolbar. Valid values are `none`, `dark`, `sepia`, and `grayscale`. |
-| AI / Context | `inlineReviewEnabled` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Gates inline review in source mode. This is a review-system correctness setting. |
+| AI / Context | `aiReviewEnabled` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Gates the Edits panel, Review tabs, and inline review controls. Chat diff updates remain visible. |
+| AI / Context | `inlineReviewEnabled` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Gates inline review in source mode when AI change review is enabled. This is a review-system correctness setting. |
 | AI / Context | `autoContextEnabled` | Per-vault, global fallback | `false` | `neverwrite.ai.auto-context:<vault-path>` | Legacy `neverwrite.ai.preferences.autoContextEnabled` is still read as fallback. |
 | AI / Chat | `chatFontFamily` | Global | `system` | `neverwrite.ai.preferences` | Validated with editor font-family normalization. |
 | AI / Chat | `chatFontSize` | Global | `14` | `neverwrite.ai.preferences` | Chat transcript font size. |
