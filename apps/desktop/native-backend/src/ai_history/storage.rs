@@ -776,9 +776,8 @@ fn windows_file_identity(path: &Path) -> Option<String> {
 
     let directory = File::open(path).ok()?;
     let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
-    let succeeded = unsafe {
-        GetFileInformationByHandle(directory.as_raw_handle() as isize, information.as_mut_ptr())
-    };
+    let succeeded =
+        unsafe { GetFileInformationByHandle(directory.as_raw_handle(), information.as_mut_ptr()) };
     if succeeded == 0 {
         return None;
     }
