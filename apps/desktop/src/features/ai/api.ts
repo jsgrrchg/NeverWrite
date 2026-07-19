@@ -70,6 +70,10 @@ export const AI_HISTORY_STORAGE_CHANGED_EVENT =
     "ai_history_storage_changed";
 
 export type AIStorageScope = "device" | "vault";
+export type AIHistoryRecoveryRootId =
+    | "device"
+    | "vault"
+    | "previous_device";
 
 export interface AIHistoryRecoveryDetails {
     reason: string;
@@ -83,6 +87,19 @@ export interface AIHistoryRecoveryDetails {
 export interface AIHistoryOrphanedDeviceHistory {
     vaultKey: string;
     previousVaultPath: string;
+}
+
+export interface AIHistoryRecoveryDiagnostic {
+    reason: string;
+    message: string;
+    canReconcile: boolean;
+    conflictingSessionIds: string[];
+    conflictingAttachmentIds: string[];
+    roots: Array<{
+        id: AIHistoryRecoveryRootId;
+        label: string;
+        hasData: boolean;
+    }>;
 }
 
 export type AIHistoryStorageStatus =
@@ -872,6 +889,34 @@ export async function reconcileAiHistoryStorage(
         "reconcile_ai_history_storage",
         { vaultPath, targetScope, sourceVaultKey },
     );
+}
+
+export async function getAiHistoryRecoveryDiagnostic(
+    vaultPath: string,
+): Promise<AIHistoryRecoveryDiagnostic> {
+    return invoke<AIHistoryRecoveryDiagnostic>(
+        "ai_get_history_recovery_diagnostic",
+        { vaultPath },
+    );
+}
+
+export async function getAiHistoryRecoveryRevealPath(
+    vaultPath: string,
+    root: AIHistoryRecoveryRootId,
+): Promise<string> {
+    const result = await invoke<{ path: string }>(
+        "ai_reveal_history_recovery_root",
+        { vaultPath, root },
+    );
+    return result.path;
+}
+
+export async function retryAiHistoryRecovery(
+    vaultPath: string,
+): Promise<AIHistoryStorageStatus> {
+    return invoke<AIHistoryStorageStatus>("ai_retry_history_recovery", {
+        vaultPath,
+    });
 }
 
 export async function listenToAiHistoryStorageChanged(

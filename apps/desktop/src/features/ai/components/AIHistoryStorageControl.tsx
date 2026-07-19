@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { confirm } from "@neverwrite/runtime";
+import { confirm, revealItemInDir } from "@neverwrite/runtime";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import {
+    getAiHistoryRecoveryDiagnostic,
+    getAiHistoryRecoveryRevealPath,
+    retryAiHistoryRecovery,
+} from "../api";
 import { useChatStore } from "../store/chatStore";
-import type { AIStorageScope } from "../api";
+import type {
+    AIHistoryRecoveryDiagnostic,
+    AIHistoryRecoveryRootId,
+    AIStorageScope,
+} from "../api";
 
 export function AIHistoryStorageControl({
     compact = false,
@@ -18,6 +27,9 @@ export function AIHistoryStorageControl({
         (state) => state.changeAiHistoryStorage,
     );
     const [changing, setChanging] = useState(false);
+    const [recoveryActionPending, setRecoveryActionPending] = useState(false);
+    const [recoveryDiagnostic, setRecoveryDiagnostic] =
+        useState<AIHistoryRecoveryDiagnostic | null>(null);
     const recovery =
         status?.status === "recovery_required" ? status.details : null;
     const ready = status?.status === "ready" ? status : null;
@@ -46,6 +58,26 @@ export function AIHistoryStorageControl({
                 : (orphanedDeviceHistories[0]?.vaultKey ?? null),
         );
     }, [orphanedDeviceHistories]);
+
+    useEffect(() => {
+        let active = true;
+        if (!vaultPath || !recovery) {
+            setRecoveryDiagnostic(null);
+            return () => {
+                active = false;
+            };
+        }
+        void getAiHistoryRecoveryDiagnostic(vaultPath)
+            .then((diagnostic) => {
+                if (active) setRecoveryDiagnostic(diagnostic);
+            })
+            .catch(() => {
+                if (active) setRecoveryDiagnostic(null);
+            });
+        return () => {
+            active = false;
+        };
+    }, [recovery, vaultPath]);
 
     const requestChange = useCallback(
         async (target: AIStorageScope, sourceVaultKey?: string) => {
@@ -81,9 +113,55 @@ export function AIHistoryStorageControl({
         ],
     );
 
+    const revealRecoveryRoot = useCallback(
+        async (root: AIHistoryRecoveryRootId) => {
+            if (!vaultPath || recoveryActionPending) return;
+            setRecoveryActionPending(true);
+            try {
+                await revealItemInDir(
+                    await getAiHistoryRecoveryRevealPath(vaultPath, root),
+                );
+            } finally {
+                setRecoveryActionPending(false);
+            }
+        },
+        [recoveryActionPending, vaultPath],
+    );
+
+    const exportRecoveryDiagnostic = useCallback(async () => {
+        if (!vaultPath || recoveryActionPending) return;
+        setRecoveryActionPending(true);
+        try {
+            const diagnostic = await getAiHistoryRecoveryDiagnostic(vaultPath);
+            const blob = new Blob([JSON.stringify(diagnostic, null, 2)], {
+                type: "application/json",
+            });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "neverwrite-ai-history-recovery.json";
+            link.click();
+            URL.revokeObjectURL(url);
+        } finally {
+            setRecoveryActionPending(false);
+        }
+    }, [recoveryActionPending, vaultPath]);
+
+    const retryRecovery = useCallback(async () => {
+        if (!vaultPath || recoveryActionPending) return;
+        setRecoveryActionPending(true);
+        try {
+            await retryAiHistoryRecovery(vaultPath);
+            await refreshStatus(vaultPath);
+        } finally {
+            setRecoveryActionPending(false);
+        }
+    }, [recoveryActionPending, refreshStatus, vaultPath]);
+
     if (!vaultPath) return null;
 
-    const isMoving = changing || status?.status === "moving";
+    const isMoving =
+        changing || recoveryActionPending || status?.status === "moving";
     const conflictingIds = recovery
         ? [
               ...recovery.conflictingSessionIds,
@@ -199,6 +277,53 @@ export function AIHistoryStorageControl({
                                 }}
                             >
                                 Use this vault
+                            </button>
+                        </div>
+                    ) : null}
+                    {!recovery.canReconcile ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                            {recoveryDiagnostic?.roots
+                                .filter((root) => root.hasData)
+                                .map((root) => (
+                                    <button
+                                        key={root.id}
+                                        type="button"
+                                        disabled={isMoving}
+                                        onClick={() =>
+                                            void revealRecoveryRoot(root.id)
+                                        }
+                                        className="rounded px-2 py-1 text-[11px]"
+                                        style={{
+                                            color: "var(--text-primary)",
+                                            border: "1px solid var(--border)",
+                                        }}
+                                    >
+                                        Reveal {root.label}
+                                    </button>
+                                ))}
+                            <button
+                                type="button"
+                                disabled={isMoving}
+                                onClick={() => void exportRecoveryDiagnostic()}
+                                className="rounded px-2 py-1 text-[11px]"
+                                style={{
+                                    color: "var(--text-primary)",
+                                    border: "1px solid var(--border)",
+                                }}
+                            >
+                                Export diagnostic
+                            </button>
+                            <button
+                                type="button"
+                                disabled={isMoving}
+                                onClick={() => void retryRecovery()}
+                                className="rounded px-2 py-1 text-[11px]"
+                                style={{
+                                    color: "var(--text-primary)",
+                                    border: "1px solid var(--border)",
+                                }}
+                            >
+                                Retry
                             </button>
                         </div>
                     ) : null}

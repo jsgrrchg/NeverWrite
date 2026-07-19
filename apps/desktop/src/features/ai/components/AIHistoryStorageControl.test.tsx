@@ -1,4 +1,4 @@
-import { confirm } from "@neverwrite/runtime";
+import { confirm, invoke, revealItemInDir } from "@neverwrite/runtime";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -108,17 +108,46 @@ describe("AIHistoryStorageControl", () => {
         );
     });
 
-    it("shows conflicting IDs and blocks destructive recovery actions", () => {
+    it("shows only the reveal roots supplied by the backend", async () => {
+        vi.mocked(invoke).mockImplementation(async (command) => {
+            if (command === "ai_reveal_history_recovery_root") {
+                return { path: "/previous-local-history" };
+            }
+            return {
+                reason: "multiple_local_roots",
+                message: "Manual recovery required.",
+                canReconcile: false,
+                conflictingSessionIds: [],
+                conflictingAttachmentIds: [],
+                roots: [
+                    {
+                        id: "previous_device",
+                        label: "Previous local data",
+                        hasData: true,
+                    },
+                    {
+                        id: "device",
+                        label: "Current device data",
+                        hasData: false,
+                    },
+                    {
+                        id: "vault",
+                        label: "Current vault data",
+                        hasData: true,
+                    },
+                ],
+            };
+        });
         useChatStore.setState({
             historyStorageStatus: {
                 vaultKey: "vault-key",
                 generation: 2,
                 status: "recovery_required",
                 details: {
-                    reason: "conflicting_roots",
-                    message: "Conflicting AI chats require manual resolution.",
+                    reason: "multiple_local_roots",
+                    message: "Manual recovery required.",
                     canReconcile: false,
-                    conflictingSessionIds: ["session-a"],
+                    conflictingSessionIds: [],
                     conflictingAttachmentIds: [],
                     renamedDeviceHistory: false,
                 },
@@ -127,12 +156,41 @@ describe("AIHistoryStorageControl", () => {
 
         renderComponent(<AIHistoryStorageControl />);
 
-        expect(screen.getByText("Conflicts: session-a")).toBeInTheDocument();
         expect(
             screen.queryByRole("button", { name: "Use this device" }),
         ).not.toBeInTheDocument();
         expect(
             screen.queryByRole("button", { name: "Use this vault" }),
         ).not.toBeInTheDocument();
+        expect(
+            await screen.findByRole("button", {
+                name: "Reveal Previous local data",
+            }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Reveal Current vault data" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Reveal Current device data" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Export diagnostic" }),
+        ).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Reveal Previous local data" }),
+        );
+        await waitFor(() =>
+            expect(invoke).toHaveBeenCalledWith(
+                "ai_reveal_history_recovery_root",
+                { vaultPath: "/vault", root: "previous_device" },
+            ),
+        );
+        await waitFor(() =>
+            expect(revealItemInDir).toHaveBeenCalledWith(
+                "/previous-local-history",
+            ),
+        );
     });
 });

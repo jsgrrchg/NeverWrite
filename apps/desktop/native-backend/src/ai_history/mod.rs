@@ -5,7 +5,7 @@ use std::sync::{mpsc::Sender, Mutex};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use neverwrite_ai::persistence::{self, PersistedSessionHistory};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::RpcOutput;
@@ -32,6 +32,9 @@ const COMMANDS: &[&str] = &[
     "ai_delete_managed_attachment_if_unreferenced",
     "ai_resolve_managed_attachment_path",
     "ai_get_history_storage_status",
+    "ai_get_history_recovery_diagnostic",
+    "ai_reveal_history_recovery_root",
+    "ai_retry_history_recovery",
     "reconcile_ai_history_storage",
 ];
 
@@ -82,6 +85,33 @@ struct RecoveryDetails {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RecoveryDiagnostic {
+    reason: String,
+    message: String,
+    can_reconcile: bool,
+    conflicting_session_ids: Vec<String>,
+    conflicting_attachment_ids: Vec<String>,
+    roots: Vec<RecoveryDiagnosticRoot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RecoveryRootId {
+    Device,
+    Vault,
+    PreviousDevice,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryDiagnosticRoot {
+    id: RecoveryRootId,
+    label: &'static str,
+    has_data: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct OrphanedDeviceHistory {
     vault_key: String,
     previous_vault_path: String,
@@ -96,6 +126,9 @@ enum RecoveryPlan {
         source_vault_key: String,
         source: storage::ScopeLayout,
     },
+    MultipleLocalRoots {
+        source: storage::ScopeLayout,
+    },
 }
 
 impl RecoveryPlan {
@@ -103,6 +136,7 @@ impl RecoveryPlan {
         match self {
             Self::Roots { inspection } => inspection.can_reconcile(),
             Self::RenamedDevice { .. } => true,
+            Self::MultipleLocalRoots { .. } => false,
         }
     }
 }
@@ -383,7 +417,9 @@ impl AiHistoryStorageService {
                             conflicting_attachment_ids: Vec::new(),
                             renamed_device_history: true,
                         },
-                        None,
+                        Some(RecoveryPlan::MultipleLocalRoots {
+                            source: candidate.source,
+                        }),
                     ));
                 }
                 storage::write_state(layout, &storage::CanonicalState::recovery_required(layout))?;
@@ -583,6 +619,151 @@ impl AiHistoryStorageService {
         }
     }
 
+    fn recovery_diagnostic(
+        &self,
+        layout: &storage::VaultStorageLayout,
+    ) -> Result<RecoveryDiagnostic, String> {
+        let resolution = self.resolve_canonical(layout)?;
+        let CanonicalResolution::Recovery(details, plan) = resolution else {
+            return Err("AI history recovery is not required.".to_string());
+        };
+        let device = migration::inspect_layout(&layout.device.transaction_layout())?;
+        let vault = migration::inspect_layout(&layout.vault.transaction_layout())?;
+        let mut roots = Vec::new();
+        match plan {
+            Some(RecoveryPlan::Roots { .. }) => {
+                roots.push(RecoveryDiagnosticRoot {
+                    id: RecoveryRootId::Device,
+                    label: "Device data",
+                    has_data: !device.empty,
+                });
+                roots.push(RecoveryDiagnosticRoot {
+                    id: RecoveryRootId::Vault,
+                    label: "Vault data",
+                    has_data: !vault.empty,
+                });
+            }
+            Some(RecoveryPlan::RenamedDevice { source, .. }) => {
+                let previous = migration::inspect_layout(&source.transaction_layout())?;
+                roots.push(RecoveryDiagnosticRoot {
+                    id: RecoveryRootId::PreviousDevice,
+                    label: "Previous local data",
+                    has_data: !previous.empty,
+                });
+            }
+            Some(RecoveryPlan::MultipleLocalRoots { source }) => {
+                let previous = migration::inspect_layout(&source.transaction_layout())?;
+                roots.push(RecoveryDiagnosticRoot {
+                    id: RecoveryRootId::PreviousDevice,
+                    label: "Previous local data",
+                    has_data: !previous.empty,
+                });
+                roots.push(RecoveryDiagnosticRoot {
+                    id: RecoveryRootId::Device,
+                    label: "Current device data",
+                    has_data: !device.empty,
+                });
+                roots.push(RecoveryDiagnosticRoot {
+                    id: RecoveryRootId::Vault,
+                    label: "Current vault data",
+                    has_data: !vault.empty,
+                });
+            }
+            None => {}
+        }
+        Ok(RecoveryDiagnostic {
+            reason: details.reason,
+            message: details.message,
+            can_reconcile: details.can_reconcile,
+            conflicting_session_ids: details.conflicting_session_ids,
+            conflicting_attachment_ids: details.conflicting_attachment_ids,
+            // Paths remain backend-only. The UI receives stable root IDs that
+            // can be resolved by the reveal command without leaking locations.
+            roots,
+        })
+    }
+
+    fn recovery_reveal_root(
+        &self,
+        layout: &storage::VaultStorageLayout,
+        root: RecoveryRootId,
+    ) -> Result<PathBuf, String> {
+        match self.resolve_canonical(layout)? {
+            CanonicalResolution::Recovery(_, Some(RecoveryPlan::RenamedDevice { source, .. }))
+                if root == RecoveryRootId::PreviousDevice =>
+            {
+                Ok(source.histories)
+            }
+            CanonicalResolution::Recovery(_, Some(RecoveryPlan::MultipleLocalRoots { source })) => {
+                match root {
+                    RecoveryRootId::PreviousDevice => Ok(source.histories),
+                    RecoveryRootId::Device => Ok(layout.device.histories.clone()),
+                    RecoveryRootId::Vault => Ok(layout.vault.histories.clone()),
+                }
+            }
+            CanonicalResolution::Recovery(_, Some(RecoveryPlan::Roots { .. })) => match root {
+                RecoveryRootId::Device => Ok(layout.device.histories.clone()),
+                RecoveryRootId::Vault => Ok(layout.vault.histories.clone()),
+                RecoveryRootId::PreviousDevice => Err(
+                    "The previous local data root is not part of this recovery state.".to_string(),
+                ),
+            },
+            CanonicalResolution::Recovery(_, _) => {
+                Err("This recovery state does not have a safe data location to reveal.".to_string())
+            }
+            CanonicalResolution::Ready(_) => {
+                Err("AI history recovery is not required.".to_string())
+            }
+        }
+    }
+
+    fn retry_recovery(
+        &self,
+        layout: &storage::VaultStorageLayout,
+    ) -> Result<StorageStatusSnapshot, String> {
+        self.recover_pending_operation(layout)?;
+        if !matches!(
+            storage::read_state(layout),
+            storage::StateRead::Valid(storage::CanonicalState {
+                kind: storage::CanonicalStateKind::RecoveryRequired,
+                ..
+            })
+        ) {
+            return Ok(self.storage_status(layout));
+        }
+
+        // A retry never picks a winner between two roots. It only restores a
+        // canonical state after manual work leaves exactly one unambiguous root.
+        if let Some(candidate) =
+            storage::find_renamed_device_namespace(&self.app_data_root, layout)?
+        {
+            if !migration::inspect_layout(&candidate.source.transaction_layout())?.empty {
+                let status = self.storage_status(layout);
+                self.emit_snapshot(&status);
+                return Ok(status);
+            }
+        }
+        let device = migration::inspect_layout(&layout.device.transaction_layout())?;
+        let vault = migration::inspect_layout(&layout.vault.transaction_layout())?;
+        let scope = match (device.empty, vault.empty) {
+            (true, true) | (false, true) => storage::AIStorageScope::Device,
+            (true, false) => storage::AIStorageScope::Vault,
+            (false, false) => {
+                let status = self.storage_status(layout);
+                self.emit_snapshot(&status);
+                return Ok(status);
+            }
+        };
+        storage::write_state(layout, &storage::CanonicalState::ready(layout, scope))?;
+        self.validated_scopes
+            .lock()
+            .map_err(|error| format!("AI history validation state error: {error}"))?
+            .insert(layout.vault_key.clone(), scope);
+        let status = self.snapshot_for_resolution(layout, CanonicalResolution::Ready(scope))?;
+        self.emit_snapshot(&status);
+        Ok(status)
+    }
+
     fn reconcile_storage(
         &self,
         layout: &storage::VaultStorageLayout,
@@ -634,6 +815,10 @@ impl AiHistoryStorageService {
                         source,
                         Some(source_vault_key),
                     ),
+                    RecoveryPlan::MultipleLocalRoots { .. } => {
+                        return Err("Multiple local AI history roots require manual resolution."
+                            .to_string());
+                    }
                 }
             }
             CanonicalResolution::Recovery(details, _) => {
@@ -704,6 +889,24 @@ impl AiHistoryStorageService {
         let layout = storage::resolve_layout(&self.app_data_root, vault_root)?;
         if command == "ai_get_history_storage_status" {
             return serde_json::to_value(self.storage_status(&layout))
+                .map_err(|error| error.to_string());
+        }
+        if command == "ai_get_history_recovery_diagnostic" {
+            return serde_json::to_value(self.recovery_diagnostic(&layout)?)
+                .map_err(|error| error.to_string());
+        }
+        if command == "ai_reveal_history_recovery_root" {
+            let root: RecoveryRootId = serde_json::from_value(
+                args.get("root")
+                    .cloned()
+                    .ok_or_else(|| "Missing argument: root".to_string())?,
+            )
+            .map_err(|_| "Invalid AI history recovery root.".to_string())?;
+            let path = self.recovery_reveal_root(&layout, root)?;
+            return Ok(json!({ "path": path }));
+        }
+        if command == "ai_retry_history_recovery" {
+            return serde_json::to_value(self.retry_recovery(&layout)?)
                 .map_err(|error| error.to_string());
         }
         if command == "reconcile_ai_history_storage" {
@@ -1369,6 +1572,60 @@ mod tests {
     }
 
     #[test]
+    fn conflicting_recovery_exposes_only_owned_roots_and_retries_after_manual_resolution() {
+        let app_data = tempfile::tempdir().unwrap();
+        let vault = tempfile::tempdir().unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        let layout = storage::resolve_layout(app_data.path(), vault.path()).unwrap();
+        persistence::save_session_history(
+            &layout.device.histories,
+            &text_history("same", "device"),
+        )
+        .unwrap();
+        persistence::save_session_history(&layout.vault.histories, &text_history("same", "vault"))
+            .unwrap();
+
+        let diagnostic = service
+            .invoke(
+                "ai_get_history_recovery_diagnostic",
+                vault.path(),
+                json!({}),
+            )
+            .unwrap();
+        assert_eq!(diagnostic["conflictingSessionIds"], json!(["same"]));
+        assert!(diagnostic.get("path").is_none());
+        assert_eq!(diagnostic["roots"][0]["id"], "device");
+        assert_eq!(diagnostic["roots"][0]["label"], "Device data");
+        assert_eq!(diagnostic["roots"][0]["hasData"], true);
+
+        let revealed = service
+            .invoke(
+                "ai_reveal_history_recovery_root",
+                vault.path(),
+                json!({ "root": "device" }),
+            )
+            .unwrap();
+        assert_eq!(revealed["path"], json!(layout.device.histories));
+        assert!(service
+            .invoke(
+                "ai_reveal_history_recovery_root",
+                vault.path(),
+                json!({ "root": "outside" }),
+            )
+            .is_err());
+
+        fs::remove_dir_all(&layout.vault.histories).unwrap();
+        let status = service
+            .invoke("ai_retry_history_recovery", vault.path(), json!({}))
+            .unwrap();
+        assert_eq!(status["status"], "ready");
+        assert_eq!(status["scope"], "device");
+        assert!(service
+            .invoke("ai_load_session_histories", vault.path(), json!({}))
+            .is_ok());
+    }
+
+    #[test]
     fn reconcile_emits_moving_then_ready_and_preview_ids_survive() {
         let app_data = tempfile::tempdir().unwrap();
         let vault = tempfile::tempdir().unwrap();
@@ -1539,6 +1796,67 @@ mod tests {
             .unwrap();
         assert_eq!(histories.as_array().unwrap().len(), 1);
         assert_eq!(histories[0]["session_id"], "local");
+    }
+
+    #[test]
+    fn multiple_local_roots_expose_previous_and_current_data_for_manual_recovery() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let original = parent.path().join("original");
+        fs::create_dir(&original).unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        service
+            .invoke(
+                "ai_save_session_history",
+                &original,
+                json!({ "history": text_history("previous", "before rename") }),
+            )
+            .unwrap();
+
+        let renamed = parent.path().join("renamed");
+        fs::rename(&original, &renamed).unwrap();
+        let current_layout = storage::resolve_layout(app_data.path(), &renamed).unwrap();
+        persistence::save_session_history(
+            &current_layout.vault.histories,
+            &text_history("current", "after rename"),
+        )
+        .unwrap();
+
+        let status = service
+            .invoke("ai_get_history_storage_status", &renamed, json!({}))
+            .unwrap();
+        assert_eq!(status["details"]["reason"], "multiple_local_roots");
+
+        let previous = storage::find_renamed_device_namespace(app_data.path(), &current_layout)
+            .unwrap()
+            .unwrap();
+        let diagnostic = service
+            .invoke("ai_get_history_recovery_diagnostic", &renamed, json!({}))
+            .unwrap();
+        assert_eq!(diagnostic["roots"].as_array().unwrap().len(), 3);
+        assert_eq!(diagnostic["roots"][0]["id"], "previous_device");
+        assert_eq!(diagnostic["roots"][0]["hasData"], true);
+        assert_eq!(diagnostic["roots"][1]["id"], "device");
+        assert_eq!(diagnostic["roots"][1]["hasData"], false);
+        assert_eq!(diagnostic["roots"][2]["id"], "vault");
+        assert_eq!(diagnostic["roots"][2]["hasData"], true);
+
+        let previous_path = service
+            .invoke(
+                "ai_reveal_history_recovery_root",
+                &renamed,
+                json!({ "root": "previous_device" }),
+            )
+            .unwrap();
+        assert_eq!(previous_path["path"], json!(previous.source.histories));
+        let current_path = service
+            .invoke(
+                "ai_reveal_history_recovery_root",
+                &renamed,
+                json!({ "root": "vault" }),
+            )
+            .unwrap();
+        assert_eq!(current_path["path"], json!(current_layout.vault.histories));
     }
 
     #[test]
