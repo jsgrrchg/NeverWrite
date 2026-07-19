@@ -3,7 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ElectronVaultBackend } from "./vaultBackend";
-import type { NativeBackendBridge } from "./nativeBackend";
+import {
+    supportsNativeBackendCommand,
+    type NativeBackendBridge,
+} from "./nativeBackend";
 import type { AppUpdaterBackend } from "./updater";
 
 type VaultEntryForTest = {
@@ -159,6 +162,16 @@ describe("ElectronVaultBackend managed attachment routing", () => {
         expect(showItemInFolderMock).toHaveBeenCalledWith(
             "/vault/assets/chat/.neverwrite-managed/v1/blobs/id/blob",
         );
+    });
+});
+
+describe("native backend AI history recovery command support", () => {
+    it.each([
+        "ai_get_history_recovery_diagnostic",
+        "ai_reveal_history_recovery_root",
+        "ai_retry_history_recovery",
+    ])("declares %s for the native sidecar", (command) => {
+        expect(supportsNativeBackendCommand(command)).toBe(true);
     });
 });
 
