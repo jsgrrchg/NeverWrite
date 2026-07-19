@@ -5,6 +5,7 @@ import {
     safeStorageSetItem,
     subscribeSafeStorage,
 } from "../utils/safeStorage";
+import { notifyAiReviewDisabled } from "./aiReviewEvents";
 import { useVaultStore } from "./vaultStore";
 
 export interface Settings {
@@ -843,9 +844,14 @@ function readInitialVaultPath(): string | null {
     }
 }
 
-export const useSettingsStore = create<SettingsStore>()((set) => ({
+export const useSettingsStore = create<SettingsStore>()((set, get) => ({
     ...defaults,
-    setSetting: (key, value) =>
+    setSetting: (key, value) => {
+        const shouldCloseReviewTabs =
+            key === "aiReviewEnabled" &&
+            value === false &&
+            get().aiReviewEnabled;
+
         set((state) => {
             if (
                 key === "spellcheckPrimaryLanguage" ||
@@ -874,7 +880,12 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
             }
 
             return { [key]: value } as Partial<Settings>;
-        }),
+        });
+
+        if (shouldCloseReviewTabs) {
+            notifyAiReviewDisabled();
+        }
+    },
     reset: () => set(defaults),
 }));
 

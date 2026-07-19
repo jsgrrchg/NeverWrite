@@ -2597,6 +2597,25 @@ describe("editorStore tab management", () => {
         expect(state.activeTabId).toBe("tab-a");
     });
 
+    it("blocks and closes review tabs when AI change review is disabled", () => {
+        useEditorStore.getState().openReview("session-1");
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
+        ).toBe(true);
+
+        useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
+        ).toBe(false);
+
+        useEditorStore.getState().openReview("session-2");
+
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
+        ).toBe(false);
+    });
+
     it("switches to a tab in another pane and focuses that pane", () => {
         useEditorStore.getState().hydrateWorkspace(
             [

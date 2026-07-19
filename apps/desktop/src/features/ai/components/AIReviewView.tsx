@@ -167,12 +167,17 @@ interface AIReviewViewProps {
 }
 
 export function AIReviewView({ paneId, tabId }: AIReviewViewProps) {
+    const aiReviewEnabled = useSettingsStore((state) => state.aiReviewEnabled);
     const tab = useEditorStore((state) => {
         const current = tabId
             ? selectPaneTab(state, paneId, tabId)
             : selectEditorPaneActiveTab(state, paneId);
         return current && isReviewTab(current) ? current : null;
     });
+
+    if (!aiReviewEnabled) {
+        return null;
+    }
 
     if (!tab) {
         return (

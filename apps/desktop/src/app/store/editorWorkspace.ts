@@ -1,5 +1,6 @@
 import type { StoreApi } from "zustand";
 import type { EditorTarget } from "../../features/editor/editorTargetResolver";
+import { isAiReviewEnabledForCurrentVault } from "../../features/editor/editorReviewGate";
 import {
     buildChatTabFromHistory,
     buildTabFromHistory,
@@ -181,6 +182,7 @@ export interface EditorWorkspaceActions {
         options?: { background?: boolean; title?: string },
     ) => void;
     closeReview: (sessionId: string) => void;
+    closeAllReviewTabs: () => void;
     openChat: (
         sessionId: string,
         options?: {
@@ -2423,6 +2425,10 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         openReview: (sessionId, options) => {
+            if (!isAiReviewEnabledForCurrentVault()) {
+                return;
+            }
+
             set((state) => {
                 const workspace = getEffectivePaneWorkspace(state);
                 const existingPane = workspace.panes.find((pane) =>
@@ -2527,6 +2533,15 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 (t) => isReviewTab(t) && t.sessionId === sessionId,
             );
             if (tab) get().closeTab(tab.id);
+        },
+
+        closeAllReviewTabs: () => {
+            const reviewTabIds = selectEditorWorkspaceTabs(get())
+                .filter(isReviewTab)
+                .map((tab) => tab.id);
+            for (const tabId of reviewTabIds) {
+                get().closeTab(tabId, { reason: "cleanup" });
+            }
         },
 
         openChat: (sessionId, options) => {
