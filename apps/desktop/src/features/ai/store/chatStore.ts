@@ -578,7 +578,17 @@ function activateAiHistoryStorageContext(vaultPath: string) {
     });
 }
 
+function canAccessAiHistoryStorageForVault(vaultPath: string) {
+    const state = useChatStore.getState();
+    return (
+        state.historyStorageVaultPath !== vaultPath ||
+        state.historyStorageStatus === null ||
+        state.historyStorageStatus.status === "ready"
+    );
+}
+
 async function refreshPersistedHistoryInventory(vaultPath: string) {
+    if (!canAccessAiHistoryStorageForVault(vaultPath)) return;
     const histories = (
         await aiLoadSessionHistories(vaultPath, { includeMessages: false })
     ).filter(hasPersistedHistoryContent);
@@ -7140,7 +7150,13 @@ function persistCurrentSession(sessionId: string) {
 
 async function pruneSessionHistoriesForCurrentVault(maxAgeDays: number) {
     const vaultPath = useVaultStore.getState().vaultPath;
-    if (!vaultPath || maxAgeDays <= 0) return 0;
+    if (
+        !vaultPath ||
+        maxAgeDays <= 0 ||
+        !canAccessAiHistoryStorageForVault(vaultPath)
+    ) {
+        return 0;
+    }
     return aiPruneSessionHistories(vaultPath, maxAgeDays);
 }
 
@@ -7284,7 +7300,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (limit <= 0) return true;
 
         const vaultPath = useVaultStore.getState().vaultPath;
-        if (!vaultPath) return false;
+        if (!vaultPath || !canAccessAiHistoryStorageForVault(vaultPath)) {
+            return false;
+        }
 
         set((state) => ({
             sessionsById: updateSessionById(state, sessionId, (current) => ({
@@ -8387,7 +8405,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     string,
                     PersistedSessionHistory
                 >();
-                if (vaultPath) {
+                if (vaultPath && canAccessAiHistoryStorageForVault(vaultPath)) {
                     try {
                         const retentionDays = get().historyRetentionDays;
                         if (retentionDays > 0) {

@@ -20,6 +20,13 @@ const DEFAULT_TRANSCRIPT_COMPACTION_POLICY: TranscriptCompactionPolicy =
         force_physical_bytes: 64 * MB,
     };
 
+/// Finder writes this regular file to directories it has inspected. It is not
+/// part of NeverWrite's history format and must not affect storage ownership
+/// or transaction safety decisions.
+pub fn is_incidental_filesystem_metadata(path: &Path, metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_file() && path.file_name().is_some_and(|name| name == ".DS_Store")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedMessage {
     pub id: String,
@@ -1142,6 +1149,11 @@ fn inspect_session_directory(
                 }
 
                 let path = entry.path();
+                if fs::symlink_metadata(&path)
+                    .is_ok_and(|metadata| is_incidental_filesystem_metadata(&path, &metadata))
+                {
+                    continue;
+                }
                 let relative_path = relative_storage_path(storage_root, &path);
                 let entry_type = fs::symlink_metadata(&path)
                     .map(|metadata| {
@@ -1558,6 +1570,11 @@ pub fn inspect_history_storage(storage_root: &Path) -> StorageInventory {
         if path == sessions_root {
             continue;
         }
+        if fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| is_incidental_filesystem_metadata(&path, &metadata))
+        {
+            continue;
+        }
         let relative_path = relative_storage_path(storage_root, &path);
         let entry_type = fs::symlink_metadata(&path)
             .map(|metadata| {
@@ -1644,6 +1661,9 @@ pub fn inspect_history_storage(storage_root: &Path) -> StorageInventory {
                 continue;
             }
         };
+        if is_incidental_filesystem_metadata(&path, &metadata) {
+            continue;
+        }
         let file_type = metadata.file_type();
         if file_type.is_dir() {
             inspect_session_directory(storage_root, &path, &mut histories, &mut fingerprint);
@@ -3300,6 +3320,67 @@ mod tests {
                 "missing unknown entry diagnostic for {expected}"
             );
         }
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn strict_inspector_ignores_regular_finder_metadata() {
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("history should persist");
+
+        fs::write(storage_root.join(".DS_Store"), b"finder metadata")
+            .expect("root finder metadata should persist");
+        fs::write(
+            sessions_dir(&storage_root).join(".DS_Store"),
+            b"finder metadata",
+        )
+        .expect("sessions finder metadata should persist");
+        fs::write(
+            storage_session_dir(&storage_root, &history.session_id).join(".DS_Store"),
+            b"finder metadata",
+        )
+        .expect("session finder metadata should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert_eq!(inventory.histories.sessions.len(), 1);
+        assert!(inventory.histories.unknown_entries.is_empty());
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn strict_inspector_rejects_non_file_finder_metadata() {
+        let storage_root = make_temp_dir();
+        fs::create_dir(storage_root.join(".DS_Store"))
+            .expect("finder metadata directory should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert!(inventory
+            .histories
+            .unknown_entries
+            .iter()
+            .any(|entry| entry.relative_path == ".DS_Store"));
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_inspector_rejects_finder_metadata_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let storage_root = make_temp_dir();
+        symlink("missing-target", storage_root.join(".DS_Store"))
+            .expect("finder metadata symlink should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert!(inventory
+            .histories
+            .unknown_entries
+            .iter()
+            .any(|entry| entry.relative_path == ".DS_Store" && entry.entry_type == "symlink"));
 
         fs::remove_dir_all(storage_root).ok();
     }

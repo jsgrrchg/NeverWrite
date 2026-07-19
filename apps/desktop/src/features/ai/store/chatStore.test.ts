@@ -667,6 +667,35 @@ describe("chatStore", () => {
         expect(useChatStore.getState().historyStorageStatus).toBeNull();
     });
 
+    it("does not load persisted histories when storage is unavailable", async () => {
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_history_storage_status") {
+                return {
+                    vaultKey: "vault-key",
+                    generation: 1,
+                    status: "error",
+                    message: "Unknown AI history artifact at .DS_Store.",
+                };
+            }
+            return defaultInvokeImplementation(command);
+        });
+        useChatStore.setState({
+            historyStorageVaultPath: null,
+            historyStorageStatus: null,
+        });
+        useVaultStore.setState({ vaultPath: "/vault" });
+
+        await useChatStore.getState().initialize();
+
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_load_session_histories",
+            expect.anything(),
+        );
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            status: "error",
+        });
+    });
+
     it("refreshes the active vault when a detached window receives an early storage event", async () => {
         disposeChatStoreRuntime();
         useVaultStore.setState({ vaultPath: "/vault" });

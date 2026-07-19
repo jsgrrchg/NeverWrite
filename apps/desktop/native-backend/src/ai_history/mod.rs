@@ -1544,6 +1544,37 @@ mod tests {
     }
 
     #[test]
+    fn adopts_legacy_history_with_finder_metadata() {
+        let app_data = tempfile::tempdir().unwrap();
+        let vault = tempfile::tempdir().unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        let history_root = vault.path().join(".neverwrite");
+        persistence::save_session_history(&history_root, &text_history("legacy", "inside vault"))
+            .unwrap();
+        fs::write(history_root.join(".DS_Store"), b"finder metadata").unwrap();
+        fs::write(history_root.join("sessions/.DS_Store"), b"finder metadata").unwrap();
+
+        let session_dir = fs::read_dir(history_root.join("sessions"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.is_dir())
+            .unwrap();
+        fs::write(session_dir.join(".DS_Store"), b"finder metadata").unwrap();
+
+        let status = service
+            .invoke("ai_get_history_storage_status", vault.path(), json!({}))
+            .unwrap();
+        assert_eq!(status["status"], "ready");
+        assert_eq!(status["scope"], "vault");
+
+        let histories = service
+            .invoke("ai_load_session_histories", vault.path(), json!({}))
+            .unwrap();
+        assert_eq!(histories.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn ready_status_never_inspects_the_inactive_root() {
         let app_data = tempfile::tempdir().unwrap();
         let vault = tempfile::tempdir().unwrap();

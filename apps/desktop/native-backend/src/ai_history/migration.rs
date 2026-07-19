@@ -933,12 +933,15 @@ fn inspect_managed_attachments(
     let mut attachments_by_id = BTreeMap::new();
     for entry in fs::read_dir(managed_root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if persistence::is_incidental_filesystem_metadata(&entry.path(), &metadata) {
+            continue;
+        }
         let name = entry
             .file_name()
             .into_string()
             .map_err(|_| "Managed attachment name is not UTF-8.".to_string())?;
         let attachment_id = ManagedAttachmentId::parse(&name)?;
-        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
         if !metadata.file_type().is_dir() {
             return Err(format!(
                 "Managed attachment {name} is not a regular directory."
@@ -957,11 +960,14 @@ fn inspect_managed_attachment_directory(
     let mut names = BTreeMap::new();
     for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if persistence::is_incidental_filesystem_metadata(&entry.path(), &metadata) {
+            continue;
+        }
         let name = entry
             .file_name()
             .into_string()
             .map_err(|_| "Managed attachment artifact name is not UTF-8.".to_string())?;
-        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
         if !metadata.file_type().is_file()
             || !matches!(name.as_str(), "blob" | "metadata.json" | "committed")
         {
@@ -1416,6 +1422,9 @@ fn fingerprint_tree(root: &Path, directory: &Path, hasher: &mut Sha256) -> Resul
             .to_string_lossy()
             .replace('\\', "/");
         let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if persistence::is_incidental_filesystem_metadata(&path, &metadata) {
+            continue;
+        }
         if metadata.file_type().is_dir() {
             hasher.update(b"dir\0");
             hasher.update(relative.as_bytes());
@@ -1486,6 +1495,10 @@ fn load_journal(app_data_root: &Path) -> Result<Option<MigrationJournal>, String
     let mut withdrawn_operation_id = None;
     for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if persistence::is_incidental_filesystem_metadata(&entry.path(), &metadata) {
+            continue;
+        }
         let name = entry.file_name();
         if name == JOURNAL_FILE {
             has_journal = true;
@@ -1690,6 +1703,9 @@ fn copy_regular_tree(source: &Path, destination: &Path) -> Result<(), String> {
     for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if persistence::is_incidental_filesystem_metadata(&entry.path(), &metadata) {
+            continue;
+        }
         let target = destination.join(entry.file_name());
         if metadata.file_type().is_dir() {
             copy_regular_tree(&entry.path(), &target)?;
@@ -1721,6 +1737,9 @@ fn sync_tree(path: &Path) -> Result<(), String> {
     for entry in fs::read_dir(path).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if persistence::is_incidental_filesystem_metadata(&entry.path(), &metadata) {
+            continue;
+        }
         if metadata.file_type().is_dir() {
             sync_tree(&entry.path())?;
             sync_directory(&entry.path())?;
@@ -2002,6 +2021,11 @@ mod tests {
         root: PathBuf,
     }
 
+    struct MutateFinderMetadataAt {
+        point: Failpoint,
+        root: PathBuf,
+    }
+
     struct AbortAt(Failpoint);
 
     impl FailureInjector for AbortAt {
@@ -2017,6 +2041,16 @@ mod tests {
         fn check(&mut self, point: Failpoint) -> Result<(), String> {
             if point == self.point {
                 persistence::save_session_history(&self.root, &history("external", "change"))?;
+            }
+            Ok(())
+        }
+    }
+
+    impl FailureInjector for MutateFinderMetadataAt {
+        fn check(&mut self, point: Failpoint) -> Result<(), String> {
+            if point == self.point {
+                fs::write(self.root.join(".DS_Store"), b"updated finder metadata")
+                    .map_err(|error| error.to_string())?;
             }
             Ok(())
         }
@@ -2038,6 +2072,55 @@ mod tests {
         let loaded = persistence::load_all_session_histories(&destination.histories, true).unwrap();
         assert_eq!(loaded.len(), 2);
         assert!(!journal_path(temp.path()).exists());
+    }
+
+    #[test]
+    fn reconciles_histories_with_finder_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        persistence::save_session_history(&source.histories, &history("a", "source")).unwrap();
+        persistence::save_session_history(&destination.histories, &history("b", "destination"))
+            .unwrap();
+        fs::write(source.histories.join(".DS_Store"), b"finder metadata").unwrap();
+        fs::write(
+            source.histories.join("sessions/.DS_Store"),
+            b"finder metadata",
+        )
+        .unwrap();
+        fs::write(destination.histories.join(".DS_Store"), b"finder metadata").unwrap();
+
+        reconcile(temp.path(), &source, &destination).unwrap();
+
+        let loaded = persistence::load_all_session_histories(&destination.histories, true).unwrap();
+        assert_eq!(loaded.len(), 2);
+    }
+
+    #[test]
+    fn finder_metadata_changes_do_not_abort_reconciliation() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        persistence::save_session_history(&source.histories, &history("a", "source")).unwrap();
+        fs::write(source.histories.join(".DS_Store"), b"finder metadata").unwrap();
+
+        reconcile_with_failures(
+            temp.path(),
+            &source,
+            &destination,
+            &mut MutateFinderMetadataAt {
+                point: Failpoint::AfterPrepared,
+                root: source.histories.clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            persistence::load_all_session_histories(&destination.histories, true)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
