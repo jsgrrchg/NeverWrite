@@ -678,6 +678,24 @@ describe("AIChatMessageItem tool diffs", () => {
         expect(screen.getByText(/new line/)).toBeInTheDocument();
     });
 
+    it("keeps streaming tool diffs visible when AI change review is disabled", () => {
+        useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+
+        renderMessage(
+            createDiffMessage("tool:review-disabled", {
+                path: "/vault/notes/streamed.md",
+                kind: "update",
+                old_text: "before stream",
+                new_text: "after stream",
+            }),
+        );
+
+        const rail = expectChangeReviewRail("/vault/notes/streamed.md");
+        expandChangeReviewRail("/vault/notes/streamed.md");
+        expect(within(rail).getByText("Edited")).toBeInTheDocument();
+        expect(screen.getByText(/after stream/)).toBeInTheDocument();
+    });
+
     it("opens the diff's own file when a tool reports multiple changes", () => {
         const firstPath = "/vault/notes/first.md";
         const secondPath = "/vault/notes/second.md";
