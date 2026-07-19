@@ -1758,14 +1758,31 @@ fn sync_tree(path: &Path) -> Result<(), String> {
             sync_tree(&entry.path())?;
             sync_directory(&entry.path())?;
         } else if metadata.file_type().is_file() {
-            File::open(entry.path())
-                .and_then(|file| file.sync_all())
-                .map_err(|error| error.to_string())?;
+            sync_file(&entry.path())?;
         } else {
             return Err("Cannot sync a symlink or special transaction artifact.".into());
         }
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_file(path: &Path) -> Result<(), String> {
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn sync_file(path: &Path) -> Result<(), String> {
+    // FlushFileBuffers requires a writable handle on Windows. File::open uses
+    // read-only access there, which makes directory staging fail with ERROR_ACCESS_DENIED.
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| error.to_string())
 }
 
 fn create_private_dir(path: &Path) -> Result<(), String> {
