@@ -113,12 +113,50 @@ pub(super) trait FailureInjector {
     fn check(&mut self, point: Failpoint) -> Result<(), String>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReconciliationPhase {
+    Inspect,
+    Prepare,
+    Validate,
+    Publish,
+    Withdraw,
+    Commit,
+    Housekeeping,
+}
+
+impl ReconciliationPhase {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inspect => "inspect",
+            Self::Prepare => "prepare",
+            Self::Validate => "validate",
+            Self::Publish => "publish",
+            Self::Withdraw => "withdraw",
+            Self::Commit => "commit",
+            Self::Housekeeping => "housekeeping",
+        }
+    }
+}
+
+pub(super) trait ReconciliationObserver {
+    fn phase_started(&mut self, phase: ReconciliationPhase);
+    fn phase_completed(&mut self, phase: ReconciliationPhase);
+}
+
 struct NoFailures;
 
 impl FailureInjector for NoFailures {
     fn check(&mut self, _point: Failpoint) -> Result<(), String> {
         Ok(())
     }
+}
+
+struct NoReconciliationObserver;
+
+impl ReconciliationObserver for NoReconciliationObserver {
+    fn phase_started(&mut self, _phase: ReconciliationPhase) {}
+
+    fn phase_completed(&mut self, _phase: ReconciliationPhase) {}
 }
 
 pub(super) fn reconcile(
@@ -152,13 +190,33 @@ pub(super) fn reconcile_with_operation_commit(
     destination: &RootLayout,
     mut logical_commit: impl FnMut() -> Result<(), String>,
 ) -> Result<ReconcileResult, String> {
+    let mut observer = NoReconciliationObserver;
+    reconcile_with_operation_commit_observed(
+        app_data_root,
+        operation_id,
+        source,
+        destination,
+        &mut logical_commit,
+        &mut observer,
+    )
+}
+
+pub(super) fn reconcile_with_operation_commit_observed(
+    app_data_root: &Path,
+    operation_id: &str,
+    source: &RootLayout,
+    destination: &RootLayout,
+    logical_commit: &mut dyn FnMut() -> Result<(), String>,
+    observer: &mut dyn ReconciliationObserver,
+) -> Result<ReconcileResult, String> {
     reconcile_internal(
         app_data_root,
         operation_id,
         source,
         destination,
         &mut NoFailures,
-        &mut logical_commit,
+        logical_commit,
+        observer,
     )
 }
 
@@ -169,6 +227,7 @@ pub(super) fn reconcile_with_failures(
     failures: &mut dyn FailureInjector,
 ) -> Result<ReconcileResult, String> {
     let operation_id = uuid::Uuid::new_v4().simple().to_string();
+    let mut observer = NoReconciliationObserver;
     reconcile_internal(
         app_data_root,
         &operation_id,
@@ -176,6 +235,7 @@ pub(super) fn reconcile_with_failures(
         destination,
         failures,
         &mut || Ok(()),
+        &mut observer,
     )
 }
 
@@ -186,8 +246,10 @@ fn reconcile_internal(
     destination: &RootLayout,
     failures: &mut dyn FailureInjector,
     logical_commit: &mut dyn FnMut() -> Result<(), String>,
+    observer: &mut dyn ReconciliationObserver,
 ) -> Result<ReconcileResult, String> {
     validate_operation_id(operation_id)?;
+    observer.phase_started(ReconciliationPhase::Inspect);
     ensure_managed_parent(&source.managed)?;
     ensure_managed_parent(&destination.managed)?;
     let source_history = normalize_transaction_root(&source.histories)?;
@@ -225,7 +287,9 @@ fn reconcile_internal(
     let merge = classify_merge(&source_inventory, &destination_inventory)?;
     let mut attachment_ids =
         classify_attachment_inventories(source_attachments, destination_attachments)?;
+    observer.phase_completed(ReconciliationPhase::Inspect);
 
+    observer.phase_started(ReconciliationPhase::Prepare);
     let destination_parent = required_parent(destination)?;
     fs::create_dir_all(destination_parent).map_err(|error| error.to_string())?;
     let stage = destination_parent.join(format!("{STAGE_PREFIX}{operation_id}"));
@@ -260,6 +324,9 @@ fn reconcile_internal(
         &managed_stage,
         &mut attachment_ids,
     )?;
+    observer.phase_completed(ReconciliationPhase::Prepare);
+
+    observer.phase_started(ReconciliationPhase::Validate);
     let staged_inventory = inspect_root(&stage)?;
     ensure_safe_inventory("staging", &staged_inventory)?;
     ensure_staged_merge(&merge, &converted_sessions, &staged_inventory)?;
@@ -268,6 +335,7 @@ fn reconcile_internal(
 
     assert_unchanged(source, &source_fingerprint, "source")?;
     assert_unchanged(destination, &destination_fingerprint, "destination")?;
+    observer.phase_completed(ReconciliationPhase::Validate);
 
     let staged_fingerprint = transaction_fingerprint(&stage)?;
     let staged_managed_fingerprint = transaction_fingerprint(&managed_stage)?;
@@ -311,6 +379,10 @@ fn reconcile_internal(
         destination_managed_existed,
         legacy_withdrawals,
     };
+    // Persisting the journal makes the prepared transaction durable, which is
+    // the first boundary of publishing it. Keep Publish active if that write
+    // or an immediate durable-boundary check fails.
+    observer.phase_started(ReconciliationPhase::Publish);
     persist_journal(app_data_root, &journal)?;
     failures.check(Failpoint::AfterPrepared)?;
     failures.check(Failpoint::BeforePublish)?;
@@ -326,7 +398,9 @@ fn reconcile_internal(
     drive_prepared_transaction(&journal, app_data_root, failures)?;
     failures.check(Failpoint::AfterDestinationPublished)?;
     failures.check(Failpoint::BeforeSourceWithdrawal)?;
+    observer.phase_completed(ReconciliationPhase::Publish);
 
+    observer.phase_started(ReconciliationPhase::Withdraw);
     if let Err(error) = assert_source_unchanged(&journal) {
         rollback_transaction(&journal)?;
         remove_journal(app_data_root, &journal)?;
@@ -334,14 +408,20 @@ fn reconcile_internal(
     }
     withdraw_source(&journal, failures)?;
     failures.check(Failpoint::AfterSourceWithdrawn)?;
+    observer.phase_completed(ReconciliationPhase::Withdraw);
 
+    observer.phase_started(ReconciliationPhase::Commit);
     failures.check(Failpoint::BeforeCommit)?;
     mark_withdrawn(app_data_root, &journal)?;
     failures.check(Failpoint::AfterCommit)?;
     finish_critical_cleanup(&journal, failures)?;
     logical_commit()?;
     failures.check(Failpoint::AfterCommitted)?;
+    observer.phase_completed(ReconciliationPhase::Commit);
+
+    observer.phase_started(ReconciliationPhase::Housekeeping);
     remove_journal(app_data_root, &journal)?;
+    observer.phase_completed(ReconciliationPhase::Housekeeping);
 
     Ok(ReconcileResult {
         histories_moved: merge.len(),
@@ -2445,6 +2525,7 @@ mod tests {
         let destination = layout(temp.path(), "destination");
         persistence::save_session_history(&source.histories, &history("a", "source")).unwrap();
         let operation_id = "0123456789abcdef0123456789abcdef";
+        let mut observer = NoReconciliationObserver;
         let error = reconcile_internal(
             temp.path(),
             operation_id,
@@ -2452,6 +2533,7 @@ mod tests {
             &destination,
             &mut StopAt(Failpoint::AfterPrepared),
             &mut || Ok(()),
+            &mut observer,
         )
         .unwrap_err();
         assert!(error.contains("AfterPrepared"));
@@ -2506,6 +2588,98 @@ mod tests {
         assert!(committed);
         assert!(!source.histories.exists());
         assert!(destination.histories.exists());
+    }
+
+    #[test]
+    fn reports_reconciliation_phases_at_their_durable_boundaries() {
+        #[derive(Default)]
+        struct RecordingObserver {
+            events: Vec<(ReconciliationPhase, &'static str)>,
+        }
+
+        impl ReconciliationObserver for RecordingObserver {
+            fn phase_started(&mut self, phase: ReconciliationPhase) {
+                self.events.push((phase, "started"));
+            }
+
+            fn phase_completed(&mut self, phase: ReconciliationPhase) {
+                self.events.push((phase, "completed"));
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        persistence::save_session_history(&source.histories, &history("a", "source")).unwrap();
+        let mut observer = RecordingObserver::default();
+
+        reconcile_with_operation_commit_observed(
+            temp.path(),
+            "0123456789abcdef0123456789abcdef",
+            &source,
+            &destination,
+            &mut || Ok(()),
+            &mut observer,
+        )
+        .unwrap();
+
+        let phases = [
+            ReconciliationPhase::Inspect,
+            ReconciliationPhase::Prepare,
+            ReconciliationPhase::Validate,
+            ReconciliationPhase::Publish,
+            ReconciliationPhase::Withdraw,
+            ReconciliationPhase::Commit,
+            ReconciliationPhase::Housekeeping,
+        ];
+        assert_eq!(
+            observer.events,
+            phases
+                .into_iter()
+                .flat_map(|phase| [(phase, "started"), (phase, "completed")])
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn reports_publish_as_active_after_preparing_the_durable_journal() {
+        #[derive(Default)]
+        struct RecordingObserver {
+            events: Vec<(ReconciliationPhase, &'static str)>,
+        }
+
+        impl ReconciliationObserver for RecordingObserver {
+            fn phase_started(&mut self, phase: ReconciliationPhase) {
+                self.events.push((phase, "started"));
+            }
+
+            fn phase_completed(&mut self, phase: ReconciliationPhase) {
+                self.events.push((phase, "completed"));
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        persistence::save_session_history(&source.histories, &history("a", "source")).unwrap();
+        let mut observer = RecordingObserver::default();
+
+        let error = reconcile_internal(
+            temp.path(),
+            "0123456789abcdef0123456789abcdef",
+            &source,
+            &destination,
+            &mut StopAt(Failpoint::AfterPrepared),
+            &mut || Ok(()),
+            &mut observer,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("AfterPrepared"));
+        assert_eq!(
+            observer.events.last(),
+            Some(&(ReconciliationPhase::Publish, "started")),
+        );
     }
 
     #[test]

@@ -128,6 +128,19 @@ runtime session directly. When native loading is unavailable or unsafe,
 NeverWrite creates a fresh runtime session and sends the saved transcript as
 context with the next prompt.
 
+## Transaction Diagnostics
+
+Scope moves emit lifecycle diagnostics with an opaque vault key and operation
+ID. The recorded phases are `inspect`, `prepare`, `validate`, `publish`,
+`withdraw`, `commit`, and `housekeeping`. Diagnostics never include vault
+paths, transcript content, prompts, attachment names, or physical attachment
+paths. A failed operation reports the phase that was active when it stopped,
+which makes an interrupted move diagnosable without disclosing chat data.
+
+Release validation exercises these phases with in-process failpoints and a
+real sidecar subprocess that is terminated across the durable transaction
+boundaries. Windows runs the same transaction suite in CI.
+
 If the app detects that an AI runtime lost its live connection, the chat can show:
 
 ```text
@@ -159,4 +172,4 @@ send a new message so NeverWrite can continue with the stored transcript.
 - Pasted screenshot drafts and managed blobs are plaintext local image files;
   review them before sharing app data or a vault archive.
 
-Last updated: July 16, 2026.
+Last updated: July 19, 2026.

@@ -147,6 +147,50 @@ enum CanonicalResolution {
     Recovery(RecoveryDetails, Option<RecoveryPlan>),
 }
 
+/// Keeps reconciliation diagnostics useful without exposing vault paths or
+/// user content. The migration owns phase boundaries; this adapter only emits
+/// opaque identifiers at those boundaries.
+struct StorageReconciliationObserver<'a> {
+    vault_key: &'a str,
+    operation_id: &'a str,
+    current_phase: migration::ReconciliationPhase,
+}
+
+impl<'a> StorageReconciliationObserver<'a> {
+    fn new(vault_key: &'a str, operation_id: &'a str) -> Self {
+        Self {
+            vault_key,
+            operation_id,
+            current_phase: migration::ReconciliationPhase::Inspect,
+        }
+    }
+
+    fn current_phase(&self) -> migration::ReconciliationPhase {
+        self.current_phase
+    }
+}
+
+impl migration::ReconciliationObserver for StorageReconciliationObserver<'_> {
+    fn phase_started(&mut self, phase: migration::ReconciliationPhase) {
+        self.current_phase = phase;
+        log_storage_event(
+            self.vault_key,
+            Some(self.operation_id),
+            phase.as_str(),
+            "started",
+        );
+    }
+
+    fn phase_completed(&mut self, phase: migration::ReconciliationPhase) {
+        log_storage_event(
+            self.vault_key,
+            Some(self.operation_id),
+            phase.as_str(),
+            "completed",
+        );
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct AiHistoryStorageService {
     app_data_root: PathBuf,
@@ -856,12 +900,6 @@ impl AiHistoryStorageService {
             operation_source_vault_key,
         );
         storage::write_operation(layout, &operation)?;
-        log_storage_event(
-            &layout.vault_key,
-            Some(&operation.operation_id),
-            "prepare",
-            "completed",
-        );
 
         let moving = StorageStatusSnapshot::Moving {
             vault_key: layout.vault_key.clone(),
@@ -873,12 +911,15 @@ impl AiHistoryStorageService {
         self.emit_snapshot(&moving);
 
         let target_state = storage::CanonicalState::ready(layout, target);
-        let result = migration::reconcile_with_operation_commit(
+        let mut observer =
+            StorageReconciliationObserver::new(&layout.vault_key, &operation.operation_id);
+        let result = migration::reconcile_with_operation_commit_observed(
             &self.app_data_root,
             &operation.operation_id,
             &source.transaction_layout(),
             &destination.transaction_layout(),
-            || storage::write_state(layout, &target_state),
+            &mut || storage::write_state(layout, &target_state),
+            &mut observer,
         );
         let result = match result {
             Ok(result) => result,
@@ -886,7 +927,7 @@ impl AiHistoryStorageService {
                 log_storage_event(
                     &layout.vault_key,
                     Some(&operation.operation_id),
-                    "reconcile",
+                    observer.current_phase().as_str(),
                     "failed",
                 );
                 if !migration::has_pending(&self.app_data_root).unwrap_or(true) {
@@ -897,36 +938,12 @@ impl AiHistoryStorageService {
                 return Err(error);
             }
         };
-        log_storage_event(
-            &layout.vault_key,
-            Some(&operation.operation_id),
-            "validate",
-            "completed",
-        );
-        log_storage_event(
-            &layout.vault_key,
-            Some(&operation.operation_id),
-            "publish",
-            "completed",
-        );
-        log_storage_event(
-            &layout.vault_key,
-            Some(&operation.operation_id),
-            "withdraw",
-            "completed",
-        );
         storage::remove_operation(layout)?;
         self.validated_scopes
             .lock()
             .map_err(|error| format!("AI history validation state error: {error}"))?
             .insert(layout.vault_key.clone(), target);
         let status = self.snapshot_for_resolution(layout, CanonicalResolution::Ready(target))?;
-        log_storage_event(
-            &layout.vault_key,
-            Some(&operation.operation_id),
-            "commit",
-            "completed",
-        );
         self.emit_snapshot(&status);
         Ok(json!({
             "completed": true,
