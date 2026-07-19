@@ -180,7 +180,7 @@ fn create_managed(
         let metadata_bytes = serde_json::to_vec(&metadata).map_err(|error| error.to_string())?;
         write_new_file(&staging_dir.join(METADATA_FILE), &metadata_bytes)?;
         sync_directory(&staging_dir)?;
-        fs::rename(&staging_dir, &final_dir).map_err(|error| error.to_string())?;
+        rename_path(&staging_dir, &final_dir)?;
         sync_directory(&root)?;
         Ok(metadata)
     })();
@@ -220,7 +220,7 @@ pub(crate) fn create_draft(
         let metadata_bytes = serde_json::to_vec(&metadata).map_err(|error| error.to_string())?;
         write_new_file(&staging_dir.join(METADATA_FILE), &metadata_bytes)?;
         sync_directory(&staging_dir)?;
-        fs::rename(&staging_dir, &final_dir).map_err(|error| error.to_string())?;
+        rename_path(&staging_dir, &final_dir)?;
         sync_directory(&root)?;
         Ok(metadata)
     })();
@@ -754,6 +754,17 @@ fn parse_metadata_bytes(
     Ok(metadata)
 }
 
+pub(super) fn validate_migration_attachment(
+    metadata_bytes: &[u8],
+    attachment_id: &ManagedAttachmentId,
+    blob: &[u8],
+) -> Result<(String, String), String> {
+    let metadata = parse_metadata_bytes(metadata_bytes, attachment_id)?;
+    let mut blob_reader = blob;
+    let (metadata, _) = read_verified_blob(&mut blob_reader, metadata)?;
+    Ok((metadata.file_name, metadata.mime_type))
+}
+
 fn read_verified_blob(
     blob_file: &mut impl Read,
     metadata: ManagedAttachmentMetadata,
@@ -1105,6 +1116,40 @@ fn harden_private_directory(path: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(not(windows))]
+fn rename_path(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn rename_path(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let succeeded = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if succeeded == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
+}
+
 fn sync_directory(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -1116,14 +1161,10 @@ fn sync_directory(path: &Path) -> Result<(), String> {
     {
         #[cfg(windows)]
         {
-            use std::os::windows::fs::OpenOptionsExt;
-            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
-            return OpenOptions::new()
-                .read(true)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-                .open(path)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| error.to_string());
+            // Files are synced before publication and rename_path requests a
+            // write-through rename. Directory fsync is not portable on Windows.
+            let _ = path;
+            return Ok(());
         }
         #[cfg(not(windows))]
         {
@@ -1260,12 +1301,10 @@ mod tests {
         assert_eq!(resolved.metadata.file_name, "Screenshot by Jane.png");
         assert_eq!(resolved.metadata.mime_type, "image/png");
         assert_eq!(fs::read(resolved.path).unwrap(), PNG);
-        assert!(
-            !managed_root(vault.path())
-                .join(metadata.attachment_id.as_str())
-                .join("Screenshot by Jane.png")
-                .exists()
-        );
+        assert!(!managed_root(vault.path())
+            .join(metadata.attachment_id.as_str())
+            .join("Screenshot by Jane.png")
+            .exists());
     }
 
     #[test]

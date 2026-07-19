@@ -33,6 +33,11 @@ import {
     aiSetModel,
     aiUpdateSetup,
     aiRegisterFileBaseline,
+    getAiHistoryStorageStatus,
+    reconcileAiHistoryStorage,
+    listenToAiHistoryStorageChanged,
+    type AIHistoryStorageStatus,
+    type AIStorageScope,
 } from "../api";
 import {
     isFileTab,
@@ -527,6 +532,79 @@ function clearPersistedHistoryCache(vaultPath: string | null) {
     }
 
     _persistedHistoryCacheBySessionId.clear();
+}
+
+function applyAiHistoryStorageSnapshot(
+    snapshot: AIHistoryStorageStatus,
+    expectedVaultPath?: string,
+) {
+    if (
+        expectedVaultPath != null &&
+        useVaultStore.getState().vaultPath !== expectedVaultPath
+    ) {
+        return false;
+    }
+    let applied = false;
+    useChatStore.setState((state) => {
+        const current = state.historyStorageStatus;
+        if (
+            current &&
+            (current.vaultKey !== snapshot.vaultKey ||
+                current.generation >= snapshot.generation)
+        ) {
+            return state;
+        }
+        applied = true;
+        return { historyStorageStatus: snapshot };
+    });
+    return applied;
+}
+
+async function refreshPersistedHistoryInventory(vaultPath: string) {
+    const histories = (
+        await aiLoadSessionHistories(vaultPath, { includeMessages: false })
+    ).filter(hasPersistedHistoryContent);
+    if (useVaultStore.getState().vaultPath !== vaultPath) {
+        return;
+    }
+    setPersistedHistoryCache(vaultPath, histories);
+    useChatStore.setState((state) => {
+        const persistedIds = new Set(histories.map((history) => history.session_id));
+        const nextSessionsById = Object.fromEntries(
+            Object.entries(state.sessionsById).filter(([, session]) => {
+                if (getSessionVaultPath(session) !== vaultPath) return true;
+                if (session.runtimeState !== "persisted_only") return true;
+                return persistedIds.has(session.historySessionId);
+            }),
+        );
+        const existingByHistoryId = new Map(
+            Object.values(nextSessionsById).map((session) => [
+                session.historySessionId,
+                session,
+            ]),
+        );
+        for (const history of histories) {
+            const existing = existingByHistoryId.get(history.session_id);
+            if (existing) {
+                nextSessionsById[existing.sessionId] =
+                    applyPersistedHistoryMetadata(existing, history);
+                continue;
+            }
+            const restored = createPersistedSession(
+                history,
+                state.runtimes,
+                vaultPath,
+            );
+            if (restored) {
+                nextSessionsById[restored.sessionId] = restored;
+            }
+        }
+        return {
+            sessionsById: nextSessionsById,
+            sessionOrder: sortSessionIdsByRecency(nextSessionsById),
+            sessionInventoryLoaded: true,
+        };
+    });
 }
 
 function getPersistedHistoryFromCache(
@@ -1405,6 +1483,7 @@ interface ChatStore {
     selectedRuntimeId: string | null;
     isInitializing: boolean;
     sessionInventoryLoaded: boolean;
+    historyStorageStatus: AIHistoryStorageStatus | null;
     notePickerOpen: boolean;
     autoContextEnabled: boolean;
     requireCmdEnterToSend: boolean;
@@ -1427,6 +1506,12 @@ interface ChatStore {
     initialize: (options?: {
         createDefaultSession?: boolean;
     }) => Promise<ChatInitializationResult>;
+    refreshAiHistoryStorageStatus: (vaultPath: string) => Promise<void>;
+    changeAiHistoryStorage: (
+        vaultPath: string,
+        targetScope: AIStorageScope,
+        sourceVaultKey?: string,
+    ) => Promise<boolean>;
     reconcileRestoredWorkspaceTabs: (
         tabs: Array<{
             id: string;
@@ -8052,6 +8137,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedRuntimeId: null,
         isInitializing: false,
         sessionInventoryLoaded: false,
+        historyStorageStatus: null,
         notePickerOpen: false,
         autoContextEnabled: false,
         requireCmdEnterToSend: DEFAULT_AI_PREFERENCES.requireCmdEnterToSend,
@@ -8080,6 +8166,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ? state
                     : { autoContextEnabled: next },
             );
+        },
+
+        refreshAiHistoryStorageStatus: async (vaultPath) => {
+            try {
+                const snapshot = await getAiHistoryStorageStatus(vaultPath);
+                applyAiHistoryStorageSnapshot(snapshot, vaultPath);
+            } catch (error) {
+                if (useVaultStore.getState().vaultPath !== vaultPath) return;
+                logWarn(
+                    "chat-store",
+                    "Failed to refresh AI history storage status",
+                    error,
+                );
+            }
+        },
+
+        changeAiHistoryStorage: async (
+            vaultPath,
+            targetScope,
+            sourceVaultKey,
+        ) => {
+            try {
+                const result = await reconcileAiHistoryStorage(
+                    vaultPath,
+                    targetScope,
+                    sourceVaultKey,
+                );
+                applyAiHistoryStorageSnapshot(result.status, vaultPath);
+                if (!result.completed) return false;
+                await refreshPersistedHistoryInventory(vaultPath);
+                return true;
+            } catch (error) {
+                await get().refreshAiHistoryStorageStatus(vaultPath);
+                logWarn(
+                    "chat-store",
+                    "Failed to change AI history storage",
+                    error,
+                );
+                return false;
+            }
         },
 
         setSelectedRuntime: (runtimeId) => {
@@ -8221,6 +8347,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 });
 
                 const vaultPath = useVaultStore.getState().vaultPath;
+                if (vaultPath) {
+                    await get().refreshAiHistoryStorageStatus(vaultPath);
+                } else {
+                    set({ historyStorageStatus: null });
+                }
                 const sessions = await aiListSessions(vaultPath);
                 const hydratedRuntimes = hydrateRuntimesFromSessions(
                     runtimes,
@@ -13571,6 +13702,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 let chatRuntimeInitialized = false;
 let stopChatStorageSync: (() => void) | null = null;
 let stopChatVaultSync: (() => void) | null = null;
+let stopAiHistoryStorageListener: (() => void) | null = null;
 let aiPrefsSyncTimer: number | null = null;
 let autoContextSyncTimer: number | null = null;
 
@@ -13598,6 +13730,31 @@ export function initializeChatStoreRuntime() {
     chatRuntimeInitialized = true;
 
     hydrateChatStorePreferences();
+
+    void listenToAiHistoryStorageChanged((snapshot) => {
+        const current = useChatStore.getState().historyStorageStatus;
+        if (!current || current.vaultKey !== snapshot.vaultKey) return;
+        if (!applyAiHistoryStorageSnapshot(snapshot)) return;
+        if (snapshot.status === "ready") {
+            const vaultPath = useVaultStore.getState().vaultPath;
+            if (vaultPath) {
+                void refreshPersistedHistoryInventory(vaultPath).catch(
+                    (error) =>
+                        logWarn(
+                            "chat-store",
+                            "Failed to refresh AI history after a storage event",
+                            error,
+                        ),
+                );
+            }
+        }
+    }).then((unlisten) => {
+        if (!chatRuntimeInitialized) {
+            unlisten();
+            return;
+        }
+        stopAiHistoryStorageListener = unlisten;
+    });
 
     stopChatStorageSync = subscribeSafeStorage((event) => {
         if (event.key === AI_PREFS_KEY) {
@@ -13654,6 +13811,12 @@ export function initializeChatStoreRuntime() {
         }
 
         useChatStore.getState().syncAutoContextForVault(state.vaultPath);
+        useChatStore.setState({ historyStorageStatus: null });
+        if (state.vaultPath) {
+            void useChatStore
+                .getState()
+                .refreshAiHistoryStorageStatus(state.vaultPath);
+        }
     });
 }
 
@@ -13698,6 +13861,7 @@ export function resetChatStore() {
         selectedRuntimeId: null,
         isInitializing: false,
         sessionInventoryLoaded: false,
+        historyStorageStatus: null,
         notePickerOpen: false,
         autoContextEnabled: loadAutoContextPreference(
             useVaultStore.getState().vaultPath,
@@ -13725,8 +13889,10 @@ export function resetChatStore() {
 export function disposeChatStoreRuntime() {
     stopChatStorageSync?.();
     stopChatVaultSync?.();
+    stopAiHistoryStorageListener?.();
     stopChatStorageSync = null;
     stopChatVaultSync = null;
+    stopAiHistoryStorageListener = null;
     if (typeof window !== "undefined" && aiPrefsSyncTimer != null) {
         window.clearTimeout(aiPrefsSyncTimer);
     }

@@ -66,6 +66,64 @@ export const AI_AUTH_TERMINAL_STARTED_EVENT = "ai://auth-terminal-started";
 export const AI_AUTH_TERMINAL_OUTPUT_EVENT = "ai://auth-terminal-output";
 export const AI_AUTH_TERMINAL_EXITED_EVENT = "ai://auth-terminal-exited";
 export const AI_AUTH_TERMINAL_ERROR_EVENT = "ai://auth-terminal-error";
+export const AI_HISTORY_STORAGE_CHANGED_EVENT =
+    "ai_history_storage_changed";
+
+export type AIStorageScope = "device" | "vault";
+
+export interface AIHistoryRecoveryDetails {
+    reason: string;
+    message: string;
+    canReconcile: boolean;
+    conflictingSessionIds: string[];
+    conflictingAttachmentIds: string[];
+    renamedDeviceHistory: boolean;
+}
+
+export interface AIHistoryOrphanedDeviceHistory {
+    vaultKey: string;
+    previousVaultPath: string;
+}
+
+export type AIHistoryStorageStatus =
+    | {
+          vaultKey: string;
+          generation: number;
+          status: "ready";
+          scope: AIStorageScope;
+    orphanedDeviceHistories: Array<{
+        vaultKey: string;
+        previousVaultPath: string;
+    }>;
+}
+    | {
+          vaultKey: string;
+          generation: number;
+          status: "moving";
+          from: AIStorageScope;
+          to: AIStorageScope;
+          operationId: string;
+      }
+    | {
+          vaultKey: string;
+          generation: number;
+          status: "recovery_required";
+          details: AIHistoryRecoveryDetails;
+      }
+    | {
+          vaultKey: string;
+          generation: number;
+          status: "error";
+          message: string;
+      };
+
+export interface AIHistoryStorageChangeResult {
+    completed: boolean;
+    status: AIHistoryStorageStatus;
+    historiesMoved: number;
+    attachmentsMoved: number;
+    conflicts: string[];
+}
 
 function normalizeConfigOption(
     option: AIBackendSessionPayload["config_options"][number],
@@ -794,6 +852,34 @@ export async function listenToAiImageGeneration(
         (event) => {
             callback(event.payload);
         },
+    );
+}
+
+export async function getAiHistoryStorageStatus(
+    vaultPath: string,
+): Promise<AIHistoryStorageStatus> {
+    return invoke<AIHistoryStorageStatus>("ai_get_history_storage_status", {
+        vaultPath,
+    });
+}
+
+export async function reconcileAiHistoryStorage(
+    vaultPath: string,
+    targetScope: AIStorageScope,
+    sourceVaultKey?: string,
+): Promise<AIHistoryStorageChangeResult> {
+    return invoke<AIHistoryStorageChangeResult>(
+        "reconcile_ai_history_storage",
+        { vaultPath, targetScope, sourceVaultKey },
+    );
+}
+
+export async function listenToAiHistoryStorageChanged(
+    callback: (status: AIHistoryStorageStatus) => void,
+): Promise<UnlistenFn> {
+    return listen<AIHistoryStorageStatus>(
+        AI_HISTORY_STORAGE_CHANGED_EVENT,
+        (event) => callback(event.payload),
     );
 }
 

@@ -7,6 +7,7 @@ import { exportChatSessionToVaultNote } from "../chatExport";
 import { findSessionForHistorySelection } from "../sessionPresentation";
 import { HistorySessionList } from "./HistorySessionList";
 import { HistoryTranscriptViewer } from "./HistoryTranscriptViewer";
+import { AIHistoryStorageControl } from "./AIHistoryStorageControl";
 
 const MIN_LIST_WIDTH = 220;
 const MAX_LIST_WIDTH = 480;
@@ -321,6 +322,8 @@ export function ChatHistoryView({
                     <option value={365}>1 year</option>
                 </select>
             </div>
+
+            <AIHistoryStorageControl compact />
 
             {/* Master-detail body */}
             <div className="flex min-h-0 flex-1">

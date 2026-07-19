@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { BrowserWindow } from "electron";
 
 vi.mock("electron", () => ({
     app: { isPackaged: true, getPath: vi.fn(() => "/tmp") },
@@ -11,7 +12,7 @@ vi.mock("electron", () => ({
     shell: {},
 }));
 
-import { registerPreviewProtocolHandler } from "./ipc";
+import { broadcastRuntimeEvent, registerPreviewProtocolHandler } from "./ipc";
 
 function encodeBase64Url(value: string) {
     return Buffer.from(value, "utf8")
@@ -22,6 +23,34 @@ function encodeBase64Url(value: string) {
 }
 
 describe("managed attachment preview protocol", () => {
+    it("broadcasts backend events to main and detached windows", () => {
+        const mainSend = vi.fn();
+        const detachedSend = vi.fn();
+        vi.mocked(BrowserWindow.getAllWindows).mockReturnValue([
+            {
+                isDestroyed: () => false,
+                webContents: { send: mainSend },
+            },
+            {
+                isDestroyed: () => false,
+                webContents: { send: detachedSend },
+            },
+        ] as never);
+
+        broadcastRuntimeEvent("ai_history_storage_changed", {
+            status: "ready",
+        });
+
+        expect(mainSend).toHaveBeenCalledOnce();
+        expect(detachedSend).toHaveBeenCalledOnce();
+        expect(detachedSend).toHaveBeenCalledWith(
+            "neverwrite:event",
+            expect.objectContaining({
+                eventName: "ai_history_storage_changed",
+            }),
+        );
+    });
+
     it("reads managed bytes through the shared backend authority", async () => {
         const invoke = vi.fn(async () => ({
             data_base64: Buffer.from("image-bytes").toString("base64"),

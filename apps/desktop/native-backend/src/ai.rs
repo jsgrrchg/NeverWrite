@@ -1666,7 +1666,11 @@ impl NativeAi {
         })
     }
 
-    pub(crate) fn send_message(&self, args: &Value) -> Result<Value, String> {
+    pub(crate) fn send_message(
+        &self,
+        args: &Value,
+        history_storage: &crate::ai_history::AiHistoryStorageService,
+    ) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         let content = required_string(args, &["content"])?;
         let attachments = args
@@ -1695,7 +1699,11 @@ impl NativeAi {
                 .runtime_handle
                 .clone()
                 .ok_or_else(|| "AI runtime session is not connected.".to_string())?;
-            resolve_managed_attachment_inputs(&mut attachments, managed.vault_root.as_deref())?;
+            resolve_managed_attachment_inputs(
+                &mut attachments,
+                managed.vault_root.as_deref(),
+                history_storage,
+            )?;
             let prompt = build_prompt_blocks_with_attachments(
                 &content,
                 &attachments,
@@ -2318,6 +2326,7 @@ impl NativeAi {
 fn resolve_managed_attachment_inputs(
     attachments: &mut [AiAttachmentInput],
     vault_root: Option<&Path>,
+    history_storage: &crate::ai_history::AiHistoryStorageService,
 ) -> Result<(), String> {
     for attachment in attachments {
         let Some(attachment_id) = attachment.managed_attachment_id.as_deref() else {
@@ -2337,7 +2346,7 @@ fn resolve_managed_attachment_inputs(
         let vault_root = vault_root
             .ok_or_else(|| "Managed attachments require an open vault session.".to_string())?;
         let (bytes, file_name, mime_type) =
-            crate::ai_history::resolve_managed_attachment_for_runtime(vault_root, attachment_id)?;
+            history_storage.resolve_managed_attachment_for_runtime(vault_root, attachment_id)?;
         if let Some(declared_file_name) = attachment.file_name.as_deref() {
             if declared_file_name != file_name {
                 return Err("Managed attachment file name does not match its blob.".to_string());
@@ -8287,7 +8296,10 @@ fn build_prompt_with_attachments(
                     context_parts.push(format!(
                         "<attached_image name=\"{}\" type=\"{}\" size=\"{}\" />",
                         attachment.label,
-                        attachment.mime_type.as_deref().unwrap_or("application/octet-stream"),
+                        attachment
+                            .mime_type
+                            .as_deref()
+                            .unwrap_or("application/octet-stream"),
                         bytes.len()
                     ));
                     continue;
@@ -11231,11 +11243,14 @@ mod tests {
         }
 
         let error = ai
-            .send_message(&json!({
-                "session_id": CHILD_RUNTIME_SESSION_ID,
-                "content": "continue",
-                "attachments": [],
-            }))
+            .send_message(
+                &json!({
+                    "session_id": CHILD_RUNTIME_SESSION_ID,
+                    "content": "continue",
+                    "attachments": [],
+                }),
+                &crate::ai_history::AiHistoryStorageService::default(),
+            )
             .expect_err("closed child should reject direct prompts");
 
         assert!(error.contains("closed by its parent thread"));
@@ -13775,7 +13790,7 @@ mod tests {
             end_line: None,
         }];
 
-        resolve_managed_attachment_inputs(&mut attachments, Some(vault.path())).unwrap();
+        resolve_managed_attachment_inputs(&mut attachments, Some(vault.path()), &service).unwrap();
 
         assert_eq!(
             attachments[0].managed_bytes.as_deref(),

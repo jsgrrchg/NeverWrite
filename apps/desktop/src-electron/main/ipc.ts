@@ -203,13 +203,15 @@ function registerAppLogHandlers() {
     });
 }
 
+export function broadcastRuntimeEvent(eventName: string, payload: unknown) {
+    for (const window of BrowserWindow.getAllWindows()) {
+        if (window.isDestroyed()) continue;
+        window.webContents.send(ELECTRON_IPC.event, { eventName, payload });
+    }
+}
+
 function createBackend() {
-    const emitRuntimeEvent = (eventName: string, payload: unknown) => {
-        for (const window of BrowserWindow.getAllWindows()) {
-            if (window.isDestroyed()) continue;
-            window.webContents.send(ELECTRON_IPC.event, { eventName, payload });
-        }
-    };
+    const emitRuntimeEvent = broadcastRuntimeEvent;
     const nativeBackend = createNativeBackendSidecar(emitRuntimeEvent);
     const backend = new ElectronVaultBackend(
         emitRuntimeEvent,

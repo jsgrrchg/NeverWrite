@@ -74,6 +74,23 @@ pub(super) struct ReconcileResult {
     pub attachments_moved: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LayoutInspection {
+    pub empty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ReconciliationInspection {
+    pub conflicting_session_ids: Vec<String>,
+    pub conflicting_attachment_ids: Vec<String>,
+}
+
+impl ReconciliationInspection {
+    pub(super) fn can_reconcile(&self) -> bool {
+        self.conflicting_session_ids.is_empty() && self.conflicting_attachment_ids.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Failpoint {
     BeforePublish,
@@ -109,7 +126,40 @@ pub(super) fn reconcile(
     source: &RootLayout,
     destination: &RootLayout,
 ) -> Result<ReconcileResult, String> {
-    reconcile_with_failures(app_data_root, source, destination, &mut NoFailures)
+    reconcile_with_commit(app_data_root, source, destination, || Ok(()))
+}
+
+pub(super) fn reconcile_with_commit(
+    app_data_root: &Path,
+    source: &RootLayout,
+    destination: &RootLayout,
+    mut logical_commit: impl FnMut() -> Result<(), String>,
+) -> Result<ReconcileResult, String> {
+    let operation_id = uuid::Uuid::new_v4().simple().to_string();
+    reconcile_with_operation_commit(
+        app_data_root,
+        &operation_id,
+        source,
+        destination,
+        &mut logical_commit,
+    )
+}
+
+pub(super) fn reconcile_with_operation_commit(
+    app_data_root: &Path,
+    operation_id: &str,
+    source: &RootLayout,
+    destination: &RootLayout,
+    mut logical_commit: impl FnMut() -> Result<(), String>,
+) -> Result<ReconcileResult, String> {
+    reconcile_internal(
+        app_data_root,
+        operation_id,
+        source,
+        destination,
+        &mut NoFailures,
+        &mut logical_commit,
+    )
 }
 
 pub(super) fn reconcile_with_failures(
@@ -118,6 +168,26 @@ pub(super) fn reconcile_with_failures(
     destination: &RootLayout,
     failures: &mut dyn FailureInjector,
 ) -> Result<ReconcileResult, String> {
+    let operation_id = uuid::Uuid::new_v4().simple().to_string();
+    reconcile_internal(
+        app_data_root,
+        &operation_id,
+        source,
+        destination,
+        failures,
+        &mut || Ok(()),
+    )
+}
+
+fn reconcile_internal(
+    app_data_root: &Path,
+    operation_id: &str,
+    source: &RootLayout,
+    destination: &RootLayout,
+    failures: &mut dyn FailureInjector,
+    logical_commit: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<ReconcileResult, String> {
+    validate_operation_id(operation_id)?;
     ensure_managed_parent(&source.managed)?;
     ensure_managed_parent(&destination.managed)?;
     let source_history = normalize_transaction_root(&source.histories)?;
@@ -145,10 +215,17 @@ pub(super) fn reconcile_with_failures(
     let destination_inventory = inspect_root(destination)?;
     ensure_safe_inventory("source", &source_inventory)?;
     ensure_safe_inventory("destination", &destination_inventory)?;
+    let source_attachments = inspect_managed_attachments(&source_managed)?;
+    let destination_attachments = inspect_managed_attachments(&destination_managed)?;
+    validate_merged_managed_references(
+        "source and destination",
+        [&source_inventory, &destination_inventory],
+        [&source_attachments, &destination_attachments],
+    )?;
     let merge = classify_merge(&source_inventory, &destination_inventory)?;
-    let mut attachment_ids = classify_attachments(&source_managed, &destination_managed)?;
+    let mut attachment_ids =
+        classify_attachment_inventories(source_attachments, destination_attachments)?;
 
-    let operation_id = uuid::Uuid::new_v4().simple().to_string();
     let destination_parent = required_parent(destination)?;
     fs::create_dir_all(destination_parent).map_err(|error| error.to_string())?;
     let stage = destination_parent.join(format!("{STAGE_PREFIX}{operation_id}"));
@@ -187,6 +264,7 @@ pub(super) fn reconcile_with_failures(
     ensure_safe_inventory("staging", &staged_inventory)?;
     ensure_staged_merge(&merge, &converted_sessions, &staged_inventory)?;
     ensure_staged_attachments(&managed_stage, &attachment_ids)?;
+    validate_merged_managed_references("staging", [&staged_inventory], [&attachment_ids])?;
 
     assert_unchanged(source, &source_fingerprint, "source")?;
     assert_unchanged(destination, &destination_fingerprint, "destination")?;
@@ -210,7 +288,7 @@ pub(super) fn reconcile_with_failures(
         .collect::<Result<Vec<_>, String>>()?;
     let journal = MigrationJournal {
         version: JOURNAL_VERSION,
-        operation_id,
+        operation_id: operation_id.to_string(),
         source: source.to_path_buf(),
         destination: destination.to_path_buf(),
         stage,
@@ -261,6 +339,7 @@ pub(super) fn reconcile_with_failures(
     mark_withdrawn(app_data_root, &journal)?;
     failures.check(Failpoint::AfterCommit)?;
     finish_critical_cleanup(&journal, failures)?;
+    logical_commit()?;
     failures.check(Failpoint::AfterCommitted)?;
     remove_journal(app_data_root, &journal)?;
 
@@ -271,23 +350,56 @@ pub(super) fn reconcile_with_failures(
 }
 
 pub(super) fn recover_pending(app_data_root: &Path) -> Result<(), String> {
+    recover_pending_with_commit(app_data_root, || Ok(())).map(|_| ())
+}
+
+pub(super) fn recover_pending_with_commit(
+    app_data_root: &Path,
+    mut logical_commit: impl FnMut() -> Result<(), String>,
+) -> Result<bool, String> {
     let Some(journal) = load_journal(app_data_root)? else {
-        return Ok(());
+        return Ok(false);
     };
     validate_journal(&journal)?;
+    recover_loaded_journal(app_data_root, journal, &mut logical_commit)
+}
+
+pub(super) fn recover_operation_with_commit(
+    app_data_root: &Path,
+    operation_id: &str,
+    source: &RootLayout,
+    destination: &RootLayout,
+    mut logical_commit: impl FnMut() -> Result<(), String>,
+) -> Result<bool, String> {
+    validate_operation_id(operation_id)?;
+    let Some(journal) = load_journal(app_data_root)? else {
+        return Ok(false);
+    };
+    validate_journal(&journal)?;
+    validate_expected_journal(&journal, operation_id, source, destination)?;
+    recover_loaded_journal(app_data_root, journal, &mut logical_commit)
+}
+
+fn recover_loaded_journal(
+    app_data_root: &Path,
+    journal: MigrationJournal,
+    logical_commit: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<bool, String> {
     if withdrawn_marker_path(app_data_root).exists() {
         assert_published_destination(&journal)?;
         finish_critical_cleanup(&journal, &mut NoFailures)?;
+        logical_commit()?;
         remove_journal(app_data_root, &journal)?;
-        return Ok(());
+        return Ok(true);
     }
     if withdrawal_started(&journal) {
         assert_published_destination(&journal)?;
         withdraw_source(&journal, &mut NoFailures)?;
         mark_withdrawn(app_data_root, &journal)?;
         finish_critical_cleanup(&journal, &mut NoFailures)?;
+        logical_commit()?;
         remove_journal(app_data_root, &journal)?;
-        return Ok(());
+        return Ok(true);
     }
     if let Err(error) = assert_source_unchanged(&journal) {
         rollback_transaction(&journal)?;
@@ -299,8 +411,99 @@ pub(super) fn recover_pending(app_data_root: &Path) -> Result<(), String> {
     withdraw_source(&journal, &mut NoFailures)?;
     mark_withdrawn(app_data_root, &journal)?;
     finish_critical_cleanup(&journal, &mut NoFailures)?;
+    logical_commit()?;
     remove_journal(app_data_root, &journal)?;
+    Ok(true)
+}
+
+fn validate_expected_journal(
+    journal: &MigrationJournal,
+    operation_id: &str,
+    source: &RootLayout,
+    destination: &RootLayout,
+) -> Result<(), String> {
+    let expected_source = normalize_transaction_root(&source.histories)?;
+    let expected_destination = normalize_transaction_root(&destination.histories)?;
+    let expected_source_managed = normalize_managed_root(&source.managed)?;
+    let expected_destination_managed = normalize_managed_root(&destination.managed)?;
+    if journal.operation_id != operation_id
+        || journal.source != expected_source
+        || journal.destination != expected_destination
+        || journal.source_managed != expected_source_managed
+        || journal.destination_managed != expected_destination_managed
+    {
+        return Err(
+            "Pending AI history operation does not match its transaction journal.".to_string(),
+        );
+    }
     Ok(())
+}
+
+pub(super) fn has_pending(app_data_root: &Path) -> Result<bool, String> {
+    load_journal(app_data_root).map(|journal| journal.is_some())
+}
+
+pub(super) fn inspect_layout(layout: &RootLayout) -> Result<LayoutInspection, String> {
+    let inventory = inspect_root(&layout.histories)?;
+    ensure_safe_inventory("AI history", &inventory)?;
+    let attachments = inspect_managed_attachments(&layout.managed)?;
+    validate_merged_managed_references("AI history", [&inventory], [&attachments])?;
+    Ok(LayoutInspection {
+        empty: inventory.histories.sessions.is_empty() && attachments.is_empty(),
+    })
+}
+
+pub(super) fn inspect_reconciliation(
+    source: &RootLayout,
+    destination: &RootLayout,
+) -> Result<ReconciliationInspection, String> {
+    let source_inventory = inspect_root(&source.histories)?;
+    let destination_inventory = inspect_root(&destination.histories)?;
+    ensure_safe_inventory("source", &source_inventory)?;
+    ensure_safe_inventory("destination", &destination_inventory)?;
+
+    let source_attachments = inspect_managed_attachments(&source.managed)?;
+    let destination_attachments = inspect_managed_attachments(&destination.managed)?;
+    validate_merged_managed_references(
+        "source and destination",
+        [&source_inventory, &destination_inventory],
+        [&source_attachments, &destination_attachments],
+    )?;
+
+    let destination_by_id = destination_inventory
+        .histories
+        .sessions
+        .iter()
+        .map(|history| (history.session_id.as_str(), history))
+        .collect::<BTreeMap<_, _>>();
+    let mut conflicting_session_ids = source_inventory
+        .histories
+        .sessions
+        .iter()
+        .filter_map(|history| {
+            destination_by_id
+                .get(history.session_id.as_str())
+                .filter(|other| other.content_fingerprint != history.content_fingerprint)
+                .map(|_| history.session_id.clone())
+        })
+        .collect::<Vec<_>>();
+    conflicting_session_ids.sort();
+
+    let mut conflicting_attachment_ids = source_attachments
+        .iter()
+        .filter_map(|(attachment_id, bytes)| {
+            destination_attachments
+                .get(attachment_id)
+                .filter(|other| *other != bytes)
+                .map(|_| attachment_id.as_str().to_string())
+        })
+        .collect::<Vec<_>>();
+    conflicting_attachment_ids.sort();
+
+    Ok(ReconciliationInspection {
+        conflicting_session_ids,
+        conflicting_attachment_ids,
+    })
 }
 
 fn inspect_root(root: &Path) -> Result<StorageInventory, String> {
@@ -324,6 +527,40 @@ fn ensure_safe_inventory(label: &str, inventory: &StorageInventory) -> Result<()
         return Err(format!(
             "The {label} AI history root is not safe to reconcile."
         ));
+    }
+    Ok(())
+}
+
+fn validate_merged_managed_references<'a>(
+    label: &str,
+    inventories: impl IntoIterator<Item = &'a StorageInventory>,
+    attachment_inventories: impl IntoIterator<
+        Item = &'a BTreeMap<ManagedAttachmentId, ManagedAttachmentInspection>,
+    >,
+) -> Result<(), String> {
+    let available = attachment_inventories
+        .into_iter()
+        .flat_map(|attachments| attachments.keys().cloned())
+        .collect::<BTreeSet<_>>();
+    for history in inventories
+        .into_iter()
+        .flat_map(|inventory| &inventory.histories.sessions)
+    {
+        for raw_id in &history.managed_attachment_ids {
+            let attachment_id = ManagedAttachmentId::parse(raw_id).map_err(|_| {
+                format!(
+                    "Session {} contains an invalid managed attachment ID.",
+                    history.session_id
+                )
+            })?;
+            if !available.contains(&attachment_id) {
+                return Err(format!(
+                    "The {label} inventory is missing managed attachment {} referenced by session {}.",
+                    attachment_id.as_str(),
+                    history.session_id
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -380,7 +617,7 @@ fn build_stage(
     stage: &Path,
     merge: &BTreeMap<String, MergeSource>,
     managed_stage: &Path,
-    attachments_by_id: &mut BTreeMap<ManagedAttachmentId, Vec<u8>>,
+    attachments_by_id: &mut BTreeMap<ManagedAttachmentId, ManagedAttachmentInspection>,
 ) -> Result<(BTreeSet<String>, BTreeMap<PathBuf, LegacyCandidate>), String> {
     create_private_dir(stage)?;
     let source_histories = load_histories_strict(source)?;
@@ -431,7 +668,7 @@ fn convert_legacy_attachments(
     history: &mut PersistedSessionHistory,
     history_root: &Path,
     managed_stage: &Path,
-    attachments_by_id: &mut BTreeMap<ManagedAttachmentId, Vec<u8>>,
+    attachments_by_id: &mut BTreeMap<ManagedAttachmentId, ManagedAttachmentInspection>,
     legacy_files: &mut BTreeMap<PathBuf, LegacyCandidate>,
 ) -> Result<bool, String> {
     let legacy_root = required_parent(history_root)?.join("assets/chat");
@@ -457,7 +694,7 @@ fn convert_legacy_attachment_value(
     value: &mut serde_json::Value,
     legacy_root: &Path,
     managed_stage: &Path,
-    attachments_by_id: &mut BTreeMap<ManagedAttachmentId, Vec<u8>>,
+    attachments_by_id: &mut BTreeMap<ManagedAttachmentId, ManagedAttachmentInspection>,
     legacy_files: &mut BTreeMap<PathBuf, LegacyCandidate>,
 ) -> Result<bool, String> {
     match value {
@@ -514,7 +751,14 @@ fn convert_legacy_attachment_value(
                             &bytes,
                         )?;
                         let fingerprint = format!("{:x}", Sha256::digest(&bytes));
-                        attachments_by_id.insert(attachment_id.clone(), bytes);
+                        attachments_by_id.insert(
+                            attachment_id.clone(),
+                            ManagedAttachmentInspection {
+                                bytes,
+                                file_name,
+                                mime_type,
+                            },
+                        );
                         legacy_files.insert(
                             canonical,
                             LegacyCandidate {
@@ -597,7 +841,7 @@ fn canonical_directory_if_present(path: &Path) -> Result<Option<PathBuf>, String
 
 fn inspect_managed_attachments(
     managed_root: &Path,
-) -> Result<BTreeMap<ManagedAttachmentId, Vec<u8>>, String> {
+) -> Result<BTreeMap<ManagedAttachmentId, ManagedAttachmentInspection>, String> {
     let metadata = match fs::symlink_metadata(managed_root) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
@@ -629,7 +873,7 @@ fn inspect_managed_attachments(
 fn inspect_managed_attachment_directory(
     directory: &Path,
     attachment_id: &ManagedAttachmentId,
-) -> Result<Vec<u8>, String> {
+) -> Result<ManagedAttachmentInspection, String> {
     let mut names = BTreeMap::new();
     for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
@@ -656,34 +900,26 @@ fn inspect_managed_attachment_directory(
     if metadata_bytes.len() > 64 * 1024 {
         return Err("Managed attachment metadata is too large.".into());
     }
-    let metadata: serde_json::Value =
-        serde_json::from_slice(&metadata_bytes).map_err(|error| error.to_string())?;
-    let expected_sha = format!("{:x}", Sha256::digest(&blob));
-    if metadata.get("version").and_then(serde_json::Value::as_u64) != Some(1)
-        || metadata
-            .get("attachment_id")
-            .and_then(serde_json::Value::as_str)
-            != Some(attachment_id.as_str())
-        || metadata
-            .get("size_bytes")
-            .and_then(serde_json::Value::as_u64)
-            != Some(blob.len() as u64)
-        || metadata.get("sha256").and_then(serde_json::Value::as_str) != Some(expected_sha.as_str())
-    {
-        return Err(format!(
-            "Managed attachment {} failed metadata validation.",
-            attachment_id.as_str()
-        ));
-    }
-    Ok(blob)
+    let (file_name, mime_type) =
+        super::attachments::validate_migration_attachment(&metadata_bytes, attachment_id, &blob)?;
+    Ok(ManagedAttachmentInspection {
+        bytes: blob,
+        file_name,
+        mime_type,
+    })
 }
 
-fn classify_attachments(
-    source_managed: &Path,
-    destination_managed: &Path,
-) -> Result<BTreeMap<ManagedAttachmentId, Vec<u8>>, String> {
-    let source_attachments = inspect_managed_attachments(source_managed)?;
-    let destination_attachments = inspect_managed_attachments(destination_managed)?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedAttachmentInspection {
+    bytes: Vec<u8>,
+    file_name: String,
+    mime_type: String,
+}
+
+fn classify_attachment_inventories(
+    source_attachments: BTreeMap<ManagedAttachmentId, ManagedAttachmentInspection>,
+    destination_attachments: BTreeMap<ManagedAttachmentId, ManagedAttachmentInspection>,
+) -> Result<BTreeMap<ManagedAttachmentId, ManagedAttachmentInspection>, String> {
     for (attachment_id, source_bytes) in &source_attachments {
         if let Some(destination_bytes) = destination_attachments.get(attachment_id) {
             if destination_bytes != source_bytes {
@@ -750,7 +986,7 @@ fn ensure_staged_merge(
 
 fn ensure_staged_attachments(
     stage: &Path,
-    expected: &BTreeMap<ManagedAttachmentId, Vec<u8>>,
+    expected: &BTreeMap<ManagedAttachmentId, ManagedAttachmentInspection>,
 ) -> Result<(), String> {
     let actual = inspect_managed_attachments(stage)?;
     if &actual != expected {
@@ -842,7 +1078,7 @@ fn drive_component(component: TransactionComponent<'_>) -> Result<(), String> {
         fingerprint_matches(component.backup, component.destination_fingerprint)?;
     if destination_is_original {
         if component.destination_existed {
-            fs::rename(component.destination, component.backup)
+            rename_path(component.destination, component.backup)
                 .map_err(|error| error.to_string())?;
             sync_parent(component.destination)?;
         }
@@ -850,7 +1086,7 @@ fn drive_component(component: TransactionComponent<'_>) -> Result<(), String> {
         return Err("AI history destination changed during publication.".into());
     }
 
-    fs::rename(component.stage, component.destination).map_err(|error| error.to_string())?;
+    rename_path(component.stage, component.destination)?;
     sync_parent(component.destination)?;
     assert_component_published(component)?;
     assert_component_backup(component)
@@ -891,7 +1127,7 @@ fn rollback_component(component: TransactionComponent<'_>) -> Result<(), String>
         if component.stage.exists() {
             return Err("Cannot safely roll back duplicate staging trees.".into());
         }
-        fs::rename(component.destination, component.stage).map_err(|error| error.to_string())?;
+        rename_path(component.destination, component.stage)?;
         sync_parent(component.destination)?;
     } else if !fingerprint_matches(component.stage, component.staged_fingerprint)? {
         return Err("Cannot locate the staged AI history tree for rollback.".into());
@@ -903,7 +1139,7 @@ fn rollback_component(component: TransactionComponent<'_>) -> Result<(), String>
         } else if !component.destination.exists()
             && fingerprint_matches(component.backup, component.destination_fingerprint)?
         {
-            fs::rename(component.backup, component.destination)
+            rename_path(component.backup, component.destination)
                 .map_err(|error| error.to_string())?;
             sync_parent(component.destination)?;
         } else if component.stage.exists() && !component.backup.exists() {
@@ -938,7 +1174,7 @@ fn withdraw_source(
         if !legacy.source.exists() || file_fingerprint(&legacy.source)? != legacy.fingerprint {
             return Err("Legacy attachment changed before withdrawal.".into());
         }
-        fs::rename(&legacy.source, &legacy.quarantine).map_err(|error| error.to_string())?;
+        rename_path(&legacy.source, &legacy.quarantine)?;
         sync_parent(&legacy.source)?;
     }
     failures.check(Failpoint::AfterLegacyWithdrawn)?;
@@ -965,7 +1201,7 @@ fn withdraw_component(component: TransactionComponent<'_>) -> Result<(), String>
     {
         return Err("AI history source changed before withdrawal.".into());
     }
-    fs::rename(component.source, component.quarantine).map_err(|error| error.to_string())?;
+    rename_path(component.source, component.quarantine)?;
     sync_parent(component.source)
 }
 
@@ -1153,7 +1389,7 @@ fn persist_journal(app_data_root: &Path, journal: &MigrationJournal) -> Result<(
     reject_existing_transaction_path(&temporary)?;
     let bytes = serde_json::to_vec_pretty(journal).map_err(|error| error.to_string())?;
     write_new_file(&temporary, &bytes)?;
-    fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+    rename_path(&temporary, &path)?;
     sync_directory(&root)
 }
 
@@ -1206,7 +1442,7 @@ fn load_journal(app_data_root: &Path) -> Result<Option<MigrationJournal>, String
             fs::remove_file(&temporary).map_err(|error| error.to_string())?;
             sync_directory(&root)?;
         } else {
-            fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+            rename_path(&temporary, &path)?;
             sync_directory(&root)?;
         }
     }
@@ -1226,12 +1462,8 @@ fn validate_journal(journal: &MigrationJournal) -> Result<(), String> {
     if journal.version != JOURNAL_VERSION {
         return Err("Unsupported AI history transaction journal version.".into());
     }
-    if journal.operation_id.len() != 32
-        || !journal
-            .operation_id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        || normalize_transaction_root(&journal.source)? != journal.source
+    validate_operation_id(&journal.operation_id)?;
+    if normalize_transaction_root(&journal.source)? != journal.source
         || normalize_transaction_root(&journal.destination)? != journal.destination
         || normalize_managed_root(&journal.source_managed)? != journal.source_managed
         || normalize_managed_root(&journal.destination_managed)? != journal.destination_managed
@@ -1311,6 +1543,17 @@ fn validate_journal(journal: &MigrationJournal) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_operation_id(operation_id: &str) -> Result<(), String> {
+    if operation_id.len() != 32
+        || !operation_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("Invalid AI history operation ID.".to_string());
+    }
+    Ok(())
+}
+
 fn validate_component_transaction_paths(
     operation_id: &str,
     destination: &Path,
@@ -1346,7 +1589,7 @@ fn remove_journal(app_data_root: &Path, journal: &MigrationJournal) -> Result<()
         let parent = required_parent(&root)?;
         let retired = parent.join(format!(".transactions-completed-{}", journal.operation_id));
         reject_existing_transaction_path(&retired)?;
-        fs::rename(&root, &retired).map_err(|error| error.to_string())?;
+        rename_path(&root, &retired)?;
         sync_directory(parent)?;
         remove_regular_tree_if_exists(&retired)?;
         return Ok(());
@@ -1437,6 +1680,40 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
+fn rename_path(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn rename_path(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let succeeded = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if succeeded == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
 fn sync_directory(path: &Path) -> Result<(), String> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
@@ -1444,15 +1721,10 @@ fn sync_directory(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn sync_directory(path: &Path) -> Result<(), String> {
-    use std::os::windows::fs::OpenOptionsExt;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| error.to_string())
+fn sync_directory(_path: &Path) -> Result<(), String> {
+    // Windows has no reliable POSIX-style directory fsync. Files are flushed
+    // before publication and rename_path uses MOVEFILE_WRITE_THROUGH.
+    Ok(())
 }
 
 fn sync_parent(path: &Path) -> Result<(), String> {
@@ -1608,10 +1880,15 @@ mod tests {
         }
     }
 
+    fn managed_test_bytes(payload: &[u8]) -> Vec<u8> {
+        [b"\x89PNG\r\n\x1a\n".as_slice(), payload].concat()
+    }
+
     fn write_managed(root: &Path, id: &str, bytes: &[u8], promoted: bool) {
+        let bytes = managed_test_bytes(bytes);
         let directory = root.join(id);
         fs::create_dir_all(&directory).unwrap();
-        fs::write(directory.join("blob"), bytes).unwrap();
+        fs::write(directory.join("blob"), &bytes).unwrap();
         fs::write(
             directory.join("metadata.json"),
             serde_json::to_vec(&json!({
@@ -1620,7 +1897,7 @@ mod tests {
                 "file_name": "screenshot.png",
                 "mime_type": "image/png",
                 "size_bytes": bytes.len(),
-                "sha256": format!("{:x}", Sha256::digest(bytes)),
+                "sha256": format!("{:x}", Sha256::digest(&bytes)),
                 "promoted_at_ms": promoted.then_some(1_u64),
             }))
             .unwrap(),
@@ -1681,6 +1958,42 @@ mod tests {
         let loaded = persistence::load_all_session_histories(&destination.histories, true).unwrap();
         assert_eq!(loaded.len(), 2);
         assert!(!journal_path(temp.path()).exists());
+    }
+
+    #[test]
+    fn recovery_runs_the_logical_commit_before_retiring_the_journal() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        persistence::save_session_history(&source.histories, &history("a", "source")).unwrap();
+
+        let error = reconcile_with_failures(
+            temp.path(),
+            &source,
+            &destination,
+            &mut StopAt(Failpoint::AfterCommitted),
+        )
+        .unwrap_err();
+        assert!(error.contains("AfterCommitted"));
+        assert!(journal_path(temp.path()).exists());
+
+        let committed = std::cell::Cell::new(false);
+        let recovered = recover_pending_with_commit(temp.path(), || {
+            committed.set(true);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(recovered);
+        assert!(committed.get());
+        assert!(!journal_path(temp.path()).exists());
+        assert!(!source.histories.exists());
+        assert_eq!(
+            persistence::load_all_session_histories(&destination.histories, true)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1835,8 +2148,9 @@ mod tests {
         assert_eq!(
             inspect_managed_attachments(&destination.managed)
                 .unwrap()
-                .get(&ManagedAttachmentId::parse(promoted_id).unwrap()),
-            Some(&b"promoted-orphan".to_vec())
+                .get(&ManagedAttachmentId::parse(promoted_id).unwrap())
+                .map(|attachment| attachment.bytes.as_slice()),
+            Some(managed_test_bytes(b"promoted-orphan").as_slice())
         );
 
         let collision = tempfile::tempdir().unwrap();
@@ -1847,6 +2161,49 @@ mod tests {
         assert!(reconcile(collision.path(), &source, &destination).is_err());
         assert!(source.managed.exists());
         assert!(destination.managed.exists());
+    }
+
+    #[test]
+    fn blocks_equal_blob_ids_when_their_durable_metadata_differs() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        let attachment_id = "ma_0123456789abcdef0123456789abcdef";
+        write_managed(&source.managed, attachment_id, b"same", false);
+        write_managed(&destination.managed, attachment_id, b"same", false);
+        let metadata_path = destination
+            .managed
+            .join(attachment_id)
+            .join("metadata.json");
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+        metadata["file_name"] = json!("different.png");
+        fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+        let inspection = inspect_reconciliation(&source, &destination).unwrap();
+        assert_eq!(
+            inspection.conflicting_attachment_ids,
+            vec![attachment_id.to_string()]
+        );
+        assert!(!inspection.can_reconcile());
+        assert!(reconcile(temp.path(), &source, &destination).is_err());
+        assert!(source.managed.exists());
+        assert!(destination.managed.exists());
+    }
+
+    #[test]
+    fn rejects_managed_metadata_that_runtime_reading_cannot_validate() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = layout(temp.path(), "root");
+        let attachment_id = "ma_0123456789abcdef0123456789abcdef";
+        write_managed(&root.managed, attachment_id, b"invalid-metadata", false);
+        let metadata_path = root.managed.join(attachment_id).join("metadata.json");
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+        metadata.as_object_mut().unwrap().remove("mime_type");
+        fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+        assert!(inspect_layout(&root).is_err());
     }
 
     #[test]
@@ -1902,7 +2259,7 @@ mod tests {
         };
         let legacy_path = source_parent.join("assets/chat/legacy.png");
         fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-        fs::write(&legacy_path, b"legacy-image").unwrap();
+        fs::write(&legacy_path, managed_test_bytes(b"legacy-image")).unwrap();
         let external_path = temp.path().join("external.png");
         fs::write(&external_path, b"external-image").unwrap();
         let mut source_history = history("legacy", "attachments");
@@ -2053,9 +2410,102 @@ mod tests {
         assert_eq!(
             inspect_managed_attachments(&destination.managed)
                 .unwrap()
-                .get(&ManagedAttachmentId::parse(attachment_id).unwrap()),
-            Some(&b"promoted".to_vec())
+                .get(&ManagedAttachmentId::parse(attachment_id).unwrap())
+                .map(|attachment| attachment.bytes.as_slice()),
+            Some(managed_test_bytes(b"promoted").as_slice())
         );
+    }
+
+    #[test]
+    fn rejects_histories_with_missing_managed_attachments() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        let attachment_id = "ma_0123456789abcdef0123456789abcdef";
+        let mut broken = history("broken", "attachment");
+        broken.messages[0].attachments = Some(json!([{
+            "managedAttachmentId": attachment_id,
+            "fileName": "missing.png",
+            "mimeType": "image/png"
+        }]));
+        persistence::save_session_history(&source.histories, &broken).unwrap();
+
+        let inspection_error = inspect_layout(&source).unwrap_err();
+        assert!(inspection_error.contains(attachment_id));
+        let reconcile_error = reconcile(temp.path(), &source, &destination).unwrap_err();
+        assert!(reconcile_error.contains(attachment_id));
+        assert!(source.histories.exists());
+        assert!(!destination.histories.exists());
+    }
+
+    #[test]
+    fn recovery_requires_the_service_operation_identity_and_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        persistence::save_session_history(&source.histories, &history("a", "source")).unwrap();
+        let operation_id = "0123456789abcdef0123456789abcdef";
+        let error = reconcile_internal(
+            temp.path(),
+            operation_id,
+            &source,
+            &destination,
+            &mut StopAt(Failpoint::AfterPrepared),
+            &mut || Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("AfterPrepared"));
+        assert_eq!(
+            load_journal(temp.path()).unwrap().unwrap().operation_id,
+            operation_id
+        );
+
+        let mut committed = false;
+        let mismatch = recover_operation_with_commit(
+            temp.path(),
+            "fedcba9876543210fedcba9876543210",
+            &source,
+            &destination,
+            || {
+                committed = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(mismatch.contains("does not match"));
+        assert!(!committed);
+        assert!(source.histories.exists());
+
+        let wrong_destination = layout(temp.path(), "wrong-destination");
+        ensure_managed_parent(&wrong_destination.managed).unwrap();
+        let root_mismatch = recover_operation_with_commit(
+            temp.path(),
+            operation_id,
+            &source,
+            &wrong_destination,
+            || {
+                committed = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(root_mismatch.contains("does not match"));
+        assert!(!committed);
+
+        assert!(recover_operation_with_commit(
+            temp.path(),
+            operation_id,
+            &source,
+            &destination,
+            || {
+                committed = true;
+                Ok(())
+            },
+        )
+        .unwrap());
+        assert!(committed);
+        assert!(!source.histories.exists());
+        assert!(destination.histories.exists());
     }
 
     #[test]

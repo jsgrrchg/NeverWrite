@@ -492,6 +492,16 @@ async function defaultInvokeImplementation(command: string, args?: unknown) {
         return [];
     }
 
+    if (command === "ai_get_history_storage_status") {
+        return {
+            vaultKey: "vault-key",
+            generation: 1,
+            status: "ready",
+            scope: "device",
+            orphanedDeviceHistories: [],
+        };
+    }
+
     if (command === "ai_load_session_history_page") {
         return {
             session_id: "history-1",
@@ -603,6 +613,107 @@ describe("chatStore", () => {
         expect(useChatStore.getState().toolActivityDisplayMode).toBe(
             "collapsed",
         );
+    });
+
+    it("does not let an older storage refresh overwrite a newer snapshot", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 4,
+                status: "ready",
+                scope: "vault",
+                orphanedDeviceHistories: [],
+            },
+        });
+        invokeMock.mockResolvedValueOnce({
+            vaultKey: "vault-key",
+            generation: 3,
+            status: "ready",
+            scope: "device",
+            orphanedDeviceHistories: [],
+        });
+
+        await useChatStore
+            .getState()
+            .refreshAiHistoryStorageStatus("/vault");
+
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 4,
+            scope: "vault",
+        });
+    });
+
+    it("ignores a pending storage refresh after switching vaults", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        const response = createDeferred<unknown>();
+        invokeMock.mockReturnValueOnce(response.promise);
+
+        const refresh = useChatStore
+            .getState()
+            .refreshAiHistoryStorageStatus("/vault");
+        useVaultStore.setState({ vaultPath: "/other" });
+        response.resolve({
+            vaultKey: "vault-key",
+            generation: 2,
+            status: "ready",
+            scope: "device",
+            orphanedDeviceHistories: [],
+        });
+        await refresh;
+
+        expect(useChatStore.getState().historyStorageStatus).toBeNull();
+    });
+
+    it("changes the storage projection only after reconcile completes", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 1,
+                status: "ready",
+                scope: "device",
+                orphanedDeviceHistories: [],
+            },
+        });
+        const reconcile = createDeferred<unknown>();
+        invokeMock.mockImplementation((command) => {
+            if (command === "reconcile_ai_history_storage") {
+                return reconcile.promise;
+            }
+            if (command === "ai_load_session_histories") return Promise.resolve([]);
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        const change = useChatStore
+            .getState()
+            .changeAiHistoryStorage("/vault", "vault");
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            scope: "device",
+        });
+
+        reconcile.resolve({
+            completed: true,
+            status: {
+                vaultKey: "vault-key",
+                generation: 2,
+                status: "ready",
+                scope: "vault",
+                orphanedDeviceHistories: [],
+            },
+            historiesMoved: 0,
+            attachmentsMoved: 0,
+            conflicts: [],
+        });
+
+        await expect(change).resolves.toBe(true);
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 2,
+            scope: "vault",
+        });
     });
 
     it("restores a valid persisted tool activity display preference", () => {
