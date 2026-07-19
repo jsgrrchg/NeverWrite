@@ -30,11 +30,10 @@ Logs can still contain technical context such as provider IDs, window labels,
 platform information, error messages, executable paths, and timestamps. Review
 files before sharing them publicly.
 
-Chat history is separate from app logs and remains inside the vault under:
-
-```text
-<vault>/.neverwrite/sessions/
-```
+Chat history is separate from app logs. Its location is determined by the
+backend-owned storage scope for the current vault, which can be device-local or
+inside the vault. See [AI Session History And Crash Recovery](./ai-session-history.md)
+for the disk layout and recovery behavior.
 
 Do not upload chat transcripts unless you have reviewed them and are comfortable
 sharing their contents.

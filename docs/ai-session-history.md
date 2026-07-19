@@ -6,8 +6,8 @@ backend for that scope; it never chooses a history root or derives one from a
 filesystem path.
 
 New vaults use device-local storage. Existing vaults that already contain
-NeverWrite history are adopted as vault storage. In Settings or Chat History,
-enable **Store AI chats inside this vault** to move all history and
+NeverWrite history are adopted as vault storage. In Settings, enable
+**Store AI chats inside this vault** to move all history and
 NeverWrite-managed pasted attachments into the vault. Moving back to device
 storage uses the same verified transaction.
 
