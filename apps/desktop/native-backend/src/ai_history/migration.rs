@@ -2174,6 +2174,42 @@ mod tests {
     }
 
     #[test]
+    fn recovery_after_withdrawal_rejects_an_externally_modified_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        persistence::save_session_history(&source.histories, &history("source", "original"))
+            .unwrap();
+
+        let error = reconcile_with_failures(
+            temp.path(),
+            &source,
+            &destination,
+            &mut StopAt(Failpoint::AfterHistoryWithdrawn),
+        )
+        .unwrap_err();
+        assert!(error.contains("AfterHistoryWithdrawn"));
+        assert!(journal_path(temp.path()).exists());
+        assert!(!source.histories.exists());
+
+        // Source withdrawal has begun, so recovery must not roll back or
+        // overwrite a destination changed by another installation.
+        persistence::save_session_history(&destination.histories, &history("external", "edit"))
+            .unwrap();
+
+        let recovery_error = recover_pending(temp.path()).unwrap_err();
+        assert!(recovery_error.contains("Published AI history destination does not match"));
+        assert!(journal_path(temp.path()).exists());
+        assert!(!source.histories.exists());
+        assert_eq!(
+            persistence::load_all_session_histories(&destination.histories, true)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn deduplicates_equal_sessions_and_blocks_different_content() {
         let temp = tempfile::tempdir().unwrap();
         let source = layout(temp.path(), "source");
