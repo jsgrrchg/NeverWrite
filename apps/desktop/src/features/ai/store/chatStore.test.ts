@@ -828,6 +828,58 @@ describe("chatStore", () => {
         });
     });
 
+    it("ignores a completed storage move after switching vaults", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 1,
+                status: "ready",
+                scope: "device",
+                orphanedDeviceHistories: [],
+            },
+        });
+        const reconcile = createDeferred<unknown>();
+        invokeMock.mockImplementation((command) => {
+            if (command === "reconcile_ai_history_storage") {
+                return reconcile.promise;
+            }
+            if (command === "ai_load_session_histories") {
+                throw new Error("A stale vault must not reload its history inventory.");
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        const change = useChatStore
+            .getState()
+            .changeAiHistoryStorage("/vault", "vault");
+        useVaultStore.setState({ vaultPath: "/other-vault" });
+        reconcile.resolve({
+            completed: true,
+            status: {
+                vaultKey: "vault-key",
+                generation: 2,
+                status: "ready",
+                scope: "vault",
+                orphanedDeviceHistories: [],
+            },
+            historiesMoved: 0,
+            attachmentsMoved: 0,
+            conflicts: [],
+        });
+
+        await expect(change).resolves.toBe(true);
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 1,
+            scope: "device",
+        });
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_load_session_histories",
+            expect.objectContaining({ vaultPath: "/vault" }),
+        );
+    });
+
     it("restores a valid persisted tool activity display preference", () => {
         localStorage.setItem(
             AI_PREFS_KEY,
