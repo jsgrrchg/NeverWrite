@@ -80,6 +80,13 @@ back to the agent.
       view UI disappear.
 - [ ] Disable inline review for the vault and confirm Review tab/Edits panel
       still work while inline controls stay hidden.
+- [ ] Disable AI change review for the vault and confirm existing Review tabs
+      close, Edits and inline controls disappear, and pending changes are
+      accepted and cleared without changing file content.
+- [ ] While AI change review is disabled, run an agent edit and confirm the
+      chat timeline still shows its streamed diff.
+- [ ] Re-enable AI change review and confirm pending changes and the previous
+      inline-review preference are available again.
 - [ ] Edit non-agent-owned text while pending AI changes exist.
 - [ ] Confirm pending ranges rebase and only agent-owned spans remain in
       review.

@@ -194,7 +194,9 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
     const editorActiveLineHighlight = useSettingsStore(
         (s) => s.editorActiveLineHighlight,
     );
-    const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
+    const inlineReviewEnabled = useSettingsStore(
+        (s) => s.aiReviewEnabled && s.inlineReviewEnabled,
+    );
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const sessionsById = useChatStore((state) => state.sessionsById);
     const getCurrentContent = useCallback(

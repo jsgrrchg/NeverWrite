@@ -1,5 +1,6 @@
 import type { StoreApi } from "zustand";
 import type { EditorTarget } from "../../features/editor/editorTargetResolver";
+import { isAiReviewEnabledForCurrentVault } from "../../features/editor/editorReviewGate";
 import {
     buildChatTabFromHistory,
     buildTabFromHistory,
@@ -181,6 +182,7 @@ export interface EditorWorkspaceActions {
         options?: { background?: boolean; title?: string },
     ) => void;
     closeReview: (sessionId: string) => void;
+    closeAllReviewTabs: () => void;
     openChat: (
         sessionId: string,
         options?: {
@@ -2423,6 +2425,10 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         openReview: (sessionId, options) => {
+            if (!isAiReviewEnabledForCurrentVault()) {
+                return;
+            }
+
             set((state) => {
                 const workspace = getEffectivePaneWorkspace(state);
                 const existingPane = workspace.panes.find((pane) =>
@@ -2527,6 +2533,65 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 (t) => isReviewTab(t) && t.sessionId === sessionId,
             );
             if (tab) get().closeTab(tab.id);
+        },
+
+        closeAllReviewTabs: () => {
+            set((state) => {
+                const workspace = getEffectivePaneWorkspace(state);
+                let panesChanged = false;
+                const removedReviewTabIds = new Set<string>();
+                const panes = workspace.panes.map((pane) => {
+                    const reviewTabIds = pane.tabs
+                        .filter(isReviewTab)
+                        .map((tab) => tab.id);
+                    if (reviewTabIds.length === 0) {
+                        return pane;
+                    }
+
+                    panesChanged = true;
+                    for (const tabId of reviewTabIds) {
+                        removedReviewTabIds.add(tabId);
+                    }
+                    let nextPane = pane;
+                    for (const tabId of reviewTabIds) {
+                        nextPane = createEditorPaneState(
+                            pane.id,
+                            removeTabFromWorkspaceState(nextPane, tabId),
+                        );
+                    }
+                    return nextPane;
+                });
+                const recentlyClosedTabs = state.recentlyClosedTabs.filter(
+                    (entry) => !isReviewTab(entry.tab),
+                );
+                const recentlyClosedTabsChanged =
+                    recentlyClosedTabs.length !== state.recentlyClosedTabs.length;
+
+                if (!panesChanged && !recentlyClosedTabsChanged) {
+                    return state;
+                }
+
+                const workspaceSnapshot = panesChanged
+                    ? buildWorkspaceSnapshot({
+                          panes,
+                          focusedPaneId: workspace.focusedPaneId,
+                          layoutTree: workspace.layoutTree,
+                      })
+                    : {};
+
+                return {
+                    ...state,
+                    ...workspaceSnapshot,
+                    recentlyClosedTabs,
+                    dirtyTabIds: panesChanged
+                        ? new Set(
+                              [...state.dirtyTabIds].filter(
+                                  (tabId) => !removedReviewTabIds.has(tabId),
+                              ),
+                          )
+                        : state.dirtyTabIds,
+                };
+            });
         },
 
         openChat: (sessionId, options) => {
@@ -3065,21 +3130,32 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
 
         reopenLastClosedTab: () => {
             set((state) => {
+                // Disabled review tabs are not a valid restore target. This
+                // also cleans up any stale entry that predates invalidation.
+                const recentlyClosedTabs = isAiReviewEnabledForCurrentVault()
+                    ? state.recentlyClosedTabs
+                    : state.recentlyClosedTabs.filter(
+                          (entry) => !isReviewTab(entry.tab),
+                      );
                 const closed =
-                    state.recentlyClosedTabs[
-                        state.recentlyClosedTabs.length - 1
-                    ];
-                if (!closed) return state;
+                    recentlyClosedTabs[recentlyClosedTabs.length - 1];
+                if (!closed) {
+                    return recentlyClosedTabs === state.recentlyClosedTabs
+                        ? state
+                        : { recentlyClosedTabs };
+                }
                 const projection = mutateFocusedPaneWorkspace(state, (pane) =>
                     insertNormalizedTab(pane, closed.tab, closed.index),
                 );
                 if (!projection) {
-                    return state;
+                    return recentlyClosedTabs === state.recentlyClosedTabs
+                        ? state
+                        : { recentlyClosedTabs };
                 }
 
                 return {
                     ...projection,
-                    recentlyClosedTabs: state.recentlyClosedTabs.slice(0, -1),
+                    recentlyClosedTabs: recentlyClosedTabs.slice(0, -1),
                 };
             });
         },
