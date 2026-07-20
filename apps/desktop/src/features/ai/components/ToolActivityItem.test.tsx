@@ -194,6 +194,36 @@ describe("ToolActivityItem", () => {
         ).toHaveAttribute("data-tool-activity-status", "failed");
     });
 
+    it("expands a definitive command policy rejection with its reason", () => {
+        const reason =
+            "rm -f style commands are not permitted. Use a safer approach";
+        const view = renderComponent(
+            <ToolActivityItem
+                message={createTool("tool:blocked-command", {
+                    content: reason,
+                    meta: {
+                        status: "failed",
+                        tool: "execute",
+                    },
+                    title: "Running command",
+                })}
+                sessionId="session-1"
+            />,
+        );
+
+        const row = view.container.querySelector(
+            '[data-tool-activity-row="attention"]',
+        );
+        expect(row).toHaveAttribute("data-tool-activity-status", "failed");
+        expect(screen.getByText("Failed")).toBeInTheDocument();
+        expect(screen.queryByText(reason)).not.toBeInTheDocument();
+
+        fireEvent.click(row!);
+
+        expect(screen.getByText(reason)).toBeInTheDocument();
+        expect(row).toHaveAttribute("aria-expanded", "true");
+    });
+
     it("preserves the open-session breadcrumb for subagent activity", () => {
         renderComponent(
             <ToolActivityItem
