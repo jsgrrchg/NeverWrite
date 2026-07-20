@@ -9341,6 +9341,7 @@ mod tests {
         SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
         SessionNotification, SessionUpdate, StringPropertySchema, ToolCallContent, ToolCallId,
         Terminal, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+        UsageUpdate,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -10431,6 +10432,36 @@ mod tests {
                 .and_then(|managed| managed.session.title.as_deref()),
             Some("Investigate startup crash")
         );
+    }
+
+    #[test]
+    fn usage_update_preserves_dynamic_context_window_size() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "codex-session",
+            SessionUpdate::UsageUpdate(UsageUpdate::new(136_000, 272_000)),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("token usage event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOKEN_USAGE_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("codex-session")
+        );
+        assert_eq!(payload.get("used").and_then(Value::as_u64), Some(136_000));
+        assert_eq!(payload.get("size").and_then(Value::as_u64), Some(272_000));
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[test]

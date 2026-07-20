@@ -6515,7 +6515,7 @@ mod tests {
     use codex_protocol::models::AgentMessageInputContent;
     use codex_protocol::{
         config_types::{CollaborationMode, ModeKind, Settings},
-        protocol::ThreadSettingsAppliedEvent,
+        protocol::{ThreadSettingsAppliedEvent, TokenUsage, TokenUsageInfo},
     };
     use codex_shell_command::is_dangerous_command::{
         DangerousCommandMatch, dangerous_command_match,
@@ -7730,6 +7730,55 @@ mod tests {
             ],
             "notifications={notifications:?}"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn token_count_projects_dynamic_context_window_usage() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut prompt_state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::TokenCount(TokenCountEvent {
+                    info: Some(TokenUsageInfo {
+                        total_token_usage: TokenUsage::default(),
+                        last_token_usage: TokenUsage {
+                            input_tokens: 100_000,
+                            cached_input_tokens: 20_000,
+                            output_tokens: 16_000,
+                            reasoning_output_tokens: 0,
+                            total_tokens: 136_000,
+                        },
+                        model_context_window: Some(272_000),
+                    }),
+                    rate_limits: None,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let usage = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::UsageUpdate(update) => Some(update),
+                _ => None,
+            })
+            .expect("token count should produce an ACP usage update");
+        assert_eq!(usage.used, 136_000);
+        assert_eq!(usage.size, 272_000);
 
         Ok(())
     }
