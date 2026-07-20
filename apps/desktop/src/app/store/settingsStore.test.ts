@@ -38,6 +38,7 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().claudeCodeContinueSession).toBe(
             false,
         );
+        expect(useSettingsStore.getState().aiReviewEnabled).toBe(true);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
         expect(useSettingsStore.getState().pdfFilter).toBe("none");
         expect(useSettingsStore.getState().pdfDefaultZoom).toBe("fit-width");
@@ -129,12 +130,14 @@ describe("settingsStore", () => {
     it("persists settings per vault", () => {
         useVaultStore.setState({ vaultPath: "/vaults/devtools" });
 
+        useSettingsStore.getState().setSetting("aiReviewEnabled", false);
         useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
         useSettingsStore.getState().setSetting("pdfFilter", "sepia");
         useSettingsStore.getState().setSetting("fileTreeStickyFolders", false);
         useSettingsStore.getState().setSetting("agentsSidebarScale", 125);
         useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
 
+        expect(useSettingsStore.getState().aiReviewEnabled).toBe(false);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
         expect(useSettingsStore.getState().pdfFilter).toBe("sepia");
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(false);
@@ -146,6 +149,7 @@ describe("settingsStore", () => {
             ),
         ).toMatchObject({
             state: {
+                aiReviewEnabled: false,
                 inlineReviewEnabled: false,
                 pdfFilter: "sepia",
                 fileTreeStickyFolders: false,
@@ -153,6 +157,18 @@ describe("settingsStore", () => {
                 editorAutosaveDelayMs: 750,
             },
         });
+    });
+
+    it("keeps AI change review enabled for older vault settings", () => {
+        localStorage.setItem(
+            "neverwrite:settings:/vaults/legacy-review",
+            JSON.stringify({ state: { inlineReviewEnabled: false } }),
+        );
+
+        useVaultStore.setState({ vaultPath: "/vaults/legacy-review" });
+
+        expect(useSettingsStore.getState().aiReviewEnabled).toBe(true);
+        expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
     });
 
     it("persists the document status toggle per vault", () => {

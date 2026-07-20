@@ -2,7 +2,9 @@ import { create } from "zustand";
 import { openUrl } from "@neverwrite/runtime";
 import {
     normalizeEditorFontFamily,
+    readSettingsForVault,
     type EditorFontFamily,
+    useSettingsStore,
 } from "../../../app/store/settingsStore";
 import {
     aiCancelTurn,
@@ -1555,6 +1557,7 @@ interface ChatStore {
     rejectAllEditedFiles: (sessionId: string) => Promise<void>;
     keepEditedFile: (sessionId: string, identityKey: string) => void;
     keepAllEditedFiles: (sessionId: string) => void;
+    clearAiReviewTrackingForVault: (vaultPath: string | null) => void;
     resolveReviewHunks: (
         sessionId: string,
         identityKey: string,
@@ -4352,6 +4355,10 @@ function ensureActionLog(session: AIChatSession): AIChatSession {
 
 function diffCanBeTracked(diff: AIFileDiff) {
     return diff.is_text !== false && diff.reversible !== false;
+}
+
+function isAiReviewTrackingEnabledForSession(session: AIChatSession) {
+    return readSettingsForVault(getSessionVaultPath(session)).aiReviewEnabled;
 }
 
 function replaceTextExactlyOnce(
@@ -9105,6 +9112,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             scheduleStaleStreamingCheck(payload.session_id);
             const eventTimestamp = Date.now();
             let workCycleId: string | null | undefined = null;
+            let didConsolidate = false;
 
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -9119,7 +9127,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const shouldConsolidate =
                     payload.status === "completed" &&
                     (payload.diffs?.some(diffCanBeTracked) ?? false) &&
-                    Boolean(workCycleId);
+                    Boolean(workCycleId) &&
+                    isAiReviewTrackingEnabledForSession(nextSession);
 
                 const messageId = `tool:${payload.tool_call_id}`;
 
@@ -9133,6 +9142,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     useVaultStore.getState().vaultPath;
                 let reviewDiffs = freezeMessageReviewDiffs(messageDiffs);
                 if (shouldConsolidate) {
+                    didConsolidate = true;
                     consolidated = ensureActionLog(consolidated);
                     const currentFiles = getTrackedFilesForSession(
                         consolidated.actionLog,
@@ -9203,7 +9213,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 void persistSession(updatedSession);
             }
             if (
-                payload.status === "completed" &&
+                didConsolidate &&
                 updatedSession?.actionLog &&
                 (payload.diffs?.some(diffCanBeTracked) ?? false)
             ) {
@@ -9390,7 +9400,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 workCycleId = nextSession.activeWorkCycleId;
                 const hasDiffs =
                     payload.diffs.some(diffCanBeTracked) &&
-                    Boolean(workCycleId);
+                    Boolean(workCycleId) &&
+                    isAiReviewTrackingEnabledForSession(nextSession);
                 let sessionWithBuffer = nextSession;
                 let messageDiffs = payload.diffs;
                 let reviewVaultPath =
@@ -11854,6 +11865,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
+        clearAiReviewTrackingForVault: (vaultPath) => {
+            const sessionsToPersist: AIChatSession[] = [];
+
+            set((state) => {
+                let changed = false;
+                const sessionsById = { ...state.sessionsById };
+
+                for (const [sessionId, session] of Object.entries(
+                    state.sessionsById,
+                )) {
+                    if (
+                        !session.actionLog ||
+                        getSessionVaultPath(session) !== vaultPath
+                    ) {
+                        continue;
+                    }
+
+                    // The agent's current text is already on disk. Clearing
+                    // review ownership accepts it without writing the file.
+                    const { actionLog: _actionLog, ...withoutActionLog } =
+                        session;
+                    sessionsById[sessionId] = withoutActionLog;
+                    sessionsToPersist.push(withoutActionLog);
+                    changed = true;
+                }
+
+                return changed ? { sessionsById } : state;
+            });
+
+            for (const session of sessionsToPersist) {
+                void persistSession(session);
+            }
+        },
+
         resolveReviewHunks: async (
             sessionId,
             identityKey,
@@ -12987,6 +13032,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
     };
+});
+
+// Stop retaining agent-owned review state as soon as the current vault turns
+// AI change review off. File writes and the ordinary vault watcher are not
+// involved in this cleanup.
+useSettingsStore.subscribe((state, previousState) => {
+    if (previousState.aiReviewEnabled && !state.aiReviewEnabled) {
+        useChatStore
+            .getState()
+            .clearAiReviewTrackingForVault(useVaultStore.getState().vaultPath);
+    }
 });
 
 let chatRuntimeInitialized = false;

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore, isReviewTab } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { shouldEnableInlineReviewMergeView } from "../../editor/editorReviewGate";
 import { renderComponent, setVaultEntries } from "../../../test/test-utils";
 import { AIReviewView } from "./AIReviewView";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
@@ -162,7 +163,11 @@ describe("multi-session review integration", () => {
             notes: [],
             entries: [],
         });
-        useSettingsStore.setState({ lineWrapping: true });
+        useSettingsStore.setState({
+            aiReviewEnabled: true,
+            inlineReviewEnabled: true,
+            lineWrapping: true,
+        });
     });
 
     it("mounts review and panel with two active sessions while switching between review tabs", async () => {
@@ -307,6 +312,56 @@ describe("multi-session review integration", () => {
         expect(firstA.map((file) => file.path)).toEqual(["/vault/notes/a.md"]);
         expect(firstB.map((file) => file.path)).toEqual(["/vault/notes/b.md"]);
         expect(secondA).toBe(firstA);
+    });
+
+    it("clears pending changes while preserving inline preference across an AI review transition", async () => {
+        const session = createSession("session-transition", [
+            createTrackedFile("/vault/notes/transition.md", 10),
+        ]);
+
+        renderComponent(<MultiSessionReviewHarness />);
+
+        await act(async () => {
+            useChatStore.setState((state) => ({
+                ...state,
+                runtimes,
+                activeSessionId: session.sessionId,
+                sessionsById: { [session.sessionId]: session },
+            }));
+            openReviewTab(session, runtimes);
+        });
+
+        expect(shouldEnableInlineReviewMergeView("source")).toBe(true);
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
+        ).toBe(true);
+
+        await act(async () => {
+            useSettingsStore
+                .getState()
+                .setSetting("aiReviewEnabled", false);
+        });
+
+        expect(shouldEnableInlineReviewMergeView("source")).toBe(false);
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
+        ).toBe(false);
+        expect(
+            useChatStore.getState().sessionsById[session.sessionId]?.actionLog,
+        ).toBeUndefined();
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("aiReviewEnabled", true);
+            openReviewTab(session, runtimes);
+        });
+
+        expect(shouldEnableInlineReviewMergeView("source")).toBe(true);
+        expect(
+            useChatStore.getState().sessionsById[session.sessionId]?.actionLog,
+        ).toBeUndefined();
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
+        ).toBe(true);
     });
 
     it("disables line wrapping inside pending review diffs when editor line wrapping is disabled", async () => {

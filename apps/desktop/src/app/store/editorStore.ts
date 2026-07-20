@@ -9,6 +9,7 @@ import {
     createEditorWorkspaceSlice,
     type EditorWorkspaceStore,
 } from "./editorWorkspace";
+import { AI_REVIEW_DISABLED_EVENT } from "./aiReviewEvents";
 import { useVaultStore } from "./vaultStore";
 
 export {
@@ -181,3 +182,11 @@ useEditorStore.subscribe((state) => {
         _lastSessionJson = json;
     }, 500);
 });
+
+// Review tabs are a transient decision surface. Settings emits this event for
+// every local, synchronized, and vault-scoped transition to disabled.
+if (typeof window !== "undefined") {
+    window.addEventListener(AI_REVIEW_DISABLED_EVENT, () => {
+        useEditorStore.getState().closeAllReviewTabs();
+    });
+}
