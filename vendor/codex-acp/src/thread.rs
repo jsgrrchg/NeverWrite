@@ -46,9 +46,9 @@ use codex_protocol::protocol::{
     PatchApplyStatus, PatchApplyUpdatedEvent, PlanDeltaEvent, ReasoningContentDeltaEvent,
     ReasoningRawContentDeltaEvent, ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget,
     StreamErrorEvent, TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent,
-    ThreadSettingsOverrides, TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent,
-    TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent,
-    WebSearchEndEvent,
+    ThreadSettingsOverrides, ThreadSettingsSnapshot, TokenCountEvent, TurnAbortedEvent,
+    TurnCompleteEvent, TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent,
+    WebSearchBeginEvent, WebSearchEndEvent,
 };
 use codex_protocol::review_format::format_review_findings_block;
 use codex_protocol::{
@@ -5725,6 +5725,14 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     async fn handle_event(&mut self, Event { id, msg }: Event) {
+        if let EventMsg::ThreadSettingsApplied(event) = &msg {
+            if let Err(error) = self.sync_config_with_thread_settings(&event.thread_settings) {
+                warn!("Failed to synchronize ACP session configuration: {error:?}");
+            } else {
+                self.maybe_emit_config_options_update().await;
+            }
+        }
+
         if let Some(submission) = self.submissions.get_mut(&id) {
             submission.handle_event(&self.client, msg).await;
         } else {
@@ -5744,6 +5752,32 @@ impl<A: Auth> ThreadActor<A> {
                 self.remember_closed_event_projection(id);
             }
         }
+    }
+
+    fn sync_config_with_thread_settings(
+        &mut self,
+        settings: &ThreadSettingsSnapshot,
+    ) -> Result<(), Error> {
+        self.config.cwd = settings.cwd.clone();
+        self.config.model = Some(settings.model.clone());
+        self.config.model_provider_id = settings.model_provider_id.clone();
+        self.config.model_reasoning_effort = settings.reasoning_effort.clone();
+        self.config.service_tier = settings.service_tier.clone();
+        self.config
+            .permissions
+            .approval_policy
+            .set(settings.approval_policy)
+            .map_err(Error::into_internal_error)?;
+        self.config
+            .permissions
+            .set_permission_profile_from_session_snapshot(
+                PermissionProfileSnapshot::from_session_snapshot(
+                    settings.permission_profile.clone(),
+                    settings.active_permission_profile.clone(),
+                ),
+            )
+            .map_err(Error::into_internal_error)?;
+        Ok(())
     }
 
     fn remember_closed_event_projection(&mut self, id: String) {
@@ -6478,8 +6512,11 @@ mod tests {
     };
     use codex_core::{config::ConfigOverrides, test_support::all_model_presets};
     use codex_features::Feature;
-    use codex_protocol::config_types::ModeKind;
     use codex_protocol::models::AgentMessageInputContent;
+    use codex_protocol::{
+        config_types::{CollaborationMode, ModeKind, Settings},
+        protocol::ThreadSettingsAppliedEvent,
+    };
     use codex_shell_command::is_dangerous_command::{
         DangerousCommandMatch, dangerous_command_match,
     };
@@ -9249,6 +9286,98 @@ mod tests {
         );
 
         Ok((actor, client, conversation))
+    }
+
+    fn thread_settings_applied_event(
+        config: &Config,
+        reasoning_effort: Option<ReasoningEffort>,
+    ) -> EventMsg {
+        let model = config
+            .model
+            .clone()
+            .expect("test configuration must select a model");
+        EventMsg::ThreadSettingsApplied(ThreadSettingsAppliedEvent {
+            thread_settings: ThreadSettingsSnapshot {
+                model: model.clone(),
+                model_provider_id: config.model_provider_id.clone(),
+                service_tier: config.service_tier.clone(),
+                approval_policy: config.permissions.approval_policy.get().clone(),
+                approvals_reviewer: config.approvals_reviewer.clone(),
+                permission_profile: config.permissions.permission_profile().clone(),
+                active_permission_profile: config.permissions.active_permission_profile().clone(),
+                cwd: config.cwd.clone(),
+                reasoning_effort: reasoning_effort.clone(),
+                reasoning_summary: None,
+                personality: config.personality.clone(),
+                collaboration_mode: CollaborationMode {
+                    mode: ModeKind::Default,
+                    settings: Settings {
+                        model,
+                        reasoning_effort,
+                        developer_instructions: None,
+                    },
+                },
+            },
+        })
+    }
+
+    #[tokio::test]
+    async fn thread_settings_clear_updates_live_config_once() -> anyhow::Result<()> {
+        let preset = all_model_presets()
+            .iter()
+            .find(|preset| {
+                preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .any(|effort| effort.effort != preset.default_reasoning_effort)
+            })
+            .expect("a preset with a non-default reasoning effort should exist")
+            .clone();
+        let persisted_effort = preset
+            .supported_reasoning_efforts
+            .iter()
+            .find(|effort| effort.effort != preset.default_reasoning_effort)
+            .expect("selected preset should expose a non-default effort")
+            .effort
+            .clone();
+
+        let (mut actor, client, _) = setup_actor(|config| {
+            config.model = Some(preset.model.clone());
+            config.model_reasoning_effort = Some(persisted_effort.clone());
+        })
+        .await?;
+
+        actor
+            .handle_event(Event {
+                id: "settings-clear".to_string(),
+                msg: thread_settings_applied_event(&actor.config, None),
+            })
+            .await;
+
+        assert_eq!(actor.config.model_reasoning_effort, None);
+
+        actor
+            .handle_event(Event {
+                id: "settings-clear-repeat".to_string(),
+                msg: thread_settings_applied_event(&actor.config, None),
+            })
+            .await;
+
+        let config_updates = client
+            .notifications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|notification| {
+                matches!(notification.update, SessionUpdate::ConfigOptionUpdate(_))
+            })
+            .count();
+        assert_eq!(
+            config_updates, 1,
+            "a repeated snapshot must not re-emit options"
+        );
+
+        Ok(())
     }
 
     struct StubAuth;
