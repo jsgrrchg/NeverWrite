@@ -7,6 +7,7 @@ import {
     isReviewTab,
     useEditorStore,
 } from "../../../app/store/editorStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { serializeComposerParts } from "../composerParts";
 import type {
@@ -573,6 +574,10 @@ function expectTrackedFileToMatchAccumulatedDiff(
 
 describe("chatStore", () => {
     beforeEach(() => {
+        useSettingsStore.setState({
+            aiReviewEnabled: true,
+            inlineReviewEnabled: true,
+        });
         disposeChatStoreRuntime();
         initializeChatStoreRuntime();
         resetClaudeCodeInstalledCacheForTests();
@@ -8971,6 +8976,159 @@ describe("chatStore", () => {
                 diffBase: "old line",
                 currentText: "new line",
                 isText: true,
+            },
+        ]);
+    });
+
+    it("stops tracking new tool diffs immediately when AI change review is disabled", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+
+        useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-review-disabled",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.actionLog).toBeUndefined();
+        expect(
+            session.messages.find(
+                (message) => message.id === "tool:tool-review-disabled",
+            )?.diffs,
+        ).toEqual([
+            {
+                path: "/vault/src/watcher.rs",
+                kind: "update",
+                old_text: "old line",
+                new_text: "new line",
+            },
+        ]);
+
+        useSettingsStore.getState().setSetting("aiReviewEnabled", true);
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-review-reenabled",
+            title: "Edit watcher again",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs again",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "new line",
+                    new_text: "final line",
+                },
+            ],
+        });
+
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
+            {
+                path: "/vault/src/watcher.rs",
+                diffBase: "new line",
+                currentText: "final line",
+            },
+        ]);
+    });
+
+    it("clears existing review tracking as soon as AI change review is disabled", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-before-review-disabled",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(1);
+
+        useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.actionLog,
+        ).toBeUndefined();
+    });
+
+    it("does not track permission-request diffs when AI change review is disabled", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-before-disabled-permission",
+            title: "Read watcher",
+            kind: "read",
+            status: "completed",
+            summary: "watcher.rs",
+        });
+        useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+
+        useChatStore.getState().applyPermissionRequest({
+            session_id: activeSessionId,
+            request_id: "permission-review-disabled",
+            tool_call_id: "tool-permission-review-disabled",
+            title: "Edit watcher",
+            target: "/vault/src/watcher.rs",
+            options: [],
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.actionLog,
+        ).toBeUndefined();
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.find(
+                    (message) =>
+                        message.permissionRequestId ===
+                        "permission-review-disabled",
+                )?.diffs,
+        ).toEqual([
+            {
+                path: "/vault/src/watcher.rs",
+                kind: "update",
+                old_text: "old line",
+                new_text: "new line",
             },
         ]);
     });

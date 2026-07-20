@@ -2784,6 +2784,30 @@ describe("Editor", () => {
         expect(getEditorView().state.doc.toString()).toBe("new line");
     });
 
+    it("clears merge view when AI change review is turned off in source mode", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "new line",
+            },
+        ]);
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        seedTrackedDiff("notes/current.md", "old line", "new line");
+
+        renderComponent(<Editor />);
+        expect(getChunks(getEditorView().state)?.chunks.length).toBe(1);
+
+        await act(async () => {
+            useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+            await flushPromises();
+        });
+
+        expect(getChunks(getEditorView().state)).toBeNull();
+        expect(getEditorView().state.doc.toString()).toBe("new line");
+    });
+
     it("keeps tracked files in the review store while inline review stays disabled and the editor remains unprojected", async () => {
         setEditorTabs([
             {

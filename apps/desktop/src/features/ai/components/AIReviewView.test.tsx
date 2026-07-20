@@ -2,6 +2,7 @@ import { fireEvent, screen } from "@testing-library/react";
 import { waitFor } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { isReviewTab, useEditorStore } from "../../../app/store/editorStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import {
     renderComponent,
     setVaultEntries,
@@ -152,6 +153,7 @@ describe("AIReviewView", () => {
     beforeEach(() => {
         localStorage.clear();
         resetChatStore();
+        useSettingsStore.getState().reset();
         useEditorStore.setState({
             panes: [
                 {
@@ -180,6 +182,24 @@ describe("AIReviewView", () => {
     it("shows fallback when no review tab is active", () => {
         renderComponent(<AIReviewView />);
         expect(screen.getByText("No review tab active")).toBeInTheDocument();
+    });
+
+    it("does not expose a restored review tab while AI change review is disabled", () => {
+        const sessionId = "disabled-review";
+        const file = makeTrackedFile();
+        useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+        setupReviewTab(sessionId);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [sessionId]: makeSession(sessionId, [file]) },
+        }));
+
+        const view = renderComponent(<AIReviewView />);
+
+        expect(view.container).toBeEmptyDOMElement();
+        expect(
+            useChatStore.getState().sessionsById[sessionId]?.actionLog,
+        ).toEqual(makeSession(sessionId, [file]).actionLog);
     });
 
     it("renders the review session from the requested pane even when another pane is focused", () => {

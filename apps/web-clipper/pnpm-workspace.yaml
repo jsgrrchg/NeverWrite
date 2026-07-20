@@ -2,6 +2,7 @@ packages:
     - .
 
 overrides:
+    adm-zip: 0.6.0
     esbuild: 0.28.1
     node-notifier>uuid: 11.1.1
     shell-quote: 1.8.4

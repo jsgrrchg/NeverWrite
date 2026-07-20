@@ -27,6 +27,7 @@ import {
     selectPaneTab,
     useEditorStore,
 } from "../../../app/store/editorStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 import {
@@ -229,6 +230,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
 
     // Actions ref — avoids subscribing to every action
     const chatActions = useRef(useChatStore.getState()).current;
+    const aiReviewEnabled = useSettingsStore((state) => state.aiReviewEnabled);
 
     // Session data
     const {
@@ -1035,9 +1037,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 />
             </ChatContentColumn>
 
-            <ChatContentColumn>
-                <EditedFilesBufferPanel sessionId={sessionId} />
-            </ChatContentColumn>
+            {aiReviewEnabled ? (
+                <ChatContentColumn>
+                    <EditedFilesBufferPanel sessionId={sessionId} />
+                </ChatContentColumn>
+            ) : null}
 
             <div
                 className={

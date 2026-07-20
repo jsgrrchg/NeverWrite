@@ -730,6 +730,15 @@ describe("SettingsPanel", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "AI" }));
 
+        const reviewLabel = screen.getByText("AI change review");
+        const reviewRow = reviewLabel.parentElement?.parentElement;
+        expect(reviewRow).not.toBeNull();
+
+        const reviewToggle = within(reviewRow as HTMLElement).getByRole(
+            "switch",
+        );
+        expect(reviewToggle).toHaveAttribute("aria-checked", "true");
+
         const label = screen.getByText("Inline review in editor");
         const row = label.parentElement?.parentElement;
         expect(row).not.toBeNull();
@@ -741,6 +750,13 @@ describe("SettingsPanel", () => {
 
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
         expect(toggle).toHaveAttribute("aria-checked", "false");
+
+        fireEvent.click(reviewToggle);
+
+        expect(useSettingsStore.getState().aiReviewEnabled).toBe(false);
+        expect(reviewToggle).toHaveAttribute("aria-checked", "false");
+        expect(toggle).toBeDisabled();
+        expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
     });
 
     it("renders and persists the wikilink hover preview toggle in editor settings", () => {

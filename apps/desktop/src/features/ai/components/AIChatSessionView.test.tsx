@@ -3,6 +3,7 @@ import { invoke } from "@neverwrite/runtime";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
+import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
@@ -160,6 +161,7 @@ function expectColumnAncestor(testId: string) {
 describe("AIChatSessionView", () => {
     beforeEach(() => {
         resetChatStore();
+        useSettingsStore.getState().reset();
         composerMockState.onPasteImage = undefined;
         messageListMockState.props = [];
         useVaultStore.setState({
@@ -346,6 +348,17 @@ describe("AIChatSessionView", () => {
                 .getByTestId("chat-composer")
                 .closest('[data-testid="chat-content-column"]'),
         ).toBeNull();
+    });
+
+    it("hides the Edited files panel when AI change review is disabled", () => {
+        useSettingsStore.getState().setSetting("aiReviewEnabled", false);
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(screen.queryByTestId("edited-files-panel")).toBeNull();
+        expect(screen.getByTestId("chat-message-list")).toBeInTheDocument();
+        expect(screen.getByTestId("chat-composer")).toBeInTheDocument();
     });
 
     it("keeps the composer flexible while it is expanded", () => {

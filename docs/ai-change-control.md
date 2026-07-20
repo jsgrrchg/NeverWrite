@@ -111,6 +111,13 @@ There are three review surfaces:
 - Compact Edits surface: [`EditedFilesBufferPanel.tsx`](../apps/desktop/src/features/ai/components/EditedFilesBufferPanel.tsx) appears in the chat sidebar and offers compact keep/reject/review/undo actions.
 - Chat activity rows: [`ChangeReviewToolRail.tsx`](../apps/desktop/src/features/ai/components/ChangeReviewToolRail.tsx) renders change-review progress and diff previews in the conversation timeline. It is a navigation and inspection surface; keep/reject state and actions still derive from the same canonical ActionLog projection.
 
+The Review tab and Edits surface are available only while the current vault's
+`aiReviewEnabled` setting is enabled. Disabling it closes open Review tabs,
+hides Edits, and accepts then clears pending ActionLog state without writing
+the current file content back to disk. New agent changes are not added to the
+ActionLog while review is disabled. Chat activity rows remain available so
+streamed diffs stay visible.
+
 The Review tab and Edits surface render shared rows through
 [`EditedFilesReviewList.tsx`](../apps/desktop/src/features/ai/components/EditedFilesReviewList.tsx)
 and derive file items from the same tracked-file projection. Chat activity rows
@@ -129,8 +136,10 @@ Review projection groups spans into hunks and chunks:
 
 Inline review is gated by vault settings in
 [`editorReviewGate.ts`](../apps/desktop/src/features/editor/editorReviewGate.ts).
-It is enabled only for source mode and when `inlineReviewEnabled` is true for
-the current vault.
+It is enabled only for source mode and when both `aiReviewEnabled` and
+`inlineReviewEnabled` are true for the current vault. Disabling AI change
+review preserves the inline preference so it resumes when review is enabled
+again.
 
 Editor synchronization happens in two layers:
 

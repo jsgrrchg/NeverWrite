@@ -3953,6 +3953,7 @@ function AISettings({
     searchQuery: SettingsSearchQuery;
     vaultPath: string | null;
 }) {
+    const aiReviewEnabled = useSettingsStore((s) => s.aiReviewEnabled);
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const setSetting = useSettingsStore((s) => s.setSetting);
     const requireCmdEnterToSend = useChatStore((s) => s.requireCmdEnterToSend);
@@ -3999,6 +4000,15 @@ function AISettings({
         searchQuery,
         "Context",
         [
+            [
+                "AI change review",
+                "Track AI file changes for review. Turning this off accepts and clears pending review changes. Chat diff updates remain visible.",
+                "review",
+                "edits",
+                "changes",
+                "accept",
+                "reject",
+            ],
             [
                 "Inline review in editor",
                 "Show AI file changes inline in editors with accept and reject controls. Available only in source mode. This preference is saved per vault.",
@@ -4079,12 +4089,28 @@ function AISettings({
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Context"
+                label="AI change review"
+                description="Track AI file changes for review. Turning this off accepts and clears pending review changes. Chat diff updates remain visible."
+                keywords={["review", "edits", "changes", "accept", "reject"]}
+                control={
+                    <Toggle
+                        value={aiReviewEnabled}
+                        onChange={(value) =>
+                            setSetting("aiReviewEnabled", value)
+                        }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Context"
                 label="Inline review in editor"
                 description="Show AI file changes inline in editors with accept and reject controls. Available only in source mode. This preference is saved per vault."
                 keywords={["review", "accept", "reject"]}
                 control={
                     <Toggle
                         value={inlineReviewEnabled}
+                        disabled={!aiReviewEnabled}
                         onChange={(value) =>
                             setSetting("inlineReviewEnabled", value)
                         }
