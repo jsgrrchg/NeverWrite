@@ -566,6 +566,7 @@ struct ActiveCommand {
     tool_call_id: ToolCallId,
     terminal_output: bool,
     output: String,
+    observed_output: bool,
     file_extension: Option<String>,
     /// Snapshots of file contents taken before the command executes.
     /// Key = absolute path, Value = file content (None if file didn't exist).
@@ -3482,6 +3483,7 @@ impl PromptState {
                 terminal_output,
                 tool_call_id: tool_call_id.clone(),
                 output: String::new(),
+                observed_output: false,
                 file_extension,
                 file_snapshots: HashMap::new(),
             },
@@ -3623,9 +3625,11 @@ impl PromptState {
             .pending_command_output
             .remove(&call_id)
             .unwrap_or_default();
+        let observed_output = !pending_output.is_empty();
         let mut active_command = ActiveCommand {
             tool_call_id: tool_call_id.clone(),
             output: pending_output,
+            observed_output,
             file_extension,
             terminal_output,
             file_snapshots,
@@ -3695,6 +3699,7 @@ impl PromptState {
         // Stream output bytes to the display-only terminal via ToolCallUpdate meta.
         let data_str = String::from_utf8_lossy(&chunk).to_string();
         if let Some(active_command) = self.active_commands.get_mut(&call_id) {
+            active_command.observed_output |= !data_str.is_empty();
             if client.supports_terminal_output(active_command) {
                 let update = ToolCallUpdate::new(
                     active_command.tool_call_id.clone(),
@@ -3743,6 +3748,24 @@ impl PromptState {
         }
     }
 
+    fn declined_command_reason(
+        status: &ExecCommandStatus,
+        observed_output: bool,
+        formatted_output: &str,
+        aggregated_output: &str,
+        stderr: &str,
+    ) -> Option<String> {
+        if status != &ExecCommandStatus::Declined || observed_output {
+            return None;
+        }
+
+        [formatted_output, aggregated_output, stderr]
+            .into_iter()
+            .map(str::trim)
+            .find(|output| !output.is_empty())
+            .map(str::to_string)
+    }
+
     async fn exec_command_end(&mut self, client: &SessionClient, event: ExecCommandEndEvent) {
         let raw_output = serde_json::json!(&event);
         let ExecCommandEndEvent {
@@ -3755,15 +3778,22 @@ impl PromptState {
             call_id,
             exit_code,
             stdout: _,
-            stderr: _,
-            aggregated_output: _,
+            stderr,
+            aggregated_output,
             duration: _,
-            formatted_output: _,
+            formatted_output,
             process_id: _,
             status,
             ..
         } = event;
         if let Some(active_command) = self.active_commands.remove(&call_id) {
+            let declined_reason = Self::declined_command_reason(
+                &status,
+                active_command.observed_output,
+                &formatted_output,
+                &aggregated_output,
+                &stderr,
+            );
             let is_success = exit_code == 0;
 
             let status = match status {
@@ -3782,19 +3812,24 @@ impl PromptState {
             let should_emit_accumulated_output = !client.supports_terminal_output(&active_command)
                 && !active_command.output.is_empty();
 
-            let content: Option<Vec<ToolCallContent>> =
-                if !exec_diffs.is_empty() || should_emit_accumulated_output {
-                    let mut items: Vec<ToolCallContent> = Vec::new();
-                    if client.supports_terminal_output(&active_command) {
-                        items.push(ToolCallContent::Terminal(Terminal::new(call_id.clone())));
-                    } else if !active_command.output.is_empty() {
-                        items.push(Self::command_output_content(&active_command).into());
-                    }
-                    items.extend(exec_diffs);
-                    Some(items)
-                } else {
-                    None
-                };
+            let content: Option<Vec<ToolCallContent>> = if !exec_diffs.is_empty()
+                || should_emit_accumulated_output
+                || declined_reason.is_some()
+            {
+                let mut items: Vec<ToolCallContent> = Vec::new();
+                if client.supports_terminal_output(&active_command) {
+                    items.push(ToolCallContent::Terminal(Terminal::new(call_id.clone())));
+                } else if !active_command.output.is_empty() {
+                    items.push(Self::command_output_content(&active_command).into());
+                }
+                items.extend(exec_diffs);
+                if let Some(reason) = declined_reason {
+                    items.push(reason.into());
+                }
+                Some(items)
+            } else {
+                None
+            };
 
             let fields = ToolCallUpdateFields::new()
                 .status(status)
@@ -3822,6 +3857,13 @@ impl PromptState {
         } else {
             // No later event can consume this buffer once the command has ended.
             self.pending_command_output.remove(&call_id);
+            let declined_reason = Self::declined_command_reason(
+                &status,
+                false,
+                &formatted_output,
+                &aggregated_output,
+                &stderr,
+            );
             let status = match status {
                 ExecCommandStatus::Completed if exit_code == 0 => ToolCallStatus::Completed,
                 ExecCommandStatus::Completed => ToolCallStatus::Failed,
@@ -3833,6 +3875,7 @@ impl PromptState {
                     call_id,
                     ToolCallUpdateFields::new()
                         .status(status)
+                        .content(declined_reason.map(|reason| vec![ToolCallContent::from(reason)]))
                         .raw_output(raw_output),
                 ),
                 "Running command",
@@ -3853,9 +3896,11 @@ impl PromptState {
             stdin,
         } = event;
 
+        let has_stdin = !stdin.is_empty();
         let stdin = format!("\n{stdin}\n");
         // Stream output bytes to the display-only terminal via ToolCallUpdate meta.
         if let Some(active_command) = self.active_commands.get_mut(&call_id) {
+            active_command.observed_output |= has_stdin;
             if client.supports_terminal_output(active_command) {
                 let update = ToolCallUpdate::new(
                     active_command.tool_call_id.clone(),
@@ -6435,6 +6480,9 @@ mod tests {
     use codex_features::Feature;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::models::AgentMessageInputContent;
+    use codex_shell_command::is_dangerous_command::{
+        DangerousCommandMatch, dangerous_command_match,
+    };
     use tokio::sync::{Mutex, mpsc::UnboundedSender};
 
     use super::*;
@@ -8759,6 +8807,163 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn full_access_forced_rm_rejection_is_visible_without_permission_request()
+    -> anyhow::Result<()> {
+        const REJECTION_REASON: &str =
+            "rm -f style commands are not permitted. Use a safer approach";
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("neverwrite-full-access-policy-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir)?;
+        let sentinel = temp_dir.join("sentinel.txt");
+        std::fs::write(&sentinel, "must survive")?;
+
+        let command = vec![
+            "rm".to_string(),
+            "-rf".to_string(),
+            temp_dir.display().to_string(),
+        ];
+        assert_eq!(
+            dangerous_command_match(&command),
+            Some(DangerousCommandMatch::ForcedRm)
+        );
+        let full_access = APPROVAL_PRESETS
+            .iter()
+            .find(|preset| preset.id == "full-access")
+            .expect("full access preset should exist");
+        assert!(matches!(
+            &full_access.approval,
+            codex_protocol::protocol::AskForApproval::Never
+        ));
+        assert!(matches!(
+            &full_access.permission_profile,
+            PermissionProfile::Disabled
+        ));
+
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+        let cwd = codex_utils_path_uri::PathUri::from_host_native_path(&temp_dir)
+            .expect("temporary directory should be representable as a path URI");
+
+        state
+            .exec_command_begin(
+                &session_client,
+                ExecCommandBeginEvent {
+                    call_id: "blocked-forced-rm".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 0,
+                    command: command.clone(),
+                    cwd: cwd.clone(),
+                    parsed_cmd: vec![ParsedCommand::Unknown {
+                        cmd: command.join(" "),
+                    }],
+                    source: Default::default(),
+                    interaction_input: None,
+                },
+            )
+            .await;
+        state
+            .exec_command_end(
+                &session_client,
+                ExecCommandEndEvent {
+                    call_id: "blocked-forced-rm".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    completed_at_ms: 1,
+                    command,
+                    cwd,
+                    parsed_cmd: vec![],
+                    source: Default::default(),
+                    interaction_input: None,
+                    stdout: String::new(),
+                    stderr: REJECTION_REASON.to_string(),
+                    aggregated_output: REJECTION_REASON.to_string(),
+                    exit_code: -1,
+                    duration: std::time::Duration::ZERO,
+                    formatted_output: REJECTION_REASON.to_string(),
+                    status: ExecCommandStatus::Declined,
+                },
+            )
+            .await;
+
+        assert!(sentinel.exists(), "the rejected command must never execute");
+        assert_eq!(
+            client
+                .permission_requests
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a definitive policy rejection must not become an ACP permission request"
+        );
+        let notifications = client.notifications.lock().unwrap();
+        let update = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update)
+                    if update.tool_call_id.0.as_ref() == "blocked-forced-rm" =>
+                {
+                    Some(update)
+                }
+                _ => None,
+            })
+            .expect("blocked command should emit a terminal tool update");
+        assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
+        let visible_reason = update
+            .fields
+            .content
+            .as_ref()
+            .and_then(|content| content.first())
+            .and_then(|content| match content {
+                ToolCallContent::Content(Content {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(visible_reason, Some(REJECTION_REASON));
+        drop(notifications);
+
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn declined_command_reason_is_not_duplicated_after_visible_output() {
+        let reason = "blocked by policy";
+        assert_eq!(
+            PromptState::declined_command_reason(
+                &ExecCommandStatus::Declined,
+                false,
+                reason,
+                "aggregated fallback",
+                "stderr fallback",
+            ),
+            Some(reason.to_string())
+        );
+        assert_eq!(
+            PromptState::declined_command_reason(
+                &ExecCommandStatus::Declined,
+                true,
+                reason,
+                "aggregated fallback",
+                "stderr fallback",
+            ),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn early_command_output_is_replayed_to_terminal_clients() -> anyhow::Result<()> {
         let session_id = SessionId::new("test");
@@ -9341,12 +9546,14 @@ mod tests {
 
     struct StubClient {
         notifications: std::sync::Mutex<Vec<SessionNotification>>,
+        permission_requests: AtomicUsize,
     }
 
     impl StubClient {
         fn new() -> Self {
             StubClient {
                 notifications: std::sync::Mutex::default(),
+                permission_requests: AtomicUsize::new(0),
             }
         }
     }
@@ -9362,6 +9569,8 @@ mod tests {
             _args: RequestPermissionRequest,
         ) -> Pin<Box<dyn Future<Output = Result<RequestPermissionResponse, Error>> + Send + '_>>
         {
+            self.permission_requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async { unimplemented!() })
         }
     }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { AIConfigOption, AIModeOption, AIModelOption } from "../types";
 
 interface AIChatAgentControlsProps {
@@ -42,6 +42,53 @@ const SEARCHABLE_MODEL_RUNTIME_IDS = new Set([
 const GROK_RUNTIME_ID = "grok-acp";
 const CLAUDE_RUNTIME_ID = "claude-acp";
 const CLAUDE_FAST_OPTION_ID = "fast";
+const CODEX_RUNTIME_ID = "codex-acp";
+const CODEX_FULL_ACCESS_MODE_ID = "full-access";
+const CODEX_FULL_ACCESS_POLICY_HELP =
+    "Some destructive command forms may still be blocked by Codex safety policy.";
+
+function FullAccessPolicyHelp() {
+    const [open, setOpen] = useState(false);
+    const descriptionId = useId();
+
+    return (
+        <div className="relative flex shrink-0 items-center">
+            <button
+                aria-describedby={open ? descriptionId : undefined}
+                aria-label="Full Access safety policy"
+                className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold"
+                onBlur={() => setOpen(false)}
+                onFocus={() => setOpen(true)}
+                onMouseEnter={() => setOpen(true)}
+                onMouseLeave={() => setOpen(false)}
+                style={{
+                    backgroundColor: "transparent",
+                    border: "1px solid var(--border)",
+                    color: "var(--text-secondary)",
+                }}
+                type="button"
+            >
+                ?
+            </button>
+            {open ? (
+                <div
+                    className="absolute bottom-full left-0 z-50 mb-1 w-72 rounded-lg px-3 py-2 text-xs"
+                    id={descriptionId}
+                    role="tooltip"
+                    style={{
+                        backgroundColor: "var(--bg-secondary)",
+                        border: "1px solid var(--border)",
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                        color: "var(--text-primary)",
+                        lineHeight: 1.4,
+                    }}
+                >
+                    {CODEX_FULL_ACCESS_POLICY_HELP}
+                </div>
+            ) : null}
+        </div>
+    );
+}
 
 function shouldUseSearchableModelMenu(runtimeId?: string) {
     return (
@@ -526,6 +573,8 @@ export function AIChatAgentControls({
                 .filter(({ options }) => options.length > 0),
         [effortsByModel, extraConfigs, runtimeId, selectedModelId],
     );
+    const showFullAccessPolicyHelp =
+        runtimeId === CODEX_RUNTIME_ID && modeId === CODEX_FULL_ACCESS_MODE_ID;
 
     return (
         <div className="flex min-w-0 flex-wrap items-center gap-1">
@@ -543,6 +592,7 @@ export function AIChatAgentControls({
                     onChange={onModeChange}
                 />
             ) : null}
+            {showFullAccessPolicyHelp ? <FullAccessPolicyHelp /> : null}
             {lockedModelOptions.length > 0 ? (
                 <DropdownField
                     disabled={disabled}
