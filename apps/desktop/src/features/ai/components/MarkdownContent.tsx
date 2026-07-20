@@ -41,6 +41,7 @@ import {
     getChatCodeLabelFontSize,
 } from "./chatCodeSizing";
 import { extractFenceLanguageToken } from "../../editor/codeLanguage";
+import { formatCodeFenceLanguageLabel } from "../../editor/codeFencePresentation";
 import { HighlightedCodeText } from "../../editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "../../editor/useCodeLanguageSupport";
 import {
@@ -1414,69 +1415,6 @@ function TextBlock({
     );
 }
 
-const codeLanguageLabels: Record<string, string> = {
-    bash: "Bash",
-    c: "C",
-    "c++": "C++",
-    cpp: "C++",
-    cs: "C#",
-    csharp: "C#",
-    css: "CSS",
-    diff: "Diff",
-    docker: "Dockerfile",
-    dockerfile: "Dockerfile",
-    gql: "GraphQL",
-    graphql: "GraphQL",
-    html: "HTML",
-    java: "Java",
-    javascript: "JavaScript",
-    js: "JavaScript",
-    json: "JSON",
-    jsonc: "JSONC",
-    jsx: "JSX",
-    make: "Makefile",
-    makefile: "Makefile",
-    markdown: "Markdown",
-    md: "Markdown",
-    mdx: "MDX",
-    php: "PHP",
-    powershell: "PowerShell",
-    ps1: "PowerShell",
-    pwsh: "PowerShell",
-    py: "Python",
-    python: "Python",
-    rb: "Ruby",
-    rs: "Rust",
-    ruby: "Ruby",
-    rust: "Rust",
-    scss: "SCSS",
-    sh: "Shell",
-    shell: "Shell",
-    sql: "SQL",
-    text: "Text",
-    ts: "TypeScript",
-    tsx: "TSX",
-    typescript: "TypeScript",
-    xml: "XML",
-    yaml: "YAML",
-    yml: "YAML",
-    zsh: "Zsh",
-};
-
-function formatCodeLanguageLabel(language?: string) {
-    const normalizedLanguage = language?.trim().toLowerCase();
-    if (!normalizedLanguage) return undefined;
-
-    return (
-        codeLanguageLabels[normalizedLanguage] ??
-        normalizedLanguage
-            .split(/[-_]+/)
-            .filter(Boolean)
-            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-            .join(" ")
-    );
-}
-
 function CodeBlock({
     content,
     info,
@@ -1495,9 +1433,7 @@ function CodeBlock({
     const languageSupport = useMarkdownCodeLanguageSupport(info);
     const languageToken = extractFenceLanguageToken(info ?? "");
     const normalizedLanguage = languageToken?.toLowerCase();
-    const languageLabel = formatCodeLanguageLabel(
-        languageToken ?? info?.trim(),
-    );
+    const languageLabel = formatCodeFenceLanguageLabel(info);
     const isMarkdownFence =
         normalizedLanguage === "markdown" || normalizedLanguage === "md";
     const isUnifiedDiff =

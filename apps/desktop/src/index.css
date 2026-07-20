@@ -630,22 +630,38 @@ html[data-desktop-platform="windows"].dark {
     overflow-wrap: anywhere;
 }
 
-/* Code fences and streamed plans share one compact terminal-like surface. */
+/* Chat and Markdown live preview share one compact code-fence surface. */
+:root {
+    --code-fence-background: color-mix(
+        in srgb,
+        var(--bg-tertiary) 68%,
+        transparent
+    );
+    --code-fence-border-color: color-mix(
+        in srgb,
+        var(--border) 82%,
+        transparent
+    );
+    --code-fence-radius: 6px;
+    --code-fence-inline-size: min(100%, 68ch);
+}
+
 .chat-code-frame,
 .chat-plan-frame {
     /* Keep fenced content at a readable measure without overflowing narrow chat panes. */
-    inline-size: min(100%, 68ch);
+    inline-size: var(--code-fence-inline-size);
     margin-inline: auto;
-    border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--bg-tertiary) 68%, transparent);
+    border: 1px solid var(--code-fence-border-color);
+    border-radius: var(--code-fence-radius);
+    background: var(--code-fence-background);
 }
 
 .chat-plan-frame {
     font-family: var(--font-mono), ui-monospace, monospace;
 }
 
-.chat-code-header {
+.chat-code-header,
+.cm-code-block-header {
     display: flex;
     min-height: 2.45em;
     align-items: center;
@@ -654,6 +670,73 @@ html[data-desktop-platform="windows"].dark {
     font-family: var(--font-mono);
     font-weight: 600;
     padding: 0.18em 2.75em 0 1em;
+}
+
+.cm-code-block-header-shell,
+.cm-code-block-line {
+    box-sizing: border-box;
+    inline-size: var(--code-fence-inline-size);
+    margin-inline: auto;
+}
+
+.cm-code-block-header-shell {
+    padding-top: 0.25rem;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.93em;
+}
+
+.cm-code-block-header {
+    justify-content: space-between;
+    padding-right: 0.55em;
+    border: 1px solid var(--code-fence-border-color);
+    border-bottom: 0;
+    border-radius: var(--code-fence-radius) var(--code-fence-radius) 0 0;
+    background: var(--code-fence-background);
+    /* The shell matches the code body metrics so their 68ch widths align. */
+    font-size: 0.84em;
+}
+
+.cm-code-block-header-only {
+    border-bottom: 1px solid var(--code-fence-border-color);
+    border-radius: var(--code-fence-radius);
+}
+
+.cm-code-block-header-shell-unlabeled {
+    position: relative;
+    z-index: 10;
+    height: 0;
+    padding-top: 0;
+    pointer-events: none;
+}
+
+.cm-code-block-header-unlabeled {
+    position: absolute;
+    top: 0.55em;
+    right: 0.55em;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+.cm-code-block-header-unlabeled .cm-code-block-copy {
+    pointer-events: auto;
+}
+
+.cm-code-block-header-shell-unlabeled-empty {
+    height: auto;
+    padding-top: 0.25rem;
+}
+
+.cm-code-block-header-unlabeled.cm-code-block-header-only {
+    position: static;
+    min-height: 2.45em;
+    justify-content: flex-end;
+    padding: 0.18em 0.55em 0;
+    border: 1px solid var(--code-fence-border-color);
+    border-radius: var(--code-fence-radius);
+    background: var(--code-fence-background);
+    pointer-events: auto;
 }
 
 .chat-code-actions {
@@ -688,7 +771,12 @@ html[data-desktop-platform="windows"].dark {
     border-radius: 2px;
 }
 
-.chat-code-copy-button {
+.chat-code-copy-button,
+.cm-code-block-copy {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
     width: 20px;
     height: 20px;
     border: 0;
@@ -701,14 +789,24 @@ html[data-desktop-platform="windows"].dark {
         opacity 100ms ease;
 }
 
-.chat-code-copy-button:hover {
+.chat-code-copy-button:hover,
+.cm-code-block-copy:hover {
     color: var(--text-primary) !important;
     opacity: 1;
 }
 
-.chat-code-copy-button:focus-visible {
+.chat-code-copy-button:focus-visible,
+.cm-code-block-copy:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 42%, transparent);
     outline-offset: 2px;
+}
+
+.cm-code-block-copy {
+    color: var(--text-secondary);
+}
+
+.cm-code-block-copy[data-copied="true"] {
+    color: var(--accent);
 }
 
 .chat-code-block {
@@ -723,6 +821,37 @@ html[data-desktop-platform="windows"].dark {
 .chat-code-frame--unlabeled .chat-code-block {
     padding-top: 0.85em;
     padding-right: 2.75em;
+}
+
+.cm-code-block-line {
+    padding-right: 1em !important;
+    padding-left: 1em !important;
+    border-right: 1px solid var(--code-fence-border-color);
+    border-left: 1px solid var(--code-fence-border-color);
+    background: var(--code-fence-background) !important;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.93em;
+}
+
+.cm-code-block-line-first {
+    padding-top: 0.3em !important;
+}
+
+.cm-code-block-line-unlabeled {
+    padding-top: 0.85em !important;
+    padding-right: 2.75em !important;
+    border-top: 1px solid var(--code-fence-border-color);
+    border-radius: var(--code-fence-radius) var(--code-fence-radius) 0 0;
+}
+
+.cm-code-block-line-last {
+    padding-bottom: 0.85em !important;
+    border-bottom: 1px solid var(--code-fence-border-color);
+    border-radius: 0 0 var(--code-fence-radius) var(--code-fence-radius);
+}
+
+.cm-code-block-line-unlabeled.cm-code-block-line-last {
+    border-radius: var(--code-fence-radius);
 }
 
 body.resizing-sidebar,

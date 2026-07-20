@@ -849,61 +849,6 @@ export const livePreviewTheme = EditorView.baseTheme({
         fontSize: "0",
         overflow: "hidden",
     },
-    ".cm-code-block-header-shell": {
-        paddingTop: "8px",
-    },
-    ".cm-code-block-header": {
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        padding: "6px 12px",
-        background:
-            "color-mix(in srgb, var(--bg-tertiary) 80%, var(--bg-secondary))",
-        borderRadius: "8px 8px 0 0",
-        border: "1px solid var(--border)",
-        borderBottom: "none",
-        fontSize: "0.78em",
-        color: "var(--text-secondary)",
-    },
-    ".cm-code-block-header-only": {
-        borderBottom: "1px solid var(--border)",
-        borderRadius: "8px",
-    },
-    ".cm-code-block-lang": {
-        fontWeight: "600",
-        textTransform: "uppercase",
-        letterSpacing: "0.05em",
-    },
-    ".cm-code-block-copy": {
-        background: "none",
-        border: "1px solid var(--border)",
-        borderRadius: "4px",
-        padding: "2px 8px",
-        color: "var(--text-secondary)",
-        cursor: "pointer",
-        fontSize: "0.9em",
-    },
-    ".cm-code-block-copy:hover": {
-        background:
-            "color-mix(in srgb, var(--bg-secondary) 60%, var(--bg-tertiary))",
-    },
-    ".cm-code-block-line": {
-        background:
-            "color-mix(in srgb, var(--bg-tertiary) 50%, var(--bg-primary)) !important",
-        borderLeft: "1px solid var(--border)",
-        borderRight: "1px solid var(--border)",
-        paddingLeft: "12px !important",
-    },
-    ".cm-code-block-line-first": {
-        borderTop: "1px solid var(--border)",
-        borderRadius: "8px 8px 0 0",
-        paddingTop: "8px !important",
-    },
-    ".cm-code-block-line-last": {
-        borderBottom: "1px solid var(--border)",
-        borderRadius: "0 0 8px 8px",
-        paddingBottom: "8px !important",
-    },
     ".cm-mermaid-preview": {
         margin: "12px 0",
         maxWidth: "100%",
