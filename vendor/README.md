@@ -48,10 +48,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
   - synced against upstream commit `863d433fc91855d0b5427372bf635c894bf68cb6`
   - latest upstream sync from `0.14.0` brought in 5 commits:
     `d9bf1c1`, `0c2d828`, `8aef91b`, `f67ca5f`, `863d433`
-  - OpenAI Codex Rust crates: `rust-v0.144.0`
-    (`767822446c7a594caa19609ca435281a9ec67e0d`)
+  - OpenAI Codex Rust crates: `rust-v0.144.6`
+    (`5d1fbf26c43abc65a203928b2e31561cb039e06d`)
   - vendor ACP SDK: `agent-client-protocol` `0.14.0`
-  - includes a local `vendor/codex-utils-pty/` snapshot at `0.144.0` plus the
+  - includes a local `vendor/codex-utils-pty/` snapshot at `0.144.6` plus the
     matching `[patch."https://github.com/openai/codex"]` entry required by the
     OpenAI Codex crate graph
   - local NeverWrite delta remains intentionally bounded and currently lives in:
@@ -79,8 +79,8 @@ That means the directory is intentionally reproducible, but not yet minimal.
 ## Current Codex Delta
 
 The Codex vendor is no longer a raw upstream checkout. Its runtime compatibility
-baseline is OpenAI Codex `rust-v0.144.0`, resolved to
-`767822446c7a594caa19609ca435281a9ec67e0d` in `Cargo.lock`.
+baseline is OpenAI Codex `rust-v0.144.6`, resolved to
+`5d1fbf26c43abc65a203928b2e31561cb039e06d` in `Cargo.lock`.
 
 The remaining NeverWrite-specific delta exists to preserve desktop product behavior:
 
@@ -111,7 +111,7 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
   breadcrumbs, child lifecycle, and receiver-owned inter-agent transcripts
 - per-turn coalescing of equivalent subagent waits; only fully terminal status sets
   complete the ACP activity
-- a local `codex-utils-pty` 0.144 snapshot with process-group signaling and
+- a local `codex-utils-pty` 0.144.6 snapshot with process-group signaling and
   Windows input/ConPTY compatibility tests
 
 The 0.144 API shapes for deferred turn items are handled as localized
@@ -128,12 +128,14 @@ The remaining deferred work is:
 
 The desktop release pipeline packages `codex-acp` and its `codex-code-mode-host`
 companion for macOS universal, Windows x64/ARM64, and Linux x64/ARM64. Each
-release build is lockfile-pinned; runnable targets initialize the packaged ACP
-runtime in their platform smoke test before release assets are published.
+release build is lockfile-pinned. Its packaged smoke now drives an ACP
+`initialize`, `session/new`, and `session/prompt` exchange through the packaged
+code-mode host, with a deterministic local Responses mock; it verifies both the
+tool completion and the assistant response.
 
 When updating Codex again, treat upstream ACP commit
 `863d433fc91855d0b5427372bf635c894bf68cb6`, OpenAI Codex tag
-`rust-v0.144.0`, and the local PTY `0.144.0` snapshot as the comparison base.
+`rust-v0.144.6`, and the local PTY `0.144.6` snapshot as the comparison base.
 Review the bounded delta file by file instead of replacing the vendor tree.
 
 Canonical compatibility checks:
@@ -142,6 +144,70 @@ Canonical compatibility checks:
 cargo check --locked --manifest-path vendor/codex-acp/Cargo.toml
 cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml
 ```
+
+## Codex 0.144.6 Compatibility Baseline
+
+The embedded runtime is pinned to OpenAI Codex `rust-v0.144.6`. Every Codex git
+dependency in `codex-acp/Cargo.toml` uses that tag, and `Cargo.lock` resolves it
+to `5d1fbf26c43abc65a203928b2e31561cb039e06d`. The local
+`codex-utils-pty` snapshot is also `0.144.6`; it is part of the same runtime
+baseline, not an independently updatable crate.
+
+The vendor toolchain inherits Rust `1.96.0` from the repository-root
+`rust-toolchain.toml`. This promotion deliberately does not change these
+protocol boundaries:
+
+- the `codex-acp` adapter package remains `0.16.0`
+- the vendored ACP Rust SDK remains `agent-client-protocol` `0.14.0`
+- the desktop native backend remains `agent-client-protocol` `1.2.0`, which it
+  communicates through the serialized ACP protocol rather than a shared Rust
+  crate boundary
+
+### Product behavior covered by this baseline
+
+- Code mode retains the 0.144 host/fallback compatibility path. The standalone
+  `codex-code-mode-host` is packaged with the ACP sidecar, and the smoke forces
+  that exact packaged host so an in-process fallback cannot hide a missing host.
+- A definitive dangerous-command policy rejection is projected as a failed,
+  terminal ACP tool activity with its visible reason; it never becomes an ACP
+  permission request.
+- Thread metadata now synchronizes both a selected reasoning effort and an
+  explicit clearing of it, preventing a stale value after load, resume, or fork.
+- Model context-window metadata remains dynamic. Regression coverage exercises
+  the 272K context window reported for Sol, Terra, and Luna without hard-coding
+  that size into the runtime.
+- The public Full Access label and its ACP description remain unchanged. The UI
+  adds only contextual help explaining that Codex safety policy can still block
+  some destructive command forms.
+
+### Packaged code-mode smoke matrix
+
+| Package target | Executes the functional ACP code-mode smoke | Coverage when it cannot execute |
+| --- | --- | --- |
+| macOS universal | Yes, on a native runner slice | Both packaged host slices are staged |
+| Windows x64 and ARM64 | Yes | — |
+| Linux x64 | Yes | — |
+| Linux ARM64 | No, because it is cross-compiled | Packaging, sidecar staging, and architecture checks run without executing the foreign binary |
+
+The smoke uses a temporary `CODEX_HOME`, a local deterministic Responses mock,
+and an explicit `CODEX_CODE_MODE_HOST_PATH`. It asserts a real ACP turn reaches
+both a code-mode tool completion and a final assistant response; it does not
+require credentials or a network service.
+
+### Follow-up and rollback
+
+The App Server adapter `1.1.4` is an architectural follow-up, not a replacement
+made by this baseline. It must demonstrate parity for sessions, configuration
+and permissions, review, inline changes, and accept/reject flows before it can
+replace the current adapter.
+
+#### Historical rollback baseline
+
+To roll this runtime back, return `vendor/codex-acp/Cargo.toml`,
+`vendor/codex-acp/Cargo.lock`, and `vendor/codex-acp/vendor/codex-utils-pty/`
+together to OpenAI Codex `rust-v0.144.0`
+(`767822446c7a594caa19609ca435281a9ec67e0d`) and its matching PTY snapshot.
+Never roll back a single Codex crate or the PTY snapshot independently.
 
 The desktop backend now supports a mixed ACP world: current ACP integration for
 Claude, Codex, Kilo, and OpenCode, plus the vendored

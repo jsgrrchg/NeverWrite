@@ -2606,13 +2606,19 @@ impl NativeAcpClient {
         if tool_call.status != ToolCallStatus::Failed {
             self.mark_agent_write_paths(session_id, &diffs);
         }
+        let summary = if tool_call.status == ToolCallStatus::Failed {
+            summarize_tool_content(tool_call)
+                .or_else(|| self.terminal_summary(session_id, &tool_call.tool_call_id.0))
+        } else {
+            self.terminal_summary(session_id, &tool_call.tool_call_id.0)
+        };
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             map_tool_call(
                 session_id,
                 tool_call,
                 action,
-                self.terminal_summary(session_id, &tool_call.tool_call_id.0),
+                summary,
                 diffs,
             ),
         );
@@ -6338,15 +6344,29 @@ fn is_generated_image_artifact_path(path: &str) -> bool {
 }
 
 fn summarize_tool_content(tool_call: &ToolCall) -> Option<String> {
-    tool_call.content.iter().find_map(|item| match item {
-        ToolCallContent::Content(content) => match &content.content {
-            ContentBlock::Text(text) => Some(text.text.clone()),
+    tool_call
+        .content
+        .iter()
+        .find_map(|item| match item {
+            ToolCallContent::Content(content) => match &content.content {
+                ContentBlock::Text(text) => Some(text.text.clone()),
+                _ => None,
+            },
             _ => None,
-        },
-        ToolCallContent::Diff(diff) => Some(format!("Updated {}", diff.path.display())),
-        ToolCallContent::Terminal(_) => Some("Terminal output available.".to_string()),
-        _ => None,
-    })
+        })
+        .or_else(|| {
+            tool_call.content.iter().find_map(|item| match item {
+                ToolCallContent::Diff(diff) => Some(format!("Updated {}", diff.path.display())),
+                _ => None,
+            })
+        })
+        .or_else(|| {
+            tool_call
+                .content
+                .iter()
+                .any(|item| matches!(item, ToolCallContent::Terminal(_)))
+                .then(|| "Terminal output available.".to_string())
+        })
 }
 
 fn terminal_output_from_meta(meta: &Meta) -> Option<String> {
@@ -9417,7 +9437,8 @@ mod tests {
         PermissionOptionKind, PlanEntry, PromptCapabilities, SessionConfigOption,
         SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
         SessionNotification, SessionUpdate, StringPropertySchema, ToolCallContent, ToolCallId,
-        ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+        Terminal, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+        UsageUpdate,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -10508,6 +10529,36 @@ mod tests {
                 .and_then(|managed| managed.session.title.as_deref()),
             Some("Investigate startup crash")
         );
+    }
+
+    #[test]
+    fn usage_update_preserves_dynamic_context_window_size() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "codex-session",
+            SessionUpdate::UsageUpdate(UsageUpdate::new(136_000, 272_000)),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("token usage event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOKEN_USAGE_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("codex-session")
+        );
+        assert_eq!(payload.get("used").and_then(Value::as_u64), Some(136_000));
+        assert_eq!(payload.get("size").and_then(Value::as_u64), Some(272_000));
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[test]
@@ -14349,6 +14400,63 @@ mod tests {
 
         assert_eq!(payload.summary.as_deref(), Some("README.md"));
         assert!(payload.diffs.is_none());
+    }
+
+    #[test]
+    fn failed_tool_activity_prefers_acp_reason_over_terminal_exit_summary() {
+        const REJECTION_REASON: &str =
+            "rm -f style commands are not permitted. Use a safer approach";
+
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let started = ToolCall::new(ToolCallId::from("blocked-command"), "Running command")
+            .kind(ToolKind::Execute)
+            .status(ToolCallStatus::InProgress);
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(started),
+        )))
+        .unwrap();
+        let _ = event_rx.recv_timeout(StdDuration::from_millis(250));
+
+        let failed = ToolCallUpdate::new(
+            "blocked-command",
+            ToolCallUpdateFields::new()
+                .status(ToolCallStatus::Failed)
+                .content(vec![
+                    ToolCallContent::Terminal(Terminal::new("blocked-command")),
+                    ToolCallContent::from(REJECTION_REASON),
+                ]),
+        )
+        .meta(Meta::from_iter([(
+            "terminal_exit".to_string(),
+            json!({
+                "terminal_id": "blocked-command",
+                "exit_code": -1,
+                "signal": null,
+            }),
+        )]));
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(failed),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("failed tool activity event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(payload.get("status").and_then(Value::as_str), Some("failed"));
+        assert_eq!(
+            payload.get("summary").and_then(Value::as_str),
+            Some(REJECTION_REASON)
+        );
     }
 
     #[test]

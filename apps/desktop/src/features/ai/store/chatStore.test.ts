@@ -12548,8 +12548,8 @@ describe("chatStore", () => {
 
         useChatStore.getState().applyTokenUsage({
             session_id: activeSessionId,
-            used: 170_000,
-            size: 200_000,
+            used: 136_000,
+            size: 272_000,
             cost: {
                 amount: 0.0421,
                 currency: "USD",
@@ -12560,8 +12560,8 @@ describe("chatStore", () => {
             useChatStore.getState().tokenUsageBySessionId[activeSessionId],
         ).toMatchObject({
             session_id: activeSessionId,
-            used: 170_000,
-            size: 200_000,
+            used: 136_000,
+            size: 272_000,
             cost: {
                 amount: 0.0421,
                 currency: "USD",
