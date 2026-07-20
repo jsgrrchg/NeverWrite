@@ -273,8 +273,9 @@ async function startResponsesMock(marker) {
             });
             response.end(formatSse(events));
         } catch (error) {
+            console.error("Responses mock request failed:", error);
             response.writeHead(500, { "content-type": "application/json" });
-            response.end(JSON.stringify({ error: String(error) }));
+            response.end(JSON.stringify({ error: "Internal server error" }));
         }
     });
 
