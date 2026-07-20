@@ -2618,6 +2618,76 @@ describe("editorStore tab management", () => {
         ).toBe(false);
     });
 
+    it("invalidates closed review tabs when AI change review is disabled", () => {
+        useEditorStore.getState().openReview("session-1");
+        const reviewTab = useEditorStore
+            .getState()
+            .tabs.find((tab) => isReviewTab(tab));
+        expect(reviewTab).toBeDefined();
+
+        useEditorStore.getState().closeTab(reviewTab!.id);
+        expect(
+            useEditorStore
+                .getState()
+                .recentlyClosedTabs.some((entry) => isReviewTab(entry.tab)),
+        ).toBe(true);
+
+        useSettingsStore.setState({ aiReviewEnabled: false });
+
+        expect(
+            useEditorStore
+                .getState()
+                .recentlyClosedTabs.some((entry) => isReviewTab(entry.tab)),
+        ).toBe(false);
+
+        useEditorStore.getState().reopenLastClosedTab();
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
+        ).toBe(false);
+    });
+
+    it("does not restore a stale closed review tab while AI change review is disabled", () => {
+        useSettingsStore.setState({ aiReviewEnabled: false });
+        useEditorStore.setState({
+            recentlyClosedTabs: [
+                {
+                    tab: {
+                        id: "stale-review",
+                        kind: "ai-review",
+                        sessionId: "session-1",
+                        title: "Review",
+                    },
+                    index: 0,
+                },
+            ],
+        });
+
+        useEditorStore.getState().reopenLastClosedTab();
+
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
+        ).toBe(false);
+        expect(useEditorStore.getState().recentlyClosedTabs).toEqual([]);
+    });
+
+    it("restores a manually closed review tab while AI change review is enabled", () => {
+        useEditorStore.getState().openReview("session-1");
+        const reviewTab = useEditorStore
+            .getState()
+            .tabs.find((tab) => isReviewTab(tab));
+        expect(reviewTab).toBeDefined();
+
+        useEditorStore.getState().closeTab(reviewTab!.id);
+        useEditorStore.getState().reopenLastClosedTab();
+
+        expect(
+            useEditorStore.getState().tabs.find((tab) => isReviewTab(tab)),
+        ).toMatchObject({
+            id: reviewTab!.id,
+            sessionId: "session-1",
+        });
+    });
+
     it("switches to a tab in another pane and focuses that pane", () => {
         useEditorStore.getState().hydrateWorkspace(
             [
