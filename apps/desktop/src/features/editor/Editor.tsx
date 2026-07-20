@@ -510,7 +510,9 @@ export function Editor({
     );
     const justifyText = useSettingsStore((s) => s.justifyText);
     const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
-    const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
+    const inlineReviewEnabled = useSettingsStore(
+        (s) => s.aiReviewEnabled && s.inlineReviewEnabled,
+    );
     const hoverPreviewEnabled = useSettingsStore(
         (s) => s.hoverPreviewEnabled,
     );

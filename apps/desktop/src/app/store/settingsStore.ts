@@ -5,6 +5,7 @@ import {
     safeStorageSetItem,
     subscribeSafeStorage,
 } from "../utils/safeStorage";
+import { notifyAiReviewDisabled } from "./aiReviewEvents";
 import { useVaultStore } from "./vaultStore";
 
 export interface Settings {
@@ -21,6 +22,7 @@ export interface Settings {
     editorActiveLineHighlight: boolean;
     justifyText: boolean;
     livePreviewEnabled: boolean;
+    aiReviewEnabled: boolean;
     inlineReviewEnabled: boolean;
     hoverPreviewEnabled: boolean;
     hoverPreviewDelayMs: number; // 0–2000
@@ -194,6 +196,7 @@ const defaults: Settings = {
     editorActiveLineHighlight: true,
     justifyText: false,
     livePreviewEnabled: true,
+    aiReviewEnabled: true,
     inlineReviewEnabled: true,
     hoverPreviewEnabled: true,
     hoverPreviewDelayMs: 300,
@@ -482,6 +485,8 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             justifyText: parsed.state.justifyText ?? defaults.justifyText,
             livePreviewEnabled:
                 parsed.state.livePreviewEnabled ?? defaults.livePreviewEnabled,
+            aiReviewEnabled:
+                parsed.state.aiReviewEnabled ?? defaults.aiReviewEnabled,
             inlineReviewEnabled:
                 parsed.state.inlineReviewEnabled ??
                 defaults.inlineReviewEnabled,
@@ -620,6 +625,7 @@ function pickSettings(state: SettingsStore): Settings {
         editorActiveLineHighlight: state.editorActiveLineHighlight,
         justifyText: state.justifyText,
         livePreviewEnabled: state.livePreviewEnabled,
+        aiReviewEnabled: state.aiReviewEnabled,
         inlineReviewEnabled: state.inlineReviewEnabled,
         hoverPreviewEnabled: state.hoverPreviewEnabled,
         hoverPreviewDelayMs: state.hoverPreviewDelayMs,
@@ -872,6 +878,15 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
         }),
     reset: () => set(defaults),
 }));
+
+// Settings can be changed directly, synchronized from another window, or
+// reloaded for a different vault. Emit the transition in the receiving window
+// so review tabs are consistently closed regardless of the update source.
+useSettingsStore.subscribe((state, previousState) => {
+    if (previousState.aiReviewEnabled && !state.aiReviewEnabled) {
+        notifyAiReviewDisabled();
+    }
+});
 
 // Track the current vault path so the save subscriber always writes to the right key
 let _currentVaultPath: string | null = null;
