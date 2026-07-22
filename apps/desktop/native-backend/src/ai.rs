@@ -28,6 +28,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
+use agent_client_protocol_schema::v1::LlmProtocol;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use neverwrite_ai::{
     AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
@@ -57,7 +58,7 @@ use serde_json::{json, Value};
 use tokio::{process::Command, runtime::Builder, sync::oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::RpcOutput;
+use crate::{acp_providers, RpcOutput};
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str = "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
@@ -131,6 +132,17 @@ const LEGACY_GEMINI_RUNTIME_ID: &str = "gemini-acp";
 const LEGACY_GEMINI_SECRET_ENV_KEYS: &[&str] = &["GEMINI_API_KEY", "GOOGLE_API_KEY"];
 const RUNTIME_SETUP_LOAD_ERROR_MESSAGE: &str = "Secure credential storage is unavailable. Reconnect this AI provider or configure an environment variable before starting a session.";
 const OPENCODE_AUTH_UNVERIFIED_MESSAGE: &str = "OpenCode auth is managed by the OpenCode CLI. NeverWrite could not verify local OpenCode credentials, but OpenCode may still use /connect, environment variables, or a project .env.";
+const CLAUDE_PROVIDER_ROUTING_ENV_KEYS: &[&str] = &[
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "AWS_BEARER_TOKEN_BEDROCK",
+];
 
 #[derive(Debug, Clone, Copy)]
 struct RuntimeDefinition {
@@ -877,7 +889,7 @@ struct NativeAiInner {
     setup_load_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct AcpProcessSpec {
     program: PathBuf,
     args: Vec<String>,
@@ -886,6 +898,21 @@ struct AcpProcessSpec {
     runtime_id: String,
     auth_method: Option<String>,
     auth_handshake: Option<AcpAuthHandshake>,
+    claude_provider_routing: ClaudeProviderProcessRouting,
+}
+
+#[derive(Clone, Default)]
+enum ClaudeProviderProcessRouting {
+    #[default]
+    Inherit,
+    Default,
+    Configure(ClaudeProviderSnapshot),
+}
+
+#[derive(Clone)]
+struct ClaudeProviderSnapshot {
+    routing: ClaudeProviderRouting,
+    headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3954,6 +3981,20 @@ fn acp_initialize_response_has_auth_method(
         .any(|method| method.id().0.as_ref() == method_id)
 }
 
+fn apply_acp_process_environment(command: &mut Command, spec: &AcpProcessSpec) {
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    if !matches!(
+        &spec.claude_provider_routing,
+        ClaudeProviderProcessRouting::Inherit
+    ) {
+        for key in CLAUDE_PROVIDER_ROUTING_ENV_KEYS {
+            command.env_remove(key);
+        }
+    }
+}
+
 async fn run_acp_auth_inner(
     spec: AcpProcessSpec,
     auth_command: AcpAuthCommand,
@@ -3964,9 +4005,7 @@ async fn run_acp_auth_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
+    apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
         command.process_group(0);
@@ -4044,9 +4083,7 @@ async fn run_acp12_auth_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
+    apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
         command.process_group(0);
@@ -4172,9 +4209,7 @@ async fn run_acp12_actor_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
+    apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
         command.process_group(0);
@@ -4369,9 +4404,7 @@ async fn run_acp_actor_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
+    apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
         command.process_group(0);
@@ -4487,6 +4520,12 @@ async fn run_acp_actor_inner(
                         prompt_capabilities_from_initialize_response(&initialize_response),
                     );
                     run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
+                    let provider_fallback_env = configure_claude_provider_for_session(
+                        &connection,
+                        &spec,
+                        &initialize_response,
+                    )
+                    .await?;
                     emit_event(
                         &event_tx_for_connection,
                         AI_RUNTIME_CONNECTION_EVENT,
@@ -4496,7 +4535,13 @@ async fn run_acp_actor_inner(
                             message: None,
                         }),
                     );
-                    start_acp_runtime_session(&connection, &spec, &start_mode).await
+                    start_acp_runtime_session(
+                        &connection,
+                        &spec,
+                        &start_mode,
+                        provider_fallback_env.as_ref(),
+                    )
+                    .await
                 } => response?,
                 wait_result = child.wait() => {
                     let message = wait_result
@@ -4563,12 +4608,137 @@ async fn run_acp_actor_inner(
     }
 }
 
+async fn configure_claude_provider_for_session(
+    connection: &ConnectionTo<Agent>,
+    spec: &AcpProcessSpec,
+    initialize_response: &InitializeResponse,
+) -> Result<Option<HashMap<String, String>>, agent_client_protocol::Error> {
+    let ClaudeProviderProcessRouting::Configure(snapshot) = &spec.claude_provider_routing else {
+        return Ok(None);
+    };
+
+    if !acp_providers::supports_providers(initialize_response) {
+        return claude_provider_legacy_fallback_env(snapshot).map(Some);
+    }
+
+    let (api_type, base_url, vertex) = match &snapshot.routing {
+        ClaudeProviderRouting::Anthropic { base_url } => {
+            (LlmProtocol::Anthropic, base_url.clone(), None)
+        }
+        ClaudeProviderRouting::Bedrock { base_url } => {
+            (LlmProtocol::Bedrock, base_url.clone(), None)
+        }
+        ClaudeProviderRouting::Vertex {
+            base_url,
+            project_id,
+            region,
+        } => (
+            LlmProtocol::Vertex,
+            base_url.clone(),
+            Some(acp_providers::VertexProviderMeta::new(
+                project_id.clone(),
+                region.clone(),
+            )),
+        ),
+        ClaudeProviderRouting::Default => return Ok(None),
+    };
+    let protocol_name = claude_provider_protocol_name(&api_type);
+    acp_providers::configure_main_provider(
+        connection,
+        api_type,
+        base_url,
+        snapshot.headers.clone(),
+        vertex,
+    )
+    .await
+    .map_err(|_| {
+        sanitized_provider_error(&format!(
+            "Claude ACP could not apply the requested {protocol_name} provider configuration before starting the session."
+        ))
+    })?;
+    Ok(None)
+}
+
+fn claude_provider_legacy_fallback_env(
+    snapshot: &ClaudeProviderSnapshot,
+) -> Result<HashMap<String, String>, agent_client_protocol::Error> {
+    match &snapshot.routing {
+        ClaudeProviderRouting::Anthropic { base_url } => Ok(HashMap::from([
+            ("ANTHROPIC_BASE_URL".to_string(), base_url.clone()),
+            (
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                serialize_claude_provider_headers(&snapshot.headers),
+            ),
+            ("ANTHROPIC_AUTH_TOKEN".to_string(), " ".to_string()),
+        ])),
+        ClaudeProviderRouting::Bedrock { base_url } => Ok(HashMap::from([
+            ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
+            (
+                "AWS_BEARER_TOKEN_BEDROCK".to_string(),
+                " ".to_string(),
+            ),
+            (
+                "ANTHROPIC_BEDROCK_BASE_URL".to_string(),
+                base_url.clone(),
+            ),
+            (
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                serialize_claude_provider_headers(&snapshot.headers),
+            ),
+        ])),
+        ClaudeProviderRouting::Vertex { .. } => Err(sanitized_provider_error(
+            "Claude is configured for Google Vertex AI, but this ACP runtime does not support provider configuration. Update claude-agent-acp to version 0.60.0 or newer.",
+        )),
+        ClaudeProviderRouting::Default => Ok(HashMap::new()),
+    }
+}
+
+fn claude_provider_protocol_name(protocol: &LlmProtocol) -> &'static str {
+    match protocol {
+        LlmProtocol::Anthropic => "Anthropic",
+        LlmProtocol::Bedrock => "Bedrock",
+        LlmProtocol::Vertex => "Vertex",
+        _ => "unknown",
+    }
+}
+
+fn serialize_claude_provider_headers(headers: &HashMap<String, String>) -> String {
+    headers
+        .iter()
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn sanitized_provider_error(message: &str) -> agent_client_protocol::Error {
+    agent_client_protocol::Error::internal_error().data(message.to_string())
+}
+
+fn claude_provider_fallback_meta(
+    env: Option<&HashMap<String, String>>,
+) -> Option<Meta> {
+    env.map(|env| {
+        Meta::from_iter([(
+            "claudeCode".to_string(),
+            json!({
+                "options": {
+                    "env": env,
+                }
+            }),
+        )])
+    })
+}
+
 async fn start_acp_runtime_session(
     connection: &ConnectionTo<Agent>,
     spec: &AcpProcessSpec,
     start_mode: &AcpSessionStartMode,
+    provider_fallback_env: Option<&HashMap<String, String>>,
 ) -> Result<AcpSessionStartResponse, agent_client_protocol::Error> {
     let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
+    let provider_meta = claude_provider_fallback_meta(provider_fallback_env);
     match start_mode {
         AcpSessionStartMode::New {
             additional_directories,
@@ -4578,6 +4748,7 @@ async fn start_acp_runtime_session(
                     &spec.runtime_id,
                     cwd,
                     additional_directories,
+                    provider_meta,
                 ))
                 .block_task()
                 .await?;
@@ -4592,13 +4763,13 @@ async fn start_acp_runtime_session(
             additional_directories,
         } => {
             let response = connection
-                .send_request(
-                    ResumeSessionRequest::new(SessionId::new(session_id.clone()), cwd)
-                        .additional_directories(additional_wire_paths(
-                            &spec.runtime_id,
-                            additional_directories,
-                        )),
-                )
+                .send_request(resume_session_request(
+                    &spec.runtime_id,
+                    session_id,
+                    cwd,
+                    additional_directories,
+                    provider_meta,
+                ))
                 .block_task()
                 .await?;
             Ok(AcpSessionStartResponse {
@@ -4755,9 +4926,23 @@ fn new_session_request(
     runtime_id: &str,
     cwd: PathBuf,
     additional_directories: &[PathBuf],
+    meta: Option<Meta>,
 ) -> NewSessionRequest {
     NewSessionRequest::new(cwd)
         .additional_directories(additional_wire_paths(runtime_id, additional_directories))
+        .meta(meta)
+}
+
+fn resume_session_request(
+    runtime_id: &str,
+    session_id: &str,
+    cwd: PathBuf,
+    additional_directories: &[PathBuf],
+    meta: Option<Meta>,
+) -> ResumeSessionRequest {
+    ResumeSessionRequest::new(SessionId::new(session_id.to_string()), cwd)
+        .additional_directories(additional_wire_paths(runtime_id, additional_directories))
+        .meta(meta)
 }
 
 fn additional_wire_paths(runtime_id: &str, additional_directories: &[PathBuf]) -> Vec<PathBuf> {
@@ -6827,6 +7012,7 @@ fn acp_process_spec(
             runtime_name(runtime_id)
         )
     })?;
+    let claude_provider_routing = claude_provider_process_routing(runtime_id, setup)?;
     let mut env = setup.env.clone();
     for key in secret_env_keys_for_runtime(runtime_id) {
         let inherited_secret_should_win = env_secret_present(key)
@@ -6841,6 +7027,10 @@ fn acp_process_spec(
     let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
     if runtime_id == CLAUDE_RUNTIME_ID
         && matches!(
+            &claude_provider_routing,
+            ClaudeProviderProcessRouting::Inherit
+        )
+        && matches!(
             effective_claude_provider_routing(setup),
             ClaudeProviderRouting::Bedrock { .. }
         )
@@ -6848,6 +7038,14 @@ fn acp_process_spec(
         env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
         env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
             .or_default();
+    }
+    if !matches!(
+        &claude_provider_routing,
+        ClaudeProviderProcessRouting::Inherit
+    ) {
+        for key in CLAUDE_PROVIDER_ROUTING_ENV_KEYS {
+            env.remove(*key);
+        }
     }
     Ok(AcpProcessSpec {
         program,
@@ -6857,6 +7055,7 @@ fn acp_process_spec(
         runtime_id: runtime_id.to_string(),
         auth_method,
         auth_handshake: acp_auth_handshake_for_runtime(runtime_id),
+        claude_provider_routing,
     })
 }
 
@@ -8120,6 +8319,67 @@ fn effective_claude_provider_routing(setup: &RuntimeSetupState) -> ClaudeProvide
     claude_provider_routing_from_lookup(|key| setup.env.get(key).cloned())
         .or_else(|| claude_provider_routing_from_lookup(|key| std::env::var(key).ok()))
         .unwrap_or(ClaudeProviderRouting::Default)
+}
+
+fn claude_provider_process_routing(
+    runtime_id: &str,
+    setup: &RuntimeSetupState,
+) -> Result<ClaudeProviderProcessRouting, String> {
+    if runtime_id != CLAUDE_RUNTIME_ID {
+        return Ok(ClaudeProviderProcessRouting::Inherit);
+    }
+    let Some(routing) = setup.claude_provider_routing.clone() else {
+        // Existing gateway and inherited environment configurations keep their
+        // established launch path. Only the new typed setting owns ACP provider calls.
+        return Ok(ClaudeProviderProcessRouting::Inherit);
+    };
+    let routing = routing.normalized()?;
+    if routing == ClaudeProviderRouting::Default {
+        return Ok(ClaudeProviderProcessRouting::Default);
+    }
+    Ok(ClaudeProviderProcessRouting::Configure(
+        ClaudeProviderSnapshot {
+            routing,
+            headers: effective_claude_provider_headers(setup)?,
+        },
+    ))
+}
+
+fn effective_claude_provider_headers(
+    setup: &RuntimeSetupState,
+) -> Result<HashMap<String, String>, String> {
+    let raw = std::env::var("ANTHROPIC_CUSTOM_HEADERS")
+        .ok()
+        .and_then(normalize_optional_string)
+        .or_else(|| {
+            setup
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .cloned()
+                .and_then(normalize_optional_string)
+        });
+    raw.map(|value| parse_claude_provider_headers(&value))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn parse_claude_provider_headers(value: &str) -> Result<HashMap<String, String>, String> {
+    let mut headers = HashMap::new();
+    for line in value.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(
+                "Custom provider headers must use one 'Name: value' header per line.".to_string(),
+            );
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(
+                "Custom provider headers must use one 'Name: value' header per line.".to_string(),
+            );
+        }
+        headers.insert(name.to_string(), value.trim().to_string());
+    }
+    Ok(headers)
 }
 
 fn claude_provider_routing_from_lookup(
@@ -9675,6 +9935,7 @@ mod tests {
                 PathBuf::from("/external/project"),
                 PathBuf::from("/external/notes"),
             ],
+            None,
         );
 
         assert_eq!(
@@ -9689,14 +9950,16 @@ mod tests {
 
     #[test]
     fn resume_session_request_serializes_additional_directories() {
-        let request = ResumeSessionRequest::new("claude-session-1", "/vault")
-            .additional_directories(additional_wire_paths(
-                CLAUDE_RUNTIME_ID,
-                &[
-                    PathBuf::from("/external/project"),
-                    PathBuf::from("/external/notes"),
-                ],
-            ));
+        let request = resume_session_request(
+            CLAUDE_RUNTIME_ID,
+            "claude-session-1",
+            PathBuf::from("/vault"),
+            &[
+                PathBuf::from("/external/project"),
+                PathBuf::from("/external/notes"),
+            ],
+            None,
+        );
 
         assert_eq!(
             serde_json::to_value(request).unwrap(),
@@ -12163,6 +12426,175 @@ mod tests {
             }))
             .expect_err("invalid explicit routing should fail");
         assert_eq!(error, "HTTP gateways are only allowed for localhost.");
+    }
+
+    #[test]
+    fn provider_lifecycle_snapshots_only_typed_claude_settings() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _headers = TestEnvVar::unset("ANTHROPIC_CUSTOM_HEADERS");
+        let explicit = RuntimeSetupState {
+            claude_provider_routing: Some(ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "project-1".to_string(),
+                region: "us-east5".to_string(),
+            }),
+            env: HashMap::from([(
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                "authorization: Bearer provider-secret".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+        let snapshot = claude_provider_process_routing(CLAUDE_RUNTIME_ID, &explicit)
+            .expect("typed provider routing should snapshot");
+        let ClaudeProviderProcessRouting::Configure(snapshot) = snapshot else {
+            panic!("typed provider routing should use ACP configuration");
+        };
+        assert_eq!(
+            snapshot.routing,
+            explicit.claude_provider_routing.clone().unwrap()
+        );
+        assert_eq!(
+            snapshot.headers.get("authorization").map(String::as_str),
+            Some("Bearer provider-secret")
+        );
+
+        let mut spec_setup = explicit.clone();
+        spec_setup.custom_binary_path = Some(
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        );
+        spec_setup.env.insert(
+            "ANTHROPIC_VERTEX_BASE_URL".to_string(),
+            "https://stale-process-env.example".to_string(),
+        );
+        let spec = acp_process_spec(
+            CLAUDE_RUNTIME_ID,
+            &spec_setup,
+            std::env::current_dir().unwrap(),
+        )
+        .expect("typed provider process spec should resolve");
+        assert!(!spec.env.contains_key("ANTHROPIC_CUSTOM_HEADERS"));
+        assert!(!spec.env.contains_key("ANTHROPIC_VERTEX_BASE_URL"));
+
+        let legacy = RuntimeSetupState {
+            env: HashMap::from([(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://legacy.example".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+        assert!(matches!(
+            claude_provider_process_routing(CLAUDE_RUNTIME_ID, &legacy).unwrap(),
+            ClaudeProviderProcessRouting::Inherit
+        ));
+
+        let default = RuntimeSetupState {
+            claude_provider_routing: Some(ClaudeProviderRouting::Default),
+            ..RuntimeSetupState::default()
+        };
+        assert!(matches!(
+            claude_provider_process_routing(CLAUDE_RUNTIME_ID, &default).unwrap(),
+            ClaudeProviderProcessRouting::Default
+        ));
+    }
+
+    #[test]
+    fn provider_lifecycle_legacy_fallback_supports_anthropic_and_bedrock_only() {
+        let headers = HashMap::from([(
+            "authorization".to_string(),
+            "Bearer provider-secret".to_string(),
+        )]);
+        let anthropic = claude_provider_legacy_fallback_env(&ClaudeProviderSnapshot {
+            routing: ClaudeProviderRouting::Anthropic {
+                base_url: "https://anthropic.example".to_string(),
+            },
+            headers: headers.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            anthropic.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://anthropic.example")
+        );
+        assert_eq!(
+            anthropic
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .map(String::as_str),
+            Some("authorization: Bearer provider-secret")
+        );
+        assert_eq!(
+            anthropic.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some(" ")
+        );
+
+        let bedrock = claude_provider_legacy_fallback_env(&ClaudeProviderSnapshot {
+            routing: ClaudeProviderRouting::Bedrock {
+                base_url: "https://bedrock.example".to_string(),
+            },
+            headers: headers.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            bedrock
+                .get("ANTHROPIC_BEDROCK_BASE_URL")
+                .map(String::as_str),
+            Some("https://bedrock.example")
+        );
+        assert_eq!(
+            bedrock
+                .get("CLAUDE_CODE_USE_BEDROCK")
+                .map(String::as_str),
+            Some("1")
+        );
+
+        let error = claude_provider_legacy_fallback_env(&ClaudeProviderSnapshot {
+            routing: ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "private-project".to_string(),
+                region: "us-east5".to_string(),
+            },
+            headers,
+        })
+        .expect_err("Vertex must require ACP provider support");
+        let message = error.to_string();
+        assert!(message.contains("does not support provider configuration"));
+        assert!(!message.contains("private-project"));
+        assert!(!message.contains("provider-secret"));
+    }
+
+    #[test]
+    fn provider_lifecycle_scopes_fallback_env_to_new_and_resumed_sessions() {
+        let fallback_env = HashMap::from([(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "https://fallback.example".to_string(),
+        )]);
+        let meta = claude_provider_fallback_meta(Some(&fallback_env));
+        let new_request = new_session_request(
+            CLAUDE_RUNTIME_ID,
+            PathBuf::from("/vault"),
+            &[],
+            meta.clone(),
+        );
+        let resume_request = resume_session_request(
+            CLAUDE_RUNTIME_ID,
+            "claude-session-1",
+            PathBuf::from("/vault"),
+            &[],
+            meta,
+        );
+
+        for request in [
+            serde_json::to_value(new_request).unwrap(),
+            serde_json::to_value(resume_request).unwrap(),
+        ] {
+            assert_eq!(
+                request
+                    .pointer("/_meta/claudeCode/options/env/ANTHROPIC_BASE_URL")
+                    .and_then(Value::as_str),
+                Some("https://fallback.example")
+            );
+        }
     }
 
     #[test]

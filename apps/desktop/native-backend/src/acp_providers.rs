@@ -102,6 +102,24 @@ pub(crate) async fn set_main_provider(
     Ok(())
 }
 
+pub(crate) async fn configure_main_provider(
+    connection: &ConnectionTo<Agent>,
+    api_type: LlmProtocol,
+    base_url: impl Into<String>,
+    headers: HashMap<String, String>,
+    vertex: Option<VertexProviderMeta>,
+) -> Result<(), Error> {
+    let providers = list_providers(connection).await?;
+    let provider = main_provider(&providers)?;
+    if !provider.supported.contains(&api_type) {
+        return Err(invalid_params(
+            "The main provider does not support the requested protocol.",
+        ));
+    }
+    set_main_provider(connection, api_type, base_url, headers, vertex).await
+}
+
+#[allow(dead_code)]
 pub(crate) async fn disable_main_provider(connection: &ConnectionTo<Agent>) -> Result<(), Error> {
     connection
         .send_request(DisableProvider(DisableProviderRequest::new(
