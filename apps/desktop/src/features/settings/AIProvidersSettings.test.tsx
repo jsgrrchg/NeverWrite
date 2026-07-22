@@ -451,6 +451,155 @@ describe("AIProvidersSettings", () => {
         );
     });
 
+    it("saves Google Vertex AI routing without starting Claude authentication", async () => {
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Claude");
+        fireEvent.click(getButtonFromText("Google Vertex AI"));
+
+        expect(
+            screen.getByText(
+                "Authentication is provided by Google Application Default Credentials.",
+            ),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByText(
+                "Changes apply to new or reopened sessions. Active chats keep their current provider configuration.",
+            ),
+        ).toBeInTheDocument();
+        expect(screen.queryByPlaceholderText(/Vertex API key/i)).not.toBeInTheDocument();
+
+        fireEvent.change(screen.getByLabelText("Vertex endpoint"), {
+            target: { value: "http://vertex.example" },
+        });
+        expect(
+            screen.getByText("HTTP gateways are only allowed for localhost."),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Save Vertex configuration" }),
+        ).toBeDisabled();
+
+        fireEvent.change(screen.getByLabelText("Vertex endpoint"), {
+            target: { value: "https://vertex.example" },
+        });
+        expect(screen.getByText("Project ID is required.")).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText("Project ID"), {
+            target: { value: "project-1" },
+        });
+        expect(screen.getByText("Region is required.")).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText("Region"), {
+            target: { value: "us-east5" },
+        });
+        fireEvent.change(screen.getByLabelText("Custom headers (optional)"), {
+            target: { value: "x-api-key: gateway-secret" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Save Vertex configuration" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "claude-acp",
+                    claudeProviderRouting: {
+                        type: "vertex",
+                        baseUrl: "https://vertex.example",
+                        projectId: "project-1",
+                        region: "us-east5",
+                    },
+                    anthropicCustomHeaders: {
+                        action: "set",
+                        value: "x-api-key: gateway-secret",
+                    },
+                    anthropicApiKey: { action: "unchanged" },
+                }),
+            );
+        });
+        expect(apiMocks.aiStartAuth).not.toHaveBeenCalled();
+        expect(apiMocks.aiLogout).not.toHaveBeenCalled();
+    });
+
+    it("clears Vertex routing without deleting existing Claude authentication", async () => {
+        const providers = createDefaultProviders();
+        providers.statuses["claude-acp"] = {
+            ...providers.statuses["claude-acp"],
+            authReady: true,
+            authMethod: "anthropic-api-key",
+            onboardingRequired: false,
+            claudeProviderRouting: {
+                type: "vertex",
+                baseUrl: "https://vertex.example",
+                projectId: "project-1",
+                region: "us-east5",
+            },
+        };
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+        await openProvider("Claude");
+
+        expect(screen.getByLabelText("Vertex endpoint")).toHaveValue(
+            "https://vertex.example",
+        );
+        fireEvent.click(
+            screen.getByRole("button", { name: "Clear Vertex settings" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "claude-acp",
+                    claudeProviderRouting: { type: "default" },
+                    anthropicApiKey: { action: "unchanged" },
+                    anthropicCustomHeaders: { action: "unchanged" },
+                    anthropicAuthToken: { action: "unchanged" },
+                }),
+            );
+        });
+        expect(apiMocks.aiLogout).not.toHaveBeenCalled();
+        expect(apiMocks.aiStartAuth).not.toHaveBeenCalled();
+    });
+
+    it("returns from Vertex routing when an Anthropic API key is selected", async () => {
+        const providers = createDefaultProviders();
+        providers.statuses["claude-acp"] = {
+            ...providers.statuses["claude-acp"],
+            claudeProviderRouting: {
+                type: "vertex",
+                baseUrl: "https://vertex.example",
+                projectId: "project-1",
+                region: "us-east5",
+            },
+        };
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+        await openProvider("Claude");
+        fireEvent.click(getButtonFromText("Anthropic API key"));
+        fireEvent.change(screen.getByPlaceholderText("Anthropic API key"), {
+            target: { value: "anthropic-secret" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Save and connect" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    claudeProviderRouting: { type: "default" },
+                    anthropicApiKey: {
+                        action: "set",
+                        value: "anthropic-secret",
+                    },
+                }),
+            );
+        });
+        expect(apiMocks.aiStartAuth).toHaveBeenCalledWith(
+            { methodId: "anthropic-api-key", runtimeId: "claude-acp" },
+            null,
+        );
+    });
+
     it("logs providers out through the native backend logout command", async () => {
         renderComponent(<AIProvidersSettings />);
 

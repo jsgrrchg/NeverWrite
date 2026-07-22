@@ -31,12 +31,12 @@ use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use agent_client_protocol_schema::v1::LlmProtocol;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use neverwrite_ai::{
-    AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
-    AiImageGenerationPayload, AiMessageCompletedPayload, AiMessageDeltaPayload,
-    AiMessageStartedPayload, AiModeOption, AiModelOption, AiPermissionOptionPayload,
-    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload, AiRuntimeBinarySource,
-    AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
-    AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
+    AiAuthMethod, AiClaudeProviderRouting, AiConfigOption, AiConfigOptionCategory,
+    AiConfigSelectOption, AiFileDiffPayload, AiImageGenerationPayload, AiMessageCompletedPayload,
+    AiMessageDeltaPayload, AiMessageStartedPayload, AiModeOption, AiModelOption,
+    AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload,
+    AiRuntimeBinarySource, AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption,
+    AiRuntimeSetupStatus, AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
     AiToolActivityPayload, AiUrlElicitationRequestPayload, AiUserInputQuestionOptionPayload,
     AiUserInputQuestionPayload, AiUserInputRequestPayload, DiscardedAdditionalRoot,
@@ -300,6 +300,29 @@ enum ClaudeProviderRouting {
         project_id: String,
         region: String,
     },
+}
+
+impl From<&ClaudeProviderRouting> for AiClaudeProviderRouting {
+    fn from(routing: &ClaudeProviderRouting) -> Self {
+        match routing {
+            ClaudeProviderRouting::Default => Self::Default,
+            ClaudeProviderRouting::Anthropic { base_url } => Self::Anthropic {
+                base_url: base_url.clone(),
+            },
+            ClaudeProviderRouting::Bedrock { base_url } => Self::Bedrock {
+                base_url: base_url.clone(),
+            },
+            ClaudeProviderRouting::Vertex {
+                base_url,
+                project_id,
+                region,
+            } => Self::Vertex {
+                base_url: base_url.clone(),
+                project_id: project_id.clone(),
+                region: region.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -6901,7 +6924,13 @@ fn setup_status_for_with_inherited_auth(
     };
     let inherited_auth_method = inherited_auth_method
         .filter(|method| inherited_auth_method_applies_to_setup(&setup, method));
-    let auth_ready = binary_ready && (setup.auth_ready || inherited_auth_method.is_some());
+    let provider_auth_ready = runtime_id == CLAUDE_RUNTIME_ID
+        && matches!(
+            setup.claude_provider_routing,
+            Some(ClaudeProviderRouting::Vertex { .. })
+        );
+    let auth_ready = binary_ready
+        && (setup.auth_ready || inherited_auth_method.is_some() || provider_auth_ready);
     let auth_method = setup.auth_method.or(inherited_auth_method);
     let message = if !binary_ready {
         setup.message
@@ -6923,6 +6952,10 @@ fn setup_status_for_with_inherited_auth(
         auth_ready,
         auth_method,
         auth_methods: auth_methods(runtime_id),
+        claude_provider_routing: setup
+            .claude_provider_routing
+            .as_ref()
+            .map(AiClaudeProviderRouting::from),
         has_gateway_config: setup.has_gateway_config,
         has_gateway_url: setup.has_gateway_url,
         onboarding_required: !binary_ready || !auth_ready,
@@ -7914,10 +7947,16 @@ fn local_auth_method_for_runtime(runtime_id: &str, setup: &RuntimeSetupState) ->
 }
 
 fn has_local_auth_config(runtime_id: &str, setup: &RuntimeSetupState) -> bool {
-    (runtime_id == CLAUDE_RUNTIME_ID && setup.has_gateway_config)
-        || secret_env_keys_for_runtime(runtime_id)
-            .iter()
-            .any(|key| setup.env.get(*key).is_some_and(|value| !value.is_empty()))
+    if runtime_id == CLAUDE_RUNTIME_ID {
+        return setup.has_gateway_config
+            || ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+                .into_iter()
+                .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()));
+    }
+
+    secret_env_keys_for_runtime(runtime_id)
+        .iter()
+        .any(|key| setup.env.get(*key).is_some_and(|value| !value.is_empty()))
 }
 
 fn refresh_runtime_setup_flags(runtime_id: &str, setup: &mut RuntimeSetupState) {
@@ -7926,10 +7965,11 @@ fn refresh_runtime_setup_flags(runtime_id: &str, setup: &mut RuntimeSetupState) 
         .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()));
     setup.has_gateway_config = runtime_id == CLAUDE_RUNTIME_ID
         && (setup.has_gateway_url
-            || setup
-                .env
-                .get("ANTHROPIC_CUSTOM_HEADERS")
-                .is_some_and(|value| !value.is_empty()));
+            || (setup.claude_provider_routing.is_none()
+                && setup
+                    .env
+                    .get("ANTHROPIC_CUSTOM_HEADERS")
+                    .is_some_and(|value| !value.is_empty())));
 }
 
 fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
@@ -8447,8 +8487,9 @@ fn update_auth_state(
         .anthropic_custom_headers
         .clone()
         .or_else(|| input.gateway_headers.clone());
-    let gateway_config_touched =
-        runtime_id == CLAUDE_RUNTIME_ID && (gateway_url_touched || gateway_headers_patch.is_some());
+    let provider_headers_touched = explicit_provider_routing.is_some();
+    let gateway_config_touched = runtime_id == CLAUDE_RUNTIME_ID
+        && (gateway_url_touched || (gateway_headers_patch.is_some() && !provider_headers_touched));
     let gateway_base_url = input
         .gateway_base_url
         .as_ref()
@@ -8488,12 +8529,16 @@ fn update_auth_state(
             touched_auth |= apply_secret_patch(setup, "ANTHROPIC_AUTH_TOKEN", patch, auth_method);
         }
         if let Some(patch) = gateway_headers_patch {
-            touched_auth |= apply_secret_patch(
-                setup,
-                "ANTHROPIC_CUSTOM_HEADERS",
-                patch,
-                gateway_auth_method,
-            );
+            if provider_headers_touched {
+                apply_provider_secret_patch(setup, "ANTHROPIC_CUSTOM_HEADERS", patch);
+            } else {
+                touched_auth |= apply_secret_patch(
+                    setup,
+                    "ANTHROPIC_CUSTOM_HEADERS",
+                    patch,
+                    gateway_auth_method,
+                );
+            }
         }
         if anthropic_gateway_url_touched {
             if let Some(value) = gateway_base_url {
@@ -8590,6 +8635,20 @@ fn apply_secret_patch(
         _ => {}
     }
     false
+}
+
+fn apply_provider_secret_patch(setup: &mut RuntimeSetupState, env_key: &str, patch: AiSecretPatch) {
+    match patch.action.as_str() {
+        "set" => {
+            if let Some(value) = patch.value.and_then(normalize_optional_string) {
+                setup.env.insert(env_key.to_string(), value);
+            }
+        }
+        "clear" => {
+            setup.env.remove(env_key);
+        }
+        _ => {}
+    }
 }
 
 fn build_prompt_with_attachments(
@@ -12385,15 +12444,46 @@ mod tests {
         ai.update_setup(&json!({
             "runtimeId": CLAUDE_RUNTIME_ID,
             "input": {
-                "claude_provider_routing": {
-                    "type": "vertex",
-                    "base_url": " https://vertex.example ",
-                    "project_id": " project-1 ",
-                    "region": " us-east5 "
+                "anthropic_api_key": {
+                    "action": "set",
+                    "value": "existing-anthropic-secret"
                 }
             }
         }))
-        .expect("valid explicit routing should update");
+        .expect("existing Claude authentication should update");
+
+        let status = ai
+            .update_setup(&json!({
+                "runtimeId": CLAUDE_RUNTIME_ID,
+                "input": {
+                    "anthropic_custom_headers": {
+                        "action": "set",
+                        "value": "x-api-key: provider-secret"
+                    },
+                    "claude_provider_routing": {
+                        "type": "vertex",
+                        "base_url": " https://vertex.example ",
+                        "project_id": " project-1 ",
+                        "region": " us-east5 "
+                    }
+                }
+            }))
+            .expect("valid explicit routing should update");
+
+        assert_eq!(
+            status.get("claude_provider_routing"),
+            Some(&json!({
+                "type": "vertex",
+                "base_url": "https://vertex.example",
+                "project_id": "project-1",
+                "region": "us-east5"
+            }))
+        );
+        assert_eq!(status.get("auth_ready").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            status.get("onboarding_required").and_then(Value::as_bool),
+            Some(false)
+        );
 
         let setup = ai
             .inner
@@ -12410,6 +12500,53 @@ mod tests {
                 project_id: "project-1".to_string(),
                 region: "us-east5".to_string(),
             })
+        );
+        assert_eq!(setup.auth_method.as_deref(), Some("anthropic-api-key"));
+        assert!(setup.auth_ready);
+        assert_eq!(
+            setup
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .map(String::as_str),
+            Some("x-api-key: provider-secret")
+        );
+
+        ai.update_setup(&json!({
+            "runtimeId": CLAUDE_RUNTIME_ID,
+            "input": {
+                "claude_provider_routing": { "type": "default" },
+                "anthropic_custom_headers": { "action": "unchanged" },
+                "anthropic_api_key": { "action": "unchanged" }
+            }
+        }))
+        .expect("clearing provider routing should update");
+        let cleared = ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(CLAUDE_RUNTIME_ID)
+            .cloned()
+            .expect("Claude setup should remain available");
+        assert_eq!(
+            cleared.claude_provider_routing,
+            Some(ClaudeProviderRouting::Default)
+        );
+        assert_eq!(cleared.auth_method.as_deref(), Some("anthropic-api-key"));
+        assert!(cleared.auth_ready);
+        assert_eq!(
+            cleared
+                .env
+                .get("ANTHROPIC_API_KEY")
+                .map(String::as_str),
+            Some("existing-anthropic-secret")
+        );
+        assert_eq!(
+            cleared
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .map(String::as_str),
+            Some("x-api-key: provider-secret")
         );
 
         let error = ai

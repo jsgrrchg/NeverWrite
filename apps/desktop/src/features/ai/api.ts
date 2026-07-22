@@ -11,6 +11,7 @@ import type {
     AIBackendRuntimeSetupStatusPayload,
     AIBackendSessionPayload,
     AIChatAttachment,
+    AIClaudeProviderRouting,
     AIChatSession,
     AIConfigOption,
     AIMessageCompletedPayload,
@@ -180,7 +181,9 @@ function normalizeRuntimeSetupStatus(
             (m) => !isClaudeTerminalAuthMethodId(m.id),
         );
         if (isClaudeTerminalAuthMethodId(authMethod)) {
-            authReady = false;
+            if (status.claude_provider_routing?.type !== "vertex") {
+                authReady = false;
+            }
             authMethod = undefined;
         }
     }
@@ -194,11 +197,54 @@ function normalizeRuntimeSetupStatus(
         authReady,
         authMethod,
         authMethods,
+        claudeProviderRouting: normalizeClaudeProviderRouting(
+            status.claude_provider_routing,
+        ),
         hasGatewayConfig: status.has_gateway_config ?? false,
         hasGatewayUrl: status.has_gateway_url ?? false,
         onboardingRequired: status.onboarding_required,
         message: status.message ?? undefined,
     };
+}
+
+function normalizeClaudeProviderRouting(
+    routing: AIBackendRuntimeSetupStatusPayload["claude_provider_routing"],
+): AIClaudeProviderRouting | undefined {
+    if (!routing) return undefined;
+    switch (routing.type) {
+        case "default":
+            return { type: "default" };
+        case "anthropic":
+        case "bedrock":
+            return { type: routing.type, baseUrl: routing.base_url };
+        case "vertex":
+            return {
+                type: "vertex",
+                baseUrl: routing.base_url,
+                projectId: routing.project_id,
+                region: routing.region,
+            };
+    }
+}
+
+function serializeClaudeProviderRouting(routing: AIClaudeProviderRouting) {
+    switch (routing.type) {
+        case "default":
+            return { type: "default" } as const;
+        case "anthropic":
+        case "bedrock":
+            return {
+                type: routing.type,
+                base_url: routing.baseUrl,
+            } as const;
+        case "vertex":
+            return {
+                type: "vertex",
+                base_url: routing.baseUrl,
+                project_id: routing.projectId,
+                region: routing.region,
+            } as const;
+    }
 }
 
 function normalizeEnvironmentDiagnostics(diagnostics: {
@@ -308,6 +354,7 @@ export async function aiGetEnvironmentDiagnostics() {
 export async function aiUpdateSetup(input: {
     runtimeId: string;
     customBinaryPath?: string;
+    claudeProviderRouting?: AIClaudeProviderRouting;
     codexApiKey: AISecretPatch;
     openaiApiKey: AISecretPatch;
     xaiApiKey?: AISecretPatch;
@@ -326,6 +373,14 @@ export async function aiUpdateSetup(input: {
             input: {
                 ...(input.customBinaryPath !== undefined
                     ? { custom_binary_path: input.customBinaryPath }
+                    : {}),
+                ...(input.claudeProviderRouting !== undefined
+                    ? {
+                          claude_provider_routing:
+                              serializeClaudeProviderRouting(
+                                  input.claudeProviderRouting,
+                              ),
+                      }
                     : {}),
                 codex_api_key: input.codexApiKey,
                 openai_api_key: input.openaiApiKey,
