@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { toAcpNotifications } from "../acp-agent.js";
 import { toolUpdateFromToolResult, createPostToolUseHook, createTaskHook, toolInfoFromToolUse, planEntries, applyTaskCreate, applyTaskUpdate, parseTaskCreateOutput, taskStateToPlanEntries, } from "../tools.js";
 describe("rawOutput in tool call updates", () => {
@@ -751,7 +751,7 @@ describe("Bash terminal output", () => {
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
             // Fire PostToolUse hook with a structuredPatch in tool_response
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Edit",
@@ -813,7 +813,7 @@ describe("Bash terminal output", () => {
                     },
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Edit",
@@ -877,7 +877,7 @@ describe("Bash terminal output", () => {
                     input: { command: "echo hi" },
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Bash",
@@ -892,6 +892,31 @@ describe("Bash terminal output", () => {
             const hookUpdate = hookUpdates[0].update;
             expect(hookUpdate.content).toBeUndefined();
             expect(hookUpdate.locations).toBeUndefined();
+        });
+        // Regression for issue #889: tool uses that never register a callback
+        // (TodoWrite/Task* are rendered as plan updates, not tool_calls) fire the
+        // PostToolUse hook too. That's expected — the hook must stay silent
+        // instead of spamming "No onPostToolUseHook found" to stderr.
+        it("should not log an error when no callback is registered for the tool use", async () => {
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => { });
+            try {
+                const hook = createPostToolUseHook();
+                const result = await hook({
+                    hook_event_name: "PostToolUse",
+                    tool_name: "TodoWrite",
+                    tool_input: { todos: [] },
+                    tool_response: { success: true },
+                    tool_use_id: "toolu_todo_no_callback",
+                    session_id: "test-session",
+                    transcript_path: "/tmp/test",
+                    cwd: "/tmp",
+                }, "toolu_todo_no_callback", { signal: AbortSignal.abort() });
+                expect(result).toEqual({ continue: true });
+                expect(errorSpy).not.toHaveBeenCalled();
+            }
+            finally {
+                errorSpy.mockRestore();
+            }
         });
     });
     describe("post-tool-use hook sends diff content for Write tool", () => {
@@ -919,7 +944,7 @@ describe("Bash terminal output", () => {
                     },
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Write",
@@ -980,7 +1005,7 @@ describe("Bash terminal output", () => {
                     },
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Write",
@@ -1072,7 +1097,7 @@ describe("Bash terminal output", () => {
             });
             expect(resultNotifications[1].update.status).toBe("completed");
             // Step 3: Fire the PostToolUse hook (simulates what Claude Code SDK does)
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Bash",
@@ -1128,7 +1153,7 @@ describe("Bash terminal output", () => {
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
             // Fire hook
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Bash",
@@ -1676,6 +1701,55 @@ describe("Agent/Task tool_result rendering from tool_use_result", () => {
                 type: "content",
                 content: { type: "text", text: "agentId mentioned mid-text (not a trailer) stays.\nDone." },
             },
+        ]);
+    });
+    it("leaves malformed trailers alone", () => {
+        // Incomplete trailers are ordinary report text, not metadata to strip.
+        const malformedResult = {
+            type: "tool_result",
+            tool_use_id: "toolu_agent",
+            content: [
+                { type: "text", text: "Report.\n<usage>missing closing tag" },
+                { type: "text", text: "Report.\nagentId: abc-123 (missing closing paren" },
+            ],
+        };
+        const update = toolUpdateFromToolResult(malformedResult, agentToolUse, false);
+        expect(update.content).toEqual([
+            { type: "content", content: { type: "text", text: "Report.\n<usage>missing closing tag" } },
+            {
+                type: "content",
+                content: { type: "text", text: "Report.\nagentId: abc-123 (missing closing paren" },
+            },
+        ]);
+    });
+    it("strips only the trailer when the report itself mentions <usage>", () => {
+        const result = {
+            type: "tool_result",
+            tool_use_id: "toolu_agent",
+            content: "Grep for <usage> found 3 hits.\n<usage>subagent_tokens: 5</usage>",
+        };
+        const update = toolUpdateFromToolResult(result, agentToolUse, false);
+        expect(update.content).toEqual([
+            { type: "content", content: { type: "text", text: "Grep for <usage> found 3 hits." } },
+        ]);
+    });
+    it("handles adversarial trailer-shaped input in linear time", () => {
+        // Regression: the old regex-based strip backtracked quadratically on
+        // these shapes (CodeQL js/polynomial-redos) — at this size it would
+        // blow the test timeout rather than merely run slow.
+        const result = {
+            type: "tool_result",
+            tool_use_id: "toolu_agent",
+            content: [
+                { type: "text", text: "agentId: - (".repeat(20000) },
+                { type: "text", text: "<usage>".repeat(30000) },
+            ],
+        };
+        const update = toolUpdateFromToolResult(result, agentToolUse, false);
+        // Neither is a real trailer, so both come through unchanged.
+        expect(update.content).toEqual([
+            { type: "content", content: { type: "text", text: "agentId: - (".repeat(20000) } },
+            { type: "content", content: { type: "text", text: "<usage>".repeat(30000) } },
         ]);
     });
     it("falls back (trailer-stripped) when tool_use_result is the async_launched variant", () => {

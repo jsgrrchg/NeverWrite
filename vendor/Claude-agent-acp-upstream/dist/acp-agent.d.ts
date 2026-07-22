@@ -1,4 +1,4 @@
-import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
+import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, DisableProviderRequest, DisableProviderResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListProvidersRequest, ListProvidersResponse, LlmProtocol, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, SetProviderRequest, SetProviderResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
 import { AgentInfo, CanUseTool, FastModeState, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
@@ -222,11 +222,32 @@ type Session = {
     emitRawSDKMessages: boolean | SDKMessageFilter[];
     /** Context window size of the session's current model, carried across
      *  prompts so mid-stream usage_update notifications report a correct `size`
-     *  before the turn's first result message arrives. Seeded from the SDK's
-     *  getContextUsage report at session creation (DEFAULT_CONTEXT_WINDOW when
-     *  that and the text heuristic both fail), refreshed the same way on model
-     *  switches, and confirmed by each result's modelUsage. */
+     *  before the turn's first result message arrives. Seeded synchronously at
+     *  session creation and on model switches from the per-model cache or the
+     *  text heuristic (DEFAULT_CONTEXT_WINDOW when both miss; on session/load the
+     *  resumed session's own `getContextUsage` report wins, see
+     *  `readResumedLiveModel`), then confirmed — and the cache populated — by each
+     *  result's modelUsage. No extra `getContextUsage` IPC is on these paths: on a
+     *  fresh session it stalls until the first turn runs (see the seeding call
+     *  sites and `contextWindowCache`). */
     contextWindowSize: number;
+    /** Whether `contextWindowSize` came from an authoritative source (the
+     *  cross-session cache, a resumed session's `getContextUsage` report, or a
+     *  `result.modelUsage`) rather than the text heuristic / default. Guards the
+     *  mid-stream `message_start` heuristic upgrade: an authoritative window that
+     *  happens to equal DEFAULT_CONTEXT_WINDOW must not be mistaken for "unseeded"
+     *  and clobbered by a "1m" text match. */
+    contextWindowAuthoritative: boolean;
+    /** Stable identifier of the LLM backend this session's query was created
+     *  against, derived from the routing-relevant vars of the exact `env` handed
+     *  to the SDK at query creation (see {@link providerCacheKeyFor}). The context
+     *  window is a property of (model id, backend) — the same resolved model id
+     *  can name different windows behind different base URLs, routing headers, or
+     *  credentials — so this scopes the module-global `contextWindowCache` per
+     *  backend. Captured from the query's own env (not re-resolved later) because
+     *  the process-wide provider config can change while a session is being
+     *  created, while the query stays baked to the env it was created with. */
+    providerCacheKey: string;
     /** Accumulated task list for the session, keyed by task ID. Task IDs are
      *  per-session, so this state must not be shared across sessions. */
     taskState: TaskState;
@@ -432,6 +453,22 @@ type GatewayAuthRequest = AuthenticateRequest & {
     _meta?: GatewayAuthMeta;
 };
 /**
+ * Resolved, non-secret + secret routing config for the `main` provider. This is
+ * the shared shape produced by both `providers/set` and the legacy gateway auth
+ * path, and consumed by {@link createEnvForProvider}. `null` means the provider
+ * is unconfigured (no client-managed routing in effect).
+ */
+type ProviderConfig = {
+    apiType: LlmProtocol;
+    baseUrl: string;
+    headers: Record<string, string>;
+    /** Present only for `apiType === "vertex"`. */
+    vertex?: {
+        projectId: string;
+        region: string;
+    };
+};
+/**
  * Extra metadata that the agent provides for each tool_call / tool_update update.
  */
 export type ToolUpdateMeta = {
@@ -543,6 +580,10 @@ export declare class ClaudeAcpAgent {
     clientCapabilities?: ClientCapabilities;
     logger: Logger;
     gatewayAuthRequest?: GatewayAuthRequest;
+    /** Client-managed LLM routing set via `providers/set`. Process-scoped and
+     *  never persisted to disk (see the Configurable LLM Providers RFD). When
+     *  set, it takes precedence over {@link gatewayAuthRequest}. */
+    providerConfig?: ProviderConfig;
     /** Grace period before a `session/cancel` forces a wedged prompt loop to
      *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
      *  tests can shrink it. */
@@ -561,6 +602,36 @@ export declare class ClaudeAcpAgent {
      *  the title is best-effort and another turn will retry. */
     private maybeUpdateSessionTitle;
     authenticate(_params: AuthenticateRequest): Promise<void>;
+    /**
+     * `providers/list` — returns the single client-configurable custom gateway
+     * provider (`main`). `current` carries only non-secret routing (never headers,
+     * which may hold secrets); only `apiType`/`baseUrl` are surfaced for UI
+     * display, and is `null` when the provider is not configured/disabled. The
+     * provider is optional (`required: false`): while disabled/unconfigured the
+     * agent falls back to its own default routing (normal Claude login).
+     */
+    unstable_listProviders(_params: ListProvidersRequest): Promise<ListProvidersResponse>;
+    /**
+     * `providers/set` — replace the full configuration for the `main` provider.
+     * Rejects unknown IDs, unsupported protocols, and empty/invalid base URLs with
+     * `invalid_params`. Config is process-scoped and applies to sessions created or
+     * loaded after this call.
+     */
+    unstable_setProvider(params: SetProviderRequest): Promise<SetProviderResponse>;
+    /**
+     * `providers/disable` — disabling the `main` provider clears any client-managed
+     * routing (both a `providers/set` config and the legacy gateway auth request),
+     * so the agent reverts to its own default routing and `providers/list` reports
+     * `current: null`. Disabling any other (unknown) ID is treated as a successful
+     * no-op per the RFD's idempotency rule.
+     */
+    unstable_disableProvider(params: DisableProviderRequest): Promise<DisableProviderResponse>;
+    /**
+     * Resolve the effective client-managed routing config. `providers/set` takes
+     * precedence; otherwise fall back to the legacy gateway auth request. Returns
+     * `null` when neither is configured.
+     */
+    resolveProviderConfig(): ProviderConfig | null;
     logout(_params: LogoutRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
     /** Lazily start the per-session consumer that drains the SDK query stream for
