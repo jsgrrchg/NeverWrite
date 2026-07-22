@@ -4975,6 +4975,23 @@ fn additional_wire_paths(runtime_id: &str, additional_directories: &[PathBuf]) -
         .collect()
 }
 
+fn resolve_permission_waiter(
+    permission_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+    request_id: &str,
+    option_id: Option<String>,
+) -> Result<(), String> {
+    let outcome = option_id
+        .map(|value| RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value)))
+        .unwrap_or(RequestPermissionOutcome::Cancelled);
+    permission_waiters
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(request_id)
+        .ok_or_else(|| format!("Permission request not found: {request_id}"))?
+        .send(outcome)
+        .map_err(|_| "Permission request was closed.".to_string())
+}
+
 async fn handle_acp_command(
     command: AcpCommand,
     connection: &ConnectionTo<Agent>,
@@ -5072,24 +5089,7 @@ async fn handle_acp_command(
             option_id,
             response_tx,
         } => {
-            let outcome = option_id
-                .map(|value| {
-                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value))
-                })
-                .unwrap_or(RequestPermissionOutcome::Cancelled);
-            let result = permission_waiters
-                .lock()
-                .map_err(|error| error.to_string())
-                .and_then(|mut waiters| {
-                    waiters
-                        .remove(&request_id)
-                        .ok_or_else(|| format!("Permission request not found: {request_id}"))
-                })
-                .and_then(|sender| {
-                    sender
-                        .send(outcome)
-                        .map_err(|_| "Permission request was closed.".to_string())
-                });
+            let result = resolve_permission_waiter(permission_waiters, &request_id, option_id);
             let _ = response_tx.send(result);
         }
     }
@@ -5206,24 +5206,7 @@ async fn handle_acp12_command(
             option_id,
             response_tx,
         } => {
-            let outcome = option_id
-                .map(|value| {
-                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value))
-                })
-                .unwrap_or(RequestPermissionOutcome::Cancelled);
-            let result = permission_waiters
-                .lock()
-                .map_err(|error| error.to_string())
-                .and_then(|mut waiters| {
-                    waiters
-                        .remove(&request_id)
-                        .ok_or_else(|| format!("Permission request not found: {request_id}"))
-                })
-                .and_then(|sender| {
-                    sender
-                        .send(outcome)
-                        .map_err(|_| "Permission request was closed.".to_string())
-                });
+            let result = resolve_permission_waiter(permission_waiters, &request_id, option_id);
             let _ = response_tx.send(result);
         }
     }
@@ -15609,6 +15592,40 @@ mod tests {
             payload.get("title").and_then(Value::as_str),
             Some("Generated image")
         );
+    }
+
+    #[test]
+    fn matched_ask_rule_permission_decisions_continue_or_cancel() {
+        for (request_id, option_id, expected) in [
+            (
+                "matched-ask-allow",
+                Some("allow".to_string()),
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow")),
+            ),
+            (
+                "matched-ask-cancel",
+                None,
+                RequestPermissionOutcome::Cancelled,
+            ),
+        ] {
+            let permission_waiters = Arc::new(Mutex::new(HashMap::new()));
+            let (sender, mut receiver) = oneshot::channel();
+            permission_waiters
+                .lock()
+                .unwrap()
+                .insert(request_id.to_string(), sender);
+
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            resolve_permission_waiter(&permission_waiters, request_id, option_id)
+                .expect("permission decision should resolve the pending request");
+
+            let outcome = run_client_future(async move { receiver.await.unwrap() });
+            assert_eq!(outcome, expected);
+            assert!(permission_waiters.lock().unwrap().is_empty());
+        }
     }
 
     #[test]

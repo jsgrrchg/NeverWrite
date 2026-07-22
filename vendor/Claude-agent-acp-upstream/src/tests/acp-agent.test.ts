@@ -2305,13 +2305,21 @@ describe("tool_call emitted before permission request", () => {
 });
 
 describe("canUseTool in bypassPermissions mode", () => {
-  function setup() {
+  function setup(
+    respondToPermission: (
+      request: RequestPermissionRequest,
+    ) => Promise<RequestPermissionResponse> = async () => ({
+      outcome: { outcome: "selected", optionId: "allow" },
+    }),
+  ) {
     const events: string[] = [];
+    const requests: RequestPermissionRequest[] = [];
     const mockClient = {
       sessionUpdate: async () => {},
-      requestPermission: async () => {
+      requestPermission: async (request: RequestPermissionRequest) => {
         events.push("permission");
-        return { outcome: { outcome: "selected", optionId: "allow" } };
+        requests.push(request);
+        return respondToPermission(request);
       },
     } as unknown as AcpClient;
     const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
@@ -2321,8 +2329,14 @@ describe("canUseTool in bypassPermissions mode", () => {
     // The tool_call was already surfaced by the streamed tool_use chunk, so
     // the permission flow (when taken) goes straight to requestPermission.
     agent.sessions["session-1"]!.emittedToolCalls.add("tool-1");
-    return { agent, events };
+    return { agent, events, requests };
   }
+
+  const matchedAskRule = {
+    source: "projectSettings",
+    toolName: "Bash",
+    ruleContent: "Bash(terraform:*)",
+  };
 
   it("auto-allows asks that carry no matchedAskRule", async () => {
     const { agent, events } = setup();
@@ -2342,22 +2356,78 @@ describe("canUseTool in bypassPermissions mode", () => {
   // one was forced by the user's own permissions.ask rule (matchedAskRule),
   // honoring that rule beats bypass: it must go to the client instead of
   // being silently auto-allowed.
-  it("prompts the client when the ask was forced by a permissions.ask rule", async () => {
-    const { agent, events } = setup();
+  it("prompts and waits when a permissions.ask rule overrides bypass mode", async () => {
+    let resolvePermission!: (response: RequestPermissionResponse) => void;
+    const permissionResponse = new Promise<RequestPermissionResponse>((resolve) => {
+      resolvePermission = resolve;
+    });
+    const { agent, events, requests } = setup(async () => permissionResponse);
+
+    let settled = false;
+    const resultPromise = agent.canUseTool("session-1")("Bash", { command: "terraform destroy" }, {
+      signal: new AbortController().signal,
+      suggestions: [],
+      toolUseID: "tool-1",
+      matchedAskRule,
+    } as any);
+    void resultPromise.finally(() => {
+      settled = true;
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(["permission"]);
+    });
+    expect(requests).toMatchObject([
+      {
+        sessionId: "session-1",
+        toolCall: {
+          toolCallId: "tool-1",
+          rawInput: { command: "terraform destroy" },
+        },
+        options: [{ optionId: "allow_always" }, { optionId: "allow" }, { optionId: "reject" }],
+      },
+    ]);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolvePermission({ outcome: { outcome: "selected", optionId: "allow" } });
+    const result = await resultPromise;
+    expect(result).toMatchObject({ behavior: "allow" });
+  });
+
+  it("returns a denial when the user rejects a rule-forced ask", async () => {
+    const { agent, events } = setup(async () => ({
+      outcome: { outcome: "selected", optionId: "reject" },
+    }));
 
     const result = await agent.canUseTool("session-1")("Bash", { command: "terraform destroy" }, {
       signal: new AbortController().signal,
       suggestions: [],
       toolUseID: "tool-1",
-      matchedAskRule: {
-        source: "projectSettings",
-        toolName: "Bash",
-        ruleContent: "Bash(terraform:*)",
-      },
+      matchedAskRule,
     } as any);
 
     expect(events).toEqual(["permission"]);
-    expect(result).toMatchObject({ behavior: "allow" });
+    expect(result).toEqual({
+      behavior: "deny",
+      message: "User refused permission to run tool",
+    });
+  });
+
+  it("aborts the tool when the user cancels a rule-forced ask", async () => {
+    const { agent, events } = setup(async () => ({
+      outcome: { outcome: "cancelled" },
+    }));
+
+    const result = agent.canUseTool("session-1")("Bash", { command: "terraform destroy" }, {
+      signal: new AbortController().signal,
+      suggestions: [],
+      toolUseID: "tool-1",
+      matchedAskRule,
+    } as any);
+
+    await expect(result).rejects.toThrow("Tool use aborted");
+    expect(events).toEqual(["permission"]);
   });
 });
 

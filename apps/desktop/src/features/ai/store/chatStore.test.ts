@@ -7944,6 +7944,147 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("keeps rule-forced bypass permissions pending until the user allows or cancels", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const permissionResponse = createDeferred<unknown>();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_permission") {
+                return permissionResponse.promise;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyPermissionRequest({
+            session_id: activeSessionId,
+            request_id: "matched-ask-allow",
+            tool_call_id: "tool-matched-ask-allow",
+            title: "Run terraform destroy",
+            target: "terraform destroy",
+            options: [
+                {
+                    option_id: "allow",
+                    name: "Allow",
+                    kind: "allow_once",
+                },
+                {
+                    option_id: "reject",
+                    name: "Reject",
+                    kind: "reject_once",
+                },
+            ],
+            diffs: [],
+        });
+
+        let permissionMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) =>
+                    message.permissionRequestId === "matched-ask-allow",
+            );
+        expect(permissionMessage).toMatchObject({
+            kind: "permission",
+            content: "Run terraform destroy",
+            permissionOptions: [
+                { option_id: "allow", kind: "allow_once" },
+                { option_id: "reject", kind: "reject_once" },
+            ],
+            meta: { status: "pending" },
+        });
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.status,
+        ).toBe("waiting_permission");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_respond_permission",
+            ),
+        ).toBe(false);
+
+        const allowPromise = useChatStore
+            .getState()
+            .respondPermissionForSession(
+                activeSessionId,
+                "matched-ask-allow",
+                "allow",
+            );
+
+        await vi.waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith("ai_respond_permission", {
+                input: {
+                    session_id: activeSessionId,
+                    request_id: "matched-ask-allow",
+                    option_id: "allow",
+                },
+            });
+        });
+        permissionMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) =>
+                    message.permissionRequestId === "matched-ask-allow",
+            );
+        expect(permissionMessage?.meta).toMatchObject({
+            status: "responding",
+            resolved_option: "allow",
+        });
+
+        permissionResponse.resolve({ ...sessionPayload, status: "streaming" });
+        await allowPromise;
+        permissionMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) =>
+                    message.permissionRequestId === "matched-ask-allow",
+            );
+        expect(permissionMessage?.meta).toMatchObject({
+            status: "resolved",
+            resolved_option: "allow",
+        });
+
+        useChatStore.getState().applyPermissionRequest({
+            session_id: activeSessionId,
+            request_id: "matched-ask-cancel",
+            tool_call_id: "tool-matched-ask-cancel",
+            title: "Run terraform destroy",
+            target: "terraform destroy",
+            options: [],
+            diffs: [],
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_permission") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .respondPermissionForSession(
+                activeSessionId,
+                "matched-ask-cancel",
+                undefined,
+            );
+
+        expect(invokeMock).toHaveBeenLastCalledWith("ai_respond_permission", {
+            input: {
+                session_id: activeSessionId,
+                request_id: "matched-ask-cancel",
+                option_id: null,
+            },
+        });
+        const cancelledMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) =>
+                    message.permissionRequestId === "matched-ask-cancel",
+            );
+        expect(cancelledMessage?.meta).toMatchObject({
+            status: "resolved",
+            resolved_option: null,
+        });
+    });
+
     it("ignores failed tool diffs when consolidating the edited files buffer", async () => {
         await useChatStore.getState().initialize();
 
