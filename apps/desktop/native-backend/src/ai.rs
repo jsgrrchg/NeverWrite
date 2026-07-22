@@ -251,6 +251,8 @@ struct AiSecretPatch {
 struct AiRuntimeSetupPayload {
     custom_binary_path: Option<String>,
     #[serde(default)]
+    claude_provider_routing: Option<ClaudeProviderRouting>,
+    #[serde(default)]
     codex_api_key: Option<AiSecretPatch>,
     #[serde(default)]
     openai_api_key: Option<AiSecretPatch>,
@@ -269,6 +271,23 @@ struct AiRuntimeSetupPayload {
     anthropic_auth_token: Option<AiSecretPatch>,
     #[serde(default)]
     anthropic_api_key: Option<AiSecretPatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ClaudeProviderRouting {
+    Default,
+    Anthropic {
+        base_url: String,
+    },
+    Bedrock {
+        base_url: String,
+    },
+    Vertex {
+        base_url: String,
+        project_id: String,
+        region: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -362,6 +381,7 @@ struct AiAttachmentInput {
 #[derive(Debug, Clone, Default)]
 struct RuntimeSetupState {
     custom_binary_path: Option<String>,
+    claude_provider_routing: Option<ClaudeProviderRouting>,
     auth_ready: bool,
     auth_method: Option<String>,
     suppress_persisted_auth: bool,
@@ -381,6 +401,8 @@ struct PersistedRuntimeSetupFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedRuntimeSetupState {
     custom_binary_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude_provider_routing: Option<ClaudeProviderRouting>,
     auth_method: Option<String>,
     #[serde(default)]
     auth_invalidated_at_ms: Option<u64>,
@@ -574,6 +596,11 @@ impl RuntimeSetupStore {
                 custom_binary_path: persisted_setup
                     .custom_binary_path
                     .and_then(normalize_optional_string),
+                claude_provider_routing: if runtime_id == CLAUDE_RUNTIME_ID {
+                    persisted_setup.claude_provider_routing
+                } else {
+                    None
+                },
                 auth_method: persisted_setup
                     .auth_method
                     .and_then(normalize_optional_string),
@@ -718,8 +745,14 @@ impl PersistedRuntimeSetupState {
             .and_then(normalize_optional_string)
             .filter(|method| should_persist_auth_method(runtime_id, setup, method));
         let auth_invalidated_at_ms = setup.auth_invalidated_at_ms;
+        let claude_provider_routing = if runtime_id == CLAUDE_RUNTIME_ID {
+            setup.claude_provider_routing.clone()
+        } else {
+            None
+        };
 
         if custom_binary_path.is_none()
+            && claude_provider_routing.is_none()
             && auth_method.is_none()
             && auth_invalidated_at_ms.is_none()
             && env.is_empty()
@@ -730,6 +763,7 @@ impl PersistedRuntimeSetupState {
 
         Ok(Some(Self {
             custom_binary_path,
+            claude_provider_routing,
             auth_method,
             auth_invalidated_at_ms,
             env,
@@ -6805,17 +6839,11 @@ fn acp_process_spec(
         env.insert("XAI_API_KEY".to_string(), String::new());
     }
     let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
-    if let Some(method) = setup.auth_method.as_deref() {
-        if runtime_id == CLAUDE_RUNTIME_ID && method == "gateway-bedrock" {
-            env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
-            env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
-                .or_default();
-        }
-    }
     if runtime_id == CLAUDE_RUNTIME_ID
-        && env
-            .get("ANTHROPIC_BEDROCK_BASE_URL")
-            .is_some_and(|value| !value.is_empty())
+        && matches!(
+            effective_claude_provider_routing(setup),
+            ClaudeProviderRouting::Bedrock { .. }
+        )
     {
         env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
         env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
@@ -8051,11 +8079,95 @@ fn is_loopback_gateway_hostname(hostname: &str) -> bool {
         .unwrap_or(false)
 }
 
+impl ClaudeProviderRouting {
+    fn normalized(self) -> Result<Self, String> {
+        match self {
+            Self::Default => Ok(Self::Default),
+            Self::Anthropic { base_url } => Ok(Self::Anthropic {
+                base_url: normalize_claude_provider_url(base_url)?,
+            }),
+            Self::Bedrock { base_url } => Ok(Self::Bedrock {
+                base_url: normalize_claude_provider_url(base_url)?,
+            }),
+            Self::Vertex {
+                base_url,
+                project_id,
+                region,
+            } => Ok(Self::Vertex {
+                base_url: normalize_claude_provider_url(base_url)?,
+                project_id: normalize_required_provider_value(project_id, "Project ID")?,
+                region: normalize_required_provider_value(region, "Region")?,
+            }),
+        }
+    }
+}
+
+fn normalize_claude_provider_url(value: String) -> Result<String, String> {
+    let value = value.trim().to_string();
+    validate_claude_gateway_url(&value)?;
+    Ok(value)
+}
+
+fn normalize_required_provider_value(value: String, label: &str) -> Result<String, String> {
+    normalize_optional_string(value).ok_or_else(|| format!("{label} is required."))
+}
+
+fn effective_claude_provider_routing(setup: &RuntimeSetupState) -> ClaudeProviderRouting {
+    if let Some(routing) = setup.claude_provider_routing.clone() {
+        return routing.normalized().unwrap_or(ClaudeProviderRouting::Default);
+    }
+
+    claude_provider_routing_from_lookup(|key| setup.env.get(key).cloned())
+        .or_else(|| claude_provider_routing_from_lookup(|key| std::env::var(key).ok()))
+        .unwrap_or(ClaudeProviderRouting::Default)
+}
+
+fn claude_provider_routing_from_lookup(
+    mut value_for: impl FnMut(&str) -> Option<String>,
+) -> Option<ClaudeProviderRouting> {
+    let vertex_base_url = value_for("ANTHROPIC_VERTEX_BASE_URL").and_then(normalize_optional_string);
+    let vertex_project_id =
+        value_for("ANTHROPIC_VERTEX_PROJECT_ID").and_then(normalize_optional_string);
+    let vertex_region = value_for("CLOUD_ML_REGION").and_then(normalize_optional_string);
+    if let (Some(base_url), Some(project_id), Some(region)) =
+        (vertex_base_url, vertex_project_id, vertex_region)
+    {
+        if let Ok(routing) = (ClaudeProviderRouting::Vertex {
+            base_url,
+            project_id,
+            region,
+        })
+        .normalized()
+        {
+            return Some(routing);
+        }
+    }
+    if let Some(routing) = value_for("ANTHROPIC_BEDROCK_BASE_URL")
+        .and_then(normalize_optional_string)
+        .and_then(|base_url| ClaudeProviderRouting::Bedrock { base_url }.normalized().ok())
+    {
+        return Some(routing);
+    }
+    if let Some(base_url) = value_for("ANTHROPIC_BASE_URL").and_then(normalize_optional_string) {
+        return ClaudeProviderRouting::Anthropic { base_url }
+            .normalized()
+            .ok();
+    }
+    None
+}
+
 fn update_auth_state(
     setup: &mut RuntimeSetupState,
     runtime_id: &str,
     input: AiRuntimeSetupPayload,
 ) -> Result<(), String> {
+    let explicit_provider_routing = match input.claude_provider_routing.clone() {
+        Some(_) if runtime_id != CLAUDE_RUNTIME_ID => {
+            return Err("Provider routing is only supported for Claude.".to_string());
+        }
+        Some(routing) => Some(routing.normalized()?),
+        None => None,
+    };
     let anthropic_gateway_url_touched =
         input.gateway_base_url.is_some() || input.anthropic_base_url.is_some();
     let bedrock_gateway_url_touched = input.anthropic_bedrock_base_url.is_some();
@@ -8150,6 +8262,13 @@ fn update_auth_state(
                 setup.env.remove("AWS_BEARER_TOKEN_BEDROCK");
             }
             touched_auth = true;
+        }
+        if let Some(routing) = explicit_provider_routing {
+            setup.claude_provider_routing = Some(routing);
+        } else if gateway_url_touched {
+            // Existing gateway updates remain authoritative and are projected
+            // through the resolver without rewriting their persisted shape.
+            setup.claude_provider_routing = None;
         }
     }
     if runtime_id == GROK_RUNTIME_ID {
@@ -9349,6 +9468,34 @@ mod tests {
     use std::time::Duration as StdDuration;
 
     static ENV_TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+    struct TestEnvVar {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TestEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for TestEnvVar {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn test_client(event_tx: mpsc::Sender<RpcOutput>) -> NativeAcpClient {
         test_client_with_state(event_tx, Arc::new(Mutex::new(NativeAiInner::default())))
@@ -11841,6 +11988,181 @@ mod tests {
             status.get("auth_ready").and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn claude_provider_routing_keeps_default_auth_independent() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _anthropic_base_url = TestEnvVar::unset("ANTHROPIC_BASE_URL");
+        let _bedrock_base_url = TestEnvVar::unset("ANTHROPIC_BEDROCK_BASE_URL");
+        let _vertex_base_url = TestEnvVar::unset("ANTHROPIC_VERTEX_BASE_URL");
+        let _vertex_project_id = TestEnvVar::unset("ANTHROPIC_VERTEX_PROJECT_ID");
+        let _vertex_region = TestEnvVar::unset("CLOUD_ML_REGION");
+        let setup = RuntimeSetupState {
+            auth_method: Some("anthropic-api-key".to_string()),
+            auth_ready: true,
+            env: HashMap::from([(
+                "ANTHROPIC_API_KEY".to_string(),
+                "test-secret".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+
+        assert_eq!(
+            effective_claude_provider_routing(&setup),
+            ClaudeProviderRouting::Default
+        );
+        assert_eq!(setup.auth_method.as_deref(), Some("anthropic-api-key"));
+        assert!(setup.auth_ready);
+    }
+
+    #[test]
+    fn claude_provider_routing_projects_legacy_gateways() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _anthropic_base_url = TestEnvVar::unset("ANTHROPIC_BASE_URL");
+        let _bedrock_base_url = TestEnvVar::unset("ANTHROPIC_BEDROCK_BASE_URL");
+        let _vertex_base_url = TestEnvVar::unset("ANTHROPIC_VERTEX_BASE_URL");
+        let _vertex_project_id = TestEnvVar::unset("ANTHROPIC_VERTEX_PROJECT_ID");
+        let _vertex_region = TestEnvVar::unset("CLOUD_ML_REGION");
+        let mut setup = RuntimeSetupState {
+            env: HashMap::from([(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://gateway.example".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+
+        assert_eq!(
+            effective_claude_provider_routing(&setup),
+            ClaudeProviderRouting::Anthropic {
+                base_url: "https://gateway.example".to_string(),
+            }
+        );
+
+        setup.env.insert(
+            "ANTHROPIC_BEDROCK_BASE_URL".to_string(),
+            "https://bedrock.example".to_string(),
+        );
+        assert_eq!(
+            effective_claude_provider_routing(&setup),
+            ClaudeProviderRouting::Bedrock {
+                base_url: "https://bedrock.example".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_provider_routing_uses_explicit_then_inherited_precedence() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _anthropic_base_url =
+            TestEnvVar::set("ANTHROPIC_BASE_URL", "https://inherited.example");
+        let _bedrock_base_url = TestEnvVar::set(
+            "ANTHROPIC_BEDROCK_BASE_URL",
+            "https://inherited-bedrock.example",
+        );
+        let _vertex_base_url =
+            TestEnvVar::set("ANTHROPIC_VERTEX_BASE_URL", "https://inherited-vertex.example");
+        let _vertex_project_id =
+            TestEnvVar::set("ANTHROPIC_VERTEX_PROJECT_ID", "inherited-project");
+        let _vertex_region = TestEnvVar::set("CLOUD_ML_REGION", "us-central1");
+        let setup = RuntimeSetupState {
+            claude_provider_routing: Some(ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "project-1".to_string(),
+                region: "us-east5".to_string(),
+            }),
+            env: HashMap::from([(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://stored.example".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+
+        assert_eq!(
+            effective_claude_provider_routing(&setup),
+            ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "project-1".to_string(),
+                region: "us-east5".to_string(),
+            }
+        );
+
+        let inherited_setup = RuntimeSetupState::default();
+        assert_eq!(
+            effective_claude_provider_routing(&inherited_setup),
+            ClaudeProviderRouting::Vertex {
+                base_url: "https://inherited-vertex.example".to_string(),
+                project_id: "inherited-project".to_string(),
+                region: "us-central1".to_string(),
+            }
+        );
+
+        std::env::remove_var("ANTHROPIC_VERTEX_PROJECT_ID");
+        assert_eq!(
+            effective_claude_provider_routing(&inherited_setup),
+            ClaudeProviderRouting::Bedrock {
+                base_url: "https://inherited-bedrock.example".to_string(),
+            }
+        );
+
+        std::env::set_var("ANTHROPIC_BEDROCK_BASE_URL", "http://unsafe.example");
+        assert_eq!(
+            effective_claude_provider_routing(&inherited_setup),
+            ClaudeProviderRouting::Anthropic {
+                base_url: "https://inherited.example".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_provider_routing_validates_and_normalizes_explicit_setup() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+
+        ai.update_setup(&json!({
+            "runtimeId": CLAUDE_RUNTIME_ID,
+            "input": {
+                "claude_provider_routing": {
+                    "type": "vertex",
+                    "base_url": " https://vertex.example ",
+                    "project_id": " project-1 ",
+                    "region": " us-east5 "
+                }
+            }
+        }))
+        .expect("valid explicit routing should update");
+
+        let setup = ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(CLAUDE_RUNTIME_ID)
+            .cloned()
+            .expect("Claude setup should exist");
+        assert_eq!(
+            setup.claude_provider_routing,
+            Some(ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "project-1".to_string(),
+                region: "us-east5".to_string(),
+            })
+        );
+
+        let error = ai
+            .update_setup(&json!({
+                "runtimeId": CLAUDE_RUNTIME_ID,
+                "input": {
+                    "claude_provider_routing": {
+                        "type": "vertex",
+                        "base_url": "http://vertex.example",
+                        "project_id": "project-1",
+                        "region": ""
+                    }
+                }
+            }))
+            .expect_err("invalid explicit routing should fail");
+        assert_eq!(error, "HTTP gateways are only allowed for localhost.");
     }
 
     #[test]
@@ -16002,6 +16324,179 @@ mod tests {
         assert!(encoded.contains("ANTHROPIC_API_KEY"));
         assert!(encoded.contains("KILO_API_KEY"));
         assert!(encoded.contains("XAI_API_KEY"));
+    }
+
+    #[test]
+    fn claude_provider_routing_persists_non_secrets_and_rehydrates_keyring_headers() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+        let store = RuntimeSetupStore::with_secret_store(store_path.clone(), secrets.clone());
+        let routing = ClaudeProviderRouting::Vertex {
+            base_url: "https://vertex.example".to_string(),
+            project_id: "project-1".to_string(),
+            region: "us-east5".to_string(),
+        };
+        let setup = RuntimeSetupState {
+            claude_provider_routing: Some(routing.clone()),
+            env: HashMap::from([(
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                "authorization: Bearer provider-secret".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+
+        store
+            .save(&HashMap::from([(CLAUDE_RUNTIME_ID.to_string(), setup)]))
+            .expect("Claude provider routing should persist");
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("\"type\": \"vertex\""));
+        assert!(encoded.contains("\"base_url\": \"https://vertex.example\""));
+        assert!(encoded.contains("\"project_id\": \"project-1\""));
+        assert!(encoded.contains("\"region\": \"us-east5\""));
+        assert!(encoded.contains("ANTHROPIC_CUSTOM_HEADERS"));
+        assert!(!encoded.contains("provider-secret"));
+        assert_eq!(
+            secrets
+                .get_secret(CLAUDE_RUNTIME_ID, "ANTHROPIC_CUSTOM_HEADERS")
+                .unwrap()
+                .as_deref(),
+            Some("authorization: Bearer provider-secret")
+        );
+
+        let loaded = store
+            .load()
+            .unwrap()
+            .remove(CLAUDE_RUNTIME_ID)
+            .expect("Claude setup should reload");
+        assert_eq!(loaded.claude_provider_routing, Some(routing));
+        assert_eq!(
+            loaded
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .map(String::as_str),
+            Some("authorization: Bearer provider-secret")
+        );
+    }
+
+    #[test]
+    fn claude_provider_routing_loads_legacy_setups_without_rewriting_them() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _anthropic_base_url = TestEnvVar::unset("ANTHROPIC_BASE_URL");
+        let _bedrock_base_url = TestEnvVar::unset("ANTHROPIC_BEDROCK_BASE_URL");
+        let _vertex_base_url = TestEnvVar::unset("ANTHROPIC_VERTEX_BASE_URL");
+        let _vertex_project_id = TestEnvVar::unset("ANTHROPIC_VERTEX_PROJECT_ID");
+        let _vertex_region = TestEnvVar::unset("CLOUD_ML_REGION");
+        let cases = vec![
+            (
+                "default",
+                json!({
+                    "custom_binary_path": null,
+                    "auth_method": null,
+                    "env": {},
+                    "secret_env_keys": []
+                }),
+                Vec::<(&str, &str)>::new(),
+                ClaudeProviderRouting::Default,
+                None,
+                false,
+            ),
+            (
+                "anthropic-api-key",
+                json!({
+                    "custom_binary_path": null,
+                    "auth_method": "anthropic-api-key",
+                    "env": {},
+                    "secret_env_keys": ["ANTHROPIC_API_KEY"]
+                }),
+                vec![("ANTHROPIC_API_KEY", "api-key-secret")],
+                ClaudeProviderRouting::Default,
+                Some("anthropic-api-key"),
+                true,
+            ),
+            (
+                "custom-gateway",
+                json!({
+                    "custom_binary_path": null,
+                    "auth_method": "gateway",
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://gateway.example"
+                    },
+                    "secret_env_keys": ["ANTHROPIC_AUTH_TOKEN"]
+                }),
+                vec![("ANTHROPIC_AUTH_TOKEN", "gateway-secret")],
+                ClaudeProviderRouting::Anthropic {
+                    base_url: "https://gateway.example".to_string(),
+                },
+                Some("gateway"),
+                true,
+            ),
+            (
+                "bedrock-gateway",
+                json!({
+                    "custom_binary_path": null,
+                    "auth_method": "gateway-bedrock",
+                    "env": {
+                        "ANTHROPIC_BEDROCK_BASE_URL": "https://bedrock.example",
+                        "CLAUDE_CODE_USE_BEDROCK": "1"
+                    },
+                    "secret_env_keys": ["ANTHROPIC_CUSTOM_HEADERS"]
+                }),
+                vec![("ANTHROPIC_CUSTOM_HEADERS", "x-api-key: bedrock-secret")],
+                ClaudeProviderRouting::Bedrock {
+                    base_url: "https://bedrock.example".to_string(),
+                },
+                Some("gateway-bedrock"),
+                true,
+            ),
+        ];
+
+        for (name, persisted_setup, stored_secrets, expected_routing, expected_auth, auth_ready) in
+            cases
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let store_path = temp.path().join(format!("{name}.json"));
+            let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+            for (key, value) in stored_secrets {
+                secrets
+                    .set_secret(CLAUDE_RUNTIME_ID, key, value)
+                    .unwrap();
+            }
+            fs::write(
+                &store_path,
+                serde_json::to_vec_pretty(&json!({
+                    "version": RUNTIME_SETUP_STORE_VERSION,
+                    "runtimes": {
+                        CLAUDE_RUNTIME_ID: persisted_setup
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let original = fs::read_to_string(&store_path).unwrap();
+            let store = RuntimeSetupStore::with_secret_store(store_path.clone(), secrets);
+
+            let loaded = store
+                .load()
+                .unwrap()
+                .remove(CLAUDE_RUNTIME_ID)
+                .expect("legacy Claude setup should load");
+
+            assert_eq!(
+                fs::read_to_string(&store_path).unwrap(),
+                original,
+                "{name} should not be rewritten during load"
+            );
+            assert_eq!(
+                effective_claude_provider_routing(&loaded),
+                expected_routing,
+                "{name} should preserve effective routing"
+            );
+            assert_eq!(loaded.auth_method.as_deref(), expected_auth);
+            assert_eq!(loaded.auth_ready, auth_ready);
+            assert_eq!(loaded.claude_provider_routing, None);
+        }
     }
 
     #[test]
