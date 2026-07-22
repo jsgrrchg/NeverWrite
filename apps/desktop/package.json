@@ -125,6 +125,7 @@
         "mermaid": {
             "uuid": "14.0.0"
         },
+        "lightningcss": "1.33.0",
         "react": "$react",
         "react-dom": "$react-dom",
         "react-resize-detector": "12.3.0"
