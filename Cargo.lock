@@ -1759,6 +1759,7 @@ version = "0.5.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-legacy",
+ "agent-client-protocol-schema",
  "base64",
  "keyring",
  "neverwrite-ai",

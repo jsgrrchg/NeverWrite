@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 agent-client-protocol = { version = "=1.2.0", features = ["unstable"] }
+agent-client-protocol-schema = { version = "=1.4.0", features = ["unstable_llm_providers"] }
 acp12 = { package = "agent-client-protocol-legacy", path = "../../../vendor/acp12/agent-client-protocol", features = ["unstable"] }
 base64 = "0.22.1"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-async-persistent", "async-io", "crypto-rust"] }
