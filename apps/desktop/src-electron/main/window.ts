@@ -139,12 +139,16 @@ function getSearchFromUrl(rawUrl: unknown) {
     }
 }
 
-function getTitle(label: string, options: Record<string, unknown> | undefined) {
+export function resolveWindowTitle(
+    label: string,
+    options: Record<string, unknown> | undefined,
+    applicationName: string,
+) {
     if (typeof options?.title === "string" && options.title.trim()) {
         return options.title;
     }
-    if (label === "settings") return "Settings - NeverWrite";
-    return "NeverWrite";
+    if (label === "settings") return `Settings - ${applicationName}`;
+    return applicationName;
 }
 
 function getBooleanOption(
@@ -402,7 +406,7 @@ export function createAppWindow(
         : "#1c1c1c";
 
     const window = new BrowserWindow({
-        title: getTitle(label, options),
+        title: resolveWindowTitle(label, options, app.getName()),
         icon: getWindowIconPath(),
         width: getNumberOption(options, "width", DEFAULT_WIDTH),
         height: getNumberOption(options, "height", DEFAULT_HEIGHT),

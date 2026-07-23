@@ -126,6 +126,7 @@ const AUTH_TERMINAL_OUTPUT_CHUNK_SIZE: usize = 4096;
 const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
 const RUNTIME_SETUP_STORE_VERSION: u32 = 2;
 const RUNTIME_SECRET_SERVICE: &str = "NeverWrite AI Provider Secrets";
+const RUNTIME_SECRET_SERVICE_ENV: &str = "NEVERWRITE_AI_SECRET_SERVICE";
 const RUNTIME_SECRET_STORE_MODE_ENV: &str = "NEVERWRITE_AI_SECRET_STORE";
 const LEGACY_GEMINI_RUNTIME_ID: &str = "gemini-acp";
 const LEGACY_GEMINI_SECRET_ENV_KEYS: &[&str] = &["GEMINI_API_KEY", "GOOGLE_API_KEY"];
@@ -397,12 +398,22 @@ trait RuntimeSecretStore: Send + Sync {
 }
 
 #[derive(Debug)]
-struct OsRuntimeSecretStore;
+struct OsRuntimeSecretStore {
+    service_name: String,
+}
 
 impl OsRuntimeSecretStore {
-    fn entry(runtime_id: &str, env_key: &str) -> Result<keyring::Entry, String> {
+    fn from_env() -> Self {
+        Self {
+            service_name: runtime_secret_service_name(
+                std::env::var(RUNTIME_SECRET_SERVICE_ENV).ok().as_deref(),
+            ),
+        }
+    }
+
+    fn entry(&self, runtime_id: &str, env_key: &str) -> Result<keyring::Entry, String> {
         keyring::Entry::new(
-            RUNTIME_SECRET_SERVICE,
+            &self.service_name,
             &runtime_secret_account(runtime_id, env_key),
         )
         .map_err(|error| format!("Secure credential storage is unavailable: {error}"))
@@ -411,7 +422,7 @@ impl OsRuntimeSecretStore {
 
 impl RuntimeSecretStore for OsRuntimeSecretStore {
     fn get_secret(&self, runtime_id: &str, env_key: &str) -> Result<Option<String>, String> {
-        match Self::entry(runtime_id, env_key)?.get_password() {
+        match self.entry(runtime_id, env_key)?.get_password() {
             Ok(value) => Ok(normalize_optional_string(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(format!(
@@ -421,7 +432,7 @@ impl RuntimeSecretStore for OsRuntimeSecretStore {
     }
 
     fn set_secret(&self, runtime_id: &str, env_key: &str, value: &str) -> Result<(), String> {
-        Self::entry(runtime_id, env_key)?
+        self.entry(runtime_id, env_key)?
             .set_password(value)
             .map_err(|error| {
                 format!("Failed to save AI provider secret to secure storage: {error}")
@@ -429,7 +440,7 @@ impl RuntimeSecretStore for OsRuntimeSecretStore {
     }
 
     fn delete_secret(&self, runtime_id: &str, env_key: &str) -> Result<(), String> {
-        match Self::entry(runtime_id, env_key)?.delete_credential() {
+        match self.entry(runtime_id, env_key)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(format!(
                 "Failed to remove AI provider secret from secure storage: {error}"
@@ -498,7 +509,7 @@ impl RuntimeSetupStore {
         match runtime_secret_store_mode_from_env(
             std::env::var(RUNTIME_SECRET_STORE_MODE_ENV).ok().as_deref(),
         ) {
-            RuntimeSecretStoreMode::OsKeyring => Arc::new(OsRuntimeSecretStore),
+            RuntimeSecretStoreMode::OsKeyring => Arc::new(OsRuntimeSecretStore::from_env()),
             // This is intentionally opt-in for CI/smoke tests that run without a
             // desktop keyring service. Production keeps using OS secure storage.
             RuntimeSecretStoreMode::InMemory => Arc::new(InMemoryRuntimeSecretStore::default()),
@@ -663,6 +674,14 @@ fn runtime_secret_store_mode_from_env(value: Option<&str>) -> RuntimeSecretStore
         Some("memory") => RuntimeSecretStoreMode::InMemory,
         _ => RuntimeSecretStoreMode::OsKeyring,
     }
+}
+
+fn runtime_secret_service_name(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(RUNTIME_SECRET_SERVICE)
+        .to_string()
 }
 
 impl Default for RuntimeSetupStore {
@@ -15341,6 +15360,26 @@ mod tests {
         assert_eq!(
             runtime_secret_store_mode_from_env(Some("plaintext")),
             RuntimeSecretStoreMode::OsKeyring
+        );
+    }
+
+    #[test]
+    fn runtime_secret_service_preserves_release_default_and_accepts_dev_namespace() {
+        assert_eq!(
+            runtime_secret_service_name(None),
+            "NeverWrite AI Provider Secrets"
+        );
+        assert_eq!(
+            runtime_secret_service_name(Some("")),
+            "NeverWrite AI Provider Secrets"
+        );
+        assert_eq!(
+            runtime_secret_service_name(Some(" NeverWrite Dev AI Provider Secrets ")),
+            "NeverWrite Dev AI Provider Secrets"
+        );
+        assert_ne!(
+            runtime_secret_service_name(None),
+            runtime_secret_service_name(Some("NeverWrite Dev AI Provider Secrets"))
         );
     }
 
