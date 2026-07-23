@@ -63,6 +63,28 @@ export type AISecretPatch =
     | { action: "clear" }
     | { action: "set"; value: string };
 
+export type AIClaudeProviderRouting =
+    | { type: "default" }
+    | { type: "anthropic"; baseUrl: string }
+    | { type: "bedrock"; baseUrl: string }
+    | {
+          type: "vertex";
+          baseUrl: string;
+          projectId: string;
+          region: string;
+      };
+
+export type AIBackendClaudeProviderRouting =
+    | { type: "default" }
+    | { type: "anthropic"; base_url: string }
+    | { type: "bedrock"; base_url: string }
+    | {
+          type: "vertex";
+          base_url: string;
+          project_id: string;
+          region: string;
+      };
+
 export type AIAuthTerminalStatus = "starting" | "running" | "exited" | "error";
 
 export interface AIAuthTerminalSessionSnapshot {
@@ -98,6 +120,7 @@ export interface AIRuntimeSetupStatus {
     authReady: boolean;
     authMethod?: string;
     authMethods: AIAuthMethod[];
+    claudeProviderRouting?: AIClaudeProviderRouting;
     hasGatewayConfig?: boolean;
     hasGatewayUrl?: boolean;
     onboardingRequired: boolean;
@@ -510,6 +533,7 @@ export interface AIBackendRuntimeSetupStatusPayload {
     auth_ready: boolean;
     auth_method?: string | null;
     auth_methods: AIAuthMethod[];
+    claude_provider_routing?: AIBackendClaudeProviderRouting | null;
     has_gateway_config?: boolean;
     has_gateway_url?: boolean;
     onboarding_required: boolean;

@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 let capturedOptions: Options | undefined;
-let contextUsageResult: (() => Promise<{ rawMaxTokens: number }>) | undefined;
+let contextUsageResult: (() => Promise<{ rawMaxTokens: number; model?: string }>) | undefined;
 vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
   const actual = await vi.importActual<typeof import("@anthropic-ai/claude-agent-sdk")>(
     "@anthropic-ai/claude-agent-sdk",
@@ -625,38 +625,101 @@ describe("createSession options merging", () => {
       return (agent as unknown as { sessions: Record<string, any> }).sessions[sessionId];
     }
 
-    it("seeds contextWindowSize from the SDK's getContextUsage report", async () => {
-      // Aliases like `sonnet` can resolve to an extended-context model with no
-      // "1m" token anywhere in id/displayName/description, so the authoritative
-      // report must win over text inference (issue #596).
+    it("does not call getContextUsage during session creation", async () => {
+      // getContextUsage stalls until the session's first prompt turn has run
+      // (it is not serviced pre-turn), so session/new must never call it —
+      // awaiting it inline is what regressed session/new latency in 0.59.0.
+      const ctxSpy = vi.fn(async () => ({ rawMaxTokens: 967000 }));
+      contextUsageResult = ctxSpy;
+
+      await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+
+      expect(ctxSpy).not.toHaveBeenCalled();
+    });
+
+    it("seeds contextWindowSize from text inference, falling back to the default when it misses", async () => {
+      // The mock model ("claude-sonnet-4-6" / "Claude Sonnet" / "Fast") carries
+      // no "1m" token anywhere, so inference misses and the window falls back to
+      // the default; the authoritative value arrives later via result.modelUsage.
       contextUsageResult = async () => ({ rawMaxTokens: 967000 });
 
       const response = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
 
-      expect(sessionFor(response.sessionId).contextWindowSize).toBe(967000);
+      expect(sessionFor(response.sessionId).contextWindowSize).toBe(200000);
+      expect(sessionFor(response.sessionId).contextWindowAuthoritative).toBe(false);
     });
 
-    it("falls back to the default window when getContextUsage fails and inference misses", async () => {
-      // getContextUsage rejects, and the mock model ("claude-sonnet-4-6" /
-      // "Claude Sonnet" / "Fast") has no "1m" hint.
-      contextUsageResult = () => Promise.reject(new Error("no context usage mocked"));
-      // The rejection is deliberate — capture the agent's warning instead of
-      // letting it hit the console.
-      const errorSpy = vi.fn();
-      (agent as any).logger = { log: () => {}, error: errorSpy };
+    it("session/load seeds the window from the resumed session's getContextUsage report", async () => {
+      // Resumed sessions get getContextUsage serviced pre-turn (issue #845 uses
+      // it to restore the live model), and the same response carries the
+      // authoritative window (`rawMaxTokens`). After a process restart the
+      // module cache is empty and text inference misses natively-1M aliases, so
+      // discarding this in-hand value would replay the issue-#596 flicker on
+      // every reload — the flagship scenario. 888_000 can only come from the
+      // report: inference on the mock model yields null → 200_000 default.
+      contextUsageResult = async () => ({ rawMaxTokens: 888_000, model: "claude-sonnet-4-6" });
 
-      const response = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      await (
+        agent as unknown as {
+          createSession: (params: object, opts: { resume?: string }) => Promise<unknown>;
+        }
+      ).createSession({ cwd: process.cwd(), mcpServers: [] }, { resume: "resumed-window-probe" });
 
-      expect(sessionFor(response.sessionId).contextWindowSize).toBe(200000);
-      expect(errorSpy).toHaveBeenCalled();
+      const session = sessionFor("resumed-window-probe");
+      expect(session.contextWindowSize).toBe(888_000);
+      expect(session.contextWindowAuthoritative).toBe(true);
     });
 
-    it("ignores a nonsensical (non-positive) reported window", async () => {
-      contextUsageResult = async () => ({ rawMaxTokens: 0 });
+    it("scopes providerCacheKey by per-session env routing", async () => {
+      // The context-window cache key must distinguish backends exactly as the
+      // CLI will see them: a session routed to a proxy via _meta env shares a
+      // model id spelling with default-routed sessions but not a context lane,
+      // so it must land in its own cache bucket (and two default-routed
+      // sessions must share one).
+      const r1 = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      const r2 = await agent.newSession({
+        cwd: process.cwd(),
+        mcpServers: [],
+        _meta: {
+          claudeCode: {
+            options: { env: { ANTHROPIC_BASE_URL: "https://window-probe-proxy.example" } },
+          },
+        },
+      });
+      const r3 = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
 
-      const response = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      expect(sessionFor(r2.sessionId).providerCacheKey).not.toBe(
+        sessionFor(r1.sessionId).providerCacheKey,
+      );
+      expect(sessionFor(r3.sessionId).providerCacheKey).toBe(
+        sessionFor(r1.sessionId).providerCacheKey,
+      );
+    });
 
-      expect(sessionFor(response.sessionId).contextWindowSize).toBe(200000);
+    it("scopes providerCacheKey by provider headers: same endpoint, different headers → different buckets", async () => {
+      // Two providers/set configs sharing apiType+baseUrl but differing in
+      // headers (e.g. an `anthropic-beta: context-1m-…` routing header) can
+      // serve different context lanes for the same model id, so they must not
+      // share a window-cache bucket.
+      await agent.unstable_setProvider({
+        providerId: "main",
+        apiType: "anthropic",
+        baseUrl: "https://gw.example",
+        headers: {},
+      });
+      const plain = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+
+      await agent.unstable_setProvider({
+        providerId: "main",
+        apiType: "anthropic",
+        baseUrl: "https://gw.example",
+        headers: { "anthropic-beta": "context-1m-2025-08-07" },
+      });
+      const beta = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+
+      expect(sessionFor(beta.sessionId).providerCacheKey).not.toBe(
+        sessionFor(plain.sessionId).providerCacheKey,
+      );
     });
   });
 

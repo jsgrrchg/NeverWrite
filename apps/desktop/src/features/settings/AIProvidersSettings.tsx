@@ -34,6 +34,7 @@ import {
     type SettingsSearchQuery,
 } from "./settingsSearch";
 import type {
+    AIClaudeProviderRouting,
     AIEnvironmentDiagnostics,
     AIRuntimeDescriptor,
     AIRuntimeSetupStatus,
@@ -45,6 +46,23 @@ import type {
 const OPENCODE_RUNTIME_ID = "opencode-acp";
 const OPENCODE_AUTH_METHOD_ID = "opencode-login";
 const GROK_RUNTIME_ID = "grok-acp";
+const CLAUDE_ACP_RUNTIME_ID = "claude-acp";
+const GOOGLE_VERTEX_METHOD_ID = "google-vertex";
+const GOOGLE_VERTEX_METHOD = {
+    id: GOOGLE_VERTEX_METHOD_ID,
+    name: "Google Vertex AI",
+    description: "Use Claude through Google Vertex AI.",
+};
+
+function isVertexConfigured(status: AIRuntimeSetupStatus | null): boolean {
+    return status?.claudeProviderRouting?.type === "vertex";
+}
+
+function getVisibleAuthMethods(status: AIRuntimeSetupStatus) {
+    return status.runtimeId === CLAUDE_ACP_RUNTIME_ID
+        ? [...status.authMethods, GOOGLE_VERTEX_METHOD]
+        : status.authMethods;
+}
 
 function getErrorMessage(error: unknown, fallback: string): string {
     if (error instanceof Error && error.message.trim()) return error.message;
@@ -73,6 +91,7 @@ function isBedrockGatewayMethod(id?: string) {
 function getMethodDisplayName(
     status: AIRuntimeSetupStatus | null,
 ): string | null {
+    if (isVertexConfigured(status)) return GOOGLE_VERTEX_METHOD.name;
     if (!status?.authMethod) return null;
     return (
         status.authMethods.find((m) => m.id === status.authMethod)?.name ?? null
@@ -100,6 +119,8 @@ function getShortMethodDesc(id: string): string {
             return "Custom endpoint";
         case "gateway-bedrock":
             return "Bedrock gateway";
+        case GOOGLE_VERTEX_METHOD_ID:
+            return "Google Cloud ADC";
         case "xai-api-key":
             return "xAI API key";
         case "kilo-api-key":
@@ -135,6 +156,8 @@ function getAuthHelpText(id: string): string {
             return "Route requests through a custom gateway endpoint. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.";
         case "gateway-bedrock":
             return "Route Claude requests through a custom Bedrock-compatible gateway endpoint. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.";
+        case GOOGLE_VERTEX_METHOD_ID:
+            return "Authentication is provided by Google Application Default Credentials.";
         case "xai-api-key":
             return `Store an xAI API key locally for ${APP_BRAND_NAME} only.`;
         case "kilo-api-key":
@@ -158,6 +181,8 @@ function getActionLabel(
     status: AIRuntimeSetupStatus,
 ): string {
     if (!methodId) return "Connect";
+    if (methodId === GOOGLE_VERTEX_METHOD_ID)
+        return "Save Vertex configuration";
     if (methodId === "chatgpt") return "Continue with ChatGPT";
     if (isClaudeTerminalAuthMethodId(methodId)) return "Open sign-in terminal";
     if (methodId === "grok-login") return "Open sign-in terminal";
@@ -183,6 +208,7 @@ function getLogoutErrorFallback(runtimeId: string): string {
 }
 
 function getDefaultMethodId(status: AIRuntimeSetupStatus): string {
+    if (isVertexConfigured(status)) return GOOGLE_VERTEX_METHOD_ID;
     if (
         status.authMethod &&
         status.authMethods.some((m) => m.id === status.authMethod)
@@ -214,6 +240,7 @@ interface ProviderAuthInput {
     runtimeId: string;
     methodId: string;
     customBinaryPath?: string;
+    claudeProviderRouting?: AIClaudeProviderRouting;
     codexApiKey: AISecretPatch;
     openaiApiKey: AISecretPatch;
     xaiApiKey: AISecretPatch;
@@ -275,6 +302,7 @@ function getPendingCustomBinaryPath(
 function hasPendingSetupUpdate(input: ProviderAuthInput): boolean {
     return (
         input.customBinaryPath !== undefined ||
+        input.claudeProviderRouting !== undefined ||
         input.codexApiKey.action !== "unchanged" ||
         input.openaiApiKey.action !== "unchanged" ||
         input.xaiApiKey.action !== "unchanged" ||
@@ -315,10 +343,26 @@ function getProviderSearchValues(
         setupStatus?.binaryPath,
         setupStatus?.binarySource,
         setupStatus?.authMethod,
-        setupStatus?.authReady ? "Connected" : "Not configured",
+        isVertexConfigured(setupStatus)
+            ? "Configured"
+            : setupStatus?.authReady
+              ? "Connected"
+              : "Not configured",
         setupStatus?.binaryReady ? "Binary ready" : "Binary missing",
         setupStatus?.hasGatewayConfig ? "Custom gateway" : undefined,
         setupStatus?.hasGatewayUrl ? "Gateway URL" : undefined,
+        setupStatus?.claudeProviderRouting?.type === "vertex"
+            ? "Google Vertex AI"
+            : undefined,
+        setupStatus?.claudeProviderRouting?.type === "vertex"
+            ? setupStatus.claudeProviderRouting.baseUrl
+            : undefined,
+        setupStatus?.claudeProviderRouting?.type === "vertex"
+            ? setupStatus.claudeProviderRouting.projectId
+            : undefined,
+        setupStatus?.claudeProviderRouting?.type === "vertex"
+            ? setupStatus.claudeProviderRouting.region
+            : undefined,
         supportsRuntimeBinaryOverride(provider.id)
             ? "Runtime binary"
             : undefined,
@@ -340,15 +384,17 @@ function getProviderSearchValues(
             : undefined,
         getMethodDisplayName(setupStatus),
         error,
-        ...(setupStatus?.authMethods.flatMap((method) => [
-            method.id,
-            method.name,
-            method.description,
-            getShortMethodDesc(method.id),
-            getAuthHelpText(method.id),
-            getApiKeyPlaceholder(method.id),
-            getActionLabel(method.id, setupStatus),
-        ]) ?? []),
+        ...(setupStatus
+            ? getVisibleAuthMethods(setupStatus).flatMap((method) => [
+                  method.id,
+                  method.name,
+                  method.description,
+                  getShortMethodDesc(method.id),
+                  getAuthHelpText(method.id),
+                  getApiKeyPlaceholder(method.id),
+                  getActionLabel(method.id, setupStatus),
+              ])
+            : []),
     ];
 }
 
@@ -528,6 +574,7 @@ function ProviderExpandedPanel({
     saving,
     onAuth,
     onClearGateway,
+    onClearVertex,
     onLogout,
 }: {
     setupStatus: AIRuntimeSetupStatus;
@@ -535,6 +582,7 @@ function ProviderExpandedPanel({
     saving: boolean;
     onAuth: (input: ProviderAuthInput) => void;
     onClearGateway: () => void;
+    onClearVertex: () => void;
     onLogout: () => void;
 }) {
     const [selectedMethodId, setSelectedMethodId] = useState(() =>
@@ -544,12 +592,26 @@ function ProviderExpandedPanel({
     const [gatewayUrl, setGatewayUrl] = useState("");
     const [gatewayHeaders, setGatewayHeaders] = useState("");
     const [gatewayToken, setGatewayToken] = useState("");
+    const vertexRouting =
+        setupStatus.claudeProviderRouting?.type === "vertex"
+            ? setupStatus.claudeProviderRouting
+            : null;
+    const [vertexEndpoint, setVertexEndpoint] = useState(
+        vertexRouting?.baseUrl ?? "",
+    );
+    const [vertexProjectId, setVertexProjectId] = useState(
+        vertexRouting?.projectId ?? "",
+    );
+    const [vertexRegion, setVertexRegion] = useState(
+        vertexRouting?.region ?? "",
+    );
     const [customBinaryPath, setCustomBinaryPath] = useState(() =>
         getInitialCustomBinaryPath(setupStatus),
     );
 
+    const visibleAuthMethods = getVisibleAuthMethods(setupStatus);
     const selectedMethod =
-        setupStatus.authMethods.find((m) => m.id === selectedMethodId) ?? null;
+        visibleAuthMethods.find((m) => m.id === selectedMethodId) ?? null;
     const runtimeBinaryOverrideSupported = supportsRuntimeBinaryOverride(
         setupStatus.runtimeId,
     );
@@ -558,6 +620,7 @@ function ProviderExpandedPanel({
         : undefined;
     const apiKeySelected = isApiKeyMethod(selectedMethodId);
     const gatewaySelected = isGatewayMethod(selectedMethodId);
+    const vertexSelected = selectedMethodId === GOOGLE_VERTEX_METHOD_ID;
     const bedrockGatewaySelected = isBedrockGatewayMethod(selectedMethodId);
     const isOpenAi = selectedMethodId === "openai-api-key";
     const isCodex = selectedMethodId === "codex-api-key";
@@ -567,19 +630,43 @@ function ProviderExpandedPanel({
     const gatewayUrlError = gatewaySelected
         ? getClaudeGatewayUrlValidationMessage(gatewayUrl)
         : null;
+    const vertexEndpointError = vertexSelected
+        ? getClaudeGatewayUrlValidationMessage(vertexEndpoint)
+        : null;
+    const vertexProjectIdError =
+        vertexSelected && !vertexProjectId.trim()
+            ? "Project ID is required."
+            : null;
+    const vertexRegionError =
+        vertexSelected && !vertexRegion.trim() ? "Region is required." : null;
 
     const canSubmit =
         !saving &&
         selectedMethod != null &&
         (!apiKeySelected || apiKey.trim() !== "") &&
         (!gatewaySelected ||
-            (gatewayUrl.trim() !== "" && gatewayUrlError == null));
+            (gatewayUrl.trim() !== "" && gatewayUrlError == null)) &&
+        (!vertexSelected ||
+            (vertexEndpoint.trim() !== "" &&
+                vertexEndpointError == null &&
+                vertexProjectIdError == null &&
+                vertexRegionError == null));
 
     const handleSubmit = () => {
         onAuth({
             runtimeId: setupStatus.runtimeId,
             methodId: selectedMethodId,
             customBinaryPath: pendingCustomBinaryPath,
+            claudeProviderRouting: vertexSelected
+                ? {
+                      type: "vertex",
+                      baseUrl: vertexEndpoint.trim(),
+                      projectId: vertexProjectId.trim(),
+                      region: vertexRegion.trim(),
+                  }
+                : isVertexConfigured(setupStatus) && !gatewaySelected
+                  ? { type: "default" }
+                  : undefined,
             openaiApiKey: isOpenAi
                 ? setSecretPatch(apiKey)
                 : unchangedSecretPatch,
@@ -601,7 +688,7 @@ function ProviderExpandedPanel({
                     ? gatewayUrl || undefined
                     : undefined
                 : undefined,
-            anthropicCustomHeaders: gatewaySelected
+            anthropicCustomHeaders: gatewaySelected || vertexSelected
                 ? setOptionalSecretPatch(gatewayHeaders)
                 : unchangedSecretPatch,
             anthropicAuthToken: gatewaySelected && !bedrockGatewaySelected
@@ -620,9 +707,9 @@ function ProviderExpandedPanel({
             }}
         >
             {/* Auth method selector */}
-            {setupStatus.authMethods.length > 0 && (
+            {visibleAuthMethods.length > 0 && (
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {setupStatus.authMethods.map((method) => {
+                    {visibleAuthMethods.map((method) => {
                         const selected = method.id === selectedMethodId;
                         return (
                             <button
@@ -810,8 +897,202 @@ function ProviderExpandedPanel({
                 </>
             )}
 
+            {vertexSelected && (
+                <>
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                        }}
+                    >
+                        <label
+                            htmlFor={`${setupStatus.runtimeId}-vertex-endpoint`}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Vertex endpoint
+                        </label>
+                        <input
+                            id={`${setupStatus.runtimeId}-vertex-endpoint`}
+                            type="url"
+                            value={vertexEndpoint}
+                            onChange={(event) =>
+                                setVertexEndpoint(event.target.value)
+                            }
+                            placeholder="https://vertex.example.com"
+                            style={inputStyle}
+                        />
+                    </div>
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                        }}
+                    >
+                        <label
+                            htmlFor={`${setupStatus.runtimeId}-vertex-project-id`}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Project ID
+                        </label>
+                        <input
+                            id={`${setupStatus.runtimeId}-vertex-project-id`}
+                            type="text"
+                            value={vertexProjectId}
+                            onChange={(event) =>
+                                setVertexProjectId(event.target.value)
+                            }
+                            placeholder="my-google-cloud-project"
+                            style={inputStyle}
+                        />
+                    </div>
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                        }}
+                    >
+                        <label
+                            htmlFor={`${setupStatus.runtimeId}-vertex-region`}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Region
+                        </label>
+                        <input
+                            id={`${setupStatus.runtimeId}-vertex-region`}
+                            type="text"
+                            value={vertexRegion}
+                            onChange={(event) =>
+                                setVertexRegion(event.target.value)
+                            }
+                            placeholder="us-east5"
+                            style={inputStyle}
+                        />
+                    </div>
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                        }}
+                    >
+                        <label
+                            htmlFor={`${setupStatus.runtimeId}-vertex-headers`}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Custom headers (optional)
+                        </label>
+                        <textarea
+                            id={`${setupStatus.runtimeId}-vertex-headers`}
+                            value={gatewayHeaders}
+                            onChange={(event) =>
+                                setGatewayHeaders(event.target.value)
+                            }
+                            placeholder={
+                                "Headers, one per line\nx-api-key: secret"
+                            }
+                            style={{
+                                ...inputStyle,
+                                minHeight: 60,
+                                resize: "vertical",
+                            }}
+                        />
+                    </div>
+                    <div
+                        style={{
+                            fontSize: 11,
+                            color: "var(--text-secondary)",
+                        }}
+                    >
+                        Authentication is provided by Google Application Default
+                        Credentials.
+                    </div>
+                    <div
+                        style={{
+                            fontSize: 11,
+                            color: "var(--text-secondary)",
+                        }}
+                    >
+                        Changes apply to new or reopened sessions. Active chats
+                        keep their current provider configuration.
+                    </div>
+                    {(vertexEndpointError ||
+                        vertexProjectIdError ||
+                        vertexRegionError) && (
+                        <div
+                            style={{
+                                padding: "10px 12px",
+                                borderRadius: 6,
+                                fontSize: 12,
+                                border: "1px solid #7f1d1d",
+                                backgroundColor:
+                                    "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
+                                color: "#fecaca",
+                            }}
+                        >
+                            {vertexEndpointError ??
+                                vertexProjectIdError ??
+                                vertexRegionError}
+                        </div>
+                    )}
+                    {vertexRouting && (
+                        <div
+                            style={{
+                                display: "flex",
+                                justifyContent: "flex-start",
+                            }}
+                        >
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setVertexEndpoint("");
+                                    setVertexProjectId("");
+                                    setVertexRegion("");
+                                    setSelectedMethodId(
+                                        setupStatus.authMethods[0]?.id ??
+                                            "anthropic-api-key",
+                                    );
+                                    onClearVertex();
+                                }}
+                                disabled={saving}
+                                style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 6,
+                                    fontSize: 11,
+                                    color: "var(--text-secondary)",
+                                    border: "1px solid var(--border)",
+                                    backgroundColor: "transparent",
+                                    cursor: saving ? "not-allowed" : "pointer",
+                                    opacity: saving ? 0.5 : 1,
+                                }}
+                            >
+                                Clear Vertex settings
+                            </button>
+                        </div>
+                    )}
+                </>
+            )}
+
             {/* Info box */}
-            {selectedMethod && (
+            {selectedMethod && !vertexSelected && (
                 <div
                     style={{
                         display: "flex",
@@ -903,7 +1184,9 @@ function ProviderExpandedPanel({
                     }}
                 >
                     {saving
-                        ? "Connecting…"
+                        ? vertexSelected
+                            ? "Saving…"
+                            : "Connecting…"
                         : getActionLabel(selectedMethodId, setupStatus)}
                 </button>
             </div>
@@ -1131,6 +1414,7 @@ export function AIProvidersSettings({
                     const preflight = await aiUpdateSetup({
                         runtimeId: input.runtimeId,
                         customBinaryPath: input.customBinaryPath,
+                        claudeProviderRouting: input.claudeProviderRouting,
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
                         xaiApiKey: input.xaiApiKey,
@@ -1147,6 +1431,15 @@ export function AIProvidersSettings({
                         ...prev,
                         [input.runtimeId]: preflight,
                     }));
+                }
+
+                if (input.methodId === GOOGLE_VERTEX_METHOD_ID) {
+                    setErrorMap((prev) => {
+                        const next = { ...prev };
+                        delete next[input.runtimeId];
+                        return next;
+                    });
+                    return;
                 }
 
                 if (terminalAuth) {
@@ -1254,6 +1547,45 @@ export function AIProvidersSettings({
             }
         },
         [refreshRuntime],
+    );
+
+    const handleClearVertex = useCallback(
+        async (runtimeId: string) => {
+            setSavingId(runtimeId);
+            try {
+                const status = await aiUpdateSetup({
+                    runtimeId,
+                    claudeProviderRouting: { type: "default" },
+                    codexApiKey: unchangedSecretPatch,
+                    openaiApiKey: unchangedSecretPatch,
+                    xaiApiKey: unchangedSecretPatch,
+                    gatewayBaseUrl: undefined,
+                    gatewayHeaders: unchangedSecretPatch,
+                    anthropicBaseUrl: undefined,
+                    anthropicBedrockBaseUrl: undefined,
+                    anthropicCustomHeaders: unchangedSecretPatch,
+                    anthropicAuthToken: unchangedSecretPatch,
+                    anthropicApiKey: unchangedSecretPatch,
+                });
+                setSetupStatusMap((prev) => ({ ...prev, [runtimeId]: status }));
+                setErrorMap((prev) => {
+                    const next = { ...prev };
+                    delete next[runtimeId];
+                    return next;
+                });
+            } catch (error) {
+                setErrorMap((prev) => ({
+                    ...prev,
+                    [runtimeId]: getErrorMessage(
+                        error,
+                        "Failed to clear Vertex settings.",
+                    ),
+                }));
+            } finally {
+                setSavingId(null);
+            }
+        },
+        [],
     );
 
     /* ── Derived data ── */
@@ -1509,7 +1841,11 @@ export function AIProvidersSettings({
                                     !isTerminalRuntime &&
                                     expandedId === provider.id;
                                 const isSaving = savingId === provider.id;
+                                const vertexConfigured = isVertexConfigured(
+                                    provider.setupStatus,
+                                );
                                 const connected =
+                                    vertexConfigured ||
                                     provider.setupStatus?.authReady === true;
                                 const methodName = getMethodDisplayName(
                                     provider.setupStatus,
@@ -1662,7 +1998,9 @@ export function AIProvidersSettings({
                                                 >
                                                     {isTerminalRuntime
                                                         ? "Ready"
-                                                        : connected
+                                                        : vertexConfigured
+                                                          ? "Configured"
+                                                          : connected
                                                           ? "Connected"
                                                           : "Not configured"}
                                                 </div>
@@ -1753,6 +2091,11 @@ export function AIProvidersSettings({
                                                         }}
                                                         onClearGateway={() => {
                                                             void handleClearGateway(
+                                                                provider.id,
+                                                            );
+                                                        }}
+                                                        onClearVertex={() => {
+                                                            void handleClearVertex(
                                                                 provider.id,
                                                             );
                                                         }}

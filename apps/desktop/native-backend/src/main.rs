@@ -9,6 +9,7 @@ use std::sync::{
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod acp_providers;
 mod ai;
 mod devtools;
 mod spellcheck;

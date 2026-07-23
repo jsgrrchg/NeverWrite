@@ -46,10 +46,35 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       # Setup .npmrc file to publish to npm
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "lts/*"
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
       - run: npm run build
       - run: npm publish
+
+  trigger-registry-update:
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    environment: release
+    permissions: {}
+    steps:
+      - name: Generate token scoped to the registry repo
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        id: registry-token
+        with:
+          app-id: ${{ secrets.REGISTRY_UPDATER_APP_ID }}
+          private-key: ${{ secrets.REGISTRY_UPDATER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: registry
+
+      - name: Dispatch registry version update
+        env:
+          GH_TOKEN: ${{ steps.registry-token.outputs.token }}
+        run: |
+          gh workflow run update-versions.yml \
+            --repo ${{ github.repository_owner }}/registry \
+            --ref main \
+            -f apply=true \
+            -f agents=claude-acp
