@@ -24,6 +24,7 @@ import {
     resolvePreviewFilePath,
 } from "./vaultBackend";
 import { createNativeBackendSidecar } from "./nativeBackend";
+import { installProfileIntegrations } from "./profileIntegrations";
 import { getSystemUsername } from "./systemUser";
 import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
@@ -203,21 +204,33 @@ function registerAppLogHandlers() {
     });
 }
 
-function registerInvokeHandler() {
+interface IpcRegistrationOptions {
+    enableProductionDeepLinks: boolean;
+    enableWebClipperServer: boolean;
+    runtimeSecretServiceName: string;
+}
+
+function registerInvokeHandler(options: IpcRegistrationOptions) {
     const emitRuntimeEvent = (eventName: string, payload: unknown) => {
         for (const window of BrowserWindow.getAllWindows()) {
             if (window.isDestroyed()) continue;
             window.webContents.send(ELECTRON_IPC.event, { eventName, payload });
         }
     };
-    const nativeBackend = createNativeBackendSidecar(emitRuntimeEvent);
+    const nativeBackend = createNativeBackendSidecar(emitRuntimeEvent, {
+        runtimeSecretServiceName: options.runtimeSecretServiceName,
+    });
     const backend = new ElectronVaultBackend(
         emitRuntimeEvent,
         new ElectronAppUpdater(),
         nativeBackend,
     );
-    installWebClipperRuntime(backend, emitRuntimeEvent);
-    installDeepLinkRuntime(emitRuntimeEvent);
+    installProfileIntegrations(options, {
+        installProductionDeepLinks: () =>
+            installDeepLinkRuntime(emitRuntimeEvent),
+        installWebClipperServer: () =>
+            installWebClipperRuntime(backend, emitRuntimeEvent),
+    });
 
     ipcMain.handle(ELECTRON_IPC.invoke, async (_event, rawEnvelope) => {
         const envelope = asRecord(rawEnvelope) as Partial<IpcInvokeEnvelope>;
@@ -404,8 +417,8 @@ export function registerPreviewProtocolHandler() {
     };
 }
 
-export function registerIpcHandlers() {
-    registerInvokeHandler();
+export function registerIpcHandlers(options: IpcRegistrationOptions) {
+    registerInvokeHandler(options);
     registerDialogHandlers();
     registerOpenerHandlers();
     registerWindowHandlers();

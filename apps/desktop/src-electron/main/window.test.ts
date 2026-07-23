@@ -4,8 +4,33 @@ import {
     getFrameNavigationAction,
     resolveRendererDevUrl,
     resolveWindowIconPath,
+    resolveWindowTitle,
     shouldOpenInSystemBrowser,
 } from "./window";
+
+describe("resolveWindowTitle", () => {
+    it("uses the configured application name for release and development", () => {
+        expect(resolveWindowTitle("main", undefined, "NeverWrite")).toBe(
+            "NeverWrite",
+        );
+        expect(resolveWindowTitle("main", undefined, "NeverWrite Dev")).toBe(
+            "NeverWrite Dev",
+        );
+        expect(
+            resolveWindowTitle("settings", undefined, "NeverWrite Dev"),
+        ).toBe("Settings - NeverWrite Dev");
+    });
+
+    it("preserves an explicit window title", () => {
+        expect(
+            resolveWindowTitle(
+                "note",
+                { title: "Roadmap - NeverWrite" },
+                "NeverWrite Dev",
+            ),
+        ).toBe("Roadmap - NeverWrite");
+    });
+});
 
 describe("resolveRendererDevUrl", () => {
     it("returns the dev URL for unpackaged builds", () => {

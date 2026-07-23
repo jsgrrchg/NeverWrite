@@ -36,6 +36,8 @@ Electron's app data directory is usually:
 - macOS: `~/Library/Application Support/NeverWrite/`
 - Linux: `~/.config/NeverWrite/` for Electron-managed data such as logs.
 
+Unpackaged desktop development uses a separate `NeverWrite Dev` profile in the equivalent platform app-data location. The installed release keeps the paths above unchanged. Opening the same vault in both variants still shares the vault-owned `.neverwrite` and `.neverwrite-cache` directories described below.
+
 The native backend normally receives Electron's `userData` path through
 `NEVERWRITE_APP_DATA_DIR`, so its persisted app state is stored under the same
 app data directory when launched from the desktop app. If the native backend is
