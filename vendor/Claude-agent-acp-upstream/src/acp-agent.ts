@@ -192,6 +192,66 @@ const TURN_NO_RESULT_MESSAGE =
   "The turn ended without a result: the agent went idle while this prompt was still in flight " +
   "(e.g. the model stream dropped mid-turn). Any partial output may be incomplete; please retry.";
 
+/** Custom (extension) request method a client uses to steer the turn that is
+ *  currently running: the message is injected into the in-flight turn rather
+ *  than queued as a separate `session/prompt`. Named `_session/steering` per the
+ *  agreed ACP steering wire protocol; advertised to clients via the top-level
+ *  `InitializeResponse._meta.steering.supported`. */
+const STEER_METHOD = "_session/steering";
+
+/** How urgently the SDK delivers a steered message relative to the running
+ *  turn — an internal Claude implementation detail, not part of the wire
+ *  contract. `now` pre-empts the current generation and handles the message
+ *  immediately (interrupting a single-shot response, or slotting in between a
+ *  multi-step turn's tool calls). Maps to `SDKUserMessage.priority`; injected
+ *  steering always uses `now` so the running turn adapts as soon as possible. */
+const STEER_PRIORITY = "now" as const;
+
+/** Params of a {@link STEER_METHOD} request. Shaped like the relevant subset of
+ *  a `PromptRequest` so the same `promptToClaude` conversion applies. Delivery
+ *  priority is deliberately NOT exposed here — it's an internal detail the agent
+ *  chooses (see {@link STEER_PRIORITY}). */
+export type SteerRequest = {
+  sessionId: string;
+  prompt: PromptRequest["prompt"];
+};
+
+/** Where a steering message was accepted, per the wire protocol's two
+ *  successful outcomes:
+ *   - `injected`: a turn was still running and the message was applied to it;
+ *   - `startedNewTurn`: the turn we meant to steer had already finished (an
+ *     unavoidable race), so the message began a fresh turn instead of being
+ *     dropped.
+ *  Both are success results — never a JSON-RPC error — and tell the client
+ *  where the message landed. */
+type SteerOutcome = "injected" | "startedNewTurn";
+
+/** Result of a {@link STEER_METHOD} request: the single required `outcome`
+ *  field the client reads to learn where its steering message was accepted. */
+export type SteerResponse = {
+  outcome: SteerOutcome;
+};
+
+/** Validate raw JSON-RPC params into a {@link SteerRequest}. Kept minimal — the
+ *  content blocks are handed to `promptToClaude`, which tolerates unknown block
+ *  types — but `sessionId` and a non-empty `prompt` array are required. */
+function parseSteerRequest(params: unknown): SteerRequest {
+  if (!params || typeof params !== "object") {
+    throw RequestError.invalidParams(undefined, "steer params must be an object");
+  }
+  const { sessionId, prompt } = params as Record<string, unknown>;
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
+    throw RequestError.invalidParams(undefined, "steer params require a non-empty sessionId");
+  }
+  if (!Array.isArray(prompt) || prompt.length === 0) {
+    throw RequestError.invalidParams(undefined, "steer params require a non-empty prompt array");
+  }
+  return {
+    sessionId,
+    prompt: prompt as PromptRequest["prompt"],
+  };
+}
+
 /** Internal model-selection state. Mirrors the shape the ACP SDK exposed as
  *  `SessionModelState` before model selection moved entirely into
  *  `SessionConfigOption` (category "model"). Retained internally to track the
@@ -744,6 +804,15 @@ export type ToolUpdateMeta = {
        Agent/Task call that spawned the subagent. Mirrors the SDK's
        `parent_tool_use_id` on streamed subagent messages. */
     parentToolUseId?: string;
+    /* On a "failed" tool_call_update: why the tool never actually ran, so a
+       client can render the denial/cancellation distinctly from a real tool
+       failure. From the SDK's `tool_result_meta` non_execution_kind:
+       "user-rejected", "permission-rule", "interrupted", "cancelled", …
+       (open set). Absent when the tool executed — including real failures. */
+    nonExecutionKind?: string;
+    /* Free-text the user supplied when rejecting the tool call, when the
+       harness collected any. Only ever present alongside nonExecutionKind. */
+    userFeedback?: string;
   };
   /* Terminal metadata for Bash tool execution, matching codex-acp's _meta protocol. */
   terminal_info?: {
@@ -1368,6 +1437,15 @@ export class ClaudeAcpAgent {
         ...terminalAuthMethods,
         ...(supportsGatewayAuth ? [gatewayAuthMethod, gatewayBedrockAuthMethod] : []),
       ],
+      // Top-level `_meta` (sibling of `agentCapabilities`), per the ACP steering
+      // wire protocol: advertises the `_session/steering` extension request so
+      // clients know they may inject a follow-up into the running turn (see
+      // STEER_METHOD) instead of queuing it as a separate `session/prompt`.
+      _meta: {
+        steering: {
+          supported: true,
+        },
+      },
     };
   }
 
@@ -1663,6 +1741,71 @@ export class ClaudeAcpAgent {
     session.input.push(userMessage);
     this.ensureConsumer(session, params.sessionId);
     return response;
+  }
+
+  /** Steer the session per the ACP steering wire protocol: apply a follow-up
+   *  message to the turn that is currently running, or — if that turn already
+   *  finished — start a fresh turn with it. Never drops the message and never
+   *  returns a JSON-RPC error for the "arrived too late" race; both paths are
+   *  success outcomes (see {@link SteerOutcome}).
+   *
+   *  When a turn is in flight this injects (returns `injected`): unlike
+   *  `prompt()`, it does NOT create a Turn or enqueue on `turnQueue`; it pushes
+   *  an `SDKUserMessage` onto the same streaming input, which the SDK routes
+   *  into the in-flight turn. The injected message's echo carries a uuid that
+   *  matches no queued turn, so the consumer drops it as an unrelated replay
+   *  without promoting/settling anything. It is delivered at {@link
+   *  STEER_PRIORITY} (`now`) so it pre-empts the current generation (interrupting
+   *  a single-shot response, or slotting in between a multi-step turn's tool
+   *  calls). The steered message's own output streams via `session/update`, not
+   *  this response.
+   *
+   *  When the session is idle (no unsettled turn — the turn we meant to steer
+   *  raced ahead and finished), this starts a normal new turn with the message
+   *  and returns `startedNewTurn`. That turn is fire-and-forget from the steer
+   *  request's view: its `PromptResponse` and output flow through the usual
+   *  `prompt()`/`session/update` path, so we return the outcome immediately
+   *  rather than awaiting turn completion. */
+  async steer(params: SteerRequest): Promise<SteerResponse> {
+    const sessionId = params.sessionId;
+    const prompt = params.prompt;
+
+    const session = this.sessions[sessionId];
+    if (!session) {
+      throw new Error("Session not found");
+    }
+    if (session.queryClosed) {
+      throw RequestError.internalError(undefined, SESSION_ENDED_MESSAGE);
+    }
+    // "A turn is running" = the queue holds an unsettled turn. This covers both
+    // the activated turn and one just submitted but not yet echoed/activated,
+    // which is exactly the window in which steering is meaningful.
+    const turnInFlight = (session.turnQueue ?? []).some((t) => !t.settled);
+    const promptRequest: PromptRequest = {
+      sessionId: sessionId,
+      prompt: prompt,
+    };
+
+    if (!turnInFlight) {
+      // Race: the turn we meant to steer already finished. Per the protocol the
+      // message must not be dropped nor surfaced as an error — start a fresh
+      // turn with it. Don't await: the new turn streams via session/update and
+      // its PromptResponse is consumed by the normal prompt() path; we only owe
+      // the client the outcome. `.catch` keeps the detached promise from
+      // becoming an unhandled rejection.
+      this.prompt(promptRequest).catch((error) => {
+        this.logger.error(`Session ${sessionId}: steered new turn failed: ${error}`);
+      });
+      return { outcome: "startedNewTurn" };
+    }
+
+    const userMessage = promptToClaude(promptRequest);
+    userMessage.uuid = randomUUID();
+    // Deliver into the running turn rather than queuing behind it as a fresh
+    // prompt would.
+    userMessage.priority = STEER_PRIORITY;
+    session.input.push(userMessage);
+    return { outcome: "injected" };
   }
 
   /** Lazily start the per-session consumer that drains the SDK query stream for
@@ -2552,9 +2695,9 @@ export class ClaudeAcpAgent {
                 // Push the full slash-command list after a mid-session change
                 // (e.g. skills discovered dynamically as the agent works in a
                 // subdirectory). The client should REPLACE its cached command
-                // list with this payload: supportedCommands() is captured once
-                // at initialize and never reflects mid-session changes, so we
-                // forward message.commands directly rather than re-querying.
+                // list with this payload. Forward message.commands directly —
+                // it's authoritative, and re-querying supportedCommands()
+                // would just return the same list with an extra round-trip.
                 await sendUpdate({
                   sessionId: message.session_id,
                   update: {
@@ -3548,6 +3691,12 @@ export class ClaudeAcpAgent {
                 emittedToolCalls: session.emittedToolCalls,
                 messageId: messageIdForGrouping(message),
                 toolUseResult: message.type === "user" ? message.tool_use_result : undefined,
+                // On the wire since CLI 2.1.216 but not in SDKUserMessage's
+                // type, hence the cast. Validated by parseToolResultMeta.
+                toolResultMeta:
+                  message.type === "user"
+                    ? (message as { tool_result_meta?: unknown }).tool_result_meta
+                    : undefined,
               },
             )) {
               // sendUpdate records delivery. Subagent text/thinking is
@@ -6635,6 +6784,36 @@ function streamedInputRefinement(
   };
 }
 
+/** Validates the SDK user message's `tool_result_meta` sidecar (emitted on the
+ *  wire by CLI ≥ 2.1.216 but absent from sdk.d.ts, hence unknown-typed) into a
+ *  by-tool_use_id lookup. Each entry explains why an is_error tool_result
+ *  carries harness prose instead of the tool's own output — "user-rejected",
+ *  "permission-rule", "interrupted", "cancelled", … (open set: new kinds ship
+ *  on the wire ahead of schema updates, so no enum check). Malformed entries
+ *  are skipped rather than failing the message. */
+function parseToolResultMeta(
+  raw: unknown,
+): Map<string, { nonExecutionKind: string; userFeedback?: string }> | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  let byToolUseId: Map<string, { nonExecutionKind: string; userFeedback?: string }> | undefined;
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const { id, non_execution_kind, user_feedback } = entry as Record<string, unknown>;
+    if (typeof id !== "string" || typeof non_execution_kind !== "string") {
+      continue;
+    }
+    (byToolUseId ??= new Map()).set(id, {
+      nonExecutionKind: non_execution_kind,
+      ...(typeof user_feedback === "string" ? { userFeedback: user_feedback } : {}),
+    });
+  }
+  return byToolUseId;
+}
+
 /**
  * Convert an SDKAssistantMessage (Claude) to a SessionNotification (ACP).
  * Only handles text, image, and thinking chunks for now.
@@ -6670,6 +6849,10 @@ export function toAcpNotifications(
     // Agent/Task results from the structured subagent report instead of the raw
     // text (which ends in a model-directed agentId/usage trailer).
     toolUseResult?: unknown;
+    // The SDK user message's `tool_result_meta` sidecar, passed raw (it's
+    // untyped in sdk.d.ts) and validated by `parseToolResultMeta`. Stamps
+    // denied/interrupted tool_call_updates with why the tool never ran.
+    toolResultMeta?: unknown;
   },
 ): SessionNotification[] {
   const taskState = options?.taskState ?? new Map();
@@ -6711,6 +6894,10 @@ export function toAcpNotifications(
       .length === 1
       ? options.toolUseResult
       : undefined;
+
+  // Unlike `tool_use_result`, entries carry their own tool_use_id, so batched
+  // messages need no single-block guard.
+  const toolResultMeta = parseToolResultMeta(options?.toolResultMeta);
 
   const output = [];
   // Only handle the first chunk for streaming; extend as needed for batching
@@ -6862,6 +7049,12 @@ export function toAcpNotifications(
       case "mcp_tool_result": {
         const wasEmitted = options?.emittedToolCalls?.has(chunk.tool_use_id) === true;
         options?.emittedToolCalls?.delete(chunk.tool_use_id);
+        // Why this is_error result carries harness prose instead of tool
+        // output (user-rejected / interrupted / …), when the SDK said so.
+        // Spread into the claudeCode meta of every update emitted below; the
+        // untracked-tool fallback can't carry it (claudeCode metas always
+        // carry `toolName`, which is unknown there).
+        const nonExecution = toolResultMeta?.get(chunk.tool_use_id);
         const toolUse = toolUseCache[chunk.tool_use_id];
         if (!toolUse) {
           // The permission flow may have surfaced this tool_call even though
@@ -6905,6 +7098,7 @@ export function toAcpNotifications(
               _meta: {
                 claudeCode: {
                   toolName: toolUse.name,
+                  ...(nonExecution ?? {}),
                   ...(options?.parentToolUseId ? { parentToolUseId: options.parentToolUseId } : {}),
                 },
               } satisfies ToolUpdateMeta,
@@ -6976,6 +7170,7 @@ export function toAcpNotifications(
             _meta: {
               claudeCode: {
                 toolName: toolUse.name,
+                ...(nonExecution ?? {}),
               },
               ...(toolMeta?.terminal_exit ? { terminal_exit: toolMeta.terminal_exit } : {}),
             } satisfies ToolUpdateMeta,
@@ -7242,6 +7437,9 @@ export function runAcp() {
       runPromptWithCancellation(agent, ctx.params, ctx.signal),
     )
     .onNotification(methods.agent.session.cancel, (ctx) => agent.cancel(ctx.params))
+    .onRequest<SteerRequest, SteerResponse>(STEER_METHOD, { parse: parseSteerRequest }, (ctx) =>
+      agent.steer(ctx.params),
+    )
     .connect(stream);
 
   agent = new ClaudeAcpAgent(new ClientConnection(connection.client));

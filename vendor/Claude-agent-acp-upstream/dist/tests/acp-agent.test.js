@@ -1895,13 +1895,17 @@ describe("tool_call emitted before permission request", () => {
     });
 });
 describe("canUseTool in bypassPermissions mode", () => {
-    function setup() {
+    function setup(respondToPermission = async () => ({
+        outcome: { outcome: "selected", optionId: "allow" },
+    })) {
         const events = [];
+        const requests = [];
         const mockClient = {
             sessionUpdate: async () => { },
-            requestPermission: async () => {
+            requestPermission: async (request) => {
                 events.push("permission");
-                return { outcome: { outcome: "selected", optionId: "allow" } };
+                requests.push(request);
+                return respondToPermission(request);
             },
         };
         const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
@@ -1911,8 +1915,13 @@ describe("canUseTool in bypassPermissions mode", () => {
         // The tool_call was already surfaced by the streamed tool_use chunk, so
         // the permission flow (when taken) goes straight to requestPermission.
         agent.sessions["session-1"].emittedToolCalls.add("tool-1");
-        return { agent, events };
+        return { agent, events, requests };
     }
+    const matchedAskRule = {
+        source: "projectSettings",
+        toolName: "Bash",
+        ruleContent: "Bash(terraform:*)",
+    };
     it("auto-allows asks that carry no matchedAskRule", async () => {
         const { agent, events } = setup();
         const result = await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
@@ -1928,20 +1937,69 @@ describe("canUseTool in bypassPermissions mode", () => {
     // one was forced by the user's own permissions.ask rule (matchedAskRule),
     // honoring that rule beats bypass: it must go to the client instead of
     // being silently auto-allowed.
-    it("prompts the client when the ask was forced by a permissions.ask rule", async () => {
-        const { agent, events } = setup();
+    it("prompts and waits when a permissions.ask rule overrides bypass mode", async () => {
+        let resolvePermission;
+        const permissionResponse = new Promise((resolve) => {
+            resolvePermission = resolve;
+        });
+        const { agent, events, requests } = setup(async () => permissionResponse);
+        let settled = false;
+        const resultPromise = agent.canUseTool("session-1")("Bash", { command: "terraform destroy" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+            matchedAskRule,
+        });
+        void resultPromise.finally(() => {
+            settled = true;
+        });
+        await vi.waitFor(() => {
+            expect(events).toEqual(["permission"]);
+        });
+        expect(requests).toMatchObject([
+            {
+                sessionId: "session-1",
+                toolCall: {
+                    toolCallId: "tool-1",
+                    rawInput: { command: "terraform destroy" },
+                },
+                options: [{ optionId: "allow_always" }, { optionId: "allow" }, { optionId: "reject" }],
+            },
+        ]);
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        resolvePermission({ outcome: { outcome: "selected", optionId: "allow" } });
+        const result = await resultPromise;
+        expect(result).toMatchObject({ behavior: "allow" });
+    });
+    it("returns a denial when the user rejects a rule-forced ask", async () => {
+        const { agent, events } = setup(async () => ({
+            outcome: { outcome: "selected", optionId: "reject" },
+        }));
         const result = await agent.canUseTool("session-1")("Bash", { command: "terraform destroy" }, {
             signal: new AbortController().signal,
             suggestions: [],
             toolUseID: "tool-1",
-            matchedAskRule: {
-                source: "projectSettings",
-                toolName: "Bash",
-                ruleContent: "Bash(terraform:*)",
-            },
+            matchedAskRule,
         });
         expect(events).toEqual(["permission"]);
-        expect(result).toMatchObject({ behavior: "allow" });
+        expect(result).toEqual({
+            behavior: "deny",
+            message: "User refused permission to run tool",
+        });
+    });
+    it("aborts the tool when the user cancels a rule-forced ask", async () => {
+        const { agent, events } = setup(async () => ({
+            outcome: { outcome: "cancelled" },
+        }));
+        const result = agent.canUseTool("session-1")("Bash", { command: "terraform destroy" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+            matchedAskRule,
+        });
+        await expect(result).rejects.toThrow("Tool use aborted");
+        expect(events).toEqual(["permission"]);
     });
 });
 describe("subagent permission attribution (issue #851)", () => {
@@ -8129,6 +8187,178 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
         // debt from the idle cancel would have absorbed the un-owed idle.
         await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "next" }] })).rejects.toMatchObject({ code: -32603 });
         await agent.sessions["test-session"]?.consumer;
+    });
+});
+describe("turn steering (_session/steering)", () => {
+    function createMockAgent() {
+        const mockClient = {
+            sessionUpdate: async () => { },
+        };
+        return new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+    }
+    function createResultMessage() {
+        return {
+            type: "result",
+            subtype: "success",
+            stop_reason: "end_turn",
+            is_error: false,
+            result: "",
+            errors: [],
+            duration_ms: 0,
+            duration_api_ms: 0,
+            num_turns: 1,
+            total_cost_usd: 0,
+            usage: {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+            modelUsage: {},
+            permission_denials: [],
+            uuid: randomUUID(),
+            session_id: "test-session",
+        };
+    }
+    const waitFor = async (cond) => {
+        for (let i = 0; i < 200; i++) {
+            if (cond())
+                return;
+            await new Promise((r) => setTimeout(r, 0));
+        }
+        throw new Error("waitFor timed out");
+    };
+    it("rejects when the session is unknown", async () => {
+        const agent = createMockAgent();
+        await expect(agent.steer({ sessionId: "missing", prompt: [{ type: "text", text: "hi" }] })).rejects.toThrow("Session not found");
+    });
+    it("rejects when the query stream has already closed", async () => {
+        const agent = createMockAgent();
+        agent.sessions["test-session"] = mockSessionState({
+            input: new Pushable(),
+            queryClosed: true,
+            turnQueue: [
+                {
+                    promptUuid: "x",
+                    isLocalOnlyCommand: false,
+                    settled: false,
+                    resolve: () => { },
+                    reject: () => { },
+                },
+            ],
+        });
+        await expect(agent.steer({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] })).rejects.toThrow();
+    });
+    it("advertises steering support at _meta.steering.supported", async () => {
+        const agent = createMockAgent();
+        const response = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {},
+        });
+        // Top-level _meta (sibling of agentCapabilities), per the wire protocol.
+        expect(response._meta?.steering).toEqual({ supported: true });
+    });
+    it("starts a new turn (outcome 'startedNewTurn') when no turn is in flight (race)", async () => {
+        const agent = createMockAgent();
+        const captured = [];
+        // Idle session: turnQueue starts empty, so the turn we meant to steer has
+        // (from the agent's view) already finished. Steering must not error — it
+        // starts a fresh turn with the message.
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                captured.push(u1.value);
+                yield userEcho(u1.value); // activates the new turn
+                yield createResultMessage();
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        }, { turnQueue: [] });
+        const res = await agent.steer({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "late follow-up" }],
+        });
+        expect(res.outcome).toBe("startedNewTurn");
+        // A real turn was enqueued and drains like any normal prompt.
+        await waitFor(() => (agent.sessions["test-session"].turnQueue ?? []).length === 0);
+        expect(captured).toHaveLength(1);
+        // It went through the normal prompt() path — no steering delivery priority.
+        expect(captured[0].priority).toBeUndefined();
+        expect(JSON.stringify(captured[0].message.content)).toContain("late follow-up");
+    });
+    it("injects (outcome 'injected') a priority:'now' message into the running turn without spawning a new turn", async () => {
+        const agent = createMockAgent();
+        const captured = [];
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value); // turn becomes active
+                // The steered message is pushed next; capture it, replay its echo
+                // (which matches no queued turn and must be dropped), then finish.
+                const steered = await iter.next();
+                captured.push(steered.value);
+                yield userEcho(steered.value); // unrelated replay — must NOT settle a turn
+                yield createResultMessage();
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const turn = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "start" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const steerRes = await agent.steer({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "also handle X" }],
+        });
+        // Steering into a live turn reports the 'injected' outcome.
+        expect(steerRes.outcome).toBe("injected");
+        // The original turn resolves as a single, normal end_turn — the injected
+        // message steered it rather than producing a second PromptResponse.
+        await expect(turn).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        expect(agent.sessions["test-session"].turnQueue).toHaveLength(0);
+        // The pushed message carried priority:'now' and a fresh uuid (matching no
+        // queued turn, so its echo is dropped rather than settling anything).
+        expect(captured).toHaveLength(1);
+        const injected = captured[0];
+        expect(injected.priority).toBe("now");
+        expect(typeof injected.uuid).toBe("string");
+        expect(JSON.stringify(injected.message.content)).toContain("also handle X");
+    });
+    it("always injects at 'now' priority, ignoring any client-supplied priority", async () => {
+        const agent = createMockAgent();
+        const captured = [];
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                const steered = await iter.next();
+                captured.push(steered.value);
+                yield createResultMessage();
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const turn = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "start" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        // Delivery priority is an internal detail, not part of the wire contract.
+        // Even if a client sneaks a `priority` field into the params, it's ignored
+        // and the message is always delivered at 'now'.
+        const res = await agent.steer({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "queue this after" }],
+            priority: "next",
+        });
+        await turn;
+        expect(res.outcome).toBe("injected");
+        expect(captured[0]?.priority).toBe("now");
     });
 });
 describe("session/cancel wedge recovery (issue #680)", () => {

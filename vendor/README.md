@@ -64,10 +64,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty/`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.60.0`
-  - upstream tag: `v0.60.0`
-  - upstream commit: `0a88de2a83d017e0f5f6f429f7edea3700313f3a`
-  - dependencies match the upstream `0.60.0` release (`@agentclientprotocol/sdk` `1.2.1`, `@anthropic-ai/claude-agent-sdk` `0.3.215`, `@anthropic-ai/sdk` `0.112.3`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.61.0`
+  - upstream tag: `v0.61.0`
+  - upstream commit: `c19bddcf7914259d6c15103a2d1580c7371e1d16`
+  - dependencies match the upstream `0.61.0` release (`@agentclientprotocol/sdk` `1.3.0`, `@anthropic-ai/claude-agent-sdk` `0.3.217`, `@anthropic-ai/sdk` `0.112.5`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 - `acp12/`
   - local package names: `agent-client-protocol-legacy` and

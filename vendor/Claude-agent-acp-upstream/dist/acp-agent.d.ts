@@ -19,6 +19,28 @@ type AccumulatedUsage = {
     cachedReadTokens: number;
     cachedWriteTokens: number;
 };
+/** Params of a {@link STEER_METHOD} request. Shaped like the relevant subset of
+ *  a `PromptRequest` so the same `promptToClaude` conversion applies. Delivery
+ *  priority is deliberately NOT exposed here — it's an internal detail the agent
+ *  chooses (see {@link STEER_PRIORITY}). */
+export type SteerRequest = {
+    sessionId: string;
+    prompt: PromptRequest["prompt"];
+};
+/** Where a steering message was accepted, per the wire protocol's two
+ *  successful outcomes:
+ *   - `injected`: a turn was still running and the message was applied to it;
+ *   - `startedNewTurn`: the turn we meant to steer had already finished (an
+ *     unavoidable race), so the message began a fresh turn instead of being
+ *     dropped.
+ *  Both are success results — never a JSON-RPC error — and tell the client
+ *  where the message landed. */
+type SteerOutcome = "injected" | "startedNewTurn";
+/** Result of a {@link STEER_METHOD} request: the single required `outcome`
+ *  field the client reads to learn where its steering message was accepted. */
+export type SteerResponse = {
+    outcome: SteerOutcome;
+};
 /** Internal model-selection state. Mirrors the shape the ACP SDK exposed as
  *  `SessionModelState` before model selection moved entirely into
  *  `SessionConfigOption` (category "model"). Retained internally to track the
@@ -476,6 +498,8 @@ export type ToolUpdateMeta = {
         toolName: string;
         toolResponse?: unknown;
         parentToolUseId?: string;
+        nonExecutionKind?: string;
+        userFeedback?: string;
     };
     terminal_info?: {
         terminal_id: string;
@@ -634,6 +658,30 @@ export declare class ClaudeAcpAgent {
     resolveProviderConfig(): ProviderConfig | null;
     logout(_params: LogoutRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
+    /** Steer the session per the ACP steering wire protocol: apply a follow-up
+     *  message to the turn that is currently running, or — if that turn already
+     *  finished — start a fresh turn with it. Never drops the message and never
+     *  returns a JSON-RPC error for the "arrived too late" race; both paths are
+     *  success outcomes (see {@link SteerOutcome}).
+     *
+     *  When a turn is in flight this injects (returns `injected`): unlike
+     *  `prompt()`, it does NOT create a Turn or enqueue on `turnQueue`; it pushes
+     *  an `SDKUserMessage` onto the same streaming input, which the SDK routes
+     *  into the in-flight turn. The injected message's echo carries a uuid that
+     *  matches no queued turn, so the consumer drops it as an unrelated replay
+     *  without promoting/settling anything. It is delivered at {@link
+     *  STEER_PRIORITY} (`now`) so it pre-empts the current generation (interrupting
+     *  a single-shot response, or slotting in between a multi-step turn's tool
+     *  calls). The steered message's own output streams via `session/update`, not
+     *  this response.
+     *
+     *  When the session is idle (no unsettled turn — the turn we meant to steer
+     *  raced ahead and finished), this starts a normal new turn with the message
+     *  and returns `startedNewTurn`. That turn is fire-and-forget from the steer
+     *  request's view: its `PromptResponse` and output flow through the usual
+     *  `prompt()`/`session/update` path, so we return the outcome immediately
+     *  rather than awaiting turn completion. */
+    steer(params: SteerRequest): Promise<SteerResponse>;
     /** Lazily start the per-session consumer that drains the SDK query stream for
      *  the session's whole life. Idempotent: only the first `prompt()` starts it. */
     private ensureConsumer;
@@ -900,6 +948,7 @@ export declare function toAcpNotifications(content: string | ContentBlockParam[]
     emittedToolCalls?: Set<string>;
     messageId?: string;
     toolUseResult?: unknown;
+    toolResultMeta?: unknown;
 }): SessionNotification[];
 export declare function streamEventToAcpNotifications(message: SDKPartialAssistantMessage, sessionId: string, toolUseCache: ToolUseCache, client: AcpClient, logger: Logger, options?: {
     clientCapabilities?: ClientCapabilities;
