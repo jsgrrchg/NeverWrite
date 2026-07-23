@@ -34,6 +34,29 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.5.1] - 2026-07-22
+
+### Added
+
+- Added a per-vault **AI change review** setting that can disable review tracking, close review tabs, and accept and clear pending review state while keeping streamed chat diffs visible.
+- Added contextual safety-policy guidance for Codex sessions using **Full Access** mode.
+
+### Changed
+
+- Unified the AI chat composer into a single contextual action that switches between Send, Queue, Stop, and transition states without shifting the composer layout.
+- Polished Markdown Live Preview code fences with human-readable language labels, compact copy controls, and cleaner presentation for unlabeled and empty blocks.
+- Updated the embedded Claude ACP runtime to `0.59.0` and the embedded Codex runtime to `0.144.6`, improving background subagent handling, tool attribution, result delivery, context usage reporting, and packaged code-mode compatibility.
+
+### Fixed
+
+- Fixed inline AI change review instability by updating the editor runtime and hardened review cleanup across vault switches, synchronized settings, and stale review tabs.
+- Fixed definitive Codex command-policy blocks so failed tool activity exposes the reason instead of appearing as an unexplained failure.
+- Fixed chat search highlights being dropped from packaged desktop styles.
+
+### Security
+
+- Patched known dependency vulnerabilities across the desktop app and web clipper, including denial-of-service, archive handling, and HTML sanitization advisories.
+
 ## [0.5.0] - 2026-07-12
 
 ### Added
