@@ -12,10 +12,19 @@ import {
     installProcessDiagnostics,
     writeAppLog,
 } from "./appLogger";
+import {
+    applyAppIdentity,
+    registerProductionProtocolClient,
+    resolveAppIdentity,
+} from "./appIdentity";
 import { installYouTubeEmbedIdentityHeaders } from "./youtubeEmbedIdentity";
 
-const WINDOWS_APP_USER_MODEL_ID =
-    process.env.NEVERWRITE_ELECTRON_APP_ID?.trim() || "com.neverwrite";
+const appIdentity = resolveAppIdentity({
+    isPackaged: app.isPackaged,
+    releaseAppUserModelId: process.env.NEVERWRITE_ELECTRON_APP_ID,
+});
+
+applyAppIdentity(app, appIdentity);
 
 protocol.registerSchemesAsPrivileged([
     {
@@ -29,24 +38,13 @@ protocol.registerSchemesAsPrivileged([
     },
 ]);
 
-function configureAppIdentity() {
-    app.setName("NeverWrite");
-    if (process.platform === "win32") {
-        app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
-    }
-    if (process.platform === "darwin") {
-        app.setAboutPanelOptions({
-            applicationName: "NeverWrite",
-            applicationVersion: app.getVersion(),
-        });
-    }
-}
-
-configureAppIdentity();
 initializeAppLogger(app.getPath("userData"));
 installConsoleLogCapture();
 installProcessDiagnostics();
 writeAppLog("main", "info", "NeverWrite main process starting", {
+    variant: appIdentity.variant,
+    applicationName: appIdentity.displayName,
+    userDataDirectoryName: appIdentity.userDataDirectoryName,
     version: app.getVersion(),
     packaged: app.isPackaged,
     platform: process.platform,
@@ -55,17 +53,19 @@ writeAppLog("main", "info", "NeverWrite main process starting", {
     chrome: process.versions.chrome,
     node: process.versions.node,
 });
-app.setAsDefaultProtocolClient("neverwrite");
+registerProductionProtocolClient(app, appIdentity);
 
 app.on("child-process-gone", (_event, details) => {
     writeAppLog("main", "error", "Electron child process gone", details);
 });
 
-app.on("open-url", (event, url) => {
-    event.preventDefault();
-    focusOrCreateMainWindow();
-    handleDeepLink(url);
-});
+if (appIdentity.ownsProductionDeepLinks) {
+    app.on("open-url", (event, url) => {
+        event.preventDefault();
+        focusOrCreateMainWindow();
+        handleDeepLink(url);
+    });
+}
 
 function focusOrCreateMainWindow() {
     const existing =
@@ -90,23 +90,32 @@ if (!hasLock) {
 } else {
     app.on("second-instance", (_event, argv) => {
         focusOrCreateMainWindow();
-        for (const url of extractDeepLinksFromArgv(argv)) {
-            handleDeepLink(url);
+        if (appIdentity.ownsProductionDeepLinks) {
+            for (const url of extractDeepLinksFromArgv(argv)) {
+                handleDeepLink(url);
+            }
         }
     });
 
     void app.whenReady().then(() => {
         writeAppLog("main", "info", "Electron app ready");
         installYouTubeEmbedIdentityHeaders(session.defaultSession);
-        const backend = registerIpcHandlers();
+        const backend = registerIpcHandlers({
+            enableProductionDeepLinks:
+                appIdentity.ownsProductionDeepLinks,
+            enableWebClipperServer: appIdentity.enablesWebClipperServer,
+            runtimeSecretServiceName: appIdentity.secretServiceName,
+        });
         protocol.handle(
             "neverwrite-file",
             registerPreviewProtocolHandler(backend),
         );
         void installNativeMenus();
         createAppWindow("main");
-        for (const url of extractDeepLinksFromArgv(process.argv)) {
-            handleDeepLink(url);
+        if (appIdentity.ownsProductionDeepLinks) {
+            for (const url of extractDeepLinksFromArgv(process.argv)) {
+                handleDeepLink(url);
+            }
         }
 
         app.on("activate", () => {

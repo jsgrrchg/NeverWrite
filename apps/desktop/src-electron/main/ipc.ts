@@ -24,6 +24,7 @@ import {
     resolvePreviewFilePath,
 } from "./vaultBackend";
 import { createNativeBackendSidecar } from "./nativeBackend";
+import { installProfileIntegrations } from "./profileIntegrations";
 import { getSystemUsername } from "./systemUser";
 import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
@@ -203,6 +204,12 @@ function registerAppLogHandlers() {
     });
 }
 
+interface IpcRegistrationOptions {
+    enableProductionDeepLinks: boolean;
+    enableWebClipperServer: boolean;
+    runtimeSecretServiceName: string;
+}
+
 export function broadcastRuntimeEvent(eventName: string, payload: unknown) {
     for (const window of BrowserWindow.getAllWindows()) {
         if (window.isDestroyed()) continue;
@@ -210,16 +217,22 @@ export function broadcastRuntimeEvent(eventName: string, payload: unknown) {
     }
 }
 
-function createBackend() {
+function createBackend(options: IpcRegistrationOptions) {
     const emitRuntimeEvent = broadcastRuntimeEvent;
-    const nativeBackend = createNativeBackendSidecar(emitRuntimeEvent);
+    const nativeBackend = createNativeBackendSidecar(emitRuntimeEvent, {
+        runtimeSecretServiceName: options.runtimeSecretServiceName,
+    });
     const backend = new ElectronVaultBackend(
         emitRuntimeEvent,
         new ElectronAppUpdater(),
         nativeBackend,
     );
-    installWebClipperRuntime(backend, emitRuntimeEvent);
-    installDeepLinkRuntime(emitRuntimeEvent);
+    installProfileIntegrations(options, {
+        installProductionDeepLinks: () =>
+            installDeepLinkRuntime(emitRuntimeEvent),
+        installWebClipperServer: () =>
+            installWebClipperRuntime(backend, emitRuntimeEvent),
+    });
     return backend;
 }
 
@@ -440,8 +453,8 @@ export function registerPreviewProtocolHandler(
     };
 }
 
-export function registerIpcHandlers() {
-    const backend = createBackend();
+export function registerIpcHandlers(options: IpcRegistrationOptions) {
+    const backend = createBackend(options);
     registerInvokeHandler(backend);
     registerDialogHandlers();
     registerOpenerHandlers();

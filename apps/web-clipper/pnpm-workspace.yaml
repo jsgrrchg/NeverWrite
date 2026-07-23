@@ -3,9 +3,10 @@ packages:
 
 overrides:
     adm-zip: 0.6.0
+    brace-expansion: 1.1.16
     esbuild: 0.28.1
     node-notifier>uuid: 11.1.1
-    shell-quote: 1.8.4
+    shell-quote: 1.9.0
     vite: 8.0.16
     web-ext-run>tmp: 0.2.7
     ws: ^8.20.1

@@ -2,7 +2,7 @@
     "name": "neverwrite-web-clipper",
     "description": "NeverWrite browser extension built as an isolated WXT app inside the monorepo.",
     "private": true,
-    "version": "0.5.0",
+    "version": "0.5.1",
     "type": "module",
     "packageManager": "pnpm@10.33.0",
     "engines": {
@@ -26,7 +26,7 @@
     },
     "dependencies": {
         "defuddle": "^0.14.0",
-        "dompurify": "^3.4.11",
+        "dompurify": "^3.4.12",
         "react": "^19.2.5",
         "react-dom": "^19.2.5"
     },
