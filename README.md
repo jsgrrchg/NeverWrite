@@ -25,7 +25,7 @@ NeverWrite is an agentic markdown workspace for people who work with a local vau
 
 - **Write in the format that fits.** Edit Markdown, Mermaid, CSV, text/code files, PDFs, images, and Excalidraw concept maps in the same workspace.
 - **Navigate connected knowledge.** Follow wikilinks, backlinks, tags, advanced search, bookmarks, and 2D or 3D graph views.
-- **Work with your preferred agent.** Run Codex, Claude, Grok, Kilo, or OpenCode sessions with attachments, saved transcripts, and local history.
+- **Work with your preferred agent.** Run Codex, Claude, GitHub Copilot, Grok, Kilo, or OpenCode sessions with attachments, saved transcripts, and local history.
 - **Review AI changes deliberately.** Inspect tracked edits inline, in chat, or in a dedicated review tab, then keep or reject complete files and individual hunks.
 - **Capture the web into your vault.** Use the companion browser extension to clip pages, selections, or URLs directly to the desktop app.
 

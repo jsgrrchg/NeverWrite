@@ -47,7 +47,8 @@ use neverwrite_ai::{
     AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
     AI_TOOL_ACTIVITY_EVENT, AI_URL_ELICITATION_REQUEST_EVENT, AI_USER_INPUT_REQUEST_EVENT,
-    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, COPILOT_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID,
+    OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -124,7 +125,9 @@ const AUTH_TERMINAL_DEFAULT_ROWS: u16 = 28;
 const AUTH_TERMINAL_MONITOR_INTERVAL: Duration = Duration::from_millis(120);
 const AUTH_TERMINAL_OUTPUT_CHUNK_SIZE: usize = 4096;
 const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
-const RUNTIME_SETUP_STORE_VERSION: u32 = 2;
+const RUNTIME_SETUP_STORE_VERSION: u32 = 3;
+const COPILOT_LOGIN_INVALIDATED_MESSAGE: &str =
+    "GitHub Copilot login looks invalid or expired. Run Copilot login again to reconnect.";
 const RUNTIME_SECRET_SERVICE: &str = "NeverWrite AI Provider Secrets";
 const RUNTIME_SECRET_SERVICE_ENV: &str = "NEVERWRITE_AI_SECRET_SERVICE";
 const RUNTIME_SECRET_STORE_MODE_ENV: &str = "NEVERWRITE_AI_SECRET_STORE";
@@ -152,6 +155,7 @@ enum AcpProtocolFlavor {
 }
 
 const NO_ACP_ARGS: &[&str] = &[];
+const COPILOT_ACP_ARGS: &[&str] = &["--acp"];
 const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
 const SHELL_ACP_ARGS: &[&str] = &["acp"];
 
@@ -173,6 +177,16 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "claude",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current,
+        supports_native_resume: false,
+    },
+    RuntimeDefinition {
+        id: COPILOT_RUNTIME_ID,
+        name: "GitHub Copilot",
+        description: "GitHub Copilot CLI running as a native ACP agent.",
+        default_executable: "copilot",
+        bin_env_var: "NEVERWRITE_COPILOT_ACP_BIN",
+        acp_args: COPILOT_ACP_ARGS,
         acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
@@ -367,6 +381,7 @@ struct RuntimeSetupState {
     auth_method: Option<String>,
     suppress_persisted_auth: bool,
     auth_invalidated_at_ms: Option<u64>,
+    external_auth_verified_at_ms: Option<u64>,
     has_gateway_config: bool,
     has_gateway_url: bool,
     message: Option<String>,
@@ -385,6 +400,8 @@ struct PersistedRuntimeSetupState {
     auth_method: Option<String>,
     #[serde(default)]
     auth_invalidated_at_ms: Option<u64>,
+    #[serde(default)]
+    external_auth_verified_at_ms: Option<u64>,
     #[serde(default)]
     env: HashMap<String, String>,
     #[serde(default)]
@@ -527,7 +544,7 @@ impl RuntimeSetupStore {
         };
         let persisted: PersistedRuntimeSetupFile = serde_json::from_str(&raw)
             .map_err(|error| format!("Failed to parse AI runtime setup store: {error}"))?;
-        if !matches!(persisted.version, 1 | RUNTIME_SETUP_STORE_VERSION) {
+        if !matches!(persisted.version, 1..=RUNTIME_SETUP_STORE_VERSION) {
             return Ok(HashMap::new());
         }
 
@@ -589,6 +606,7 @@ impl RuntimeSetupStore {
                     .auth_method
                     .and_then(normalize_optional_string),
                 auth_invalidated_at_ms: persisted_setup.auth_invalidated_at_ms,
+                external_auth_verified_at_ms: persisted_setup.external_auth_verified_at_ms,
                 env,
                 ..RuntimeSetupState::default()
             };
@@ -599,7 +617,8 @@ impl RuntimeSetupStore {
                 runtime_setup.auth_method =
                     local_auth_method_for_runtime(&runtime_id, &runtime_setup);
             }
-            runtime_setup.auth_ready = has_local_auth_config(&runtime_id, &runtime_setup);
+            runtime_setup.auth_ready = has_local_auth_config(&runtime_id, &runtime_setup)
+                || has_verified_external_auth(&runtime_id, &runtime_setup);
             setup.insert(runtime_id, runtime_setup);
         }
         if should_rewrite_store {
@@ -737,10 +756,12 @@ impl PersistedRuntimeSetupState {
             .and_then(normalize_optional_string)
             .filter(|method| should_persist_auth_method(runtime_id, setup, method));
         let auth_invalidated_at_ms = setup.auth_invalidated_at_ms;
+        let external_auth_verified_at_ms = setup.external_auth_verified_at_ms;
 
         if custom_binary_path.is_none()
             && auth_method.is_none()
             && auth_invalidated_at_ms.is_none()
+            && external_auth_verified_at_ms.is_none()
             && env.is_empty()
             && secret_env_keys.is_empty()
         {
@@ -751,6 +772,7 @@ impl PersistedRuntimeSetupState {
             custom_binary_path,
             auth_method,
             auth_invalidated_at_ms,
+            external_auth_verified_at_ms,
             env,
             secret_env_keys,
         }))
@@ -774,6 +796,9 @@ fn is_secret_runtime_env_key(key: &str) -> bool {
             | "XAI_API_KEY"
             | "OPENCODE_API_KEY"
             | "KILO_API_KEY"
+            | "COPILOT_GITHUB_TOKEN"
+            | "GH_TOKEN"
+            | "GITHUB_TOKEN"
     )
 }
 
@@ -902,6 +927,7 @@ struct AcpPromptCapabilities {
 struct AcpActorSharedState {
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
+    setup_store: Option<RuntimeSetupStore>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
 }
@@ -1128,6 +1154,7 @@ impl NativeAi {
             shared: AcpActorSharedState {
                 event_tx: self.event_tx.clone(),
                 session_state: Arc::clone(&self.inner),
+                setup_store: Some(self.setup_store.clone()),
                 tool_diffs: self.tool_diffs.clone(),
                 agent_writes: self.agent_writes.clone(),
             },
@@ -1432,13 +1459,13 @@ impl NativeAi {
         ) {
             Ok(created) => created,
             Err(error) => {
-                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                if let Err(update_error) = self.invalidate_auth_after_session_start_error(
                     &input.runtime_id,
                     &setup,
                     &error,
                 ) {
                     return Err(format!(
-                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                        "{error}\n\nFailed to update AI auth state: {update_error}"
                     ));
                 }
                 return Err(error);
@@ -1539,13 +1566,13 @@ impl NativeAi {
         ) {
             Ok(created) => created,
             Err(error) => {
-                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                if let Err(update_error) = self.invalidate_auth_after_session_start_error(
                     &input.runtime_id,
                     &setup,
                     &error,
                 ) {
                     return Err(format!(
-                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                        "{error}\n\nFailed to update AI auth state: {update_error}"
                     ));
                 }
                 return Err(error);
@@ -1960,6 +1987,9 @@ impl NativeAi {
         pending.auth_method = Some(method_id.to_string());
         pending.auth_ready = false;
         pending.suppress_persisted_auth = false;
+        if runtime_id == COPILOT_RUNTIME_ID {
+            pending.external_auth_verified_at_ms = None;
+        }
         if !is_invalidation_tracked_external_auth_runtime(runtime_id) {
             pending.auth_invalidated_at_ms = None;
         }
@@ -1975,12 +2005,15 @@ impl NativeAi {
         Ok(())
     }
 
-    fn invalidate_grok_auth_after_session_start_error(
+    fn invalidate_auth_after_session_start_error(
         &self,
         runtime_id: &str,
         setup_at_start: &RuntimeSetupState,
         error: &str,
     ) -> Result<(), String> {
+        if runtime_id == COPILOT_RUNTIME_ID && is_copilot_auth_error(error) {
+            return self.invalidate_copilot_auth();
+        }
         if runtime_id != GROK_RUNTIME_ID || !is_grok_auth_error(error) {
             return Ok(());
         }
@@ -2004,6 +2037,36 @@ impl NativeAi {
         apply_grok_auth_failure(setup, source);
         self.setup_store.save(&pending_setup)?;
 
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        state.setup = pending_setup;
+        state.setup_load_error = None;
+        Ok(())
+    }
+
+    fn invalidate_copilot_auth(&self) -> Result<(), String> {
+        let (mut pending_setup, setup_load_error) = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            (state.setup.clone(), state.setup_load_error.clone())
+        };
+        if setup_load_error.is_some() {
+            pending_setup = self.setup_store.load().map_err(runtime_setup_load_error)?;
+        }
+        let setup = pending_setup
+            .entry(COPILOT_RUNTIME_ID.to_string())
+            .or_default();
+        setup.auth_method = Some("copilot-login".to_string());
+        setup.auth_ready = false;
+        setup.suppress_persisted_auth = false;
+        setup.external_auth_verified_at_ms = None;
+        setup.auth_invalidated_at_ms = Some(current_epoch_ms());
+        setup.message = Some(COPILOT_LOGIN_INVALIDATED_MESSAGE.to_string());
+        self.setup_store.save(&pending_setup)?;
         let mut state = self
             .inner
             .lock()
@@ -2440,6 +2503,7 @@ impl AcpSessionHandle {
 struct NativeAcpClient {
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
+    setup_store: Option<RuntimeSetupStore>,
     message_ids: Arc<Mutex<HashMap<MessageStreamKey, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
@@ -2485,6 +2549,29 @@ impl NativeAcpClient {
     fn emit<T: serde::Serialize>(&self, event_name: &str, payload: T) {
         if let Ok(value) = serde_json::to_value(payload) {
             emit_event(&self.event_tx, event_name, value);
+        }
+    }
+
+    fn invalidate_copilot_auth_for_session(&self, session_id: &str, error: &str) {
+        if !is_copilot_auth_error(error) {
+            return;
+        }
+        let setup_to_save = self.session_state.lock().ok().and_then(|mut state| {
+            let runtime_id = state.sessions.get(session_id)?.session.runtime_id.clone();
+            if runtime_id != COPILOT_RUNTIME_ID {
+                return None;
+            }
+            let setup = state.setup.entry(runtime_id).or_default();
+            setup.auth_method = Some("copilot-login".to_string());
+            setup.auth_ready = false;
+            setup.suppress_persisted_auth = false;
+            setup.external_auth_verified_at_ms = None;
+            setup.auth_invalidated_at_ms = Some(current_epoch_ms());
+            setup.message = Some(COPILOT_LOGIN_INVALIDATED_MESSAGE.to_string());
+            Some(state.setup.clone())
+        });
+        if let (Some(store), Some(setup)) = (&self.setup_store, setup_to_save) {
+            let _ = store.save(&setup);
         }
     }
 
@@ -3809,9 +3896,7 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
             }
         };
         let result = match flavor {
-            AcpProtocolFlavor::Current => {
-                runtime.block_on(run_acp_auth_inner(spec, auth_command))
-            }
+            AcpProtocolFlavor::Current => runtime.block_on(run_acp_auth_inner(spec, auth_command)),
             AcpProtocolFlavor::Legacy12 => {
                 runtime.block_on(run_acp12_auth_inner(spec, auth_command))
             }
@@ -4177,6 +4262,7 @@ async fn run_acp12_actor_inner(
     let client = NativeAcpClient {
         event_tx: event_tx.clone(),
         session_state: Arc::clone(&context.shared.session_state),
+        setup_store: context.shared.setup_store.clone(),
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -4374,6 +4460,7 @@ async fn run_acp_actor_inner(
     let client = NativeAcpClient {
         event_tx: event_tx.clone(),
         session_state: Arc::clone(&context.shared.session_state),
+        setup_store: context.shared.setup_store.clone(),
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -4781,6 +4868,7 @@ async fn handle_acp_command(
                 client.end_user_message(&session_id);
                 client.complete_assistant_turn(&session_id, &message_id);
                 if let Err(error) = &result {
+                    client.invalidate_copilot_auth_for_session(&session_id, error);
                     client.emit(
                         AI_SESSION_ERROR_EVENT,
                         AiSessionErrorPayload {
@@ -6771,6 +6859,13 @@ fn setup_load_error_status_for(
 }
 
 fn runtime_auth_diagnostics(runtime_id: &str) -> Value {
+    if runtime_id == COPILOT_RUNTIME_ID {
+        let environment = copilot_env_auth_keys()
+            .iter()
+            .map(|key| ((*key).to_string(), json!(env_secret_present(key))))
+            .collect::<serde_json::Map<_, _>>();
+        return json!({ "environment": environment });
+    }
     if runtime_id != OPENCODE_RUNTIME_ID {
         return Value::Null;
     }
@@ -7062,7 +7157,10 @@ fn resolve_grok_official_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn resolve_macos_homebrew_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
-    if !matches!(runtime_id, GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID) {
+    if !matches!(
+        runtime_id,
+        COPILOT_RUNTIME_ID | GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID
+    ) {
         return None;
     }
     ["/opt/homebrew/bin", "/usr/local/bin"]
@@ -7082,6 +7180,7 @@ fn default_terminal_auth_method(runtime_id: &str) -> &'static str {
         GROK_RUNTIME_ID => "grok-login",
         KILO_RUNTIME_ID => "kilo-login",
         OPENCODE_RUNTIME_ID => "opencode-login",
+        COPILOT_RUNTIME_ID => "copilot-login",
         _ => "terminal-login",
     }
 }
@@ -7136,6 +7235,10 @@ fn auth_terminal_launch_config(
         (OPENCODE_RUNTIME_ID, "opencode-login") => {
             args.extend(["auth".to_string(), "login".to_string()]);
             "OpenCode Login".to_string()
+        }
+        (COPILOT_RUNTIME_ID, "copilot-login") => {
+            args.push("login".to_string());
+            "GitHub Copilot Login".to_string()
         }
         _ => {
             return Err(format!(
@@ -7368,6 +7471,7 @@ fn inherited_auth_method(
                     auth_invalidated_at_ms,
                 )
             }),
+        COPILOT_RUNTIME_ID => copilot_env_auth_present().then(|| "copilot-login".to_string()),
         _ => None,
     }
 }
@@ -7474,6 +7578,16 @@ fn opencode_env_auth_keys() -> &'static [&'static str] {
         "GOOGLE_API_KEY",
         "CODEX_API_KEY",
     ]
+}
+
+fn copilot_env_auth_keys() -> &'static [&'static str] {
+    &["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]
+}
+
+fn copilot_env_auth_present() -> bool {
+    copilot_env_auth_keys()
+        .iter()
+        .any(|key| env_secret_present(key))
 }
 
 fn opencode_env_auth_present() -> bool {
@@ -7636,12 +7750,23 @@ fn should_persist_auth_method(
 fn is_persistable_external_auth_method(runtime_id: &str, method_id: &str) -> bool {
     matches!(
         (runtime_id, method_id),
-        (GROK_RUNTIME_ID, "grok-login") | (OPENCODE_RUNTIME_ID, "opencode-login")
+        (GROK_RUNTIME_ID, "grok-login")
+            | (OPENCODE_RUNTIME_ID, "opencode-login")
+            | (COPILOT_RUNTIME_ID, "copilot-login")
     )
 }
 
 fn is_invalidation_tracked_external_auth_runtime(runtime_id: &str) -> bool {
-    matches!(runtime_id, GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID)
+    matches!(
+        runtime_id,
+        COPILOT_RUNTIME_ID | GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID
+    )
+}
+
+fn has_verified_external_auth(runtime_id: &str, setup: &RuntimeSetupState) -> bool {
+    runtime_id == COPILOT_RUNTIME_ID
+        && setup.external_auth_verified_at_ms.is_some()
+        && setup.auth_invalidated_at_ms.is_none()
 }
 
 fn is_local_auth_method(method_id: &str) -> bool {
@@ -7730,6 +7855,7 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
     setup.suppress_persisted_auth = true;
     setup.auth_invalidated_at_ms =
         is_invalidation_tracked_external_auth_runtime(runtime_id).then(current_epoch_ms);
+    setup.external_auth_verified_at_ms = None;
     setup.has_gateway_config = false;
     setup.has_gateway_url = false;
     setup.message = None;
@@ -7746,6 +7872,9 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
         "XAI_API_KEY",
         "OPENCODE_API_KEY",
         "KILO_API_KEY",
+        "COPILOT_GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
     ] {
         setup.env.remove(key);
     }
@@ -7781,6 +7910,21 @@ fn is_grok_auth_error(error: &str) -> bool {
         "401",
         "invalid api key",
         "cached_token",
+    ]
+    .into_iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn is_copilot_auth_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+    [
+        "run copilot login",
+        "copilot login",
+        "login required",
+        "not authenticated",
+        "authentication required",
+        "unauthorized",
+        "401",
     ]
     .into_iter()
     .any(|needle| normalized.contains(needle))
@@ -7929,6 +8073,11 @@ fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
             description: "Open the OpenCode CLI sign-in flow in an integrated terminal."
                 .to_string(),
         }],
+        COPILOT_RUNTIME_ID => vec![AiAuthMethod {
+            id: "copilot-login".to_string(),
+            name: "Copilot login".to_string(),
+            description: "Open GitHub Copilot sign-in in an integrated terminal.".to_string(),
+        }],
         _ => vec![],
     }
 }
@@ -7940,6 +8089,7 @@ fn auth_method_ids(runtime_id: &str) -> Vec<&'static str> {
         GROK_RUNTIME_ID => vec!["grok-login", "xai-api-key"],
         KILO_RUNTIME_ID => vec!["kilo-login", "kilo-api-key"],
         OPENCODE_RUNTIME_ID => vec!["opencode-login"],
+        COPILOT_RUNTIME_ID => vec!["copilot-login"],
         _ => vec![],
     }
 }
@@ -9277,6 +9427,9 @@ fn mark_runtime_auth_verified(
         setup.auth_ready = true;
         setup.suppress_persisted_auth = false;
         setup.auth_invalidated_at_ms = None;
+        if runtime_id == COPILOT_RUNTIME_ID && method_id == "copilot-login" {
+            setup.external_auth_verified_at_ms = Some(current_epoch_ms());
+        }
         setup.message = None;
         state.setup.clone()
     });
@@ -9380,6 +9533,7 @@ mod tests {
         NativeAcpClient {
             event_tx,
             session_state,
+            setup_store: None,
             message_ids: Arc::new(Mutex::new(HashMap::new())),
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -9922,6 +10076,7 @@ mod tests {
     fn native_resume_is_currently_limited_to_codex() {
         assert!(runtime_supports_native_resume(CODEX_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(CLAUDE_RUNTIME_ID));
+        assert!(!runtime_supports_native_resume(COPILOT_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(GROK_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(KILO_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(OPENCODE_RUNTIME_ID));
@@ -10010,6 +10165,29 @@ mod tests {
             .iter()
             .any(|capability| capability == "grok-login"));
         assert!(diagnostic_executable_names().contains(&"grok"));
+    }
+
+    #[test]
+    fn copilot_runtime_is_registered_with_expected_launch_contract() {
+        let definition = runtime_definition(COPILOT_RUNTIME_ID).unwrap();
+        assert_eq!(definition.name, "GitHub Copilot");
+        assert_eq!(definition.default_executable, "copilot");
+        assert_eq!(definition.bin_env_var, "NEVERWRITE_COPILOT_ACP_BIN");
+        assert_eq!(definition.acp_args, ["--acp"]);
+        assert_eq!(definition.acp_protocol, AcpProtocolFlavor::Current);
+        assert!(!definition.supports_native_resume);
+
+        let descriptor = runtime_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.runtime.id == COPILOT_RUNTIME_ID)
+            .unwrap();
+        assert_eq!(descriptor.runtime.name, "GitHub Copilot");
+        assert!(!descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .any(|capability| capability == "resume_session"));
+        assert!(diagnostic_executable_names().contains(&"copilot"));
     }
 
     #[test]
@@ -12381,13 +12559,11 @@ mod tests {
         for runtime_id in [
             CLAUDE_RUNTIME_ID,
             CODEX_RUNTIME_ID,
+            COPILOT_RUNTIME_ID,
             KILO_RUNTIME_ID,
             OPENCODE_RUNTIME_ID,
         ] {
-            assert_eq!(
-                acp_protocol_flavor(runtime_id),
-                AcpProtocolFlavor::Current
-            );
+            assert_eq!(acp_protocol_flavor(runtime_id), AcpProtocolFlavor::Current);
         }
     }
 
@@ -12783,7 +12959,10 @@ mod tests {
 
         assert_eq!(option.label, "Grid layout");
         assert_eq!(option.value, "Grid layout");
-        assert_eq!(option.description.as_deref(), Some("Structured description"));
+        assert_eq!(
+            option.description.as_deref(),
+            Some("Structured description")
+        );
     }
 
     #[test]
@@ -15532,6 +15711,104 @@ mod tests {
     }
 
     #[test]
+    fn copilot_auth_error_detector_matches_cli_auth_failures() {
+        assert!(is_copilot_auth_error("Run copilot login to continue"));
+        assert!(is_copilot_auth_error("not authenticated"));
+        assert!(!is_copilot_auth_error("model does not support that option"));
+    }
+
+    #[test]
+    fn copilot_verified_login_persists_without_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let store = RuntimeSetupStore::with_secret_store(
+            store_path.clone(),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let mut setup = HashMap::new();
+        setup.insert(
+            COPILOT_RUNTIME_ID.to_string(),
+            RuntimeSetupState {
+                auth_method: Some("copilot-login".to_string()),
+                auth_ready: true,
+                external_auth_verified_at_ms: Some(123),
+                ..RuntimeSetupState::default()
+            },
+        );
+        store.save(&setup).unwrap();
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("external_auth_verified_at_ms"));
+        assert!(!encoded.contains("COPILOT_GITHUB_TOKEN"));
+        let loaded = store.load().unwrap();
+        let copilot = loaded.get(COPILOT_RUNTIME_ID).unwrap();
+        assert_eq!(copilot.external_auth_verified_at_ms, Some(123));
+        assert!(copilot.auth_ready);
+    }
+
+    #[test]
+    fn copilot_auth_error_invalidates_verified_login() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        native_ai.inner.lock().unwrap().setup.insert(
+            COPILOT_RUNTIME_ID.to_string(),
+            RuntimeSetupState {
+                auth_method: Some("copilot-login".to_string()),
+                auth_ready: true,
+                external_auth_verified_at_ms: Some(123),
+                ..RuntimeSetupState::default()
+            },
+        );
+        native_ai
+            .invalidate_auth_after_session_start_error(
+                COPILOT_RUNTIME_ID,
+                &RuntimeSetupState::default(),
+                "Run copilot login to continue",
+            )
+            .unwrap();
+        let setup = native_ai.inner.lock().unwrap().setup[COPILOT_RUNTIME_ID].clone();
+        assert!(!setup.auth_ready);
+        assert_eq!(setup.external_auth_verified_at_ms, None);
+        assert_eq!(
+            setup.message.as_deref(),
+            Some(COPILOT_LOGIN_INVALIDATED_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn copilot_prompt_auth_error_invalidates_and_persists_verified_login() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = RuntimeSetupStore::with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, COPILOT_RUNTIME_ID, "copilot-session");
+        session_state.lock().unwrap().setup.insert(
+            COPILOT_RUNTIME_ID.to_string(),
+            RuntimeSetupState {
+                auth_method: Some("copilot-login".to_string()),
+                auth_ready: true,
+                external_auth_verified_at_ms: Some(123),
+                ..RuntimeSetupState::default()
+            },
+        );
+        let (event_tx, _) = mpsc::channel();
+        let mut client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.setup_store = Some(store.clone());
+
+        client.invalidate_copilot_auth_for_session("copilot-session", "Run copilot login");
+
+        let persisted = store.load().unwrap();
+        let setup = persisted.get(COPILOT_RUNTIME_ID).unwrap();
+        assert!(!setup.auth_ready);
+        assert_eq!(setup.external_auth_verified_at_ms, None);
+        assert!(setup.auth_invalidated_at_ms.is_some());
+    }
+
+    #[test]
     fn grok_login_auth_error_marks_external_auth_invalidated() {
         let _guard = ENV_TEST_LOCK.lock().unwrap();
         let previous = std::env::var_os("XAI_API_KEY");
@@ -15556,7 +15833,7 @@ mod tests {
             .insert(GROK_RUNTIME_ID.to_string(), setup_at_start.clone());
 
         native_ai
-            .invalidate_grok_auth_after_session_start_error(
+            .invalidate_auth_after_session_start_error(
                 GROK_RUNTIME_ID,
                 &setup_at_start,
                 "cached_token unauthorized",
@@ -15632,7 +15909,7 @@ mod tests {
             .cloned()
             .expect("Grok setup should exist");
         native_ai
-            .invalidate_grok_auth_after_session_start_error(
+            .invalidate_auth_after_session_start_error(
                 GROK_RUNTIME_ID,
                 &setup_at_start,
                 "401 invalid api key",
@@ -15695,7 +15972,7 @@ mod tests {
             .cloned()
             .expect("Grok setup should exist");
         native_ai
-            .invalidate_grok_auth_after_session_start_error(
+            .invalidate_auth_after_session_start_error(
                 GROK_RUNTIME_ID,
                 &setup_at_start,
                 "unauthorized",
@@ -16083,7 +16360,7 @@ mod tests {
             Some("legacy-kilo-secret".to_string())
         );
         let migrated = fs::read_to_string(&store_path).unwrap();
-        assert!(migrated.contains("\"version\": 2"));
+        assert!(migrated.contains("\"version\": 3"));
         assert!(!migrated.contains("legacy-kilo-secret"));
     }
 
