@@ -46,6 +46,8 @@ npm install
 npm run dev
 ```
 
+Local development runs as **NeverWrite Dev** with its own application profile, so an installed NeverWrite release can remain open at the same time. Files and hidden state inside a vault remain shared when both variants open that vault; use a disposable vault when testing write or review flows concurrently.
+
 The first start builds the native backend. Configure your preferred agent from the app settings; some providers require their own CLI login or API key.
 
 ## Development

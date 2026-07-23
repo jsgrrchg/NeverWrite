@@ -5,6 +5,90 @@ import { renderComponent } from "../../../test/test-utils";
 import { AIChatAgentControls } from "./AIChatAgentControls";
 
 describe("AIChatAgentControls", () => {
+    it("shows contextual safety help only for Codex Full Access", () => {
+        const fullAccessDescription =
+            "Codex can edit files outside this workspace and access the internet without asking for approval. Exercise caution when using.";
+        const modes = [
+            {
+                id: "auto",
+                runtimeId: "codex-acp",
+                name: "Default",
+                description: "Work inside the current workspace.",
+                disabled: false,
+            },
+            {
+                id: "full-access",
+                runtimeId: "codex-acp",
+                name: "Full Access",
+                description: fullAccessDescription,
+                disabled: false,
+            },
+        ];
+        const view = renderComponent(
+            <AIChatAgentControls
+                runtimeId="codex-acp"
+                modelId=""
+                modeId="full-access"
+                effortsByModel={{}}
+                models={[]}
+                modes={modes}
+                configOptions={[]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+
+        const help = screen.getByRole("button", {
+            name: "Full Access safety policy",
+        });
+        expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+        fireEvent.mouseEnter(help);
+        expect(screen.getByRole("tooltip")).toHaveTextContent(
+            "Some destructive command forms may still be blocked by Codex safety policy.",
+        );
+        fireEvent.mouseLeave(help);
+        expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+        fireEvent.focus(help);
+        expect(screen.getByRole("tooltip")).toBeInTheDocument();
+        fireEvent.blur(help);
+
+        fireEvent.click(screen.getByTitle("Approval Preset"));
+        const fullAccessOption = screen
+            .getAllByRole("button", { name: "Full Access" })
+            .find(
+                (option) =>
+                    option.getAttribute("title") === fullAccessDescription,
+            );
+        expect(fullAccessOption).toHaveAttribute(
+            "title",
+            fullAccessDescription,
+        );
+
+        view.unmount();
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="codex-acp"
+                modelId=""
+                modeId="auto"
+                effortsByModel={{}}
+                models={[]}
+                modes={modes}
+                configOptions={[]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+        expect(
+            screen.queryByRole("button", {
+                name: "Full Access safety policy",
+            }),
+        ).not.toBeInTheDocument();
+    });
+
     it("filters reasoning efforts to the selected model", () => {
         renderComponent(
             <AIChatAgentControls

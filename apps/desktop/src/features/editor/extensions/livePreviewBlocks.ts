@@ -53,6 +53,7 @@ import {
     renderEmbedPreview,
 } from "./notePreviewSource";
 import { renderMermaidDiagram } from "../mermaid/mermaidRenderer";
+import { formatCodeFenceLanguageLabel } from "../codeFencePresentation";
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|svg|webp|bmp|ico|avif)([?#].*)?$/i;
 const PDF_EXTENSION = /\.pdf([?#].*)?$/i;
@@ -87,7 +88,6 @@ type FencedCodeBlockKind = "code" | "mermaid";
 type FencedCodeBlockPreview = {
     kind: FencedCodeBlockKind;
     info: string;
-    language: string;
     code: string;
     hasContent: boolean;
     openEnd: number;
@@ -848,19 +848,19 @@ class NoteEmbedWidget extends WidgetType {
 
 class CodeBlockHeaderWidget extends WidgetType {
     private kind: FencedCodeBlockKind;
-    private language: string;
+    private languageLabel: string | undefined;
     private code: string;
     private hasContent: boolean;
 
     constructor(
         kind: FencedCodeBlockKind,
-        language: string,
+        languageLabel: string | undefined,
         code: string,
         hasContent: boolean,
     ) {
         super();
         this.kind = kind;
-        this.language = language;
+        this.languageLabel = languageLabel;
         this.code = code;
         this.hasContent = hasContent;
     }
@@ -868,7 +868,7 @@ class CodeBlockHeaderWidget extends WidgetType {
     eq(other: CodeBlockHeaderWidget) {
         return (
             this.kind === other.kind &&
-            this.language === other.language &&
+            this.languageLabel === other.languageLabel &&
             this.code === other.code &&
             this.hasContent === other.hasContent
         );
@@ -879,35 +879,51 @@ class CodeBlockHeaderWidget extends WidgetType {
         // CodeMirror block widgets are not included in its height map, which
         // makes pointer-to-caret mapping drift after repeated code cards.
         const shell = document.createElement("div");
-        shell.className = "cm-code-block-header-shell";
+        shell.className = [
+            "cm-code-block-header-shell",
+            this.languageLabel ? "" : "cm-code-block-header-shell-unlabeled",
+            !this.languageLabel && !this.hasContent
+                ? "cm-code-block-header-shell-unlabeled-empty"
+                : "",
+        ]
+            .filter(Boolean)
+            .join(" ");
         shell.setAttribute("contenteditable", "false");
 
         const bar = document.createElement("div");
-        bar.className = this.hasContent
-            ? "cm-code-block-header"
-            : "cm-code-block-header cm-code-block-header-only";
+        bar.className = [
+            "cm-code-block-header",
+            this.hasContent ? "" : "cm-code-block-header-only",
+            this.languageLabel ? "" : "cm-code-block-header-unlabeled",
+        ]
+            .filter(Boolean)
+            .join(" ");
         bar.dataset.codeBlockKind = this.kind;
         bar.setAttribute("contenteditable", "false");
 
-        const lang = document.createElement("span");
-        lang.className = "cm-code-block-lang";
-        lang.textContent = this.language || "text";
+        if (this.languageLabel) {
+            const lang = document.createElement("span");
+            lang.className = "cm-code-block-lang";
+            lang.textContent = this.languageLabel;
+            bar.appendChild(lang);
+        }
 
         const copyBtn = document.createElement("button");
         copyBtn.className = "cm-code-block-copy";
-        copyBtn.textContent = "Copy";
+        copyBtn.type = "button";
+        copyBtn.setAttribute("aria-label", "Copy code block");
+        setCodeBlockCopyButtonState(copyBtn, false);
         copyBtn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
             void navigator.clipboard.writeText(this.code).then(() => {
-                copyBtn.textContent = "Copied!";
+                setCodeBlockCopyButtonState(copyBtn, true);
                 setTimeout(() => {
-                    copyBtn.textContent = "Copy";
-                }, 1500);
+                    setCodeBlockCopyButtonState(copyBtn, false);
+                }, 1200);
             });
         });
 
-        bar.appendChild(lang);
         bar.appendChild(copyBtn);
         shell.appendChild(bar);
         return shell;
@@ -916,6 +932,49 @@ class CodeBlockHeaderWidget extends WidgetType {
     ignoreEvent() {
         return true;
     }
+}
+
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+function createCodeBlockCopyIcon(copied: boolean) {
+    const svg = document.createElementNS(SVG_NAMESPACE, "svg");
+    svg.setAttribute("width", "11");
+    svg.setAttribute("height", "11");
+    svg.setAttribute("viewBox", "0 0 14 14");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.5");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+
+    if (copied) {
+        const check = document.createElementNS(SVG_NAMESPACE, "path");
+        check.setAttribute("d", "M3 7l2.2 2.2L11 3.8");
+        svg.appendChild(check);
+        return svg;
+    }
+
+    const copy = document.createElementNS(SVG_NAMESPACE, "rect");
+    copy.setAttribute("x", "5");
+    copy.setAttribute("y", "3");
+    copy.setAttribute("width", "6");
+    copy.setAttribute("height", "8");
+    copy.setAttribute("rx", "1.2");
+
+    const underlay = document.createElementNS(SVG_NAMESPACE, "path");
+    underlay.setAttribute("d", "M3.5 9.5H3A1 1 0 012 8.5v-5A1.5 1.5 0 013.5 2H8");
+    svg.append(copy, underlay);
+    return svg;
+}
+
+function setCodeBlockCopyButtonState(
+    button: HTMLButtonElement,
+    copied: boolean,
+) {
+    button.dataset.copied = copied ? "true" : "false";
+    button.title = copied ? "Copied" : "Copy";
+    button.replaceChildren(createCodeBlockCopyIcon(copied));
 }
 
 class MermaidDiagramWidget extends WidgetType {
@@ -999,6 +1058,12 @@ const codeBlockLineLast = Decoration.line({
 });
 const codeBlockLineOnly = Decoration.line({
     class: "cm-code-block-line cm-code-block-line-first cm-code-block-line-last",
+});
+const codeBlockLineFirstUnlabeled = Decoration.line({
+    class: "cm-code-block-line cm-code-block-line-first cm-code-block-line-unlabeled",
+});
+const codeBlockLineOnlyUnlabeled = Decoration.line({
+    class: "cm-code-block-line cm-code-block-line-first cm-code-block-line-last cm-code-block-line-unlabeled",
 });
 const mermaidBlockSourceHidden = Decoration.line({
     class: "cm-code-block-fence-hidden cm-mermaid-source-hidden",
@@ -1091,7 +1156,6 @@ function getFencedCodeBlockPreview(
     return {
         kind: getFencedCodeBlockKind(info),
         info,
-        language: info,
         code,
         hasContent,
         openEnd,
@@ -1119,8 +1183,6 @@ function buildCodeBlockDecorations(
             ) {
                 return;
             }
-
-            const showHeader = true;
 
             const openLine = state.doc.lineAt(node.from);
 
@@ -1160,22 +1222,23 @@ function buildCodeBlockDecorations(
                 return;
             }
 
-            if (showHeader) {
-                decos.push({
-                    from: node.from,
-                    to: node.from,
-                    deco: Decoration.widget({
-                        widget: new CodeBlockHeaderWidget(
-                            previewBlock.kind,
-                            previewBlock.language,
-                            previewBlock.code,
-                            previewBlock.hasContent,
-                        ),
-                        block: true,
-                        side: -1,
-                    }),
-                });
-            }
+            const languageLabel = formatCodeFenceLanguageLabel(
+                previewBlock.info,
+            );
+            decos.push({
+                from: node.from,
+                to: node.from,
+                deco: Decoration.widget({
+                    widget: new CodeBlockHeaderWidget(
+                        previewBlock.kind,
+                        languageLabel,
+                        previewBlock.code,
+                        previewBlock.hasContent,
+                    ),
+                    block: true,
+                    side: -1,
+                }),
+            });
 
             // Collapse the opening fence line (```lang) so it takes no space
             decos.push({
@@ -1203,12 +1266,17 @@ function buildCodeBlockDecorations(
                 const isFirst =
                     lineNum === previewBlock.firstContentLineNumber;
                 const isLast = lineNum === previewBlock.lastContentLineNumber;
-                const needFirst = isFirst && !showHeader;
 
                 let deco: Decoration;
-                if (needFirst && isLast) deco = codeBlockLineOnly;
-                else if (needFirst) deco = codeBlockLineFirst;
-                else if (isLast) deco = codeBlockLineLast;
+                if (isFirst && isLast) {
+                    deco = languageLabel
+                        ? codeBlockLineOnly
+                        : codeBlockLineOnlyUnlabeled;
+                } else if (isFirst) {
+                    deco = languageLabel
+                        ? codeBlockLineFirst
+                        : codeBlockLineFirstUnlabeled;
+                } else if (isLast) deco = codeBlockLineLast;
                 else deco = codeBlockLine;
 
                 decos.push({ from: line.from, to: line.from, deco });

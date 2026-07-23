@@ -129,6 +129,7 @@ const RUNTIME_SETUP_STORE_VERSION: u32 = 3;
 const COPILOT_LOGIN_INVALIDATED_MESSAGE: &str =
     "GitHub Copilot login looks invalid or expired. Run Copilot login again to reconnect.";
 const RUNTIME_SECRET_SERVICE: &str = "NeverWrite AI Provider Secrets";
+const RUNTIME_SECRET_SERVICE_ENV: &str = "NEVERWRITE_AI_SECRET_SERVICE";
 const RUNTIME_SECRET_STORE_MODE_ENV: &str = "NEVERWRITE_AI_SECRET_STORE";
 const LEGACY_GEMINI_RUNTIME_ID: &str = "gemini-acp";
 const LEGACY_GEMINI_SECRET_ENV_KEYS: &[&str] = &["GEMINI_API_KEY", "GOOGLE_API_KEY"];
@@ -414,12 +415,22 @@ trait RuntimeSecretStore: Send + Sync {
 }
 
 #[derive(Debug)]
-struct OsRuntimeSecretStore;
+struct OsRuntimeSecretStore {
+    service_name: String,
+}
 
 impl OsRuntimeSecretStore {
-    fn entry(runtime_id: &str, env_key: &str) -> Result<keyring::Entry, String> {
+    fn from_env() -> Self {
+        Self {
+            service_name: runtime_secret_service_name(
+                std::env::var(RUNTIME_SECRET_SERVICE_ENV).ok().as_deref(),
+            ),
+        }
+    }
+
+    fn entry(&self, runtime_id: &str, env_key: &str) -> Result<keyring::Entry, String> {
         keyring::Entry::new(
-            RUNTIME_SECRET_SERVICE,
+            &self.service_name,
             &runtime_secret_account(runtime_id, env_key),
         )
         .map_err(|error| format!("Secure credential storage is unavailable: {error}"))
@@ -428,7 +439,7 @@ impl OsRuntimeSecretStore {
 
 impl RuntimeSecretStore for OsRuntimeSecretStore {
     fn get_secret(&self, runtime_id: &str, env_key: &str) -> Result<Option<String>, String> {
-        match Self::entry(runtime_id, env_key)?.get_password() {
+        match self.entry(runtime_id, env_key)?.get_password() {
             Ok(value) => Ok(normalize_optional_string(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(format!(
@@ -438,7 +449,7 @@ impl RuntimeSecretStore for OsRuntimeSecretStore {
     }
 
     fn set_secret(&self, runtime_id: &str, env_key: &str, value: &str) -> Result<(), String> {
-        Self::entry(runtime_id, env_key)?
+        self.entry(runtime_id, env_key)?
             .set_password(value)
             .map_err(|error| {
                 format!("Failed to save AI provider secret to secure storage: {error}")
@@ -446,7 +457,7 @@ impl RuntimeSecretStore for OsRuntimeSecretStore {
     }
 
     fn delete_secret(&self, runtime_id: &str, env_key: &str) -> Result<(), String> {
-        match Self::entry(runtime_id, env_key)?.delete_credential() {
+        match self.entry(runtime_id, env_key)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(format!(
                 "Failed to remove AI provider secret from secure storage: {error}"
@@ -515,7 +526,7 @@ impl RuntimeSetupStore {
         match runtime_secret_store_mode_from_env(
             std::env::var(RUNTIME_SECRET_STORE_MODE_ENV).ok().as_deref(),
         ) {
-            RuntimeSecretStoreMode::OsKeyring => Arc::new(OsRuntimeSecretStore),
+            RuntimeSecretStoreMode::OsKeyring => Arc::new(OsRuntimeSecretStore::from_env()),
             // This is intentionally opt-in for CI/smoke tests that run without a
             // desktop keyring service. Production keeps using OS secure storage.
             RuntimeSecretStoreMode::InMemory => Arc::new(InMemoryRuntimeSecretStore::default()),
@@ -682,6 +693,14 @@ fn runtime_secret_store_mode_from_env(value: Option<&str>) -> RuntimeSecretStore
         Some("memory") => RuntimeSecretStoreMode::InMemory,
         _ => RuntimeSecretStoreMode::OsKeyring,
     }
+}
+
+fn runtime_secret_service_name(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(RUNTIME_SECRET_SERVICE)
+        .to_string()
 }
 
 impl Default for RuntimeSetupStore {
@@ -2637,13 +2656,19 @@ impl NativeAcpClient {
         if tool_call.status != ToolCallStatus::Failed {
             self.mark_agent_write_paths(session_id, &diffs);
         }
+        let summary = if tool_call.status == ToolCallStatus::Failed {
+            summarize_tool_content(tool_call)
+                .or_else(|| self.terminal_summary(session_id, &tool_call.tool_call_id.0))
+        } else {
+            self.terminal_summary(session_id, &tool_call.tool_call_id.0)
+        };
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             map_tool_call(
                 session_id,
                 tool_call,
                 action,
-                self.terminal_summary(session_id, &tool_call.tool_call_id.0),
+                summary,
                 diffs,
             ),
         );
@@ -6372,15 +6397,29 @@ fn is_generated_image_artifact_path(path: &str) -> bool {
 }
 
 fn summarize_tool_content(tool_call: &ToolCall) -> Option<String> {
-    tool_call.content.iter().find_map(|item| match item {
-        ToolCallContent::Content(content) => match &content.content {
-            ContentBlock::Text(text) => Some(text.text.clone()),
+    tool_call
+        .content
+        .iter()
+        .find_map(|item| match item {
+            ToolCallContent::Content(content) => match &content.content {
+                ContentBlock::Text(text) => Some(text.text.clone()),
+                _ => None,
+            },
             _ => None,
-        },
-        ToolCallContent::Diff(diff) => Some(format!("Updated {}", diff.path.display())),
-        ToolCallContent::Terminal(_) => Some("Terminal output available.".to_string()),
-        _ => None,
-    })
+        })
+        .or_else(|| {
+            tool_call.content.iter().find_map(|item| match item {
+                ToolCallContent::Diff(diff) => Some(format!("Updated {}", diff.path.display())),
+                _ => None,
+            })
+        })
+        .or_else(|| {
+            tool_call
+                .content
+                .iter()
+                .any(|item| matches!(item, ToolCallContent::Terminal(_)))
+                .then(|| "Terminal output available.".to_string())
+        })
 }
 
 fn terminal_output_from_meta(meta: &Meta) -> Option<String> {
@@ -9473,7 +9512,8 @@ mod tests {
         PermissionOptionKind, PlanEntry, PromptCapabilities, SessionConfigOption,
         SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
         SessionNotification, SessionUpdate, StringPropertySchema, ToolCallContent, ToolCallId,
-        ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+        Terminal, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+        UsageUpdate,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -10589,6 +10629,36 @@ mod tests {
                 .and_then(|managed| managed.session.title.as_deref()),
             Some("Investigate startup crash")
         );
+    }
+
+    #[test]
+    fn usage_update_preserves_dynamic_context_window_size() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "codex-session",
+            SessionUpdate::UsageUpdate(UsageUpdate::new(136_000, 272_000)),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("token usage event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOKEN_USAGE_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("codex-session")
+        );
+        assert_eq!(payload.get("used").and_then(Value::as_u64), Some(136_000));
+        assert_eq!(payload.get("size").and_then(Value::as_u64), Some(272_000));
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[test]
@@ -14355,6 +14425,63 @@ mod tests {
     }
 
     #[test]
+    fn failed_tool_activity_prefers_acp_reason_over_terminal_exit_summary() {
+        const REJECTION_REASON: &str =
+            "rm -f style commands are not permitted. Use a safer approach";
+
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let started = ToolCall::new(ToolCallId::from("blocked-command"), "Running command")
+            .kind(ToolKind::Execute)
+            .status(ToolCallStatus::InProgress);
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(started),
+        )))
+        .unwrap();
+        let _ = event_rx.recv_timeout(StdDuration::from_millis(250));
+
+        let failed = ToolCallUpdate::new(
+            "blocked-command",
+            ToolCallUpdateFields::new()
+                .status(ToolCallStatus::Failed)
+                .content(vec![
+                    ToolCallContent::Terminal(Terminal::new("blocked-command")),
+                    ToolCallContent::from(REJECTION_REASON),
+                ]),
+        )
+        .meta(Meta::from_iter([(
+            "terminal_exit".to_string(),
+            json!({
+                "terminal_id": "blocked-command",
+                "exit_code": -1,
+                "signal": null,
+            }),
+        )]));
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(failed),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("failed tool activity event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(payload.get("status").and_then(Value::as_str), Some("failed"));
+        assert_eq!(
+            payload.get("summary").and_then(Value::as_str),
+            Some(REJECTION_REASON)
+        );
+    }
+
+    #[test]
     fn session_tool_call_terminal_meta_updates_summary() {
         let (event_tx, event_rx) = mpsc::channel();
         let client = test_client(event_tx);
@@ -15412,6 +15539,26 @@ mod tests {
         assert_eq!(
             runtime_secret_store_mode_from_env(Some("plaintext")),
             RuntimeSecretStoreMode::OsKeyring
+        );
+    }
+
+    #[test]
+    fn runtime_secret_service_preserves_release_default_and_accepts_dev_namespace() {
+        assert_eq!(
+            runtime_secret_service_name(None),
+            "NeverWrite AI Provider Secrets"
+        );
+        assert_eq!(
+            runtime_secret_service_name(Some("")),
+            "NeverWrite AI Provider Secrets"
+        );
+        assert_eq!(
+            runtime_secret_service_name(Some(" NeverWrite Dev AI Provider Secrets ")),
+            "NeverWrite Dev AI Provider Secrets"
+        );
+        assert_ne!(
+            runtime_secret_service_name(None),
+            runtime_secret_service_name(Some("NeverWrite Dev AI Provider Secrets"))
         );
     }
 

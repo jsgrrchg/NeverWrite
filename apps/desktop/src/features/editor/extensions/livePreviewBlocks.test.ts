@@ -167,7 +167,7 @@ describe("code block live preview", () => {
         expect(view.dom.querySelector(".cm-mermaid-preview")).not.toBeNull();
         expect(headers).toHaveLength(1);
         expect(headers[0].dataset.codeBlockKind).toBe("code");
-        expect(headers[0].textContent).toContain("ts");
+        expect(headers[0].textContent).toContain("TypeScript");
 
         view.destroy();
         parent.remove();
@@ -433,7 +433,7 @@ describe("code block live preview", () => {
         parent.remove();
     });
 
-    it("shows the code block header even when the caret is on the fence line", () => {
+    it("shows the compact code frame even when the caret is on the fence line", () => {
         const parent = document.createElement("div");
         document.body.appendChild(parent);
 
@@ -455,8 +455,34 @@ describe("code block live preview", () => {
 
         const header = view.dom.querySelector(".cm-code-block-header");
         expect(header).not.toBeNull();
-        expect(header?.textContent).toContain("ts");
-        expect(header?.textContent).toContain("Copy");
+        expect(header?.textContent).toContain("TypeScript");
+        expect(header?.textContent).not.toContain("Copy");
+        const copyButton = header?.querySelector<HTMLButtonElement>(
+            '.cm-code-block-copy[aria-label="Copy code block"]',
+        );
+        expect(copyButton?.title).toBe("Copy");
+        expect(copyButton?.querySelector("svg")).not.toBeNull();
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("matches the chat treatment for unlabeled code fences", () => {
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const view = new EditorView({
+            state: createLivePreviewState("```\nplain text\n```"),
+            parent,
+        });
+
+        expect(view.dom.querySelector(".cm-code-block-lang")).toBeNull();
+        expect(
+            view.dom.querySelector(".cm-code-block-header-unlabeled"),
+        ).not.toBeNull();
+        expect(
+            view.dom.querySelector(".cm-code-block-line-unlabeled"),
+        ).not.toBeNull();
 
         view.destroy();
         parent.remove();

@@ -10,6 +10,8 @@ import readline from "node:readline";
 import { app } from "electron";
 import { getConfiguredLogDirectory, writeAppLog } from "./appLogger";
 
+const RUNTIME_SECRET_SERVICE_ENV = "NEVERWRITE_AI_SECRET_SERVICE";
+
 const SUPPORTED_COMMANDS = new Set([
     "ping",
     "open_vault",
@@ -153,6 +155,27 @@ export interface NativeBackendBridge {
     supports(command: string): boolean;
     invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
     dispose(): void;
+}
+
+interface NativeBackendLaunchOptions {
+    runtimeSecretServiceName: string;
+}
+
+export function buildNativeBackendProfileEnvironment({
+    appDataDir,
+    runtimeSecretServiceName,
+}: {
+    appDataDir: string;
+    runtimeSecretServiceName: string;
+}) {
+    const secretServiceName = runtimeSecretServiceName.trim();
+    if (!secretServiceName) {
+        throw new Error("Native backend secret service name is required.");
+    }
+    return {
+        NEVERWRITE_APP_DATA_DIR: appDataDir,
+        [RUNTIME_SECRET_SERVICE_ENV]: secretServiceName,
+    };
 }
 
 function nativeBackendExecutableName() {
@@ -306,12 +329,17 @@ class NativeBackendSidecar implements NativeBackendBridge {
     constructor(
         executablePath: string,
         emitEvent: (eventName: string, payload: unknown) => void,
+        options: NativeBackendLaunchOptions,
     ) {
         this.emitEvent = emitEvent;
         const workspaceRoot = resolveWorkspaceRoot();
         const sidecarPath = buildSidecarPath();
         const acpResourceDir = resolveAcpResourceDir(executablePath);
         const logDir = getConfiguredLogDirectory();
+        const profileEnvironment = buildNativeBackendProfileEnvironment({
+            appDataDir: app.getPath("userData"),
+            runtimeSecretServiceName: options.runtimeSecretServiceName,
+        });
         writeAppLog("native-backend", "info", "Starting native backend sidecar", {
             executablePath,
             workspaceRoot,
@@ -322,7 +350,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
             env: {
                 ...process.env,
                 ...(sidecarPath ? { PATH: sidecarPath } : {}),
-                NEVERWRITE_APP_DATA_DIR: app.getPath("userData"),
+                ...profileEnvironment,
                 ...(logDir ? { NEVERWRITE_LOG_DIR: logDir } : {}),
                 ...(acpResourceDir
                     ? { NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR: acpResourceDir }
@@ -485,6 +513,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
 
 export function createNativeBackendSidecar(
     emitEvent: (eventName: string, payload: unknown) => void,
+    options: NativeBackendLaunchOptions,
 ): NativeBackendBridge | null {
     const resolution = resolveNativeBackendPath();
     const explicitlyEnabled =
@@ -508,7 +537,7 @@ export function createNativeBackendSidecar(
         return new UnavailableNativeBackendBridge(resolution.expectedPath);
     }
 
-    const sidecar = new NativeBackendSidecar(executablePath, emitEvent);
+    const sidecar = new NativeBackendSidecar(executablePath, emitEvent, options);
     app.once("before-quit", () => sidecar.dispose());
     app.once("will-quit", () => sidecar.dispose());
     process.once("exit", () => sidecar.dispose());

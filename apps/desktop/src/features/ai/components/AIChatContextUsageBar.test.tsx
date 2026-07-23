@@ -9,8 +9,8 @@ describe("AIChatContextUsageBar", () => {
             <AIChatContextUsageBar
                 usage={{
                     session_id: "session-1",
-                    used: 170_000,
-                    size: 200_000,
+                    used: 136_000,
+                    size: 272_000,
                     cost: {
                         amount: 0.0421,
                         currency: "USD",
@@ -21,14 +21,14 @@ describe("AIChatContextUsageBar", () => {
         );
 
         const bar = screen.getByRole("progressbar", {
-            name: /Context window 85% used/i,
+            name: /Context window 50% used/i,
         });
-        expect(bar).toHaveAttribute("aria-valuenow", "85");
+        expect(bar).toHaveAttribute("aria-valuenow", "50");
         expect(bar).toHaveAttribute("aria-valuemin", "0");
         expect(bar).toHaveAttribute("aria-valuemax", "100");
         expect(bar).toHaveAttribute(
             "title",
-            expect.stringContaining("170k / 200k tokens"),
+            expect.stringContaining("136k / 272k tokens"),
         );
         expect(bar).toHaveAttribute(
             "title",
