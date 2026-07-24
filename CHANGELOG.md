@@ -34,6 +34,18 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.5.2] - 2026-07-24
+
+### Added
+
+- Added Google Vertex AI as a Claude provider, with configurable endpoint, project, region, and Google Application Default Credentials authentication.
+
+### Changed
+
+- Widened Markdown Live Preview code fences for more comfortable reading of long code lines.
+- Updated the embedded Claude ACP runtime to `0.62.0`, including explicit provider routing and improved session configuration support.
+- Updated SDK for Opus 5 support.
+
 ## [0.5.1] - 2026-07-22
 
 ### Added
