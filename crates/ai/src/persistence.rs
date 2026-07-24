@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -6,8 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-const PRODUCT_STATE_DIR_NAME: &str = ".neverwrite";
 
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_INDEX_FILE: &str = "index.json";
@@ -21,6 +19,13 @@ const DEFAULT_TRANSCRIPT_COMPACTION_POLICY: TranscriptCompactionPolicy =
         max_physical_to_indexed_ratio: 2,
         force_physical_bytes: 64 * MB,
     };
+
+/// Finder writes this regular file to directories it has inspected. It is not
+/// part of NeverWrite's history format and must not affect storage ownership
+/// or transaction safety decisions.
+pub fn is_incidental_filesystem_metadata(path: &Path, metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_file() && path.file_name().is_some_and(|name| name == ".DS_Store")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedMessage {
@@ -121,6 +126,72 @@ pub struct SessionSearchResult {
     pub matched_messages: Vec<MatchedMessage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectedHistoryFormat {
+    Directory,
+    LegacyJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectedHistory {
+    pub session_id: String,
+    pub relative_path: String,
+    pub format: InspectedHistoryFormat,
+    pub content_fingerprint: String,
+    pub artifact_fingerprint: String,
+    pub managed_attachment_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageArtifactIssue {
+    pub relative_path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnknownStorageEntry {
+    pub relative_path: String,
+    pub entry_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DuplicateSessionId {
+    pub session_id: String,
+    pub artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionIdClaim {
+    pub session_id: String,
+    pub relative_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoverableStorageState {
+    pub relative_path: String,
+    pub state_type: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryStorageInventory {
+    pub storage_root_exists: bool,
+    pub sessions_root_exists: bool,
+    pub sessions: Vec<InspectedHistory>,
+    pub session_id_claims: Vec<SessionIdClaim>,
+    pub corrupt_artifacts: Vec<StorageArtifactIssue>,
+    pub duplicate_session_ids: Vec<DuplicateSessionId>,
+    pub recoverable_states: Vec<RecoverableStorageState>,
+    pub unknown_entries: Vec<UnknownStorageEntry>,
+    pub read_errors: Vec<StorageArtifactIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageInventory {
+    pub fingerprint: String,
+    pub histories: HistoryStorageInventory,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSessionMetadata {
     version: u32,
@@ -186,14 +257,21 @@ struct LegacySessionArtifacts {
     dir_path: Option<PathBuf>,
 }
 
-fn sessions_dir(vault_root: &Path) -> PathBuf {
-    vault_root.join(PRODUCT_STATE_DIR_NAME).join("sessions")
+fn sessions_dir(storage_root: &Path) -> PathBuf {
+    storage_root.join("sessions")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
+    digest_hex(&sha256_digest(bytes))
+}
+
+fn sha256_digest(bytes: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let digest = hasher.finalize();
+    hasher.finalize().into()
+}
+
+fn digest_hex(digest: &[u8; 32]) -> String {
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
         use std::fmt::Write as _;
@@ -202,13 +280,331 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex
 }
 
+#[derive(Default)]
+struct InventoryFingerprintBuilder {
+    records: Vec<Vec<u8>>,
+}
+
+impl InventoryFingerprintBuilder {
+    fn add(&mut self, kind: &str, relative_path: &str, content: &[u8]) {
+        self.add_digest(kind, relative_path, &sha256_digest(content));
+    }
+
+    fn add_digest(&mut self, kind: &str, relative_path: &str, digest: &[u8; 32]) {
+        let mut record = Vec::new();
+        append_fingerprint_part(&mut record, kind.as_bytes());
+        append_fingerprint_part(&mut record, relative_path.as_bytes());
+        append_fingerprint_part(&mut record, digest);
+        self.records.push(record);
+    }
+
+    fn finish(mut self) -> String {
+        self.records.sort();
+        let mut hasher = Sha256::new();
+        for record in self.records {
+            hasher.update((record.len() as u64).to_le_bytes());
+            hasher.update(record);
+        }
+        digest_hex(&hasher.finalize().into())
+    }
+}
+
+fn append_fingerprint_part(target: &mut Vec<u8>, part: &[u8]) {
+    target.extend_from_slice(&(part.len() as u64).to_le_bytes());
+    target.extend_from_slice(part);
+}
+
+struct Sha256Writer<'a>(&'a mut Sha256);
+
+impl Write for Sha256Writer<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn update_canonical_json(value: &serde_json::Value, output: &mut Sha256) {
+    match value {
+        serde_json::Value::Null => output.update(b"null"),
+        serde_json::Value::Bool(value) => {
+            output.update(if *value { &b"true"[..] } else { &b"false"[..] })
+        }
+        serde_json::Value::Number(value) => output.update(value.to_string().as_bytes()),
+        serde_json::Value::String(value) => {
+            serde_json::to_writer(Sha256Writer(output), value)
+                .expect("serializing a JSON string cannot fail");
+        }
+        serde_json::Value::Array(values) => {
+            output.update(b"[");
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    output.update(b",");
+                }
+                update_canonical_json(value, output);
+            }
+            output.update(b"]");
+        }
+        serde_json::Value::Object(values) => {
+            output.update(b"{");
+            let sorted = values.iter().collect::<BTreeMap<_, _>>();
+            for (index, (key, value)) in sorted.into_iter().enumerate() {
+                if index > 0 {
+                    output.update(b",");
+                }
+                serde_json::to_writer(Sha256Writer(output), key)
+                    .expect("serializing a JSON object key cannot fail");
+                output.update(b":");
+                update_canonical_json(value, output);
+            }
+            output.update(b"}");
+        }
+    }
+}
+
+fn artifact_fingerprint(_path: &Path, bytes: &[u8]) -> [u8; 32] {
+    sha256_digest(bytes)
+}
+
+fn raw_file_fingerprint(path: &Path) -> std::io::Result<[u8; 32]> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn artifact_file_fingerprint(path: &Path) -> std::io::Result<[u8; 32]> {
+    raw_file_fingerprint(path)
+}
+
+fn relative_storage_path(storage_root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(storage_root).unwrap_or(path);
+    lossless_path_string(relative)
+}
+
+fn lossless_path_string(path: &Path) -> String {
+    if let Some(value) = path.to_str() {
+        let normalized = value.replace('\\', "/");
+        if normalized.starts_with("@neverwrite-bytes:") {
+            return format!("@neverwrite-utf8:{normalized}");
+        }
+        return normalized;
+    }
+
+    encode_non_utf8_path(path)
+}
+
+#[cfg(unix)]
+fn encode_non_utf8_path(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut encoded = String::from("@neverwrite-bytes:");
+    for byte in path.as_os_str().as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+#[cfg(windows)]
+fn encode_non_utf8_path(path: &Path) -> String {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut encoded = String::from("@neverwrite-bytes:");
+    for unit in path.as_os_str().encode_wide() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut encoded, "{unit:04x}");
+    }
+    encoded
+}
+
+#[cfg(not(any(unix, windows)))]
+fn encode_non_utf8_path(path: &Path) -> String {
+    format!(
+        "@neverwrite-bytes:{}",
+        sha256_hex(path.to_string_lossy().as_bytes())
+    )
+}
+
+fn push_corrupt_artifact(
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+    relative_path: String,
+    error: impl Into<String>,
+) {
+    let error = error.into();
+    fingerprint.add("corrupt", &relative_path, error.as_bytes());
+    inventory.corrupt_artifacts.push(StorageArtifactIssue {
+        relative_path,
+        error,
+    });
+}
+
+fn push_read_error(
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+    relative_path: String,
+    error: impl Into<String>,
+) {
+    let error = error.into();
+    fingerprint.add("read-error", &relative_path, error.as_bytes());
+    inventory.read_errors.push(StorageArtifactIssue {
+        relative_path,
+        error,
+    });
+}
+
+fn push_unknown_entry(
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+    relative_path: String,
+    entry_type: impl Into<String>,
+) {
+    let entry_type = entry_type.into();
+    fingerprint.add("unknown", &relative_path, entry_type.as_bytes());
+    inventory.unknown_entries.push(UnknownStorageEntry {
+        relative_path,
+        entry_type,
+    });
+}
+
+struct ReadArtifact {
+    bytes: Vec<u8>,
+    fingerprint: [u8; 32],
+}
+
+fn read_expected_artifact(
+    storage_root: &Path,
+    path: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) -> Option<ReadArtifact> {
+    let relative_path = relative_storage_path(storage_root, path);
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_path,
+                "Required history artifact is missing.",
+            );
+            return None;
+        }
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return None;
+        }
+    };
+
+    if !metadata.file_type().is_file() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_path,
+            "Required history artifact is not a regular file.",
+        );
+        return None;
+    }
+
+    match fs::read(path) {
+        Ok(bytes) => {
+            let artifact_fingerprint = artifact_fingerprint(path, &bytes);
+            fingerprint.add_digest("file", &relative_path, &artifact_fingerprint);
+            Some(ReadArtifact {
+                bytes,
+                fingerprint: artifact_fingerprint,
+            })
+        }
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            None
+        }
+    }
+}
+
+fn fingerprint_unknown_tree(
+    storage_root: &Path,
+    path: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) {
+    let relative_path = relative_storage_path(storage_root, path);
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    let file_type = metadata.file_type();
+
+    if file_type.is_symlink() {
+        match fs::read_link(path) {
+            Ok(target) => {
+                let target = lossless_path_string(&target);
+                fingerprint.add("symlink", &relative_path, target.as_bytes());
+            }
+            Err(error) => push_read_error(inventory, fingerprint, relative_path, error.to_string()),
+        }
+        return;
+    }
+
+    if file_type.is_file() {
+        match artifact_file_fingerprint(path) {
+            Ok(artifact_fingerprint) => {
+                fingerprint.add_digest("file", &relative_path, &artifact_fingerprint)
+            }
+            Err(error) => push_read_error(inventory, fingerprint, relative_path, error.to_string()),
+        }
+        return;
+    }
+
+    if !file_type.is_dir() {
+        fingerprint.add("special", &relative_path, &[]);
+        return;
+    }
+
+    fingerprint.add("directory", &relative_path, &[]);
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                fingerprint_unknown_tree(storage_root, &entry.path(), inventory, fingerprint)
+            }
+            Err(error) => push_read_error(
+                inventory,
+                fingerprint,
+                format!("{relative_path}/<unreadable-entry>"),
+                error.to_string(),
+            ),
+        }
+    }
+}
+
 // `session_id` remains a logical product identifier; disk layout uses a hashed storage key.
 fn session_storage_key(session_id: &str) -> String {
     format!("session-{}", sha256_hex(session_id.as_bytes()))
 }
 
-fn storage_session_dir(vault_root: &Path, session_id: &str) -> PathBuf {
-    sessions_dir(vault_root).join(session_storage_key(session_id))
+fn storage_session_dir(storage_root: &Path, session_id: &str) -> PathBuf {
+    sessions_dir(storage_root).join(session_storage_key(session_id))
 }
 
 fn session_meta_path(session_dir: &Path) -> PathBuf {
@@ -227,26 +623,26 @@ fn session_compaction_marker_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SESSION_COMPACTION_MARKER_FILE)
 }
 
-fn storage_session_meta_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    session_meta_path(&storage_session_dir(vault_root, session_id))
+fn storage_session_meta_file(storage_root: &Path, session_id: &str) -> PathBuf {
+    session_meta_path(&storage_session_dir(storage_root, session_id))
 }
 
-fn storage_session_index_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    session_index_path(&storage_session_dir(vault_root, session_id))
+fn storage_session_index_file(storage_root: &Path, session_id: &str) -> PathBuf {
+    session_index_path(&storage_session_dir(storage_root, session_id))
 }
 
-fn storage_session_transcript_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    session_transcript_path(&storage_session_dir(vault_root, session_id))
+fn storage_session_transcript_file(storage_root: &Path, session_id: &str) -> PathBuf {
+    session_transcript_path(&storage_session_dir(storage_root, session_id))
 }
 
-fn storage_session_is_complete(vault_root: &Path, session_id: &str) -> bool {
-    storage_session_meta_file(vault_root, session_id).exists()
-        && storage_session_index_file(vault_root, session_id).exists()
-        && storage_session_transcript_file(vault_root, session_id).exists()
+fn storage_session_is_complete(storage_root: &Path, session_id: &str) -> bool {
+    storage_session_meta_file(storage_root, session_id).exists()
+        && storage_session_index_file(storage_root, session_id).exists()
+        && storage_session_transcript_file(storage_root, session_id).exists()
 }
 
-fn ensure_sessions_root(vault_root: &Path) -> Result<(), String> {
-    fs::create_dir_all(sessions_dir(vault_root)).map_err(|e| e.to_string())
+fn ensure_sessions_root(storage_root: &Path) -> Result<(), String> {
+    fs::create_dir_all(sessions_dir(storage_root)).map_err(|e| e.to_string())
 }
 
 fn trim_non_empty(value: &str) -> Option<String> {
@@ -327,17 +723,17 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 }
 
 fn load_session_metadata(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
 ) -> Result<PersistedSessionMetadata, String> {
-    read_json_file(&storage_session_meta_file(vault_root, session_id))
+    read_json_file(&storage_session_meta_file(storage_root, session_id))
 }
 
 fn load_session_index(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
 ) -> Result<PersistedTranscriptIndex, String> {
-    read_json_file(&storage_session_index_file(vault_root, session_id))
+    read_json_file(&storage_session_index_file(storage_root, session_id))
 }
 
 fn load_session_metadata_from_dir(session_dir: &Path) -> Result<PersistedSessionMetadata, String> {
@@ -366,6 +762,929 @@ fn validate_lazy_session_files(
         return Err("Persisted transcript metadata and index are inconsistent.".to_string());
     }
     Ok(())
+}
+
+enum StrictTranscriptInspectionError {
+    Read(std::io::Error),
+    Corrupt(String),
+}
+
+impl From<std::io::Error> for StrictTranscriptInspectionError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Read(error)
+    }
+}
+
+struct StrictTranscriptFingerprints {
+    artifact: [u8; 32],
+    content: String,
+    managed_attachment_ids: Vec<String>,
+}
+
+fn collect_managed_attachment_ids(
+    message: &PersistedMessage,
+    ids: &mut HashSet<String>,
+) -> Result<(), String> {
+    let Some(attachments) = message.attachments.as_ref() else {
+        return Ok(());
+    };
+    let attachments = attachments
+        .as_array()
+        .ok_or_else(|| "Persisted message attachments are not an array.".to_string())?;
+
+    for attachment in attachments {
+        let Some(object) = attachment.as_object() else {
+            return Err("Persisted message contains a non-object attachment.".to_string());
+        };
+        let Some(value) = object.get("managedAttachmentId") else {
+            continue;
+        };
+        let id = value
+            .as_str()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| "Persisted managed attachment contains an invalid ID.".to_string())?;
+        ids.insert(id.to_string());
+    }
+
+    Ok(())
+}
+
+pub fn managed_attachment_ids_in_history(
+    history: &PersistedSessionHistory,
+) -> Result<Vec<String>, String> {
+    let mut ids = HashSet::new();
+    for message in &history.messages {
+        collect_managed_attachment_ids(message, &mut ids)?;
+    }
+    let mut ids = ids.into_iter().collect::<Vec<_>>();
+    ids.sort();
+    Ok(ids)
+}
+
+fn inspect_strict_transcript_file(
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+    transcript_path: &Path,
+) -> Result<StrictTranscriptFingerprints, StrictTranscriptInspectionError> {
+    validate_lazy_session_files(metadata, index)
+        .map_err(StrictTranscriptInspectionError::Corrupt)?;
+    if metadata.version != FORMAT_VERSION {
+        return Err(StrictTranscriptInspectionError::Corrupt(format!(
+            "Unsupported session metadata version: {}.",
+            metadata.version
+        )));
+    }
+    if index.version != FORMAT_VERSION {
+        return Err(StrictTranscriptInspectionError::Corrupt(format!(
+            "Unsupported transcript index version: {}.",
+            index.version
+        )));
+    }
+
+    let transcript = File::open(transcript_path)?;
+    let mut reader = BufReader::new(transcript);
+    let mut artifact_hasher = Sha256::new();
+    let mut line = Vec::new();
+    let mut line_index = 0_usize;
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        line_index += 1;
+        artifact_hasher.update(&line);
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        if line.is_empty() {
+            continue;
+        }
+        serde_json::from_slice::<PersistedMessage>(&line).map_err(|error| {
+            StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript row {} is invalid: {error}",
+                line_index
+            ))
+        })?;
+    }
+
+    let history = history_from_metadata(metadata.clone(), Vec::new());
+    let mut content_hasher =
+        history_content_hasher(&history).map_err(StrictTranscriptInspectionError::Corrupt)?;
+    let mut managed_attachment_ids = HashSet::new();
+    let mut transcript = File::open(transcript_path)?;
+    let transcript_length = transcript.metadata()?.len();
+    for position in 0..index.message_offsets.len() {
+        let offset = index.message_offsets[position];
+        let indexed_length = index.message_lengths[position];
+        let end = offset.checked_add(indexed_length).ok_or_else(|| {
+            StrictTranscriptInspectionError::Corrupt(
+                "Persisted transcript range overflows.".to_string(),
+            )
+        })?;
+        if end > transcript_length {
+            return Err(StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript entry {position} points outside the transcript."
+            )));
+        }
+        let length = usize::try_from(indexed_length).map_err(|_| {
+            StrictTranscriptInspectionError::Corrupt(
+                "Persisted transcript length exceeds this platform.".to_string(),
+            )
+        })?;
+        transcript.seek(SeekFrom::Start(offset))?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|error| {
+            StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript entry {position} is too large to inspect: {error}"
+            ))
+        })?;
+        bytes.resize(length, 0);
+        transcript.read_exact(&mut bytes).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                StrictTranscriptInspectionError::Corrupt(format!(
+                    "Persisted transcript entry {position} points outside the transcript."
+                ))
+            } else {
+                StrictTranscriptInspectionError::Read(error)
+            }
+        })?;
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+        }
+        let message = serde_json::from_slice::<PersistedMessage>(&bytes).map_err(|error| {
+            StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript entry {position} is invalid: {error}"
+            ))
+        })?;
+        let message_hash =
+            hash_message(&message).map_err(StrictTranscriptInspectionError::Corrupt)?;
+        if message_hash != index.message_hashes[position] {
+            return Err(StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript entry {position} does not match its index hash."
+            )));
+        }
+        collect_managed_attachment_ids(&message, &mut managed_attachment_ids)
+            .map_err(StrictTranscriptInspectionError::Corrupt)?;
+        update_history_content_field(&mut content_hasher, "message", &message)
+            .map_err(StrictTranscriptInspectionError::Corrupt)?;
+    }
+
+    let mut managed_attachment_ids = managed_attachment_ids.into_iter().collect::<Vec<_>>();
+    managed_attachment_ids.sort();
+
+    Ok(StrictTranscriptFingerprints {
+        artifact: artifact_hasher.finalize().into(),
+        content: digest_hex(&content_hasher.finalize().into()),
+        managed_attachment_ids,
+    })
+}
+
+fn combined_artifact_fingerprint(fingerprints: &[[u8; 32]]) -> String {
+    let mut hasher = Sha256::new();
+    for fingerprint in fingerprints {
+        hasher.update(fingerprint);
+    }
+    digest_hex(&hasher.finalize().into())
+}
+
+fn update_history_content_field<T: Serialize + ?Sized>(
+    hasher: &mut Sha256,
+    name: &str,
+    value: &T,
+) -> Result<(), String> {
+    hasher.update(name.as_bytes());
+    let value = serde_json::to_value(value).map_err(|error| error.to_string())?;
+    update_canonical_json(&value, hasher);
+    Ok(())
+}
+
+fn history_content_hasher(history: &PersistedSessionHistory) -> Result<Sha256, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"neverwrite-history-content-v1");
+    update_history_content_field(&mut hasher, "version", &history.version)?;
+    update_history_content_field(&mut hasher, "session_id", &history.session_id)?;
+    update_history_content_field(&mut hasher, "parent_session_id", &history.parent_session_id)?;
+    update_history_content_field(&mut hasher, "closed_at", &history.closed_at)?;
+    update_history_content_field(&mut hasher, "runtime_id", &history.runtime_id)?;
+    update_history_content_field(&mut hasher, "model_id", &history.model_id)?;
+    update_history_content_field(&mut hasher, "mode_id", &history.mode_id)?;
+    update_history_content_field(&mut hasher, "models", &history.models)?;
+    update_history_content_field(&mut hasher, "modes", &history.modes)?;
+    update_history_content_field(&mut hasher, "config_options", &history.config_options)?;
+    update_history_content_field(&mut hasher, "additional_roots", &history.additional_roots)?;
+    update_history_content_field(&mut hasher, "created_at", &history.created_at)?;
+    update_history_content_field(&mut hasher, "updated_at", &history.updated_at)?;
+    update_history_content_field(&mut hasher, "start_index", &history.start_index)?;
+    update_history_content_field(&mut hasher, "message_count", &history.message_count)?;
+    update_history_content_field(&mut hasher, "title", &history.title)?;
+    update_history_content_field(&mut hasher, "custom_title", &history.custom_title)?;
+    update_history_content_field(&mut hasher, "preview", &history.preview)?;
+    Ok(hasher)
+}
+
+fn persisted_history_content_fingerprint(
+    history: &PersistedSessionHistory,
+) -> Result<String, String> {
+    let mut hasher = history_content_hasher(history)?;
+    for message in &history.messages {
+        update_history_content_field(&mut hasher, "message", message)?;
+    }
+    Ok(digest_hex(&hasher.finalize().into()))
+}
+
+fn inspect_compaction_state(
+    storage_root: &Path,
+    session_dir: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) -> HashSet<std::ffi::OsString> {
+    let marker_path = session_compaction_marker_path(session_dir);
+    let mut known_entries = HashSet::new();
+    let marker_metadata = match fs::symlink_metadata(&marker_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return known_entries,
+        Err(error) => {
+            push_read_error(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &marker_path),
+                error.to_string(),
+            );
+            return known_entries;
+        }
+    };
+    known_entries.insert(std::ffi::OsString::from(SESSION_COMPACTION_MARKER_FILE));
+    if !marker_metadata.file_type().is_file() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_storage_path(storage_root, &marker_path),
+            "Transcript compaction marker is not a regular file.",
+        );
+        return known_entries;
+    }
+
+    let Some(marker_artifact) =
+        read_expected_artifact(storage_root, &marker_path, inventory, fingerprint)
+    else {
+        return known_entries;
+    };
+    let state = match serde_json::from_slice::<TranscriptCompactionState>(&marker_artifact.bytes) {
+        Ok(state) => state,
+        Err(error) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &marker_path),
+                format!("Invalid transcript compaction marker: {error}"),
+            );
+            return known_entries;
+        }
+    };
+    if state.version != FORMAT_VERSION {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_storage_path(storage_root, &marker_path),
+            format!(
+                "Unsupported transcript compaction marker version: {}.",
+                state.version
+            ),
+        );
+        return known_entries;
+    }
+
+    for file_name in [
+        &state.metadata_tmp,
+        &state.index_tmp,
+        &state.transcript_tmp,
+        &state.metadata_backup,
+        &state.index_backup,
+        &state.transcript_backup,
+    ] {
+        let sidecar_path = match session_sidecar_from_marker(session_dir, file_name) {
+            Ok(path) => path,
+            Err(error) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &marker_path),
+                    error,
+                );
+                return known_entries;
+            }
+        };
+        known_entries.insert(std::ffi::OsString::from(file_name.as_str()));
+        match fs::symlink_metadata(&sidecar_path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let relative_path = relative_storage_path(storage_root, &sidecar_path);
+                match artifact_file_fingerprint(&sidecar_path) {
+                    Ok(artifact_fingerprint) => {
+                        fingerprint.add_digest("file", &relative_path, &artifact_fingerprint)
+                    }
+                    Err(error) => {
+                        push_read_error(inventory, fingerprint, relative_path, error.to_string())
+                    }
+                }
+            }
+            Ok(_) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &sidecar_path),
+                    "Transcript compaction sidecar is not a regular file.",
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => push_read_error(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &sidecar_path),
+                error.to_string(),
+            ),
+        }
+    }
+
+    inventory.recoverable_states.push(RecoverableStorageState {
+        relative_path: relative_storage_path(storage_root, &marker_path),
+        state_type: "interrupted_transcript_compaction".to_string(),
+    });
+    known_entries
+}
+
+fn inspect_session_directory(
+    storage_root: &Path,
+    session_dir: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) {
+    let relative_dir = relative_storage_path(storage_root, session_dir);
+    fingerprint.add("directory", &relative_dir, &[]);
+    let compaction_entries =
+        inspect_compaction_state(storage_root, session_dir, inventory, fingerprint);
+
+    match fs::read_dir(session_dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        push_read_error(
+                            inventory,
+                            fingerprint,
+                            format!("{relative_dir}/<unreadable-entry>"),
+                            error.to_string(),
+                        );
+                        continue;
+                    }
+                };
+                let name = entry.file_name();
+                if name == SESSION_META_FILE
+                    || name == SESSION_INDEX_FILE
+                    || name == SESSION_TRANSCRIPT_FILE
+                    || compaction_entries.contains(&name)
+                {
+                    continue;
+                }
+
+                let path = entry.path();
+                if fs::symlink_metadata(&path)
+                    .is_ok_and(|metadata| is_incidental_filesystem_metadata(&path, &metadata))
+                {
+                    continue;
+                }
+                let relative_path = relative_storage_path(storage_root, &path);
+                let entry_type = fs::symlink_metadata(&path)
+                    .map(|metadata| {
+                        let file_type = metadata.file_type();
+                        if file_type.is_symlink() {
+                            "symlink"
+                        } else if file_type.is_dir() {
+                            "directory"
+                        } else if file_type.is_file() {
+                            "file"
+                        } else {
+                            "special"
+                        }
+                    })
+                    .unwrap_or("unreadable");
+                push_unknown_entry(inventory, fingerprint, relative_path, entry_type);
+                fingerprint_unknown_tree(storage_root, &path, inventory, fingerprint);
+            }
+        }
+        Err(error) => push_read_error(
+            inventory,
+            fingerprint,
+            relative_dir.clone(),
+            error.to_string(),
+        ),
+    }
+
+    let metadata_path = session_meta_path(session_dir);
+    let index_path = session_index_path(session_dir);
+    let transcript_path = session_transcript_path(session_dir);
+    let metadata_bytes =
+        read_expected_artifact(storage_root, &metadata_path, inventory, fingerprint);
+    let index_bytes = read_expected_artifact(storage_root, &index_path, inventory, fingerprint);
+    let transcript_relative_path = relative_storage_path(storage_root, &transcript_path);
+    let transcript_artifact_fingerprint = match fs::symlink_metadata(&transcript_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            match artifact_file_fingerprint(&transcript_path) {
+                Ok(artifact_fingerprint) => {
+                    fingerprint.add_digest(
+                        "file",
+                        &transcript_relative_path,
+                        &artifact_fingerprint,
+                    );
+                    Some(artifact_fingerprint)
+                }
+                Err(error) => {
+                    push_read_error(
+                        inventory,
+                        fingerprint,
+                        transcript_relative_path,
+                        error.to_string(),
+                    );
+                    None
+                }
+            }
+        }
+        Ok(_) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                transcript_relative_path,
+                "Required history artifact is not a regular file.",
+            );
+            None
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                transcript_relative_path,
+                "Required history artifact is missing.",
+            );
+            None
+        }
+        Err(error) => {
+            push_read_error(
+                inventory,
+                fingerprint,
+                transcript_relative_path,
+                error.to_string(),
+            );
+            None
+        }
+    };
+
+    let metadata = metadata_bytes.as_ref().and_then(|artifact| {
+        match serde_json::from_slice::<PersistedSessionMetadata>(&artifact.bytes) {
+            Ok(metadata) => Some(metadata),
+            Err(error) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &metadata_path),
+                    format!("Invalid session metadata: {error}"),
+                );
+                None
+            }
+        }
+    });
+    let index = index_bytes.as_ref().and_then(|artifact| {
+        match serde_json::from_slice::<PersistedTranscriptIndex>(&artifact.bytes) {
+            Ok(index) => Some(index),
+            Err(error) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &index_path),
+                    format!("Invalid transcript index: {error}"),
+                );
+                None
+            }
+        }
+    });
+
+    let Some(metadata) = metadata else {
+        return;
+    };
+    if metadata.session_id.trim().is_empty() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_storage_path(storage_root, &metadata_path),
+            "Session metadata contains an empty session ID.",
+        );
+        return;
+    }
+    inventory.session_id_claims.push(SessionIdClaim {
+        session_id: metadata.session_id.clone(),
+        relative_path: relative_dir.clone(),
+    });
+
+    let (Some(index), Some(transcript_artifact_fingerprint)) =
+        (index, transcript_artifact_fingerprint)
+    else {
+        return;
+    };
+    let transcript_fingerprints =
+        match inspect_strict_transcript_file(&metadata, &index, &transcript_path) {
+            Ok(fingerprints) => fingerprints,
+            Err(StrictTranscriptInspectionError::Corrupt(error)) => {
+                push_corrupt_artifact(inventory, fingerprint, relative_dir, error);
+                return;
+            }
+            Err(StrictTranscriptInspectionError::Read(error)) => {
+                push_read_error(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &transcript_path),
+                    error.to_string(),
+                );
+                return;
+            }
+        };
+    if transcript_fingerprints.artifact != transcript_artifact_fingerprint {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_dir,
+            "Transcript changed while it was being inspected.",
+        );
+        return;
+    }
+    let (Some(metadata_artifact), Some(index_artifact)) =
+        (metadata_bytes.as_ref(), index_bytes.as_ref())
+    else {
+        return;
+    };
+    inventory.sessions.push(InspectedHistory {
+        session_id: metadata.session_id,
+        relative_path: relative_dir,
+        format: InspectedHistoryFormat::Directory,
+        content_fingerprint: transcript_fingerprints.content,
+        artifact_fingerprint: combined_artifact_fingerprint(&[
+            metadata_artifact.fingerprint,
+            index_artifact.fingerprint,
+            transcript_fingerprints.artifact,
+        ]),
+        managed_attachment_ids: transcript_fingerprints.managed_attachment_ids,
+    });
+}
+
+fn inspect_legacy_json_history(
+    storage_root: &Path,
+    path: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) {
+    let relative_path = relative_storage_path(storage_root, path);
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    if !metadata.file_type().is_file() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_path,
+            "Legacy session history is not a regular file.",
+        );
+        return;
+    }
+    let artifact_fingerprint = match raw_file_fingerprint(path) {
+        Ok(artifact_fingerprint) => {
+            fingerprint.add_digest("file", &relative_path, &artifact_fingerprint);
+            artifact_fingerprint
+        }
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    let history = match serde_json::from_reader::<_, PersistedSessionHistory>(BufReader::new(file))
+    {
+        Ok(history) => history,
+        Err(error) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_path,
+                format!("Invalid legacy session history: {error}"),
+            );
+            return;
+        }
+    };
+    if history.session_id.trim().is_empty() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_path,
+            "Legacy session history contains an empty session ID.",
+        );
+        return;
+    }
+    inventory.session_id_claims.push(SessionIdClaim {
+        session_id: history.session_id.clone(),
+        relative_path: relative_path.clone(),
+    });
+    if history.version != FORMAT_VERSION {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_path,
+            format!("Unsupported legacy session version: {}.", history.version),
+        );
+        return;
+    }
+
+    let history = normalize_legacy_history(history);
+    let managed_attachment_ids = match managed_attachment_ids_in_history(&history) {
+        Ok(ids) => ids,
+        Err(error) => {
+            push_corrupt_artifact(inventory, fingerprint, relative_path, error);
+            return;
+        }
+    };
+    let content_fingerprint = match persisted_history_content_fingerprint(&history) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_path,
+                format!("Could not fingerprint legacy session content: {error}"),
+            );
+            return;
+        }
+    };
+    inventory.sessions.push(InspectedHistory {
+        session_id: history.session_id,
+        relative_path,
+        format: InspectedHistoryFormat::LegacyJson,
+        content_fingerprint,
+        artifact_fingerprint: digest_hex(&artifact_fingerprint),
+        managed_attachment_ids,
+    });
+}
+
+fn finish_storage_inventory(
+    mut histories: HistoryStorageInventory,
+    fingerprint: InventoryFingerprintBuilder,
+) -> StorageInventory {
+    histories.sessions.sort_by(|left, right| {
+        left.session_id
+            .cmp(&right.session_id)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+    histories.session_id_claims.sort_by(|left, right| {
+        left.session_id
+            .cmp(&right.session_id)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+    histories.corrupt_artifacts.sort_by(|left, right| {
+        left.relative_path
+            .cmp(&right.relative_path)
+            .then_with(|| left.error.cmp(&right.error))
+    });
+    histories.unknown_entries.sort_by(|left, right| {
+        left.relative_path
+            .cmp(&right.relative_path)
+            .then_with(|| left.entry_type.cmp(&right.entry_type))
+    });
+    histories.read_errors.sort_by(|left, right| {
+        left.relative_path
+            .cmp(&right.relative_path)
+            .then_with(|| left.error.cmp(&right.error))
+    });
+    histories.recoverable_states.sort_by(|left, right| {
+        left.relative_path
+            .cmp(&right.relative_path)
+            .then_with(|| left.state_type.cmp(&right.state_type))
+    });
+
+    let mut artifacts_by_session = BTreeMap::<String, Vec<String>>::new();
+    for claim in &histories.session_id_claims {
+        artifacts_by_session
+            .entry(claim.session_id.clone())
+            .or_default()
+            .push(claim.relative_path.clone());
+    }
+    histories.duplicate_session_ids = artifacts_by_session
+        .into_iter()
+        .filter_map(|(session_id, mut artifacts)| {
+            if artifacts.len() < 2 {
+                return None;
+            }
+            artifacts.sort();
+            Some(DuplicateSessionId {
+                session_id,
+                artifacts,
+            })
+        })
+        .collect();
+
+    StorageInventory {
+        fingerprint: fingerprint.finish(),
+        histories,
+    }
+}
+
+/// Inspects every history artifact without applying loader recovery or skipping failures.
+///
+/// The regular loaders intentionally remain tolerant for existing users. Destructive storage
+/// decisions must use this inventory instead: an unreadable or unknown artifact is represented
+/// explicitly and therefore cannot be mistaken for an empty root.
+pub fn inspect_history_storage(storage_root: &Path) -> StorageInventory {
+    let mut histories = HistoryStorageInventory::default();
+    let mut fingerprint = InventoryFingerprintBuilder::default();
+    let storage_metadata = match fs::symlink_metadata(storage_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fingerprint.add("storage-root", "", b"missing");
+            return finish_storage_inventory(histories, fingerprint);
+        }
+        Err(error) => {
+            fingerprint.add("storage-root", "", b"unreadable");
+            push_read_error(
+                &mut histories,
+                &mut fingerprint,
+                ".".to_string(),
+                error.to_string(),
+            );
+            return finish_storage_inventory(histories, fingerprint);
+        }
+    };
+    histories.storage_root_exists = true;
+    fingerprint.add("storage-root", "", b"present");
+    if !storage_metadata.file_type().is_dir() {
+        push_corrupt_artifact(
+            &mut histories,
+            &mut fingerprint,
+            ".".to_string(),
+            "History storage root is not a regular directory.",
+        );
+        return finish_storage_inventory(histories, fingerprint);
+    }
+
+    let sessions_root = sessions_dir(storage_root);
+    let root_entries = match fs::read_dir(storage_root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            push_read_error(
+                &mut histories,
+                &mut fingerprint,
+                ".".to_string(),
+                error.to_string(),
+            );
+            return finish_storage_inventory(histories, fingerprint);
+        }
+    };
+    for entry in root_entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                push_read_error(
+                    &mut histories,
+                    &mut fingerprint,
+                    "<unreadable-entry>".to_string(),
+                    error.to_string(),
+                );
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path == sessions_root {
+            continue;
+        }
+        if fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| is_incidental_filesystem_metadata(&path, &metadata))
+        {
+            continue;
+        }
+        let relative_path = relative_storage_path(storage_root, &path);
+        let entry_type = fs::symlink_metadata(&path)
+            .map(|metadata| {
+                let file_type = metadata.file_type();
+                if file_type.is_symlink() {
+                    "symlink"
+                } else if file_type.is_dir() {
+                    "directory"
+                } else if file_type.is_file() {
+                    "file"
+                } else {
+                    "special"
+                }
+            })
+            .unwrap_or("unreadable");
+        push_unknown_entry(&mut histories, &mut fingerprint, relative_path, entry_type);
+        fingerprint_unknown_tree(storage_root, &path, &mut histories, &mut fingerprint);
+    }
+
+    let sessions_metadata = match fs::symlink_metadata(&sessions_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fingerprint.add("sessions-root", "sessions", b"missing");
+            return finish_storage_inventory(histories, fingerprint);
+        }
+        Err(error) => {
+            push_read_error(
+                &mut histories,
+                &mut fingerprint,
+                "sessions".to_string(),
+                error.to_string(),
+            );
+            return finish_storage_inventory(histories, fingerprint);
+        }
+    };
+    if !sessions_metadata.file_type().is_dir() {
+        push_corrupt_artifact(
+            &mut histories,
+            &mut fingerprint,
+            "sessions".to_string(),
+            "History sessions root is not a regular directory.",
+        );
+        return finish_storage_inventory(histories, fingerprint);
+    }
+    histories.sessions_root_exists = true;
+    fingerprint.add("sessions-root", "sessions", b"present");
+
+    let entries = match fs::read_dir(&sessions_root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            push_read_error(
+                &mut histories,
+                &mut fingerprint,
+                "sessions".to_string(),
+                error.to_string(),
+            );
+            return finish_storage_inventory(histories, fingerprint);
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                push_read_error(
+                    &mut histories,
+                    &mut fingerprint,
+                    "sessions/<unreadable-entry>".to_string(),
+                    error.to_string(),
+                );
+                continue;
+            }
+        };
+        let path = entry.path();
+        let relative_path = relative_storage_path(storage_root, &path);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                push_read_error(
+                    &mut histories,
+                    &mut fingerprint,
+                    relative_path,
+                    error.to_string(),
+                );
+                continue;
+            }
+        };
+        if is_incidental_filesystem_metadata(&path, &metadata) {
+            continue;
+        }
+        let file_type = metadata.file_type();
+        if file_type.is_dir() {
+            inspect_session_directory(storage_root, &path, &mut histories, &mut fingerprint);
+        } else if file_type.is_file()
+            && path.extension().and_then(|extension| extension.to_str()) == Some("json")
+        {
+            inspect_legacy_json_history(storage_root, &path, &mut histories, &mut fingerprint);
+        } else {
+            let entry_type = if file_type.is_symlink() {
+                "symlink"
+            } else if file_type.is_file() {
+                "file"
+            } else {
+                "special"
+            };
+            push_unknown_entry(&mut histories, &mut fingerprint, relative_path, entry_type);
+            fingerprint_unknown_tree(storage_root, &path, &mut histories, &mut fingerprint);
+        }
+    }
+
+    finish_storage_inventory(histories, fingerprint)
 }
 
 fn history_window_bounds(history: &PersistedSessionHistory) -> Result<(usize, usize), String> {
@@ -454,7 +1773,11 @@ fn history_from_metadata(
 
 fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, String> {
     let history = read_json_file::<PersistedSessionHistory>(path)?;
-    Ok(PersistedSessionHistory {
+    Ok(normalize_legacy_history(history))
+}
+
+fn normalize_legacy_history(history: PersistedSessionHistory) -> PersistedSessionHistory {
+    PersistedSessionHistory {
         version: history.version,
         session_id: history.session_id,
         parent_session_id: history.parent_session_id,
@@ -476,7 +1799,7 @@ fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, Stri
             .preview
             .or_else(|| derive_preview(&history.messages)),
         messages: history.messages,
-    })
+    }
 }
 
 fn load_history_from_session_dir(
@@ -492,8 +1815,8 @@ fn load_history_from_session_dir(
     Ok(history_from_metadata(metadata, messages))
 }
 
-fn legacy_session_priority(vault_root: &Path, path: &Path, session_id: &str) -> u8 {
-    if path == storage_session_dir(vault_root, session_id) {
+fn legacy_session_priority(storage_root: &Path, path: &Path, session_id: &str) -> u8 {
+    if path == storage_session_dir(storage_root, session_id) {
         3
     } else if path.is_dir() {
         2
@@ -503,15 +1826,15 @@ fn legacy_session_priority(vault_root: &Path, path: &Path, session_id: &str) -> 
 }
 
 fn find_legacy_session_artifacts(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
 ) -> Result<LegacySessionArtifacts, String> {
-    let dir = sessions_dir(vault_root);
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
         return Ok(LegacySessionArtifacts::default());
     }
 
-    let storage_dir = storage_session_dir(vault_root, session_id);
+    let storage_dir = storage_session_dir(storage_root, session_id);
     let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
     let mut artifacts = LegacySessionArtifacts::default();
 
@@ -553,10 +1876,10 @@ fn find_legacy_session_artifacts(
 }
 
 fn load_legacy_history(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
 ) -> Result<Option<PersistedSessionHistory>, String> {
-    let artifacts = find_legacy_session_artifacts(vault_root, session_id)?;
+    let artifacts = find_legacy_session_artifacts(storage_root, session_id)?;
     if let Some(dir_path) = artifacts.dir_path {
         return load_history_from_session_dir(&dir_path, true).map(Some);
     }
@@ -566,8 +1889,8 @@ fn load_legacy_history(
     Ok(None)
 }
 
-fn remove_legacy_history_artifacts(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    let artifacts = find_legacy_session_artifacts(vault_root, session_id)?;
+fn remove_legacy_history_artifacts(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    let artifacts = find_legacy_session_artifacts(storage_root, session_id)?;
     if let Some(file_path) = artifacts.file_path {
         fs::remove_file(file_path).map_err(|e| e.to_string())?;
     }
@@ -578,7 +1901,7 @@ fn remove_legacy_history_artifacts(vault_root: &Path, session_id: &str) -> Resul
 }
 
 fn write_full_lazy_history(
-    vault_root: &Path,
+    storage_root: &Path,
     history: &PersistedSessionHistory,
 ) -> Result<(), String> {
     let (start_index, total_count) = history_window_bounds(history)?;
@@ -586,8 +1909,8 @@ fn write_full_lazy_history(
         return Err("Full lazy history writes require a complete transcript.".to_string());
     }
 
-    ensure_sessions_root(vault_root)?;
-    let session_dir = storage_session_dir(vault_root, &history.session_id);
+    ensure_sessions_root(storage_root)?;
+    let session_dir = storage_session_dir(storage_root, &history.session_id);
     fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
 
     let transcript_path = session_transcript_path(&session_dir);
@@ -624,31 +1947,31 @@ fn write_full_lazy_history(
 
     write_json_atomic(&session_meta_path(&session_dir), &metadata)?;
     write_json_atomic(&session_index_path(&session_dir), &index)?;
-    remove_legacy_history_artifacts(vault_root, &history.session_id)?;
+    remove_legacy_history_artifacts(storage_root, &history.session_id)?;
 
     Ok(())
 }
 
-fn ensure_lazy_session_from_legacy(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    recover_incomplete_compaction(&storage_session_dir(vault_root, session_id))?;
-    if storage_session_is_complete(vault_root, session_id) {
+fn ensure_lazy_session_from_legacy(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    recover_incomplete_compaction(&storage_session_dir(storage_root, session_id))?;
+    if storage_session_is_complete(storage_root, session_id) {
         return Ok(());
     }
 
-    let Some(history) = load_legacy_history(vault_root, session_id)? else {
+    let Some(history) = load_legacy_history(storage_root, session_id)? else {
         return Ok(());
     };
 
-    write_full_lazy_history(vault_root, &history)
+    write_full_lazy_history(storage_root, &history)
 }
 
 fn load_lazy_history_page(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
     start_index: usize,
     limit: usize,
 ) -> Result<PersistedSessionHistoryPage, String> {
-    let session_dir = storage_session_dir(vault_root, session_id);
+    let session_dir = storage_session_dir(storage_root, session_id);
     load_lazy_history_page_from_dir(&session_dir, start_index, limit)
 }
 
@@ -1043,26 +2366,26 @@ fn load_all_lazy_messages_from_dir(session_dir: &Path) -> Result<Vec<PersistedMe
 }
 
 pub fn save_session_history(
-    vault_root: &Path,
+    storage_root: &Path,
     history: &PersistedSessionHistory,
 ) -> Result<(), String> {
     save_session_history_with_compaction_policy(
-        vault_root,
+        storage_root,
         history,
         DEFAULT_TRANSCRIPT_COMPACTION_POLICY,
     )
 }
 
 fn save_session_history_with_compaction_policy(
-    vault_root: &Path,
+    storage_root: &Path,
     history: &PersistedSessionHistory,
     compaction_policy: TranscriptCompactionPolicy,
 ) -> Result<(), String> {
-    ensure_lazy_session_from_legacy(vault_root, &history.session_id)?;
+    ensure_lazy_session_from_legacy(storage_root, &history.session_id)?;
     let (start_index, total_count) = history_window_bounds(history)?;
 
-    let metadata_path = storage_session_meta_file(vault_root, &history.session_id);
-    let index_path = storage_session_index_file(vault_root, &history.session_id);
+    let metadata_path = storage_session_meta_file(storage_root, &history.session_id);
+    let index_path = storage_session_index_file(storage_root, &history.session_id);
     if !metadata_path.exists() || !index_path.exists() {
         if start_index != 0 || total_count != history.messages.len() {
             return Err(
@@ -1070,11 +2393,11 @@ fn save_session_history_with_compaction_policy(
                     .to_string(),
             );
         }
-        return write_full_lazy_history(vault_root, history);
+        return write_full_lazy_history(storage_root, history);
     }
 
-    let existing_metadata = load_session_metadata(vault_root, &history.session_id)?;
-    let existing_index = load_session_index(vault_root, &history.session_id)?;
+    let existing_metadata = load_session_metadata(storage_root, &history.session_id)?;
+    let existing_index = load_session_index(storage_root, &history.session_id)?;
     validate_index(&existing_index)?;
 
     if start_index > existing_metadata.message_count {
@@ -1107,7 +2430,7 @@ fn save_session_history_with_compaction_policy(
         .extend_from_slice(&existing_index.message_hashes[start_index..start_index + common]);
 
     if common < history.messages.len() {
-        let transcript_path = storage_session_transcript_file(vault_root, &history.session_id);
+        let transcript_path = storage_session_transcript_file(storage_root, &history.session_id);
         let mut transcript = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1147,7 +2470,7 @@ fn save_session_history_with_compaction_policy(
         message_hashes: next_hashes,
     };
 
-    let session_dir = storage_session_dir(vault_root, &history.session_id);
+    let session_dir = storage_session_dir(storage_root, &history.session_id);
     let transcript_path = session_transcript_path(&session_dir);
     let physical_bytes = fs::metadata(&transcript_path)
         .map_err(|error| error.to_string())?
@@ -1161,24 +2484,24 @@ fn save_session_history_with_compaction_policy(
         write_json_atomic(&index_path, &next_index)?;
     }
 
-    remove_legacy_history_artifacts(vault_root, &history.session_id)?;
+    remove_legacy_history_artifacts(storage_root, &history.session_id)?;
 
     Ok(())
 }
 
 pub fn load_session_history_page(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
     start_index: usize,
     limit: usize,
 ) -> Result<PersistedSessionHistoryPage, String> {
-    ensure_lazy_session_from_legacy(vault_root, session_id)?;
+    ensure_lazy_session_from_legacy(storage_root, session_id)?;
 
-    if storage_session_is_complete(vault_root, session_id) {
-        return load_lazy_history_page(vault_root, session_id, start_index, limit);
+    if storage_session_is_complete(storage_root, session_id) {
+        return load_lazy_history_page(storage_root, session_id, start_index, limit);
     }
 
-    let Some(history) = load_legacy_history(vault_root, session_id)? else {
+    let Some(history) = load_legacy_history(storage_root, session_id)? else {
         return Ok(PersistedSessionHistoryPage {
             session_id: session_id.to_string(),
             total_messages: 0,
@@ -1201,18 +2524,18 @@ pub fn load_session_history_page(
     })
 }
 
-pub fn delete_session_history(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    let dir = storage_session_dir(vault_root, session_id);
+pub fn delete_session_history(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    let dir = storage_session_dir(storage_root, session_id);
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
-    remove_legacy_history_artifacts(vault_root, session_id)?;
+    remove_legacy_history_artifacts(storage_root, session_id)?;
 
     Ok(())
 }
 
-pub fn delete_all_session_histories(vault_root: &Path) -> Result<(), String> {
-    let dir = sessions_dir(vault_root);
+pub fn delete_all_session_histories(storage_root: &Path) -> Result<(), String> {
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
         return Ok(());
     }
@@ -1241,14 +2564,14 @@ fn now_ms() -> Result<u64, String> {
 }
 
 pub fn prune_expired_session_histories(
-    vault_root: &Path,
+    storage_root: &Path,
     max_age_days: u32,
 ) -> Result<usize, String> {
     if max_age_days == 0 {
         return Ok(0);
     }
 
-    let dir = sessions_dir(vault_root);
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
         return Ok(0);
     }
@@ -1304,10 +2627,10 @@ pub fn prune_expired_session_histories(
 }
 
 pub fn load_all_session_histories(
-    vault_root: &Path,
+    storage_root: &Path,
     include_messages: bool,
 ) -> Result<Vec<PersistedSessionHistory>, String> {
-    let dir = sessions_dir(vault_root);
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -1328,7 +2651,7 @@ pub fn load_all_session_histories(
                 Ok(history) => history,
                 Err(_) => continue,
             };
-            let priority = legacy_session_priority(vault_root, &path, &history.session_id);
+            let priority = legacy_session_priority(storage_root, &path, &history.session_id);
             upsert_history(
                 &mut histories_by_session_id,
                 history.session_id.clone(),
@@ -1442,14 +2765,14 @@ const MAX_MATCHED_MESSAGES_PER_SESSION: usize = 5;
 const SNIPPET_CONTEXT_CHARS: usize = 50;
 
 pub fn search_session_content(
-    vault_root: &Path,
+    storage_root: &Path,
     query: &str,
 ) -> Result<Vec<SessionSearchResult>, String> {
     if query.trim().is_empty() {
         return Ok(vec![]);
     }
     let query_lower = query.to_lowercase();
-    let dir = sessions_dir(vault_root);
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -1565,10 +2888,13 @@ fn search_in_legacy_file(path: &Path, query_lower: &str) -> Result<SessionSearch
 // Session fork
 // ---------------------------------------------------------------------------
 
-pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Result<String, String> {
-    ensure_lazy_session_from_legacy(vault_root, source_session_id)?;
+pub fn fork_session_history(
+    storage_root: &Path,
+    source_session_id: &str,
+) -> Result<String, String> {
+    ensure_lazy_session_from_legacy(storage_root, source_session_id)?;
 
-    let source_dir = storage_session_dir(vault_root, source_session_id);
+    let source_dir = storage_session_dir(storage_root, source_session_id);
     if !source_dir.exists() {
         return Err(format!("Source session not found: {source_session_id}"));
     }
@@ -1581,8 +2907,8 @@ pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Resul
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    ensure_sessions_root(vault_root)?;
-    let dest_dir = storage_session_dir(vault_root, &new_session_id);
+    ensure_sessions_root(storage_root)?;
+    let dest_dir = storage_session_dir(storage_root, &new_session_id);
     fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
 
     // Copy transcript and index as-is
@@ -1792,8 +3118,8 @@ mod tests {
         }
     }
 
-    fn transcript_line_count(vault_root: &Path, session_id: &str) -> usize {
-        let file = File::open(storage_session_transcript_file(vault_root, session_id))
+    fn transcript_line_count(storage_root: &Path, session_id: &str) -> usize {
+        let file = File::open(storage_session_transcript_file(storage_root, session_id))
             .expect("transcript should open");
         BufReader::new(file)
             .lines()
@@ -1810,10 +3136,10 @@ mod tests {
         }
     }
 
-    fn persist_default_compaction_candidate(vault_root: &Path) -> (usize, u64, String) {
+    fn persist_default_compaction_candidate(storage_root: &Path) -> (usize, u64, String) {
         let history = sample_history();
         save_session_history_with_compaction_policy(
-            vault_root,
+            storage_root,
             &history,
             disabled_compaction_policy(),
         )
@@ -1826,18 +3152,19 @@ mod tests {
                 "obsolete transcript bytes ".repeat(45_000)
             );
             save_session_history_with_compaction_policy(
-                vault_root,
+                storage_root,
                 &assistant_update_patch(final_content.clone(), 30 + version),
                 disabled_compaction_policy(),
             )
             .expect("inflating update should persist");
         }
 
-        let inflated_lines = transcript_line_count(vault_root, "session-1");
-        let inflated_bytes = fs::metadata(storage_session_transcript_file(vault_root, "session-1"))
-            .expect("inflated transcript metadata should load")
-            .len();
-        let index = load_session_index(vault_root, "session-1").expect("index should load");
+        let inflated_lines = transcript_line_count(storage_root, "session-1");
+        let inflated_bytes =
+            fs::metadata(storage_session_transcript_file(storage_root, "session-1"))
+                .expect("inflated transcript metadata should load")
+                .len();
+        let index = load_session_index(storage_root, "session-1").expect("index should load");
 
         assert!(inflated_lines > history.messages.len());
         assert!(should_compact_transcript(
@@ -1885,6 +3212,363 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(first, third);
         assert!(first.starts_with("session-"));
+    }
+
+    #[test]
+    fn strict_inspector_reports_every_artifact_the_tolerant_loader_skips() {
+        let storage_root = make_temp_dir();
+        let valid_history = sample_history();
+        save_session_history(&storage_root, &valid_history).expect("valid history should persist");
+
+        let duplicate_path = sessions_dir(&storage_root).join("duplicate.json");
+        write_json_atomic(&duplicate_path, &valid_history).expect("duplicate should persist");
+        fs::write(sessions_dir(&storage_root).join("broken.json"), b"{broken")
+            .expect("broken history should persist");
+        fs::write(sessions_dir(&storage_root).join("unknown.bin"), b"unknown")
+            .expect("unknown entry should persist");
+        fs::write(
+            storage_root.join("unexpected-root.bin"),
+            b"unknown root entry",
+        )
+        .expect("unknown root entry should persist");
+
+        let corrupt_meta = sample_history_with_session_id("corrupt-meta");
+        save_session_history(&storage_root, &corrupt_meta).expect("history should persist");
+        fs::write(
+            storage_session_meta_file(&storage_root, "corrupt-meta"),
+            b"{broken",
+        )
+        .expect("metadata should be corrupted");
+
+        let corrupt_index = sample_history_with_session_id("corrupt-index");
+        save_session_history(&storage_root, &corrupt_index).expect("history should persist");
+        fs::write(
+            storage_session_index_file(&storage_root, "corrupt-index"),
+            b"{broken",
+        )
+        .expect("index should be corrupted");
+
+        let corrupt_transcript = sample_history_with_session_id("corrupt-transcript");
+        save_session_history(&storage_root, &corrupt_transcript).expect("history should persist");
+        fs::write(
+            storage_session_transcript_file(&storage_root, "corrupt-transcript"),
+            b"{broken\n",
+        )
+        .expect("transcript should be corrupted");
+
+        let valid_session_dir = storage_session_dir(&storage_root, &valid_history.session_id);
+        fs::write(valid_session_dir.join("unexpected.txt"), b"unexpected")
+            .expect("nested unknown entry should persist");
+        let corrupt_duplicate_dir = sessions_dir(&storage_root).join("corrupt-duplicate");
+        fs::create_dir_all(&corrupt_duplicate_dir).expect("duplicate directory should exist");
+        for file_name in [
+            SESSION_META_FILE,
+            SESSION_INDEX_FILE,
+            SESSION_TRANSCRIPT_FILE,
+        ] {
+            fs::copy(
+                valid_session_dir.join(file_name),
+                corrupt_duplicate_dir.join(file_name),
+            )
+            .expect("duplicate artifact should copy");
+        }
+        fs::write(corrupt_duplicate_dir.join(SESSION_INDEX_FILE), b"{broken")
+            .expect("duplicate index should be corrupted");
+
+        let tolerant = load_all_session_histories(&storage_root, false)
+            .expect("the normal loader should remain tolerant");
+        assert!(tolerant
+            .iter()
+            .any(|history| history.session_id == valid_history.session_id));
+        assert!(!tolerant
+            .iter()
+            .any(|history| history.session_id == "corrupt-meta"));
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert_eq!(inventory.histories.sessions.len(), 2);
+        assert_eq!(inventory.histories.duplicate_session_ids.len(), 1);
+        assert_eq!(
+            inventory.histories.duplicate_session_ids[0].session_id,
+            valid_history.session_id
+        );
+        assert!(inventory.histories.duplicate_session_ids[0]
+            .artifacts
+            .iter()
+            .any(|path| path.contains("corrupt-duplicate")));
+        for expected in ["broken.json", "session-meta.json", "index.json"] {
+            assert!(
+                inventory
+                    .histories
+                    .corrupt_artifacts
+                    .iter()
+                    .any(|artifact| artifact.relative_path.contains(expected)),
+                "missing corruption diagnostic for {expected}"
+            );
+        }
+        assert!(inventory
+            .histories
+            .corrupt_artifacts
+            .iter()
+            .any(|artifact| artifact.error.contains("Persisted transcript")));
+        for expected in ["unknown.bin", "unexpected.txt", "unexpected-root.bin"] {
+            assert!(
+                inventory
+                    .histories
+                    .unknown_entries
+                    .iter()
+                    .any(|entry| entry.relative_path.contains(expected)),
+                "missing unknown entry diagnostic for {expected}"
+            );
+        }
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn strict_inspector_ignores_regular_finder_metadata() {
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("history should persist");
+
+        fs::write(storage_root.join(".DS_Store"), b"finder metadata")
+            .expect("root finder metadata should persist");
+        fs::write(
+            sessions_dir(&storage_root).join(".DS_Store"),
+            b"finder metadata",
+        )
+        .expect("sessions finder metadata should persist");
+        fs::write(
+            storage_session_dir(&storage_root, &history.session_id).join(".DS_Store"),
+            b"finder metadata",
+        )
+        .expect("session finder metadata should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert_eq!(inventory.histories.sessions.len(), 1);
+        assert!(inventory.histories.unknown_entries.is_empty());
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn strict_inspector_rejects_non_file_finder_metadata() {
+        let storage_root = make_temp_dir();
+        fs::create_dir(storage_root.join(".DS_Store"))
+            .expect("finder metadata directory should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert!(inventory
+            .histories
+            .unknown_entries
+            .iter()
+            .any(|entry| entry.relative_path == ".DS_Store"));
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_inspector_rejects_finder_metadata_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let storage_root = make_temp_dir();
+        symlink("missing-target", storage_root.join(".DS_Store"))
+            .expect("finder metadata symlink should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert!(inventory
+            .histories
+            .unknown_entries
+            .iter()
+            .any(|entry| entry.relative_path == ".DS_Store" && entry.entry_type == "symlink"));
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn strict_inspector_rejects_oversized_index_ranges_before_allocating() {
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("history should persist");
+        let index_path = storage_session_index_file(&storage_root, &history.session_id);
+        let mut index: PersistedTranscriptIndex =
+            read_json_file(&index_path).expect("index should load");
+        index.message_lengths[0] = u64::MAX;
+        write_json_atomic(&index_path, &index).expect("corrupt index should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+
+        assert!(inventory.histories.sessions.is_empty());
+        assert!(inventory
+            .histories
+            .corrupt_artifacts
+            .iter()
+            .any(|artifact| artifact.error.contains("points outside the transcript")));
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn content_fingerprints_ignore_json_object_key_order() {
+        let first_root = make_temp_dir();
+        let second_root = make_temp_dir();
+        ensure_sessions_root(&first_root).expect("first sessions root should exist");
+        ensure_sessions_root(&second_root).expect("second sessions root should exist");
+        let first = br#"{
+            "version": 1,
+            "session_id": "stable-session",
+            "model_id": "test-model",
+            "mode_id": "default",
+            "created_at": 10,
+            "updated_at": 20,
+            "messages": [{
+                "id": "message-1",
+                "role": "user",
+                "kind": "text",
+                "content": "hello",
+                "timestamp": 10,
+                "meta": {"z": 2, "a": 1}
+            }]
+        }"#;
+        let second = br#"{
+            "messages": [{
+                "timestamp": 10,
+                "content": "hello",
+                "kind": "text",
+                "role": "user",
+                "id": "message-1",
+                "meta": {"a": 1, "z": 2}
+            }],
+            "updated_at": 20,
+            "created_at": 10,
+            "mode_id": "default",
+            "model_id": "test-model",
+            "session_id": "stable-session",
+            "version": 1
+        }"#;
+        fs::write(sessions_dir(&first_root).join("history.json"), first)
+            .expect("first history should persist");
+        fs::write(sessions_dir(&second_root).join("history.json"), second)
+            .expect("second history should persist");
+
+        let first_inventory = inspect_history_storage(&first_root);
+        let second_inventory = inspect_history_storage(&second_root);
+        assert_eq!(first_inventory.histories.sessions.len(), 1);
+        assert_eq!(second_inventory.histories.sessions.len(), 1);
+        assert_eq!(
+            first_inventory.histories.sessions[0].content_fingerprint,
+            second_inventory.histories.sessions[0].content_fingerprint
+        );
+        assert_ne!(
+            first_inventory.histories.sessions[0].artifact_fingerprint,
+            second_inventory.histories.sessions[0].artifact_fingerprint
+        );
+        assert_ne!(first_inventory.fingerprint, second_inventory.fingerprint);
+
+        fs::remove_dir_all(first_root).ok();
+        fs::remove_dir_all(second_root).ok();
+    }
+
+    #[test]
+    fn content_fingerprint_matches_across_legacy_and_directory_formats() {
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("directory history should persist");
+        write_json_atomic(&sessions_dir(&storage_root).join("legacy.json"), &history)
+            .expect("legacy history should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert_eq!(inventory.histories.sessions.len(), 2);
+        assert_eq!(
+            inventory.histories.sessions[0].content_fingerprint,
+            inventory.histories.sessions[1].content_fingerprint
+        );
+        assert_ne!(
+            inventory.histories.sessions[0].artifact_fingerprint,
+            inventory.histories.sessions[1].artifact_fingerprint
+        );
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn strict_inventory_fingerprint_covers_unindexed_transcript_bytes() {
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("history should persist");
+        let before = inspect_history_storage(&storage_root);
+        let transcript = storage_session_transcript_file(&storage_root, &history.session_id);
+        OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .expect("transcript should open")
+            .write_all(b"\n")
+            .expect("unindexed byte should append");
+
+        let after = inspect_history_storage(&storage_root);
+        assert_eq!(before.histories.sessions.len(), 1);
+        assert_eq!(after.histories.sessions.len(), 1);
+        assert_ne!(before.fingerprint, after.fingerprint);
+        assert_ne!(
+            before.histories.sessions[0].artifact_fingerprint,
+            after.histories.sessions[0].artifact_fingerprint
+        );
+        assert_eq!(
+            before.histories.sessions[0].content_fingerprint,
+            after.histories.sessions[0].content_fingerprint
+        );
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_inventory_distinguishes_non_utf8_paths() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let storage_root = Path::new("storage");
+        let first_path = storage_root.join(OsString::from_vec(vec![
+            b'u', b'n', b'k', b'n', b'o', b'w', b'n', b'-', 0xfe, b'.', b'b', b'i', b'n',
+        ]));
+        let second_path = storage_root.join(OsString::from_vec(vec![
+            b'u', b'n', b'k', b'n', b'o', b'w', b'n', b'-', 0xff, b'.', b'b', b'i', b'n',
+        ]));
+        let first = relative_storage_path(storage_root, &first_path);
+        let second = relative_storage_path(storage_root, &second_path);
+        assert!(first.starts_with("@neverwrite-bytes:"));
+        assert!(second.starts_with("@neverwrite-bytes:"));
+        assert_ne!(first, second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_inspector_reports_permission_denied_artifacts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("history should persist");
+        let transcript = storage_session_transcript_file(&storage_root, &history.session_id);
+        let original_permissions = fs::metadata(&transcript)
+            .expect("transcript metadata should load")
+            .permissions();
+        fs::set_permissions(&transcript, fs::Permissions::from_mode(0o000))
+            .expect("transcript permissions should change");
+
+        let read_is_denied = fs::read(&transcript).is_err();
+        let inventory = inspect_history_storage(&storage_root);
+        fs::set_permissions(&transcript, original_permissions)
+            .expect("transcript permissions should restore");
+        if read_is_denied {
+            assert!(inventory
+                .histories
+                .read_errors
+                .iter()
+                .any(|error| error.relative_path.ends_with(SESSION_TRANSCRIPT_FILE)));
+        }
+
+        fs::remove_dir_all(storage_root).ok();
     }
 
     #[test]
@@ -1952,7 +3636,7 @@ mod tests {
     fn delete_all_session_histories_only_clears_sessions_dir() {
         let dir = make_temp_dir();
         let history = sample_history();
-        let sibling = dir.join(PRODUCT_STATE_DIR_NAME).join("keep.txt");
+        let sibling = dir.join("keep.txt");
 
         save_session_history(&dir, &history).expect("history should persist");
         fs::create_dir_all(sibling.parent().expect("sibling parent should exist"))
@@ -1978,9 +3662,7 @@ mod tests {
         let dir = make_temp_dir();
         let mut history = sample_history();
         history.updated_at = 1;
-        let sibling = dir
-            .join(PRODUCT_STATE_DIR_NAME)
-            .join("keep-after-prune.txt");
+        let sibling = dir.join("keep-after-prune.txt");
 
         save_session_history(&dir, &history).expect("history should persist");
         fs::create_dir_all(sibling.parent().expect("sibling parent should exist"))
@@ -2034,6 +3716,39 @@ mod tests {
 
         let histories = load_all_session_histories(&dir, true).expect("full history should load");
         assert_eq!(histories[0].messages[0].attachments, expected_attachments);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn inspector_and_fork_preserve_managed_attachment_ids() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.messages[0].attachments = Some(serde_json::json!([{
+            "id": "ui-attachment",
+            "type": "file",
+            "noteId": null,
+            "label": "Screenshot",
+            "path": null,
+            "managedAttachmentId": "ma_0123456789abcdef0123456789abcdef",
+            "fileName": "pasted-image.png",
+            "mimeType": "image/png"
+        }]));
+        save_session_history(&dir, &history).expect("history should persist");
+
+        let inventory = inspect_history_storage(&dir);
+        assert_eq!(
+            inventory.histories.sessions[0].managed_attachment_ids,
+            vec!["ma_0123456789abcdef0123456789abcdef"]
+        );
+
+        let fork_id = fork_session_history(&dir, &history.session_id).expect("history should fork");
+        let fork =
+            load_session_history_page(&dir, &fork_id, 0, 20).expect("forked history should load");
+        assert_eq!(
+            fork.messages[0].attachments,
+            history.messages[0].attachments
+        );
 
         fs::remove_dir_all(dir).ok();
     }
@@ -2401,6 +4116,35 @@ mod tests {
         };
         write_json_atomic(&session_compaction_marker_path(&session_dir), &marker)
             .expect("marker should write");
+
+        let marker_path = session_compaction_marker_path(&session_dir);
+        let marker_before = fs::read(&marker_path).expect("marker should read");
+        let transcript_before = fs::read(&transcript_path).expect("partial transcript should read");
+        let inventory = inspect_history_storage(&dir);
+        assert_eq!(inventory.histories.recoverable_states.len(), 1);
+        assert_eq!(
+            inventory.histories.recoverable_states[0].state_type,
+            "interrupted_transcript_compaction"
+        );
+        assert!(!inventory.histories.unknown_entries.iter().any(|entry| {
+            entry.relative_path.contains("compact-state")
+                || entry.relative_path.contains("compact-tmp")
+                || entry.relative_path.contains("compact-bak")
+        }));
+        assert_eq!(
+            fs::read(&marker_path).expect("inspection must preserve marker"),
+            marker_before
+        );
+        assert_eq!(
+            fs::read(&transcript_path).expect("inspection must preserve transcript"),
+            transcript_before
+        );
+        assert!(metadata_backup.exists());
+        assert!(index_backup.exists());
+        assert!(transcript_backup.exists());
+        assert!(metadata_tmp.exists());
+        assert!(index_tmp.exists());
+        assert!(transcript_tmp.exists());
 
         let histories = load_all_session_histories(&dir, true).expect("history should recover");
         assert_eq!(histories.len(), 1);

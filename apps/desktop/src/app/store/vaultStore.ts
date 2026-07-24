@@ -381,7 +381,23 @@ export function togglePinVault(path: string) {
     writeRecentVaults(updated);
 }
 
+export const ACTIVE_VAULT_RECENT_REMOVAL_ERROR =
+    "Switch to another vault before removing this one from Recents. Active AI sessions could recreate its device-local data.";
+
 export async function removeVaultFromList(path: string) {
+    if (useVaultStore.getState().vaultPath === path) {
+        throw new Error(ACTIVE_VAULT_RECENT_REMOVAL_ERROR);
+    }
+
+    // This destructive step runs first. If it cannot be verified, keep the
+    // Recent entry so the user can retry instead of hiding retained local data.
+    await invoke("forget_ai_history_device_data", {
+        vaultPath: path,
+        // The native side compares canonical identities before deleting. This
+        // keeps an older Recent path alias from bypassing the UI guard above.
+        activeVaultPath: useVaultStore.getState().vaultPath,
+    });
+
     // Remove from recent vaults
     const updated = getRecentVaults().filter((v) => v.path !== path);
     writeRecentVaults(updated);
@@ -405,16 +421,6 @@ export async function removeVaultFromList(path: string) {
         // Snapshot may not exist — that's fine
     }
 
-    // Delete AI session histories from disk
-    if (useVaultStore.getState().vaultPath === path) {
-        try {
-            await invoke("ai_delete_all_session_histories", {
-                vaultPath: path,
-            });
-        } catch {
-            // No histories or vault not open — that's fine
-        }
-    }
 }
 
 export function clearRecentVaults() {
@@ -548,22 +554,25 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 });
 
                 if (openState.stage === "ready") {
+                    const canonicalPath = openState.path ?? path;
                     const [notes, entries, graphRevision] = await Promise.all([
-                        invoke<NoteDto[]>("list_notes", { vaultPath: path }),
+                        invoke<NoteDto[]>("list_notes", {
+                            vaultPath: canonicalPath,
+                        }),
                         invoke<VaultEntryDto[]>("list_vault_entries", {
-                            vaultPath: path,
+                            vaultPath: canonicalPath,
                         }),
                         invoke<number>("get_graph_revision", {
-                            vaultPath: path,
+                            vaultPath: canonicalPath,
                         }),
                     ]);
                     if (sequence !== openVaultSequence) return;
 
-                    safeStorageSetItem(LAST_VAULT_KEY, path);
-                    addToRecentVaults(path);
+                    safeStorageSetItem(LAST_VAULT_KEY, canonicalPath);
+                    addToRecentVaults(canonicalPath);
 
                     set((state) => ({
-                        vaultPath: path,
+                        vaultPath: canonicalPath,
                         notes: normalizeVaultNotes(notes),
                         entries: normalizeVaultEntries(entries),
                         okfVersion: openState.okf_version,

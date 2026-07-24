@@ -11,7 +11,11 @@ import {
     setVaultEntries,
     setVaultNotes,
 } from "../../../test/test-utils";
-import type { AIChatMessage, AIUserInputAction } from "../types";
+import type {
+    AIChatMessage,
+    AIUserInputAction,
+    ManagedAttachmentId,
+} from "../types";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import { AIChatMessageItem } from "./AIChatMessageItem";
 
@@ -480,6 +484,49 @@ describe("AIChatMessageItem user image attachments", () => {
             }),
         ]);
         expect(revealItemInDir).toHaveBeenCalledWith(filePath);
+    });
+
+    it("previews and reveals managed images without exposing a physical path", () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        renderMessage({
+            id: "user:managed-image",
+            role: "user",
+            kind: "text",
+            content: "Inspect this",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:managed",
+                    type: "file",
+                    noteId: null,
+                    label: "Screenshot 10:32",
+                    path: null,
+                    managedAttachmentId:
+                        "ma_0123456789abcdef0123456789abcdef" as ManagedAttachmentId,
+                    fileName: "pasted-image.png",
+                    mimeType: "image/png",
+                },
+            ],
+        });
+
+        const image = screen.getByRole("img", { name: "Screenshot 10:32" });
+        expect(image.getAttribute("src")).toContain(
+            "neverwrite-file://localhost/ai-attachment/",
+        );
+        expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Reveal in Finder" }),
+        );
+        expect(invoke).toHaveBeenCalledWith(
+            "ai_reveal_managed_attachment",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                attachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+            }),
+        );
+        expect(revealItemInDir).not.toHaveBeenCalled();
     });
 
     it("does not render attachment thumbnails when user text has no attachments", () => {

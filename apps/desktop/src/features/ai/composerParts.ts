@@ -1,4 +1,8 @@
-import type { AIComposerPart } from "./types";
+import type {
+    AIComposerPart,
+    DraftAttachmentId,
+    ManagedAttachmentId,
+} from "./types";
 import {
     getChatVaultReferenceBasename,
     getChatVaultReferenceLabel,
@@ -323,11 +327,20 @@ export function appendSelectionMentionPart(
 export function appendScreenshotPart(
     parts: AIComposerPart[],
     screenshot: {
-        filePath: string;
         mimeType: string;
         label: string;
         createdAt?: number;
-    },
+    } & (
+        | {
+              draftAttachmentId: DraftAttachmentId;
+              fileName: string;
+          }
+        | {
+              managedAttachmentId: ManagedAttachmentId;
+              fileName: string;
+          }
+        | { filePath: string; fileName?: string }
+    ),
 ): AIComposerPart[] {
     const next = [...parts];
 

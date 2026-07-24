@@ -65,6 +65,17 @@ export function buildVaultAssetUrl(
     return `${FILE_PREVIEW_SCHEME}/assets/${encodeBase64Url(vaultPath)}/${encodedPath}`;
 }
 
+export function buildManagedAttachmentPreviewUrl(
+    vaultPath: string | null,
+    attachmentId: string,
+) {
+    if (!vaultPath || !attachmentId) {
+        return null;
+    }
+
+    return `${FILE_PREVIEW_SCHEME}/ai-attachment/${encodeBase64Url(vaultPath)}/${encodeURIComponent(attachmentId)}`;
+}
+
 export function buildCodexGeneratedImagePreviewUrl(absolutePath: string) {
     const { pathname, suffix } = splitPathSuffix(absolutePath);
     if (!pathname.trim()) {

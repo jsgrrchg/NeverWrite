@@ -1,12 +1,25 @@
 # AI Session History And Crash Recovery
 
-NeverWrite stores AI chat history inside the currently open vault. This keeps
-conversation recovery local-first and lets the app reconnect or reconstruct a
-saved chat after a renderer reload, runtime crash, or full app restart.
+NeverWrite stores AI chat history locally by default. Each vault has one
+backend-owned canonical scope: `device` or `vault`. The renderer asks the
+backend for that scope; it never chooses a history root or derives one from a
+filesystem path.
+
+New vaults use device-local storage. Existing vaults that already contain
+NeverWrite history are adopted as vault storage. In Settings, enable
+**Store AI chats inside this vault** to move all history and
+NeverWrite-managed pasted attachments into the vault. Moving back to device
+storage uses the same verified transaction.
 
 ## Disk Layout
 
-Session history is stored under:
+Device-local sessions are stored under:
+
+```text
+<app-data>/ai-history/v1/vaults/<vault-key>/history/session-<sha256(session_id)>/
+```
+
+Vault-scoped sessions are stored under:
 
 ```text
 <vault>/.neverwrite/sessions/session-<sha256(session_id)>/
@@ -24,7 +37,39 @@ file managers or search tools. Show hidden files in your file manager, or
 inspect it from a terminal, if you need to audit the stored history directly.
 
 NeverWrite may also have `.neverwrite-cache/` in the vault for derived cache
-data. Chat recovery uses `.neverwrite/sessions/`.
+data. Vault-scoped chat recovery uses `.neverwrite/sessions/`; device-scoped
+chat recovery uses the app-data namespace shown above.
+
+## Screenshot Attachment Lifecycle
+
+Pasted screenshots have a separate draft and durable lifecycle. Before send,
+the original image is stored as a plaintext local draft under:
+
+```text
+<app-data>/ai-history/v1/vaults/<sha256(canonical-vault-path)>/drafts/<draft-id>/
+```
+
+The hash identifies the vault namespace without placing the vault path in the
+directory name; it does not encrypt the image. Drafts released by the composer,
+queue, or queue editor are deleted immediately when possible. Crash-orphaned
+drafts are eligible for best-effort startup cleanup after seven days.
+
+Sending atomically acquires the composer snapshot, promotes each draft, and only
+then inserts and persists the optimistic user message. Promotion writes a
+managed blob in the active canonical scope:
+
+```text
+<app-data>/ai-history/v1/vaults/<vault-key>/assets/chat/.neverwrite-managed/v1/blobs/<managed-attachment-id>/
+# or, when vault storage is active:
+<vault>/assets/chat/.neverwrite-managed/v1/blobs/<managed-attachment-id>/
+```
+
+History stores the opaque managed attachment ID and descriptive metadata, not a
+physical draft or blob path. Saving history marks referenced managed blobs as
+committed. Uncommitted promotions receive a seven-day grace period so a crash
+between promotion and history persistence does not leave an immediately broken
+reference. Deleting or pruning histories removes a managed blob only after its
+last retained history reference is gone.
 
 ## Sessions, Sidebar Entries, And Workspace Views
 
@@ -55,6 +100,20 @@ Claude Code or recreate the agent-sidebar projection after an app restart.
 
 ## Recovery Flow
 
+If a scope move is interrupted or storage cannot be safely inspected, NeverWrite
+blocks normal history operations and shows recovery controls in Chat History.
+The control can reveal the safe diagnostic roots and retry after manual repair;
+it never silently selects a winner between conflicting roots. A partial
+destination is never published as canonical and the source remains until the
+destination has been validated and withdrawn successfully.
+
+Device-local history is keyed by the canonical vault path. Renaming or moving a
+vault therefore requires the visible import/recovery flow; NeverWrite does not
+silently assume that two paths identify the same vault. Two devices that sync a
+vault also keep separate local scope state. Filesystem changes made by another
+device are treated as external changes and are checked during initialization,
+recovery, and an explicit scope change.
+
 After a crash, freeze, renderer reload, or AI runtime disconnect:
 
 1. Reopen the same vault.
@@ -68,6 +127,19 @@ When a provider supports native session loading, NeverWrite reconnects the
 runtime session directly. When native loading is unavailable or unsafe,
 NeverWrite creates a fresh runtime session and sends the saved transcript as
 context with the next prompt.
+
+## Transaction Diagnostics
+
+Scope moves emit lifecycle diagnostics with an opaque vault key and operation
+ID. The recorded phases are `inspect`, `prepare`, `validate`, `publish`,
+`withdraw`, `commit`, and `housekeeping`. Diagnostics never include vault
+paths, transcript content, prompts, attachment names, or physical attachment
+paths. A failed operation reports the phase that was active when it stopped,
+which makes an interrupted move diagnosable without disclosing chat data.
+
+Release validation exercises these phases with in-process failpoints and a
+real sidecar subprocess that is terminated across the durable transaction
+boundaries. Windows runs the same transaction suite in CI.
 
 If the app detects that an AI runtime lost its live connection, the chat can show:
 
@@ -86,9 +158,18 @@ send a new message so NeverWrite can continue with the stored transcript.
 
 ## Retention And Privacy Notes
 
-- Session history is local to the vault and follows the chat history retention setting in `Chat History`.
+- Session history follows the chat history retention setting in `Chat History`.
+- Device-local history and drafts live only in this app-data installation. Vault
+  history and managed blobs are copied when the vault itself is synchronized or
+  backed up.
 - `transcript.jsonl` is stored as local plaintext JSONL while retained.
-- Deleting a conversation from `Chat History` deletes its saved history from `.neverwrite/sessions/`.
+- Deleting a conversation from `Chat History` deletes its saved history and
+  only managed blobs that no retained history references.
+- Removing a vault from Recents clears local registration, drafts, and
+  device-local history; it never deletes history or managed blobs inside the
+  vault.
 - If a recovered chat is missing, confirm you reopened the same vault and that the retention window did not prune the conversation.
+- Pasted screenshot drafts and managed blobs are plaintext local image files;
+  review them before sharing app data or a vault archive.
 
-Last updated: July 11, 2026.
+Last updated: July 19, 2026.

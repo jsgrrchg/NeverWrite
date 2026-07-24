@@ -85,6 +85,18 @@ const SUPPORTED_COMMANDS = new Set([
     "ai_delete_runtime_session",
     "ai_delete_runtime_sessions_for_vault",
     "ai_prune_session_histories",
+    "ai_create_draft_attachment",
+    "ai_promote_draft_attachment",
+    "ai_delete_draft_attachment",
+    "ai_read_managed_attachment",
+    "ai_delete_managed_attachment_if_unreferenced",
+    "ai_resolve_managed_attachment_path",
+    "ai_get_history_storage_status",
+    "ai_get_history_recovery_diagnostic",
+    "ai_reveal_history_recovery_root",
+    "ai_retry_history_recovery",
+    "reconcile_ai_history_storage",
+    "forget_ai_history_device_data",
     "ai_register_file_baseline",
     "ai_get_text_file_hash",
     "ai_restore_text_file",
@@ -117,6 +129,10 @@ const SUPPORTED_COMMANDS = new Set([
     "web_clipper_list_tags",
     "web_clipper_save_note",
 ]);
+
+export function supportsNativeBackendCommand(command: string) {
+    return SUPPORTED_COMMANDS.has(command);
+}
 
 const NATIVE_BACKEND_SECRET_JSON_KEY_PATTERN =
     /("(?:codex_api_key|openai_api_key|gemini_api_key|xai_api_key|google_api_key|gateway_headers|anthropic_custom_headers|anthropic_auth_token|anthropic_api_key|api[_-]?key|authorization|token|secret|password|value)"\s*:\s*")([^"]*)(")/giu;
@@ -303,7 +319,7 @@ class UnavailableNativeBackendBridge implements NativeBackendBridge {
     }
 
     supports(command: string) {
-        return SUPPORTED_COMMANDS.has(command);
+        return supportsNativeBackendCommand(command);
     }
 
     invoke() {
@@ -414,7 +430,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
     }
 
     supports(command: string) {
-        return SUPPORTED_COMMANDS.has(command);
+        return supportsNativeBackendCommand(command);
     }
 
     invoke(command: string, args: Record<string, unknown> = {}) {

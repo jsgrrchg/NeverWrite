@@ -11,14 +11,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod acp_providers;
 mod ai;
+mod ai_history;
 mod devtools;
 mod spellcheck;
 
 use ai::NativeAi;
+use ai_history::AiHistoryStorageService;
 use devtools::DevTerminalManager;
-use neverwrite_ai::persistence::{
-    self, PersistedSessionHistory, PersistedSessionHistoryPage, SessionSearchResult,
-};
 use neverwrite_index::VaultIndex;
 use neverwrite_types::{
     AdvancedSearchParams, BacklinkDto, NoteDetailDto, NoteDocument, NoteDto, NoteId, NoteMetadata,
@@ -42,6 +41,8 @@ const DEFAULT_GRAPH_MAX_LINKS_GLOBAL: usize = 24_000;
 const DEFAULT_GRAPH_MAX_NODES_LOCAL: usize = 2_500;
 const DEFAULT_GRAPH_MAX_LINKS_LOCAL: usize = 12_000;
 const DEFAULT_LOCAL_GRAPH_HUB_NEIGHBOR_LIMIT: usize = 512;
+const ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR: &str =
+    "Switch to another vault before removing this one from Recents. Active AI sessions could recreate its device-local data.";
 
 #[derive(Debug, Deserialize)]
 struct RpcRequest {
@@ -678,6 +679,7 @@ struct VaultRuntimeState {
 struct NativeBackend {
     vaults: HashMap<String, VaultRuntimeState>,
     ai: NativeAi,
+    ai_history: AiHistoryStorageService,
     devtools: DevTerminalManager,
     spellcheck: SpellcheckState,
     event_tx: Sender<RpcOutput>,
@@ -685,9 +687,17 @@ struct NativeBackend {
 
 impl NativeBackend {
     fn new(event_tx: Sender<RpcOutput>) -> Self {
+        #[cfg(not(test))]
+        let ai_history_root = ai::app_data_dir();
+        #[cfg(test)]
+        let ai_history_root = std::env::temp_dir().join(format!(
+            "neverwrite-ai-history-backend-tests-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         Self {
             vaults: HashMap::new(),
             ai: NativeAi::new(event_tx.clone()),
+            ai_history: AiHistoryStorageService::with_events(ai_history_root, event_tx.clone()),
             devtools: DevTerminalManager::new(event_tx.clone()),
             spellcheck: SpellcheckState::new(),
             event_tx,
@@ -702,6 +712,9 @@ impl NativeBackend {
         args: Value,
         backend_ref: &Arc<Mutex<NativeBackend>>,
     ) -> Result<Value, String> {
+        if !command.starts_with("ai_") {
+            reject_private_managed_paths(&args)?;
+        }
         match command {
             "ping" => Ok(json!({ "ok": true })),
             "open_vault" => {
@@ -864,7 +877,7 @@ impl NativeBackend {
             "ai_set_model" => self.ai.set_model(&args),
             "ai_set_mode" => self.ai.set_mode(&args),
             "ai_set_config_option" => self.ai.set_config_option(&args),
-            "ai_send_message" => self.ai.send_message(&args),
+            "ai_send_message" => self.ai.send_message(&args, &self.ai_history),
             "ai_cancel_turn" => self.ai.cancel_turn(&args),
             "ai_respond_permission" => self.ai.respond_permission(&args),
             "ai_respond_user_input" => self.ai.respond_user_input(&args),
@@ -875,14 +888,27 @@ impl NativeBackend {
                 self.ai.delete_runtime_sessions_for_vault(vault_root)
             }
             "ai_register_file_baseline" => self.ai.register_file_baseline(&args),
-            "ai_save_session_history" => self.ai_save_session_history(args),
-            "ai_load_session_histories" => self.ai_load_session_histories(args),
-            "ai_load_session_history_page" => self.ai_load_session_history_page(args),
-            "ai_search_session_content" => self.ai_search_session_content(args),
-            "ai_fork_session_history" => self.ai_fork_session_history(args),
-            "ai_delete_session_history" => self.ai_delete_session_history(args),
-            "ai_delete_all_session_histories" => self.ai_delete_all_session_histories(args),
-            "ai_prune_session_histories" => self.ai_prune_session_histories(args),
+            "forget_ai_history_device_data" => {
+                let vault_path = required_string(&args, &["vaultPath", "vault_path"])?;
+                let target_root = normalize_vault_path(&vault_path)?;
+                if let Some(active_vault_path) =
+                    optional_nullable_string(&args, &["activeVaultPath", "active_vault_path"])
+                {
+                    if normalize_vault_path(&active_vault_path)? == target_root {
+                        return Err(ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR.to_string());
+                    }
+                }
+                self.ai_history
+                    .forget_device_data(Path::new(&target_root))?;
+                Ok(json!(null))
+            }
+            command if AiHistoryStorageService::handles(command) => {
+                // AI history commands enter through this boundary so the
+                // backend, rather than a renderer-selected path, resolves the
+                // single canonical storage root for the open vault.
+                let vault_root = self.required_open_vault_root(&args)?;
+                self.ai_history.invoke(command, &vault_root, args)
+            }
             "ai_get_text_file_hash" => self.ai_get_text_file_hash(args),
             "ai_restore_text_file" => self.ai_restore_text_file(args),
             "ai_start_auth_terminal_session" => self.ai.start_auth_terminal_session(&args),
@@ -955,85 +981,14 @@ impl NativeBackend {
         Ok(Some(state.vault.root.clone()))
     }
 
-    fn required_open_vault_root(&self, args: &Value) -> Result<(String, PathBuf), String> {
+    fn required_open_vault_root(&self, args: &Value) -> Result<PathBuf, String> {
         let vault_path = required_string(args, &["vaultPath", "vault_path"])?;
         let root = normalize_vault_path(&vault_path)?;
         let state = self
             .vaults
             .get(&root)
             .ok_or_else(|| "Vault not open".to_string())?;
-        Ok((root, state.vault.root.clone()))
-    }
-
-    fn ai_save_session_history(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let history: PersistedSessionHistory = serde_json::from_value(
-            args.get("history")
-                .cloned()
-                .ok_or_else(|| "Missing argument: history".to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        persistence::save_session_history(&vault_root, &history)?;
-        Ok(json!(null))
-    }
-
-    fn ai_load_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let include_messages = bool_arg(&args, "includeMessages")
-            .or_else(|| bool_arg(&args, "include_messages"))
-            .unwrap_or(true);
-        let histories: Vec<PersistedSessionHistory> =
-            persistence::load_all_session_histories(&vault_root, include_messages)?;
-        Ok(json!(histories))
-    }
-
-    fn ai_load_session_history_page(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let session_id = required_string(&args, &["sessionId", "session_id"])?;
-        let start_index = required_usize(&args, &["startIndex", "start_index"])?;
-        let limit = required_usize(&args, &["limit"])?;
-        let page: PersistedSessionHistoryPage =
-            persistence::load_session_history_page(&vault_root, &session_id, start_index, limit)?;
-        Ok(json!(page))
-    }
-
-    fn ai_search_session_content(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let query = required_string(&args, &["query"])?;
-        let results: Vec<SessionSearchResult> =
-            persistence::search_session_content(&vault_root, &query)?;
-        Ok(json!(results))
-    }
-
-    fn ai_fork_session_history(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let source_session_id = required_string(&args, &["sourceSessionId", "source_session_id"])?;
-        Ok(json!(persistence::fork_session_history(
-            &vault_root,
-            &source_session_id
-        )?))
-    }
-
-    fn ai_delete_session_history(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let session_id = required_string(&args, &["sessionId", "session_id"])?;
-        persistence::delete_session_history(&vault_root, &session_id)?;
-        Ok(json!(null))
-    }
-
-    fn ai_delete_all_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        persistence::delete_all_session_histories(&vault_root)?;
-        Ok(json!(null))
-    }
-
-    fn ai_prune_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        let max_age_days = required_u32(&args, &["maxAgeDays", "max_age_days"])?;
-        Ok(json!(persistence::prune_expired_session_histories(
-            &vault_root,
-            max_age_days
-        )?))
+        Ok(state.vault.root.clone())
     }
 
     fn ai_get_text_file_hash(&self, args: Value) -> Result<Value, String> {
@@ -2527,6 +2482,45 @@ fn normalize_vault_path(raw: &str) -> Result<String, String> {
         .to_string())
 }
 
+fn reject_private_managed_paths(args: &Value) -> Result<(), String> {
+    // General vault commands must not access internal managed blobs by path.
+    // AI history commands use validated logical IDs at their dedicated boundary.
+    const PATH_KEYS: &[&str] = &[
+        "relativePath",
+        "relative_path",
+        "newRelativePath",
+        "new_relative_path",
+        "relativeDir",
+        "relative_dir",
+        "targetFolder",
+        "target_folder",
+        "noteId",
+        "note_id",
+        "fileName",
+        "file_name",
+        "path",
+        "filePath",
+        "file_path",
+        "vaultPath",
+        "vault_path",
+    ];
+    let Some(object) = args.as_object() else {
+        return Ok(());
+    };
+    for key in PATH_KEYS {
+        let Some(value) = object.get(*key).and_then(Value::as_str) else {
+            continue;
+        };
+        if value
+            .split(['/', '\\'])
+            .any(|component| component.eq_ignore_ascii_case(".neverwrite-managed"))
+        {
+            return Err("Managed attachment storage is private.".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn required_string(args: &Value, names: &[&str]) -> Result<String, String> {
     optional_string(args, names).ok_or_else(|| format!("Missing argument: {}", names[0]))
 }
@@ -2678,28 +2672,6 @@ fn build_web_clipper_relative_note_path(
     }
 
     Err("Could not find a free filename for the clip.".to_string())
-}
-
-fn required_usize(args: &Value, names: &[&str]) -> Result<usize, String> {
-    names
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_u64))
-        .map(|value| {
-            usize::try_from(value).map_err(|_| format!("Argument out of range: {}", names[0]))
-        })
-        .transpose()?
-        .ok_or_else(|| format!("Missing argument: {}", names[0]))
-}
-
-fn required_u32(args: &Value, names: &[&str]) -> Result<u32, String> {
-    names
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_u64))
-        .map(|value| {
-            u32::try_from(value).map_err(|_| format!("Argument out of range: {}", names[0]))
-        })
-        .transpose()?
-        .ok_or_else(|| format!("Missing argument: {}", names[0]))
 }
 
 fn bool_arg(args: &Value, name: &str) -> Option<bool> {
@@ -3228,6 +3200,27 @@ mod tests {
         backend.lock().unwrap().invoke(command, args, backend)
     }
 
+    fn queued_history(session_id: &str, content: &str) -> Value {
+        json!({
+            "version": 1,
+            "session_id": session_id,
+            "runtime_id": "codex-acp",
+            "model_id": "test-model",
+            "mode_id": "default",
+            "created_at": 10,
+            "updated_at": 20,
+            "message_count": 1,
+            "start_index": 0,
+            "messages": [{
+                "id": format!("message-{session_id}"),
+                "role": "user",
+                "kind": "text",
+                "content": content,
+                "timestamp": 10,
+            }],
+        })
+    }
+
     fn recv_vault_change(event_rx: &std::sync::mpsc::Receiver<RpcOutput>) -> Value {
         match event_rx
             .recv_timeout(std::time::Duration::from_secs(1))
@@ -3292,6 +3285,275 @@ mod tests {
             .unwrap()
             .iter()
             .any(|note| note.get("id").and_then(Value::as_str) == Some("Notes/B")));
+    }
+
+    #[test]
+    fn ai_history_rpc_contracts_route_new_vaults_to_device_storage() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        let history = json!({
+            "version": 1,
+            "session_id": "session-1",
+            "runtime_id": "codex-acp",
+            "model_id": "test-model",
+            "mode_id": "default",
+            "created_at": 10,
+            "updated_at": 20,
+            "message_count": 1,
+            "start_index": 0,
+            "messages": [{
+                "id": "message-1",
+                "role": "user",
+                "kind": "text",
+                "content": "searchable content",
+                "timestamp": 10
+            }]
+        });
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({ "vaultPath": vault_path, "history": history }),
+        )
+        .unwrap();
+        assert!(!vault_dir.path().join(".neverwrite/sessions").exists());
+
+        let histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({ "vaultPath": vault_path, "includeMessages": false }),
+        )
+        .unwrap();
+        assert_eq!(histories.as_array().unwrap().len(), 1);
+        assert_eq!(histories[0]["session_id"], "session-1");
+
+        let page = invoke(
+            &backend,
+            "ai_load_session_history_page",
+            json!({
+                "vaultPath": vault_path,
+                "sessionId": "session-1",
+                "startIndex": 0,
+                "limit": 20
+            }),
+        )
+        .unwrap();
+        assert_eq!(page["total_messages"], 1);
+
+        let search = invoke(
+            &backend,
+            "ai_search_session_content",
+            json!({ "vaultPath": vault_path, "query": "searchable" }),
+        )
+        .unwrap();
+        assert_eq!(search.as_array().unwrap().len(), 1);
+
+        let fork_id = invoke(
+            &backend,
+            "ai_fork_session_history",
+            json!({ "vaultPath": vault_path, "sourceSessionId": "session-1" }),
+        )
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+        invoke(
+            &backend,
+            "ai_delete_session_history",
+            json!({ "vaultPath": vault_path, "sessionId": fork_id }),
+        )
+        .unwrap();
+
+        let pruned = invoke(
+            &backend,
+            "ai_prune_session_histories",
+            json!({ "vaultPath": vault_path, "maxAgeDays": 0 }),
+        )
+        .unwrap();
+        assert_eq!(pruned, 0);
+
+        invoke(
+            &backend,
+            "ai_delete_all_session_histories",
+            json!({ "vaultPath": vault_path }),
+        )
+        .unwrap();
+        let histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({ "vaultPath": vault_path }),
+        )
+        .unwrap();
+        assert!(histories.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn refuses_recent_cleanup_for_an_active_vault_path_alias() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        let active_path_alias = vault_dir.path().join(".").to_string_lossy().to_string();
+
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        let error = invoke(
+            &backend,
+            "forget_ai_history_device_data",
+            json!({
+                "vaultPath": vault_dir.path().to_string_lossy(),
+                "activeVaultPath": active_path_alias,
+            }),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR);
+    }
+
+    #[test]
+    fn ai_history_requests_queued_behind_a_move_resolve_the_latest_scope() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "history": queued_history("before", "device"),
+            }),
+        )
+        .unwrap();
+
+        let (move_started_tx, move_started_rx) = mpsc::channel();
+        let (continue_move_tx, continue_move_rx) = mpsc::channel();
+        let first_backend = Arc::clone(&backend);
+        let first_vault_path = vault_path.clone();
+        let first_move = thread::spawn(move || {
+            let mut locked = first_backend.lock().unwrap();
+            move_started_tx.send(()).unwrap();
+            continue_move_rx.recv().unwrap();
+            locked.invoke(
+                "reconcile_ai_history_storage",
+                json!({ "vaultPath": first_vault_path, "targetScope": "vault" }),
+                &first_backend,
+            )
+        });
+        move_started_rx.recv().unwrap();
+
+        let (submitted_tx, submitted_rx) = mpsc::channel();
+        let save_backend = Arc::clone(&backend);
+        let save_vault_path = vault_path.clone();
+        let save_submitted_tx = submitted_tx.clone();
+        let queued_save = thread::spawn(move || {
+            assert!(matches!(
+                save_backend.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            save_submitted_tx.send(()).unwrap();
+            invoke(
+                &save_backend,
+                "ai_save_session_history",
+                json!({
+                    "vaultPath": save_vault_path,
+                    "history": queued_history("queued", "latest scope"),
+                }),
+            )
+        });
+        let second_backend = Arc::clone(&backend);
+        let second_vault_path = vault_path.clone();
+        let second_move = thread::spawn(move || {
+            assert!(matches!(
+                second_backend.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            submitted_tx.send(()).unwrap();
+            invoke(
+                &second_backend,
+                "reconcile_ai_history_storage",
+                json!({ "vaultPath": second_vault_path, "targetScope": "device" }),
+            )
+        });
+        submitted_rx.recv().unwrap();
+        submitted_rx.recv().unwrap();
+        continue_move_tx.send(()).unwrap();
+
+        first_move.join().unwrap().unwrap();
+        queued_save.join().unwrap().unwrap();
+        second_move.join().unwrap().unwrap();
+
+        let status = invoke(
+            &backend,
+            "ai_get_history_storage_status",
+            json!({ "vaultPath": vault_path }),
+        )
+        .unwrap();
+        assert_eq!(status["scope"], "device");
+        let histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({ "vaultPath": vault_path, "includeMessages": false }),
+        )
+        .unwrap();
+        let session_ids = histories
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|history| history["session_id"].as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(session_ids, HashSet::from(["before", "queued"]));
+        assert!(!vault_dir.path().join(".neverwrite/sessions").exists());
+    }
+
+    #[test]
+    fn managed_attachment_commands_require_an_open_vault_and_never_accept_paths_as_ids() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        let create_args = json!({
+            "vaultPath": vault_path,
+            "fileName": "pasted-image.png",
+            "mimeType": "image/png",
+            "bytes": b"\x89PNG\r\n\x1a\nmanaged-image",
+        });
+
+        let error = invoke(
+            &backend,
+            "ai_create_managed_attachment",
+            create_args.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Vault not open");
+
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+        let created = invoke(&backend, "ai_create_managed_attachment", create_args).unwrap();
+        let attachment_id = created["attachment_id"].as_str().unwrap().to_string();
+        assert!(attachment_id.starts_with("ma_"));
+
+        let error = invoke(
+            &backend,
+            "read_vault_file",
+            json!({
+                "vaultPath": vault_path,
+                "relativePath": format!("assets/chat/.neverwrite-managed/v1/blobs/{attachment_id}/blob")
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Managed attachment storage is private.");
+
+        let error = invoke(
+            &backend,
+            "ai_read_managed_attachment",
+            json!({ "vaultPath": vault_path, "attachmentId": "../secret" }),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Invalid managed attachment ID.");
     }
 
     #[test]
@@ -3589,7 +3851,10 @@ mod tests {
             .find(|note| note.get("id").and_then(Value::as_str) == Some("Notes/A"))
             .expect("note A present");
         assert_eq!(note_a.get("status").and_then(Value::as_str), Some("draft"));
-        assert_eq!(note_a.get("okf_type").and_then(Value::as_str), Some("article"));
+        assert_eq!(
+            note_a.get("okf_type").and_then(Value::as_str),
+            Some("article")
+        );
 
         // Editing the status produces a change event carrying the new value,
         // and the save_note RESPONSE carries it too. The response matters
@@ -3614,8 +3879,14 @@ mod tests {
             Some("article")
         );
         let change = recv_vault_change(&event_rx);
-        assert_eq!(change.get("status").and_then(Value::as_str), Some("published"));
-        assert_eq!(change.get("okf_type").and_then(Value::as_str), Some("article"));
+        assert_eq!(
+            change.get("status").and_then(Value::as_str),
+            Some("published")
+        );
+        assert_eq!(
+            change.get("okf_type").and_then(Value::as_str),
+            Some("article")
+        );
         assert_eq!(
             change
                 .get("note")

@@ -77,7 +77,20 @@ without reviewing them first.
 
 ## AI Session History
 
-AI chat history is stored inside the currently open vault:
+Each vault has one backend-owned canonical AI history scope. New vaults store
+history on the current device by default; existing vault history is adopted as
+vault scope. The user can explicitly move the complete managed history between
+the two scopes with **Store AI chats inside this vault**. The preference is
+committed only after the destination has been validated and the source has been
+withdrawn successfully.
+
+Device-local history is stored under:
+
+```text
+<app-data>/ai-history/v1/vaults/<vault-key>/history/session-<sha256(session_id)>/
+```
+
+Vault-scoped history is stored under:
 
 ```text
 <vault>/.neverwrite/sessions/session-<sha256(session_id)>/
@@ -97,8 +110,56 @@ prompts, AI responses, tool activity, permission requests, plans, diffs, file
 paths, snippets, and metadata from attached vault files. Session directory names
 hash the logical session id, but the transcript content itself is not encrypted.
 
-Deleting a conversation from Chat History deletes its saved history from
-`.neverwrite/sessions/`. Retention pruning also operates on this directory.
+Deleting a conversation from Chat History deletes its saved history from the
+active scope. Retention pruning operates on that same canonical scope.
+
+The device namespace is derived by the native backend from the canonical vault
+path. It is not encryption and it is local to one app-data installation.
+Renaming or moving a vault therefore uses a visible import/recovery flow rather
+than silently reusing a namespace. Separate devices do not share a canonical
+scope state: synced vault changes are treated as external filesystem changes and
+are checked during initialization, recovery, and an explicit scope move.
+
+### AI Screenshot Drafts And Managed Blobs
+
+Pasted chat screenshots are written as temporary local drafts before they are
+sent. Drafts are stored under Electron's app data directory, not in the vault:
+
+```text
+<app-data>/ai-history/v1/vaults/<sha256(canonical-vault-path)>/drafts/<draft-id>/
+```
+
+Each draft directory contains the original image bytes in `blob` and plaintext
+JSON metadata in `metadata.json`. The vault namespace hashes the canonical vault
+path, but this is an identifier, not encryption. On Unix-like systems,
+NeverWrite creates the draft directories and files with owner-only permissions
+when possible. Other platforms rely on the access controls inherited from the
+user's app data directory.
+
+NeverWrite deletes a draft when its last composer, queue, or edit owner releases
+it. Orphan drafts left by a crash are removed on a later app startup after a
+seven-day TTL. Cleanup is best-effort, so backups, filesystem snapshots, or an
+app that is never reopened can retain the files longer.
+
+Before a screenshot is added to a sent message, NeverWrite promotes it to an
+app-owned managed blob in the current canonical scope:
+
+```text
+<app-data>/ai-history/v1/vaults/<vault-key>/assets/chat/.neverwrite-managed/v1/blobs/<managed-attachment-id>/
+# or, when vault storage is active:
+<vault>/assets/chat/.neverwrite-managed/v1/blobs/<managed-attachment-id>/
+```
+
+The managed directory contains the original `blob`, plaintext `metadata.json`,
+and an internal committed marker after the message history is saved. A promoted
+blob that has not been committed is protected from immediate cleanup for seven
+days so a crash between promotion and history persistence does not create a
+broken message reference. Managed blobs referenced by retained histories are
+deleted only after their last retained reference is removed.
+
+Removing a vault from Recents clears local registration, drafts, and
+device-local AI history. It never deletes sessions or managed blobs stored
+inside the vault; deleting those requires the explicit Chat History action.
 
 ## App Logs
 
@@ -311,6 +372,8 @@ Review and redact before sharing:
   `neverwrite.`, or `neverwrite.ai.`.
 - `runtime-setup.json`, especially gateway URLs, project ids, custom headers,
   custom binary paths, and local usernames.
+- `<app-data>/ai-history/` and
+  `<vault>/assets/chat/.neverwrite-managed/`, which can contain pasted images.
 - Screenshots of AI review panels, inline diffs, chat transcripts, terminal
   output, graph/search results, or file trees.
 
@@ -359,4 +422,4 @@ the contents.
 - Third-party AI runtime CLIs can store their own auth state outside NeverWrite.
   Check that provider's documentation before sharing provider config folders.
 
-Last updated: June 1, 2026.
+Last updated: July 16, 2026.

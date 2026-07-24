@@ -15,6 +15,7 @@ import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { useThemeStore } from "../../app/store/themeStore";
 import { themes, type ThemeName } from "../../app/themes/index";
 import {
+    ACTIVE_VAULT_RECENT_REMOVAL_ERROR,
     clearRecentVaults,
     useVaultStore,
     getRecentVaults,
@@ -56,6 +57,7 @@ import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
 import { SCREENSHOT_RETENTION_OPTIONS } from "../ai/screenshotRetention";
 import { PROVIDER_CATALOG } from "../ai/utils/runtimeMetadata";
 import { AIProvidersSettings } from "./AIProvidersSettings";
+import { AIHistoryStorageControl } from "../ai/components/AIHistoryStorageControl";
 import { ExtensionFilterInput } from "./ExtensionFilterInput";
 import { useAppUpdateStore } from "../updates/store";
 import {
@@ -2209,6 +2211,9 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         getRecentVaults(),
     );
     const [confirmPath, setConfirmPath] = useState<string | null>(null);
+    const [removeRecentError, setRemoveRecentError] = useState<string | null>(
+        null,
+    );
     const [recentSearch, setRecentSearch] = useState("");
 
     const normalizedRecentSearch = recentSearch.trim().toLowerCase();
@@ -2259,9 +2264,19 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     }
 
     const handleRemoveVault = async (path: string) => {
-        await removeVaultFromList(path);
-        setRecents(getRecentVaults());
-        setConfirmPath(null);
+        setRemoveRecentError(null);
+        try {
+            await removeVaultFromList(path);
+            setRecents(getRecentVaults());
+            setConfirmPath(null);
+        } catch (error) {
+            setRemoveRecentError(
+                error instanceof Error &&
+                    error.message === ACTIVE_VAULT_RECENT_REMOVAL_ERROR
+                    ? ACTIVE_VAULT_RECENT_REMOVAL_ERROR
+                    : "Could not delete device-local data. The vault remains in Recents so you can retry.",
+            );
+        }
     };
 
     const handleClearRecents = () => {
@@ -2434,10 +2449,36 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                                         <div
                                             style={{
                                                 display: "flex",
+                                                alignItems: "center",
                                                 gap: 4,
                                                 flexShrink: 0,
                                             }}
                                         >
+                                            <span
+                                                style={{
+                                                    maxWidth: 220,
+                                                    fontSize: 10,
+                                                    lineHeight: 1.3,
+                                                    color: "var(--text-secondary)",
+                                                }}
+                                            >
+                                                Device-local AI chats will be
+                                                deleted. Chats stored inside
+                                                the vault remain.
+                                            </span>
+                                            {removeRecentError ? (
+                                                <span
+                                                    role="alert"
+                                                    style={{
+                                                        maxWidth: 240,
+                                                        fontSize: 10,
+                                                        lineHeight: 1.3,
+                                                        color: "#ef4444",
+                                                    }}
+                                                >
+                                                    {removeRecentError}
+                                                </span>
+                                            ) : null}
                                             <button
                                                 onClick={() =>
                                                     handleRemoveVault(
@@ -2476,10 +2517,18 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                                         </div>
                                     ) : (
                                         <button
-                                            onClick={() =>
-                                                setConfirmPath(vault.path)
+                                            type="button"
+                                            aria-label={`Remove ${vault.name} from Recents`}
+                                            disabled={vault.path === vaultPath}
+                                            onClick={() => {
+                                                setRemoveRecentError(null);
+                                                setConfirmPath(vault.path);
+                                            }}
+                                            title={
+                                                vault.path === vaultPath
+                                                    ? "Switch to another vault before removing this one from Recents"
+                                                    : "Remove vault from Recents and delete device-local data"
                                             }
-                                            title="Remove vault from list and delete cached data"
                                             style={{
                                                 width: 24,
                                                 height: 24,
@@ -2489,9 +2538,15 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                                                 borderRadius: 5,
                                                 border: "none",
                                                 background: "transparent",
-                                                cursor: "pointer",
+                                                cursor:
+                                                    vault.path === vaultPath
+                                                        ? "not-allowed"
+                                                        : "pointer",
                                                 color: "var(--text-secondary)",
-                                                opacity: 0.5,
+                                                opacity:
+                                                    vault.path === vaultPath
+                                                        ? 0.25
+                                                        : 0.5,
                                                 flexShrink: 0,
                                             }}
                                             onMouseEnter={(e) => {
@@ -3891,7 +3946,13 @@ function ShortcutsSettings({
     );
 }
 
-function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
+function AISettings({
+    searchQuery,
+    vaultPath,
+}: {
+    searchQuery: SettingsSearchQuery;
+    vaultPath: string | null;
+}) {
     const aiReviewEnabled = useSettingsStore((s) => s.aiReviewEnabled);
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const setSetting = useSettingsStore((s) => s.setSetting);
@@ -3958,6 +4019,13 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         ],
     );
     const showChat = sectionHasSettingsSearchMatches(searchQuery, "Chat", [
+        [
+            "Store AI chats inside this vault",
+            "AI chat history and pasted attachments will sync or be shared with this vault. Keep this off for shared or cloud-synced vaults.",
+            "device",
+            "vault",
+            "sync",
+        ],
         ["Chat font family", "Font used for messages in the chat.", ...fontKeywords],
         ["Chat font size", "Font size of messages in the chat, in pixels."],
         [
@@ -4050,6 +4118,18 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                 }
             />
             {showChat ? <SectionLabel>Chat</SectionLabel> : null}
+            {showChat &&
+            matchesSettingsSearch(
+                searchQuery,
+                "Chat",
+                "Store AI chats inside this vault",
+                "AI chat history and pasted attachments will sync or be shared with this vault. Keep this off for shared or cloud-synced vaults.",
+                "device",
+                "vault",
+                "sync",
+            ) ? (
+                <AIHistoryStorageControl vaultPath={vaultPath} />
+            ) : null}
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Chat"
@@ -4800,7 +4880,9 @@ export function SettingsPanel({
     );
     const updateSearchStatus = useAppUpdateStore((state) => state.status);
     const updateSearchError = useAppUpdateStore((state) => state.error);
-    const currentVaultPath = useVaultStore((state) => state.vaultPath);
+    const openVaultPath = useVaultStore((state) => state.vaultPath);
+    const currentVaultPath =
+        openVaultPath ?? (standalone ? readSearchParam("vault") : null);
     const sectionFromUrl = standalone ? readSearchParam("section") : null;
     const resolvedInitialCategory =
         initialCategory && isCategory(initialCategory)
@@ -5332,7 +5414,10 @@ export function SettingsPanel({
                             )}
                         {filteredCategories.length > 0 &&
                             activeCategory === "ai" && (
-                                <AISettings searchQuery={activeSearchQuery} />
+                                <AISettings
+                                    searchQuery={activeSearchQuery}
+                                    vaultPath={currentVaultPath}
+                                />
                             )}
                     </div>
                 </div>

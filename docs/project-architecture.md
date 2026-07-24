@@ -225,8 +225,9 @@ status updates, token usage, generated images, runtime connection state, and
 session lifecycle changes. Permission requests block in the ACP client until the
 renderer responds through `ai_respond_permission`.
 
-Session history is saved under the vault's `.neverwrite/sessions/` directory.
-See [AI Session History And Crash Recovery](./ai-session-history.md) for the disk
+Session history is stored in the backend-owned canonical scope for the current
+vault, which can be device-local or inside the vault. See
+[AI Session History And Crash Recovery](./ai-session-history.md) for the disk
 layout and recovery behavior.
 
 ## Web Clipper Flow

@@ -125,9 +125,11 @@ function formatAttachmentLine(sessionAttachment: AIChatAttachment) {
                 ? "Selection"
                 : "Note";
 
-    const detail =
-        sessionAttachment.path ??
+    const detail = sessionAttachment.managedAttachmentId
+        ? `${sessionAttachment.fileName ?? sessionAttachment.label}; managed:${sessionAttachment.managedAttachmentId}`
+        : sessionAttachment.path ??
         sessionAttachment.filePath ??
+        sessionAttachment.fileName ??
         sessionAttachment.noteId ??
         "";
     return detail

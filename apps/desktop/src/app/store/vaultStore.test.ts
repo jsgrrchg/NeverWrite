@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mockInvoke, setEditorTabs } from "../../test/test-utils";
 import { useBookmarkStore } from "./bookmarkStore";
 import { useEditorStore } from "./editorStore";
 import {
+    ACTIVE_VAULT_RECENT_REMOVAL_ERROR,
     useVaultStore,
+    clearRecentVaults,
+    getRecentVaults,
+    removeVaultFromList,
     type VaultEntryDto,
     type VaultNoteChange,
 } from "./vaultStore";
@@ -74,6 +78,72 @@ function upsertChange(
 }
 
 describe("vaultStore", () => {
+    it("does not forget device-local AI data while the vault is active", async () => {
+        const invoke = mockInvoke();
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([{ path: "/vault", name: "Vault" }]),
+        );
+        useVaultStore.setState({ vaultPath: "/vault" });
+
+        await expect(removeVaultFromList("/vault")).rejects.toThrow(
+            ACTIVE_VAULT_RECENT_REMOVAL_ERROR,
+        );
+
+        expect(invoke).not.toHaveBeenCalledWith(
+            "forget_ai_history_device_data",
+            expect.anything(),
+        );
+        expect(getRecentVaults()).toEqual([
+            { path: "/vault", name: "Vault" },
+        ]);
+    });
+
+    it("forgets only device-local AI data when a vault is removed from Recents", async () => {
+        const invoke = mockInvoke();
+        invoke.mockResolvedValue(undefined);
+        useVaultStore.setState({ vaultPath: null });
+
+        await removeVaultFromList("/vault");
+
+        expect(invoke).toHaveBeenCalledWith("forget_ai_history_device_data", {
+            vaultPath: "/vault",
+            activeVaultPath: null,
+        });
+        expect(invoke).not.toHaveBeenCalledWith(
+            "ai_delete_all_session_histories",
+            expect.anything(),
+        );
+        vi.clearAllMocks();
+
+        clearRecentVaults();
+        expect(invoke).not.toHaveBeenCalledWith(
+            "forget_ai_history_device_data",
+            expect.anything(),
+        );
+    });
+
+    it("keeps a Recent visible when device-local cleanup cannot be verified", async () => {
+        const invoke = mockInvoke();
+        invoke.mockRejectedValueOnce(new Error("cleanup blocked"));
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([{ path: "/missing-vault", name: "Missing" }]),
+        );
+
+        await expect(removeVaultFromList("/missing-vault")).rejects.toThrow(
+            "cleanup blocked",
+        );
+
+        expect(getRecentVaults()).toEqual([
+            { path: "/missing-vault", name: "Missing" },
+        ]);
+        expect(invoke).not.toHaveBeenCalledWith(
+            "delete_vault_snapshot",
+            expect.anything(),
+        );
+    });
+
     it("updates a note's status and okf_type when a change event arrives", () => {
         useVaultStore.setState({
             vaultPath: "/vault",
