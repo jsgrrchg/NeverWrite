@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { toAcpNotifications } from "../acp-agent.js";
 import { toolUpdateFromToolResult, createPostToolUseHook, createTaskHook, toolInfoFromToolUse, planEntries, applyTaskCreate, applyTaskUpdate, parseTaskCreateOutput, taskStateToPlanEntries, } from "../tools.js";
 describe("rawOutput in tool call updates", () => {
@@ -751,7 +751,7 @@ describe("Bash terminal output", () => {
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
             // Fire PostToolUse hook with a structuredPatch in tool_response
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Edit",
@@ -813,7 +813,7 @@ describe("Bash terminal output", () => {
                     },
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Edit",
@@ -877,7 +877,7 @@ describe("Bash terminal output", () => {
                     input: { command: "echo hi" },
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Bash",
@@ -892,6 +892,31 @@ describe("Bash terminal output", () => {
             const hookUpdate = hookUpdates[0].update;
             expect(hookUpdate.content).toBeUndefined();
             expect(hookUpdate.locations).toBeUndefined();
+        });
+        // Regression for issue #889: tool uses that never register a callback
+        // (TodoWrite/Task* are rendered as plan updates, not tool_calls) fire the
+        // PostToolUse hook too. That's expected — the hook must stay silent
+        // instead of spamming "No onPostToolUseHook found" to stderr.
+        it("should not log an error when no callback is registered for the tool use", async () => {
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => { });
+            try {
+                const hook = createPostToolUseHook();
+                const result = await hook({
+                    hook_event_name: "PostToolUse",
+                    tool_name: "TodoWrite",
+                    tool_input: { todos: [] },
+                    tool_response: { success: true },
+                    tool_use_id: "toolu_todo_no_callback",
+                    session_id: "test-session",
+                    transcript_path: "/tmp/test",
+                    cwd: "/tmp",
+                }, "toolu_todo_no_callback", { signal: AbortSignal.abort() });
+                expect(result).toEqual({ continue: true });
+                expect(errorSpy).not.toHaveBeenCalled();
+            }
+            finally {
+                errorSpy.mockRestore();
+            }
         });
     });
     describe("post-tool-use hook sends diff content for Write tool", () => {
@@ -919,7 +944,7 @@ describe("Bash terminal output", () => {
                     },
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Write",
@@ -980,7 +1005,7 @@ describe("Bash terminal output", () => {
                     },
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Write",
@@ -1072,7 +1097,7 @@ describe("Bash terminal output", () => {
             });
             expect(resultNotifications[1].update.status).toBe("completed");
             // Step 3: Fire the PostToolUse hook (simulates what Claude Code SDK does)
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Bash",
@@ -1128,7 +1153,7 @@ describe("Bash terminal output", () => {
                 },
             ], "assistant", "test-session", toolUseCache, mockClientWithUpdate, mockLogger);
             // Fire hook
-            const hook = createPostToolUseHook(mockLogger);
+            const hook = createPostToolUseHook();
             await hook({
                 hook_event_name: "PostToolUse",
                 tool_name: "Bash",
@@ -1678,6 +1703,55 @@ describe("Agent/Task tool_result rendering from tool_use_result", () => {
             },
         ]);
     });
+    it("leaves malformed trailers alone", () => {
+        // Incomplete trailers are ordinary report text, not metadata to strip.
+        const malformedResult = {
+            type: "tool_result",
+            tool_use_id: "toolu_agent",
+            content: [
+                { type: "text", text: "Report.\n<usage>missing closing tag" },
+                { type: "text", text: "Report.\nagentId: abc-123 (missing closing paren" },
+            ],
+        };
+        const update = toolUpdateFromToolResult(malformedResult, agentToolUse, false);
+        expect(update.content).toEqual([
+            { type: "content", content: { type: "text", text: "Report.\n<usage>missing closing tag" } },
+            {
+                type: "content",
+                content: { type: "text", text: "Report.\nagentId: abc-123 (missing closing paren" },
+            },
+        ]);
+    });
+    it("strips only the trailer when the report itself mentions <usage>", () => {
+        const result = {
+            type: "tool_result",
+            tool_use_id: "toolu_agent",
+            content: "Grep for <usage> found 3 hits.\n<usage>subagent_tokens: 5</usage>",
+        };
+        const update = toolUpdateFromToolResult(result, agentToolUse, false);
+        expect(update.content).toEqual([
+            { type: "content", content: { type: "text", text: "Grep for <usage> found 3 hits." } },
+        ]);
+    });
+    it("handles adversarial trailer-shaped input in linear time", () => {
+        // Regression: the old regex-based strip backtracked quadratically on
+        // these shapes (CodeQL js/polynomial-redos) — at this size it would
+        // blow the test timeout rather than merely run slow.
+        const result = {
+            type: "tool_result",
+            tool_use_id: "toolu_agent",
+            content: [
+                { type: "text", text: "agentId: - (".repeat(20000) },
+                { type: "text", text: "<usage>".repeat(30000) },
+            ],
+        };
+        const update = toolUpdateFromToolResult(result, agentToolUse, false);
+        // Neither is a real trailer, so both come through unchanged.
+        expect(update.content).toEqual([
+            { type: "content", content: { type: "text", text: "agentId: - (".repeat(20000) } },
+            { type: "content", content: { type: "text", text: "<usage>".repeat(30000) } },
+        ]);
+    });
     it("falls back (trailer-stripped) when tool_use_result is the async_launched variant", () => {
         const update = toolUpdateFromToolResult(rawResult, agentToolUse, false, {
             status: "async_launched",
@@ -1724,6 +1798,106 @@ describe("Agent/Task tool_result rendering from tool_use_result", () => {
                 content: [{ type: "content", content: { type: "text", text: "The report." } }],
             });
         }
+    });
+});
+describe("tool_result_meta non-execution stamping", () => {
+    const mockClient = {};
+    const mockLogger = { log: () => { }, error: () => { } };
+    const bashToolUse = {
+        type: "tool_use",
+        id: "toolu_bash",
+        name: "Bash",
+        input: { command: "rm -rf build" },
+    };
+    const deniedResult = {
+        type: "tool_result",
+        tool_use_id: "toolu_bash",
+        is_error: true,
+        content: "The user doesn't want to proceed with this tool use.",
+    };
+    it("stamps nonExecutionKind and userFeedback on the failed tool_call_update", () => {
+        const toolUseCache = { toolu_bash: bashToolUse };
+        const notifications = toAcpNotifications([deniedResult], "user", "test-session", toolUseCache, mockClient, mockLogger, {
+            toolResultMeta: [
+                { id: "toolu_bash", non_execution_kind: "user-rejected", user_feedback: "use npm" },
+            ],
+        });
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].update).toMatchObject({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "toolu_bash",
+            status: "failed",
+            _meta: {
+                claudeCode: {
+                    toolName: "Bash",
+                    nonExecutionKind: "user-rejected",
+                    userFeedback: "use npm",
+                },
+            },
+        });
+    });
+    it("attributes entries by tool_use_id, so only the flagged result in a batch is stamped", () => {
+        const toolUseCache = {
+            toolu_bash: bashToolUse,
+            toolu_bash2: { ...bashToolUse, id: "toolu_bash2" },
+        };
+        const notifications = toAcpNotifications([
+            deniedResult,
+            {
+                type: "tool_result",
+                tool_use_id: "toolu_bash2",
+                content: "ok",
+            },
+        ], "user", "test-session", toolUseCache, mockClient, mockLogger, { toolResultMeta: [{ id: "toolu_bash", non_execution_kind: "user-rejected" }] });
+        expect(notifications).toHaveLength(2);
+        const [denied, ran] = notifications.map((n) => n.update);
+        expect(denied._meta.claudeCode).toMatchObject({ nonExecutionKind: "user-rejected" });
+        // No user_feedback on the wire entry → no userFeedback key at all.
+        expect(denied._meta.claudeCode).not.toHaveProperty("userFeedback");
+        expect(ran._meta.claudeCode).not.toHaveProperty("nonExecutionKind");
+    });
+    it("ignores a malformed sidecar and malformed entries", () => {
+        for (const malformed of [
+            "user-rejected", // not an array
+            [{ non_execution_kind: "user-rejected" }], // entry missing id
+            [{ id: "toolu_bash", non_execution_kind: 7 }], // kind not a string
+            [null, 42], // entries not objects
+        ]) {
+            const toolUseCache = { toolu_bash: bashToolUse };
+            const notifications = toAcpNotifications([deniedResult], "user", "test-session", toolUseCache, mockClient, mockLogger, { toolResultMeta: malformed });
+            expect(notifications).toHaveLength(1);
+            expect(notifications[0].update._meta.claudeCode).not.toHaveProperty("nonExecutionKind");
+        }
+    });
+    it("stamps the resolve of a permission-surfaced suppressed tool (Task*)", () => {
+        // A TaskGet surfaced as a real tool_call by the permission flow never gets
+        // a tool_call_update from the suppressed Task* branch; the wasEmitted
+        // resolve must carry the denial kind too.
+        const taskGetToolUse = {
+            type: "tool_use",
+            id: "toolu_taskget",
+            name: "TaskGet",
+            input: { taskId: "1" },
+        };
+        const toolUseCache = { toolu_taskget: taskGetToolUse };
+        const notifications = toAcpNotifications([
+            {
+                type: "tool_result",
+                tool_use_id: "toolu_taskget",
+                is_error: true,
+                content: "The user doesn't want to proceed with this tool use.",
+            },
+        ], "user", "test-session", toolUseCache, mockClient, mockLogger, {
+            emittedToolCalls: new Set(["toolu_taskget"]),
+            toolResultMeta: [{ id: "toolu_taskget", non_execution_kind: "user-rejected" }],
+        });
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].update).toMatchObject({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "toolu_taskget",
+            status: "failed",
+            _meta: { claudeCode: { toolName: "TaskGet", nonExecutionKind: "user-rejected" } },
+        });
     });
 });
 describe("structured tool_use_result rendering (Read/Bash/WebSearch)", () => {

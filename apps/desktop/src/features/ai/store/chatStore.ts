@@ -130,6 +130,7 @@ import {
     type AIChatNoteSummary,
     type AIChatRole,
     type AIChatSession,
+    type AIClaudeProviderRouting,
     type AIComposerPart,
     type DraftAttachmentId,
     type AIImageGenerationPayload,
@@ -1565,6 +1566,7 @@ interface ChatStore {
     saveSetup: (input: {
         runtimeId?: string;
         customBinaryPath?: string;
+        claudeProviderRouting?: AIClaudeProviderRouting;
         codexApiKey: AISecretPatch;
         openaiApiKey: AISecretPatch;
         xaiApiKey?: AISecretPatch;
@@ -1581,6 +1583,7 @@ interface ChatStore {
         runtimeId?: string;
         methodId: string;
         customBinaryPath?: string;
+        claudeProviderRouting?: AIClaudeProviderRouting;
         codexApiKey: AISecretPatch;
         openaiApiKey: AISecretPatch;
         xaiApiKey?: AISecretPatch;
@@ -8918,6 +8921,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 );
                 if (
                     input.customBinaryPath ||
+                    input.claudeProviderRouting !== undefined ||
                     secretPatchChanged(input.codexApiKey) ||
                     secretPatchChanged(input.openaiApiKey) ||
                     secretPatchChanged(
@@ -8939,6 +8943,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const setupStatus = await aiUpdateSetup({
                         runtimeId: targetRuntimeId,
                         customBinaryPath: input.customBinaryPath,
+                        claudeProviderRouting: input.claudeProviderRouting,
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
                         xaiApiKey: input.xaiApiKey,

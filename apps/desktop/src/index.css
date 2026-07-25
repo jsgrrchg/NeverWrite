@@ -644,6 +644,7 @@ html[data-desktop-platform="windows"].dark {
     );
     --code-fence-radius: 6px;
     --code-fence-inline-size: min(100%, 68ch);
+    --editor-code-fence-inline-size: min(100%, 88ch);
 }
 
 .chat-code-frame,
@@ -675,7 +676,7 @@ html[data-desktop-platform="windows"].dark {
 .cm-code-block-header-shell,
 .cm-code-block-line {
     box-sizing: border-box;
-    inline-size: var(--code-fence-inline-size);
+    inline-size: var(--editor-code-fence-inline-size);
     margin-inline: auto;
 }
 
@@ -692,7 +693,7 @@ html[data-desktop-platform="windows"].dark {
     border-bottom: 0;
     border-radius: var(--code-fence-radius) var(--code-fence-radius) 0 0;
     background: var(--code-fence-background);
-    /* The shell matches the code body metrics so their 68ch widths align. */
+    /* The shell and code body share the same editor-specific measure. */
     font-size: 0.84em;
 }
 

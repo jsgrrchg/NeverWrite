@@ -154,6 +154,23 @@ pub enum AiRuntimeBinarySource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AiClaudeProviderRouting {
+    Default,
+    Anthropic {
+        base_url: String,
+    },
+    Bedrock {
+        base_url: String,
+    },
+    Vertex {
+        base_url: String,
+        project_id: String,
+        region: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AiRuntimeSetupStatus {
     pub runtime_id: String,
     pub binary_ready: bool,
@@ -163,6 +180,8 @@ pub struct AiRuntimeSetupStatus {
     pub auth_ready: bool,
     pub auth_method: Option<String>,
     pub auth_methods: Vec<AiAuthMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_provider_routing: Option<AiClaudeProviderRouting>,
     pub has_gateway_config: bool,
     pub has_gateway_url: bool,
     pub onboarding_required: bool,

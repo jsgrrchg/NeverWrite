@@ -64,10 +64,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty/`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.59.0`
-  - upstream tag: `v0.59.0`
-  - upstream commit: `30b7c06f7640fb6a0530ba18f85e26fe2bc08882`
-  - dependencies match the upstream `0.59.0` release (`@agentclientprotocol/sdk` `1.2.1`, `@anthropic-ai/claude-agent-sdk` `0.3.207`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.62.0`
+  - upstream tag: `v0.62.0`
+  - upstream commit: `53a0c36ce3b0b76929d11d8b9565e319da745608`
+  - dependencies match the upstream `0.62.0` release (`@agentclientprotocol/sdk` `1.3.0`, `@anthropic-ai/claude-agent-sdk` `0.3.219`, `@anthropic-ai/sdk` `0.114.0`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 - `acp12/`
   - local package names: `agent-client-protocol-legacy` and
@@ -217,8 +217,9 @@ compatibility paths that NeverWrite depends on.
 
 ## Current Claude Delta
 
-The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.59.0` with no expected NeverWrite-specific source delta.
+The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.62.0` at commit `53a0c36ce3b0b76929d11d8b9565e319da745608`, with no NeverWrite-specific runtime source delta.
+
+The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.62.0` retains the linear-time ReDoS protection and its whole-line matching, so no local runtime patch needs to be reapplied.
 
 The `dist/` directory is rebuilt from the vendored source snapshot because the
 desktop packaging flow stages the compiled runtime files, while upstream does
@@ -232,8 +233,7 @@ the packaged resources include:
 - `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
 - `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
 
-The only expected local non-source delta is the vendor `.gitignore`: NeverWrite
-keeps `dist/` visible to Git so newly emitted runtime files are not missed.
+The only expected local non-source delta is generated `dist/`, which upstream does not commit. The vendor `.gitignore` matches upstream, so newly generated files must be force-added when the snapshot is refreshed.
 
 NeverWrite advertises ACP client capabilities through the native backend, not by
 patching the vendored Claude runtime. The active capability matrix for the

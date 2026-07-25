@@ -196,13 +196,21 @@ async function writeFakeAcpRuntime(runtimeDir) {
       ? `@echo off\r\nnode "%~dp0\\fake-acp.mjs"\r\n`
       : `#!/usr/bin/env node\nimport "./fake-acp.mjs";\n`;
   const modulePath = path.join(runtimeDir, "fake-acp.mjs");
+  const requestLogPath = path.join(runtimeDir, "fake-acp-requests.jsonl");
+  const providerFailurePath = path.join(
+    runtimeDir,
+    "fake-acp-provider-failure.txt",
+  );
   await fs.writeFile(runtimePath, script);
   await fs.writeFile(
     modulePath,
     `
+import { appendFileSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const sessionId = "fake-electron-acp-session";
+const requestLogPath = ${JSON.stringify(requestLogPath)};
+const providerFailurePath = ${JSON.stringify(providerFailurePath)};
 function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
 }
@@ -235,12 +243,44 @@ function configOptions(mode = "default") {
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
+  appendFileSync(requestLogPath, JSON.stringify(message) + "\\n");
   if (message.method === "initialize") {
+    const providerFailure = readFileSync(providerFailurePath, "utf8").trim();
     result(message.id, {
       protocolVersion: 1,
-      agentCapabilities: {},
+      agentCapabilities: providerFailure === "no-capability" ? {} : { providers: {} },
       agentInfo: { name: "fake-electron-acp", title: "Fake Electron ACP", version: "0.0.0" }
     });
+    return;
+  }
+  if (message.method === "providers/list") {
+    if (readFileSync(providerFailurePath, "utf8").trim() === "list-method-not-found") {
+      send({ id: message.id, error: { code: -32601, message: "Method not found" } });
+      return;
+    }
+    result(message.id, {
+      providers: [{
+        providerId: "main",
+        supported: ["anthropic", "bedrock", "vertex"],
+        required: false,
+        current: null
+      }]
+    });
+    return;
+  }
+  if (message.method === "providers/set") {
+    if (readFileSync(providerFailurePath, "utf8").trim() === "set-invalid-params") {
+      send({
+        id: message.id,
+        error: {
+          code: -32602,
+          message: "Invalid provider configuration",
+          data: message.params
+        }
+      });
+      return;
+    }
+    result(message.id, {});
     return;
   }
   if (message.method === "session/new") {
@@ -313,8 +353,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 });
 `.trimStart(),
   );
+  await fs.writeFile(providerFailurePath, "");
   await fs.chmod(runtimePath, 0o755).catch(() => {});
-  return runtimePath;
+  return { runtimePath, requestLogPath, providerFailurePath };
+}
+
+async function readRequestLog(requestLogPath) {
+  const encoded = await fs.readFile(requestLogPath, "utf8").catch(() => "");
+  return encoded
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 async function writeFakeGrokAcpRuntime(runtimeDir) {
@@ -459,7 +508,11 @@ async function main() {
   const runtimeDir = await fs.mkdtemp(
     path.join(os.tmpdir(), "neverwrite-fake-acp-"),
   );
-  const fakeAcpPath = await writeFakeAcpRuntime(runtimeDir);
+  const {
+    runtimePath: fakeAcpPath,
+    requestLogPath: fakeAcpRequestLogPath,
+    providerFailurePath: fakeAcpProviderFailurePath,
+  } = await writeFakeAcpRuntime(runtimeDir);
   const fakeGrokAcpPath = await writeFakeGrokAcpRuntime(runtimeDir);
   await writeFixtureVault(vaultPath);
   const client = new SidecarClient(sidecarPath, appDataDir);
@@ -594,6 +647,166 @@ async function main() {
       isAiEvent("ai://message-completed"),
       "real ACP stream completion",
     );
+
+    await fs.writeFile(fakeAcpRequestLogPath, "");
+    await client.invoke("ai_update_setup", {
+      runtimeId: "claude-acp",
+      input: {
+        custom_binary_path: fakeAcpPath,
+        claude_provider_routing: {
+          type: "vertex",
+          base_url: "https://vertex.example",
+          project_id: "smoke-project",
+          region: "us-east5",
+        },
+        anthropic_custom_headers: {
+          action: "set",
+          value: "authorization: Bearer smoke-provider-secret",
+        },
+      },
+    });
+    const claudeSession = await client.invoke("ai_create_session", {
+      input: {
+        runtime_id: "claude-acp",
+        additional_roots: null,
+      },
+      vaultPath,
+    });
+    assert(claudeSession.status === "idle", "Claude session should start idle");
+    const claudeProviderRequests = await readRequestLog(fakeAcpRequestLogPath);
+    assert(
+      claudeProviderRequests.map((request) => request.method).join(",") ===
+        "initialize,providers/list,providers/set,session/new",
+      "Claude provider lifecycle order should be initialize -> list -> set -> session/new",
+    );
+    const providerSet = claudeProviderRequests.find(
+      (request) => request.method === "providers/set",
+    );
+    assert(
+      providerSet?.params?.providerId === "main" &&
+        providerSet?.params?.apiType === "vertex" &&
+        providerSet?.params?.baseUrl === "https://vertex.example" &&
+        providerSet?.params?._meta?.claudeCode?.vertex?.projectId ===
+          "smoke-project" &&
+        providerSet?.params?._meta?.claudeCode?.vertex?.region === "us-east5" &&
+        providerSet?.params?.headers?.authorization ===
+          "Bearer smoke-provider-secret",
+      "Claude should send the complete Vertex provider configuration before session/new",
+    );
+
+    await fs.writeFile(fakeAcpRequestLogPath, "");
+    await client.invoke("ai_update_setup", {
+      runtimeId: "claude-acp",
+      input: {
+        claude_provider_routing: { type: "default" },
+      },
+    });
+    await client.invoke("ai_create_session", {
+      input: {
+        runtime_id: "claude-acp",
+        additional_roots: null,
+      },
+      vaultPath,
+    });
+    const defaultClaudeRequests = await readRequestLog(fakeAcpRequestLogPath);
+    assert(
+      defaultClaudeRequests.map((request) => request.method).join(",") ===
+        "initialize,session/new",
+      "Default Claude routing should not call any providers method",
+    );
+
+    await client.invoke("ai_update_setup", {
+      runtimeId: "claude-acp",
+      input: {
+        claude_provider_routing: {
+          type: "vertex",
+          base_url: "https://vertex.example",
+          project_id: "private-smoke-project",
+          region: "us-east5",
+        },
+        anthropic_custom_headers: {
+          action: "set",
+          value: "authorization: Bearer never-log-this-secret",
+        },
+      },
+    });
+    for (const [failureMode, expectedMethods] of [
+      ["list-method-not-found", "initialize,providers/list"],
+      ["set-invalid-params", "initialize,providers/list,providers/set"],
+    ]) {
+      await fs.writeFile(fakeAcpRequestLogPath, "");
+      await fs.writeFile(fakeAcpProviderFailurePath, failureMode);
+      let providerError;
+      try {
+        await client.invoke("ai_create_session", {
+          input: {
+            runtime_id: "claude-acp",
+            additional_roots: null,
+          },
+          vaultPath,
+        });
+      } catch (error) {
+        providerError = error;
+      }
+      assert(providerError, `${failureMode} should prevent session creation`);
+      assert(
+        String(providerError.message).includes(
+          "could not apply the requested Vertex provider configuration",
+        ),
+        `${failureMode} should return a sanitized provider error`,
+      );
+      assert(
+        !String(providerError.message).includes("never-log-this-secret") &&
+          !String(providerError.message).includes("private-smoke-project"),
+        `${failureMode} must not expose provider secrets or credentials`,
+      );
+      const failedRequests = await readRequestLog(fakeAcpRequestLogPath);
+      assert(
+        failedRequests.map((request) => request.method).join(",") ===
+          expectedMethods,
+        `${failureMode} must fail before session/new`,
+      );
+    }
+
+    await fs.writeFile(fakeAcpRequestLogPath, "");
+    await fs.writeFile(fakeAcpProviderFailurePath, "no-capability");
+    await client.invoke("ai_update_setup", {
+      runtimeId: "claude-acp",
+      input: {
+        claude_provider_routing: {
+          type: "anthropic",
+          base_url: "https://legacy-fallback.example",
+        },
+        anthropic_custom_headers: {
+          action: "set",
+          value: "x-api-key: fallback-secret",
+        },
+      },
+    });
+    await client.invoke("ai_create_session", {
+      input: {
+        runtime_id: "claude-acp",
+        additional_roots: null,
+      },
+      vaultPath,
+    });
+    const fallbackRequests = await readRequestLog(fakeAcpRequestLogPath);
+    assert(
+      fallbackRequests.map((request) => request.method).join(",") ===
+        "initialize,session/new",
+      "A runtime without provider capability should use the session env fallback",
+    );
+    const fallbackSessionRequest = fallbackRequests.find(
+      (request) => request.method === "session/new",
+    );
+    assert(
+      fallbackSessionRequest?.params?._meta?.claudeCode?.options?.env
+        ?.ANTHROPIC_BASE_URL === "https://legacy-fallback.example" &&
+        fallbackSessionRequest?.params?._meta?.claudeCode?.options?.env
+          ?.ANTHROPIC_CUSTOM_HEADERS === "x-api-key: fallback-secret",
+      "Anthropic fallback routing should be scoped to session/new metadata",
+    );
+    await fs.writeFile(fakeAcpProviderFailurePath, "");
 
     const grokSetup = await client.invoke("ai_update_setup", {
       runtimeId: "grok-acp",

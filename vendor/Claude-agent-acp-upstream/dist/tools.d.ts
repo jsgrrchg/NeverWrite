@@ -3,7 +3,6 @@ import { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { TaskCreateInput, TaskCreateOutput, TaskUpdateInput } from "@anthropic-ai/claude-agent-sdk/sdk-tools.js";
 import { ToolResultBlockParam, WebSearchToolResultBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaBashCodeExecutionToolResultBlockParam, BetaCodeExecutionToolResultBlockParam, BetaRequestMCPToolResultBlockParam, BetaTextEditorCodeExecutionToolResultBlockParam, BetaToolResultBlockParam, BetaToolSearchToolResultBlockParam, BetaWebFetchToolResultBlockParam, BetaWebSearchToolResultBlockParam } from "@anthropic-ai/sdk/resources/beta.mjs";
-import { Logger } from "./acp-agent.js";
 interface ToolInfo {
     title: string;
     kind: ToolKind;
@@ -82,7 +81,7 @@ export declare function toolUpdateFromDiffToolResponse(toolResponse: unknown): {
 export declare const registerHookCallback: (toolUseID: string, { onPostToolUseHook, }: {
     onPostToolUseHook?: (toolUseID: string, toolInput: unknown, toolResponse: unknown) => Promise<void>;
 }) => void;
-export declare const createPostToolUseHook: (logger?: Logger, options?: {
+export declare const createPostToolUseHook: (options?: {
     onEnterPlanMode?: () => Promise<void>;
 }) => HookCallback;
 /**
