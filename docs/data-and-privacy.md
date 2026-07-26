@@ -242,6 +242,10 @@ NeverWrite's app data directory. For example, a runtime CLI may keep its own
 tokens or config in that provider's standard location. NeverWrite cannot
 guarantee or document those third-party storage formats here.
 
+Custom ACP definitions are stored separately from built-in runtime setup metadata in `<app-data>/ai/custom-acp-runtimes.json`. They contain a display name, command, arguments, non-secret environment entries, revision, fingerprint, and deleted-definition tombstones. They are global to the application and are not written into a vault.
+
+NeverWrite rejects secret-like custom environment names and launches custom ACP processes with an isolated environment, controlled `PATH`, and no inherited provider credentials or sidecar secrets. The adapter remains responsible for its own authentication material and any third-party files it creates. Review custom definition files before sharing them because executable paths and non-secret configuration can still be sensitive.
+
 ## Caches And Derived Data
 
 NeverWrite stores derived cache data that can still contain source content.

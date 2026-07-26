@@ -188,6 +188,14 @@ npm run electron:ai-runtime:smoke
 cargo test -p neverwrite-native-backend ai
 ```
 
+### Custom ACP runtimes
+
+For a custom runtime, use **Settings → AI Providers → Custom ACP runtimes → Verify executable** before opening a chat. A failed verification usually means that the command is absent, not executable, or unavailable on the controlled runtime `PATH`; prefer an absolute executable path while diagnosing it.
+
+NeverWrite launches custom commands without a shell and with an isolated environment. Shell syntax in an argument is literal, inherited provider keys are intentionally absent, and secret-looking custom environment variables are rejected. Configure adapter authentication through the adapter itself rather than the NeverWrite custom environment form.
+
+If a saved custom chat cannot reconnect, distinguish the message: restore a missing definition, confirm an expected changed fingerprint, or use the retained transcript when the adapter only supports new sessions. Deleting a definition does not close an active chat; deleting the chat explicitly closes the process NeverWrite launched. See [Configurable Custom ACP Runtimes](custom-acp-runtimes.md) for the complete contract.
+
 Grok uses NeverWrite's legacy ACP compatibility path. If the runtime does not
 expose real model options during session startup, the chat composer
 intentionally hides the model selector instead of showing a synthetic `Auto`
