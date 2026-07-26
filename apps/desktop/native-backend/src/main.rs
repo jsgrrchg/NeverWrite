@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod acp_providers;
 mod ai;
+mod custom_acp;
 mod devtools;
 mod runtime_catalog;
 mod spellcheck;
@@ -836,6 +837,13 @@ impl NativeBackend {
             "create_map" => self.create_map(args),
             "delete_map" => self.delete_map(args),
             "ai_list_runtimes" => Ok(self.ai.list_runtimes()),
+            "ai_list_custom_runtimes" => self.ai.list_custom_runtimes(),
+            "ai_list_deleted_custom_runtimes" => self.ai.list_deleted_custom_runtimes(),
+            "ai_create_custom_runtime" => self.ai.create_custom_runtime(&args),
+            "ai_update_custom_runtime" => self.ai.update_custom_runtime(&args),
+            "ai_delete_custom_runtime" => self.ai.delete_custom_runtime(&args),
+            "ai_restore_custom_runtime" => self.ai.restore_custom_runtime(&args),
+            "ai_verify_custom_runtime" => self.ai.verify_custom_runtime(&args),
             "ai_get_setup_status" => self.ai.get_setup_status(&args),
             "ai_get_environment_diagnostics" => Ok(self.ai.get_environment_diagnostics()),
             "ai_update_setup" => self.ai.update_setup(&args),

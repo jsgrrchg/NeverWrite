@@ -31,12 +31,13 @@ use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use agent_client_protocol_schema::v1::LlmProtocol;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use neverwrite_ai::{
-    AiAuthMethod, AiClaudeProviderRouting, AiConfigOption, AiConfigOptionCategory,
-    AiConfigSelectOption, AiFileDiffPayload, AiImageGenerationPayload, AiMessageCompletedPayload,
-    AiMessageDeltaPayload, AiMessageStartedPayload, AiModeOption, AiModelOption,
-    AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload,
-    AiRuntimeBinarySource, AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption,
-    AiRuntimeSetupStatus, AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
+    custom_runtimes::CustomAcpRuntimeDefinitionInput, AiAuthMethod, AiClaudeProviderRouting,
+    AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
+    AiImageGenerationPayload, AiMessageCompletedPayload, AiMessageDeltaPayload,
+    AiMessageStartedPayload, AiModeOption, AiModelOption, AiPermissionOptionPayload,
+    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload, AiRuntimeBinarySource,
+    AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
+    AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
     AiToolActivityPayload, AiUrlElicitationRequestPayload, AiUserInputQuestionOptionPayload,
     AiUserInputQuestionPayload, AiUserInputRequestPayload, DiscardedAdditionalRoot,
@@ -60,6 +61,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::{
     acp_providers,
+    custom_acp::CustomAcpRuntimeManager,
     runtime_catalog::{AcpProtocolFlavor, ProcessEnvironmentPolicy, RUNTIME_CATALOG},
     RpcOutput,
 };
@@ -292,6 +294,18 @@ struct AiRuntimeSessionInput {
 struct AiCreateSessionInput {
     runtime_id: String,
     additional_roots: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiUpdateCustomRuntimeInput {
+    id: String,
+    definition: CustomAcpRuntimeDefinitionInput,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiCustomRuntimeIdInput {
+    id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -684,13 +698,15 @@ impl Default for RuntimeSetupStore {
 #[cfg(test)]
 impl RuntimeSetupStore {
     fn in_memory_for_tests() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "neverwrite-ai-runtime-setup-test-{}.json",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default()
-        ));
+        let path = std::env::temp_dir()
+            .join(format!(
+                "neverwrite-ai-runtime-test-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or_default()
+            ))
+            .join("runtime-setup.json");
         Self::with_secret_store(path, Arc::new(InMemoryRuntimeSecretStore::default()))
     }
 }
@@ -1096,6 +1112,7 @@ pub(crate) struct NativeAi {
     inner: Arc<Mutex<NativeAiInner>>,
     event_tx: Sender<RpcOutput>,
     setup_store: RuntimeSetupStore,
+    custom_runtimes: CustomAcpRuntimeManager,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
@@ -1116,6 +1133,7 @@ impl NativeAi {
     }
 
     fn with_setup_store(event_tx: Sender<RpcOutput>, setup_store: RuntimeSetupStore) -> Self {
+        let custom_runtime_store_path = setup_store.path.with_file_name("custom-acp-runtimes.json");
         let (setup, setup_load_error) = match setup_store.load() {
             Ok(setup) => (setup, None),
             Err(error) => (HashMap::new(), Some(runtime_setup_load_error(error))),
@@ -1128,6 +1146,7 @@ impl NativeAi {
             })),
             event_tx,
             setup_store,
+            custom_runtimes: CustomAcpRuntimeManager::new(custom_runtime_store_path),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -1157,6 +1176,41 @@ impl NativeAi {
 
     pub(crate) fn list_runtimes(&self) -> Value {
         json!(runtime_descriptors())
+    }
+
+    pub(crate) fn list_custom_runtimes(&self) -> Result<Value, String> {
+        Ok(json!(self.custom_runtimes.list()?))
+    }
+
+    pub(crate) fn list_deleted_custom_runtimes(&self) -> Result<Value, String> {
+        Ok(json!(self.custom_runtimes.list_deleted()?))
+    }
+
+    pub(crate) fn create_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: CustomAcpRuntimeDefinitionInput = input_from_args(args)?;
+        Ok(json!(self.custom_runtimes.create(input)?))
+    }
+
+    pub(crate) fn update_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: AiUpdateCustomRuntimeInput = input_from_args(args)?;
+        Ok(json!(self
+            .custom_runtimes
+            .update(&input.id, input.definition)?))
+    }
+
+    pub(crate) fn delete_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: AiCustomRuntimeIdInput = input_from_args(args)?;
+        Ok(json!(self.custom_runtimes.delete(&input.id)?))
+    }
+
+    pub(crate) fn restore_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: AiCustomRuntimeIdInput = input_from_args(args)?;
+        Ok(json!(self.custom_runtimes.restore(&input.id)?))
+    }
+
+    pub(crate) fn verify_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: CustomAcpRuntimeDefinitionInput = input_from_args(args)?;
+        Ok(json!(self.custom_runtimes.verify(input)?))
     }
 
     pub(crate) fn get_setup_status(&self, args: &Value) -> Result<Value, String> {

@@ -63,6 +63,35 @@ export type AISecretPatch =
     | { action: "clear" }
     | { action: "set"; value: string };
 
+export type AICustomAcpRuntimeId = `custom:${string}`;
+
+export interface AICustomAcpRuntimeDefinitionInput {
+    displayName: string;
+    command: string;
+    args: string[];
+    env: Record<string, string>;
+    authMode: "external";
+}
+
+export interface AICustomAcpRuntimeDefinition
+    extends AICustomAcpRuntimeDefinitionInput {
+    id: AICustomAcpRuntimeId;
+    revision: number;
+    launchFingerprint: string;
+}
+
+export type AICustomAcpExecutableVerificationState =
+    | "ready"
+    | "missing"
+    | "not_executable";
+
+export interface AICustomAcpExecutableVerification {
+    state: AICustomAcpExecutableVerificationState;
+    command: string;
+    executablePath: string | null;
+    message: string | null;
+}
+
 export type AIClaudeProviderRouting =
     | { type: "default" }
     | { type: "anthropic"; baseUrl: string }

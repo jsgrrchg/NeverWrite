@@ -12,6 +12,10 @@ import type {
     AIBackendSessionPayload,
     AIChatAttachment,
     AIClaudeProviderRouting,
+    AICustomAcpExecutableVerification,
+    AICustomAcpRuntimeDefinition,
+    AICustomAcpRuntimeDefinitionInput,
+    AICustomAcpRuntimeId,
     AIChatSession,
     AIConfigOption,
     AIMessageCompletedPayload,
@@ -309,6 +313,54 @@ export async function aiListRuntimes() {
         );
         return FALLBACK_RUNTIMES;
     }
+}
+
+export async function aiListCustomRuntimes() {
+    return invoke<AICustomAcpRuntimeDefinition[]>("ai_list_custom_runtimes");
+}
+
+export async function aiListDeletedCustomRuntimes() {
+    return invoke<AICustomAcpRuntimeDefinition[]>(
+        "ai_list_deleted_custom_runtimes",
+    );
+}
+
+export async function aiCreateCustomRuntime(
+    definition: AICustomAcpRuntimeDefinitionInput,
+) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_create_custom_runtime", {
+        input: definition,
+    });
+}
+
+export async function aiUpdateCustomRuntime(input: {
+    id: AICustomAcpRuntimeId;
+    definition: AICustomAcpRuntimeDefinitionInput;
+}) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_update_custom_runtime", {
+        input,
+    });
+}
+
+export async function aiDeleteCustomRuntime(id: AICustomAcpRuntimeId) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_delete_custom_runtime", {
+        input: { id },
+    });
+}
+
+export async function aiRestoreCustomRuntime(id: AICustomAcpRuntimeId) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_restore_custom_runtime", {
+        input: { id },
+    });
+}
+
+export async function aiVerifyCustomRuntime(
+    definition: AICustomAcpRuntimeDefinitionInput,
+) {
+    return invoke<AICustomAcpExecutableVerification>(
+        "ai_verify_custom_runtime",
+        { input: definition },
+    );
 }
 
 export async function aiListSessions(vaultPath: string | null) {
