@@ -1,5 +1,6 @@
 use neverwrite_ai::{
-    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    custom_runtimes::CustomAcpRuntimeDefinition, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
+    GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,8 +12,13 @@ pub(crate) enum AcpProtocolFlavor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProcessEnvironmentPolicy {
     Inherited,
-    #[allow(dead_code)]
     Isolated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeProductProfile {
+    BuiltIn,
+    Conservative,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,61 +36,86 @@ pub(crate) struct BuiltInRuntimeDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeDefinition<'a> {
     BuiltIn(&'a BuiltInRuntimeDefinition),
+    Custom(&'a CustomAcpRuntimeDefinition),
 }
 
 impl<'a> RuntimeDefinition<'a> {
     pub(crate) fn id(self) -> &'a str {
         match self {
             Self::BuiltIn(definition) => definition.id,
+            Self::Custom(definition) => &definition.id,
         }
     }
 
     pub(crate) fn name(self) -> &'a str {
         match self {
             Self::BuiltIn(definition) => definition.name,
+            Self::Custom(definition) => &definition.display_name,
         }
     }
 
     pub(crate) fn description(self) -> &'a str {
         match self {
             Self::BuiltIn(definition) => definition.description,
+            Self::Custom(_) => "User-configured ACP-compatible agent runtime.",
         }
     }
 
     pub(crate) fn default_executable(self) -> &'a str {
         match self {
             Self::BuiltIn(definition) => definition.default_executable,
+            Self::Custom(definition) => &definition.command,
         }
     }
 
-    pub(crate) fn bin_env_var(self) -> &'a str {
+    pub(crate) fn bin_env_var(self) -> Option<&'a str> {
         match self {
-            Self::BuiltIn(definition) => definition.bin_env_var,
+            Self::BuiltIn(definition) => Some(definition.bin_env_var),
+            Self::Custom(_) => None,
         }
     }
 
-    pub(crate) fn acp_args(self) -> &'a [&'static str] {
+    pub(crate) fn acp_args(self) -> Vec<String> {
         match self {
-            Self::BuiltIn(definition) => definition.acp_args,
+            Self::BuiltIn(definition) => definition
+                .acp_args
+                .iter()
+                .map(|argument| (*argument).to_string())
+                .collect(),
+            Self::Custom(definition) => definition.args.clone(),
         }
     }
 
     pub(crate) fn acp_protocol(self) -> AcpProtocolFlavor {
         match self {
             Self::BuiltIn(definition) => definition.acp_protocol,
+            Self::Custom(_) => AcpProtocolFlavor::Current,
         }
     }
 
     pub(crate) fn process_environment_policy(self) -> ProcessEnvironmentPolicy {
         match self {
             Self::BuiltIn(_) => ProcessEnvironmentPolicy::Inherited,
+            Self::Custom(_) => ProcessEnvironmentPolicy::Isolated,
         }
     }
 
     pub(crate) fn supports_native_resume(self) -> bool {
         match self {
             Self::BuiltIn(definition) => definition.supports_native_resume,
+            Self::Custom(_) => false,
         }
+    }
+
+    pub(crate) fn product_profile(self) -> RuntimeProductProfile {
+        match self {
+            Self::BuiltIn(_) => RuntimeProductProfile::BuiltIn,
+            Self::Custom(_) => RuntimeProductProfile::Conservative,
+        }
+    }
+
+    pub(crate) fn is_custom(self) -> bool {
+        matches!(self, Self::Custom(_))
     }
 }
 
@@ -113,6 +144,38 @@ impl RuntimeCatalog {
         self.definition(runtime_id)
             .map(|_| ())
             .ok_or_else(|| format!("Unsupported AI runtime: {runtime_id}"))
+    }
+
+    pub(crate) fn with_custom<'a>(
+        &'a self,
+        custom: &'a [CustomAcpRuntimeDefinition],
+    ) -> RuntimeCatalogView<'a> {
+        RuntimeCatalogView {
+            built_ins: self,
+            custom,
+        }
+    }
+}
+
+pub(crate) struct RuntimeCatalogView<'a> {
+    built_ins: &'a RuntimeCatalog,
+    custom: &'a [CustomAcpRuntimeDefinition],
+}
+
+impl<'a> RuntimeCatalogView<'a> {
+    pub(crate) fn definition(&self, runtime_id: &str) -> Option<RuntimeDefinition<'a>> {
+        self.built_ins.definition(runtime_id).or_else(|| {
+            self.custom
+                .iter()
+                .find(|definition| definition.id == runtime_id)
+                .map(RuntimeDefinition::Custom)
+        })
+    }
+
+    pub(crate) fn definitions(&self) -> impl Iterator<Item = RuntimeDefinition<'a>> {
+        self.built_ins
+            .definitions()
+            .chain(self.custom.iter().map(RuntimeDefinition::Custom))
     }
 }
 
@@ -178,7 +241,29 @@ pub(crate) const RUNTIME_CATALOG: RuntimeCatalog =
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use neverwrite_ai::custom_runtimes::{
+        create_custom_acp_runtime_definition_with_id, CustomAcpAuthMode,
+        CustomAcpRuntimeDefinitionInput,
+    };
+
     use super::*;
+
+    fn custom_definition() -> CustomAcpRuntimeDefinition {
+        create_custom_acp_runtime_definition_with_id(
+            CustomAcpRuntimeDefinitionInput {
+                display_name: "Local agent".to_string(),
+                command: "/opt/local/agent-acp".to_string(),
+                args: vec!["--stdio".to_string()],
+                env: BTreeMap::new(),
+                auth_mode: CustomAcpAuthMode::External,
+            },
+            &[],
+            "123e4567-e89b-12d3-a456-426614174000".to_string(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn built_in_inventory_and_order_are_stable() {
@@ -223,29 +308,68 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let expected: Vec<(&str, &str, &str, &[&str])> = vec![
-            (CODEX_RUNTIME_ID, "codex", "NEVERWRITE_CODEX_ACP_BIN", &[]),
+        let expected = vec![
+            (
+                CODEX_RUNTIME_ID,
+                "codex",
+                Some("NEVERWRITE_CODEX_ACP_BIN"),
+                Vec::<String>::new(),
+            ),
             (
                 CLAUDE_RUNTIME_ID,
                 "claude",
-                "NEVERWRITE_CLAUDE_ACP_BIN",
-                &[],
+                Some("NEVERWRITE_CLAUDE_ACP_BIN"),
+                Vec::new(),
             ),
             (
                 GROK_RUNTIME_ID,
                 "grok",
-                "NEVERWRITE_GROK_ACP_BIN",
-                &["--no-auto-update", "agent", "stdio"],
+                Some("NEVERWRITE_GROK_ACP_BIN"),
+                vec![
+                    "--no-auto-update".to_string(),
+                    "agent".to_string(),
+                    "stdio".to_string(),
+                ],
             ),
-            (KILO_RUNTIME_ID, "kilo", "NEVERWRITE_KILO_ACP_BIN", &["acp"]),
+            (
+                KILO_RUNTIME_ID,
+                "kilo",
+                Some("NEVERWRITE_KILO_ACP_BIN"),
+                vec!["acp".to_string()],
+            ),
             (
                 OPENCODE_RUNTIME_ID,
                 "opencode",
-                "NEVERWRITE_OPENCODE_ACP_BIN",
-                &["acp"],
+                Some("NEVERWRITE_OPENCODE_ACP_BIN"),
+                vec!["acp".to_string()],
             ),
         ];
         assert_eq!(contracts, expected);
+    }
+
+    #[test]
+    fn catalog_view_combines_built_in_and_custom_definitions() {
+        let custom = [custom_definition()];
+        let catalog = RUNTIME_CATALOG.with_custom(&custom);
+        let definitions = catalog.definitions().collect::<Vec<_>>();
+
+        assert_eq!(definitions.len(), 6);
+        let custom = catalog.definition(&custom[0].id).unwrap();
+        assert!(custom.is_custom());
+        assert_eq!(custom.name(), "Local agent");
+        assert_eq!(custom.default_executable(), "/opt/local/agent-acp");
+        assert_eq!(custom.acp_args(), vec!["--stdio".to_string()]);
+        assert_eq!(custom.acp_protocol(), AcpProtocolFlavor::Current);
+        assert_eq!(
+            custom.process_environment_policy(),
+            ProcessEnvironmentPolicy::Isolated
+        );
+        assert!(!custom.supports_native_resume());
+        assert_eq!(
+            custom.product_profile(),
+            RuntimeProductProfile::Conservative
+        );
+        assert_eq!(custom.bin_env_var(), None);
     }
 
     #[test]

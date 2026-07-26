@@ -31,13 +31,13 @@ use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use agent_client_protocol_schema::v1::LlmProtocol;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use neverwrite_ai::{
-    custom_runtimes::CustomAcpRuntimeDefinitionInput, AiAuthMethod, AiClaudeProviderRouting,
-    AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
-    AiImageGenerationPayload, AiMessageCompletedPayload, AiMessageDeltaPayload,
-    AiMessageStartedPayload, AiModeOption, AiModelOption, AiPermissionOptionPayload,
-    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload, AiRuntimeBinarySource,
-    AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
-    AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
+    custom_runtimes::{is_custom_acp_runtime_id, CustomAcpRuntimeDefinitionInput},
+    AiAuthMethod, AiClaudeProviderRouting, AiConfigOption, AiConfigOptionCategory,
+    AiConfigSelectOption, AiFileDiffPayload, AiImageGenerationPayload, AiMessageCompletedPayload,
+    AiMessageDeltaPayload, AiMessageStartedPayload, AiModeOption, AiModelOption,
+    AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload,
+    AiRuntimeBinarySource, AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption,
+    AiRuntimeSetupStatus, AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
     AiToolActivityPayload, AiUrlElicitationRequestPayload, AiUserInputQuestionOptionPayload,
     AiUserInputQuestionPayload, AiUserInputRequestPayload, DiscardedAdditionalRoot,
@@ -61,8 +61,11 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::{
     acp_providers,
-    custom_acp::CustomAcpRuntimeManager,
-    runtime_catalog::{AcpProtocolFlavor, ProcessEnvironmentPolicy, RUNTIME_CATALOG},
+    custom_acp::{revalidate_custom_acp_launch, CustomAcpLaunchSnapshot, CustomAcpRuntimeManager},
+    runtime_catalog::{
+        AcpProtocolFlavor, ProcessEnvironmentPolicy, RuntimeDefinition, RuntimeProductProfile,
+        RUNTIME_CATALOG,
+    },
     RpcOutput,
 };
 
@@ -885,6 +888,8 @@ struct AcpProcessSpec {
     runtime_id: String,
     acp_protocol: AcpProtocolFlavor,
     environment_policy: ProcessEnvironmentPolicy,
+    product_profile: RuntimeProductProfile,
+    custom_launch: Option<CustomAcpLaunchSnapshot>,
     auth_method: Option<String>,
     auth_handshake: Option<AcpAuthHandshake>,
     claude_provider_routing: ClaudeProviderProcessRouting,
@@ -1175,7 +1180,11 @@ impl NativeAi {
     }
 
     pub(crate) fn list_runtimes(&self) -> Value {
-        json!(runtime_descriptors())
+        let custom_runtimes = self.custom_runtimes.list().unwrap_or_else(|error| {
+            eprintln!("Failed to load custom ACP runtimes for the runtime catalog: {error}");
+            Vec::new()
+        });
+        json!(runtime_descriptors_with_custom(&custom_runtimes))
     }
 
     pub(crate) fn list_custom_runtimes(&self) -> Result<Value, String> {
@@ -1215,6 +1224,9 @@ impl NativeAi {
 
     pub(crate) fn get_setup_status(&self, args: &Value) -> Result<Value, String> {
         let runtime_id = required_runtime_id(args)?;
+        if is_custom_acp_runtime_id(&runtime_id) {
+            return Ok(json!(self.custom_runtimes.setup_status(&runtime_id)?));
+        }
         let state = self
             .inner
             .lock()
@@ -1248,7 +1260,9 @@ impl NativeAi {
                 })
             })
             .collect::<Vec<_>>();
-        let runtimes = runtime_descriptors()
+        let custom_runtimes = self.custom_runtimes.list().unwrap_or_default();
+        let runtime_catalog = RUNTIME_CATALOG.with_custom(&custom_runtimes);
+        let runtimes = runtime_descriptors_with_custom(&custom_runtimes)
             .into_iter()
             .map(|descriptor| {
                 let runtime_id = descriptor.runtime.id.clone();
@@ -1264,9 +1278,13 @@ impl NativeAi {
                         )
                     })
                     .unwrap_or_default();
-                let status = match setup_load_error {
-                    Some(message) => setup_load_error_status_for(&runtime_id, message),
-                    None => setup_status_for(&runtime_id, setup_status),
+                let status = if is_custom_acp_runtime_id(&runtime_id) {
+                    self.custom_runtimes.setup_status(&runtime_id)
+                } else {
+                    match setup_load_error {
+                        Some(message) => setup_load_error_status_for(&runtime_id, message),
+                        None => setup_status_for(&runtime_id, setup_status),
+                    }
                 };
                 let (setup_status, setup_error, resolution_display) = match status {
                     Ok(status) => {
@@ -1284,10 +1302,12 @@ impl NativeAi {
                     "runtime_name": runtime_name,
                     "setup_status": setup_status,
                     "setup_error": setup_error,
-                    "launch_program": default_executable_name(&runtime_id),
-                    "launch_args": RUNTIME_CATALOG
+                    "launch_program": runtime_catalog
                         .definition(&runtime_id)
-                        .map(|definition| definition.acp_args().to_vec())
+                        .map(|definition| definition.default_executable()),
+                    "launch_args": runtime_catalog
+                        .definition(&runtime_id)
+                        .map(|definition| definition.acp_args())
                         .unwrap_or_default(),
                     "resolution_display": resolution_display,
                     "auth": runtime_auth_diagnostics(&runtime_id),
@@ -1481,18 +1501,27 @@ impl NativeAi {
         let vault_root_for_spec = vault_root.clone().ok_or_else(|| {
             "An open vault is required to start an AI runtime session.".to_string()
         })?;
-        let setup = {
-            let state = self
-                .inner
-                .lock()
-                .map_err(|error| format!("Internal AI state error: {error}"))?;
-            state
-                .setup
-                .get(&input.runtime_id)
-                .cloned()
-                .unwrap_or_default()
+        let (spec, setup) = if is_custom_acp_runtime_id(&input.runtime_id) {
+            let launch = self.custom_runtimes.resolve_launch(&input.runtime_id)?;
+            (
+                custom_acp_process_spec(launch, vault_root_for_spec),
+                RuntimeSetupState::default(),
+            )
+        } else {
+            let setup = {
+                let state = self
+                    .inner
+                    .lock()
+                    .map_err(|error| format!("Internal AI state error: {error}"))?;
+                state
+                    .setup
+                    .get(&input.runtime_id)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
+            (spec, setup)
         };
-        let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
         let created = match start_acp_session(
             spec,
             AcpSessionStartMode::New {
@@ -2521,6 +2550,7 @@ struct NativeAcpClient {
     agent_writes: AgentWriteTracker,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
     terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
+    product_profile: RuntimeProductProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -2552,6 +2582,10 @@ impl MessageRole {
 }
 
 impl NativeAcpClient {
+    fn allows_proprietary_actions(&self) -> bool {
+        self.product_profile == RuntimeProductProfile::BuiltIn
+    }
+
     fn emit<T: serde::Serialize>(&self, event_name: &str, payload: T) {
         if let Ok(value) = serde_json::to_value(payload) {
             emit_event(&self.event_tx, event_name, value);
@@ -2662,6 +2696,9 @@ impl NativeAcpClient {
         session_id: &str,
         tool_call: &ToolCall,
     ) -> Option<AiToolActivityActionPayload> {
+        if !self.allows_proprietary_actions() {
+            return None;
+        }
         let meta = tool_call.meta.as_ref()?;
         let event_type = meta_string(meta, CODEX_ACP_EVENT_TYPE_KEY)?;
         if event_type != CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE {
@@ -3066,6 +3103,9 @@ impl NativeAcpClient {
         runtime_session_id: &str,
         meta: Option<&Meta>,
     ) -> Option<AiSession> {
+        if !self.allows_proprietary_actions() {
+            return None;
+        }
         let meta = meta?;
         let event_type = meta_string(meta, CODEX_ACP_EVENT_TYPE_KEY)?;
         if event_type != CODEX_ACP_SUBAGENT_CREATED_EVENT_TYPE {
@@ -3152,6 +3192,9 @@ impl NativeAcpClient {
     }
 
     fn handle_turn_lifecycle_update(&self, session_id: &str, meta: Option<&Meta>) -> bool {
+        if !self.allows_proprietary_actions() {
+            return false;
+        }
         let Some(meta) = meta else {
             return false;
         };
@@ -3185,6 +3228,9 @@ impl NativeAcpClient {
     }
 
     fn handle_subagent_lifecycle_breadcrumb(&self, parent_session_id: &str, meta: Option<&Meta>) {
+        if !self.allows_proprietary_actions() {
+            return;
+        }
         let Some(meta) = meta else {
             return;
         };
@@ -3813,6 +3859,7 @@ fn start_acp_session(
     start_mode: AcpSessionStartMode,
     context: AcpActorContext,
 ) -> Result<CreatedAcpSession, String> {
+    validate_acp_process_spec(&spec)?;
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
     let flavor = spec.acp_protocol;
@@ -3851,6 +3898,38 @@ fn start_acp_session(
             }
         })??;
     Ok(CreatedAcpSession { session, handle })
+}
+
+fn validate_acp_process_spec(spec: &AcpProcessSpec) -> Result<(), String> {
+    let Some(launch) = spec.custom_launch.as_ref() else {
+        return Ok(());
+    };
+    revalidate_custom_acp_launch(launch)?;
+    let env_matches = spec.env.len() == launch.env.len()
+        && launch
+            .env
+            .iter()
+            .all(|(key, value)| spec.env.get(key) == Some(value));
+    if spec.runtime_id != launch.runtime_id
+        || spec.program != launch.program
+        || spec.args != launch.args
+        || !env_matches
+        || spec.acp_protocol != AcpProtocolFlavor::Current
+        || spec.environment_policy != ProcessEnvironmentPolicy::Isolated
+        || spec.product_profile != RuntimeProductProfile::Conservative
+        || spec.auth_method.is_some()
+        || spec.auth_handshake.is_some()
+        || !matches!(
+            spec.claude_provider_routing,
+            ClaudeProviderProcessRouting::Inherit
+        )
+    {
+        return Err(format!(
+            "Custom ACP runtime process snapshot is invalid: {}",
+            spec.runtime_id
+        ));
+    }
+    Ok(())
 }
 
 fn run_acp_auth(spec: AcpProcessSpec, method_id: String) -> Result<(), String> {
@@ -4267,6 +4346,7 @@ async fn run_acp12_actor_inner(
         agent_writes: context.shared.agent_writes.clone(),
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
         terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+        product_profile: spec.product_profile,
     };
     let permission_waiters = client.permission_waiters.clone();
     let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
@@ -4462,6 +4542,7 @@ async fn run_acp_actor_inner(
         agent_writes: context.shared.agent_writes.clone(),
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
         terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+        product_profile: spec.product_profile,
     };
     let permission_waiters = client.permission_waiters.clone();
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
@@ -6668,35 +6749,51 @@ fn reasoning_effort_label(effort: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
     RUNTIME_CATALOG
         .definitions()
-        .map(|definition| {
-            let runtime_id = definition.id();
-            let models = default_models(runtime_id);
-            let modes = default_modes_for_runtime_descriptor(runtime_id);
-            let mut capabilities = vec![
-                "create_session".to_string(),
-                "prompt_queueing".to_string(),
-                "user_input".to_string(),
-            ];
-            if definition.supports_native_resume() {
-                capabilities.push("resume_session".to_string());
-            }
-            AiRuntimeDescriptor {
-                runtime: AiRuntimeOption {
-                    id: runtime_id.to_string(),
-                    name: definition.name().to_string(),
-                    description: definition.description().to_string(),
-                    capabilities,
-                },
-                config_options: default_config_options(runtime_id, &models, &modes),
-                models,
-                modes,
-            }
-            .with_auth_capabilities(auth_method_ids(runtime_id))
-        })
+        .map(runtime_descriptor)
         .collect()
+}
+
+fn runtime_descriptors_with_custom(
+    custom_runtimes: &[neverwrite_ai::custom_runtimes::CustomAcpRuntimeDefinition],
+) -> Vec<AiRuntimeDescriptor> {
+    RUNTIME_CATALOG
+        .with_custom(custom_runtimes)
+        .definitions()
+        .map(runtime_descriptor)
+        .collect()
+}
+
+fn runtime_descriptor(definition: RuntimeDefinition<'_>) -> AiRuntimeDescriptor {
+    let runtime_id = definition.id();
+    let models = default_models(runtime_id);
+    let modes = default_modes_for_runtime_descriptor(runtime_id);
+    let mut capabilities = vec!["create_session".to_string()];
+    if !definition.is_custom() {
+        capabilities.extend(["prompt_queueing".to_string(), "user_input".to_string()]);
+    }
+    if definition.supports_native_resume() {
+        capabilities.push("resume_session".to_string());
+    }
+    let descriptor = AiRuntimeDescriptor {
+        runtime: AiRuntimeOption {
+            id: runtime_id.to_string(),
+            name: definition.name().to_string(),
+            description: definition.description().to_string(),
+            capabilities,
+        },
+        config_options: default_config_options(runtime_id, &models, &modes),
+        models,
+        modes,
+    };
+    if definition.is_custom() {
+        descriptor
+    } else {
+        descriptor.with_auth_capabilities(auth_method_ids(runtime_id))
+    }
 }
 
 fn runtime_supports_native_resume(runtime_id: &str) -> bool {
@@ -7010,6 +7107,23 @@ fn runtime_auth_diagnostics(runtime_id: &str) -> Value {
     })
 }
 
+fn custom_acp_process_spec(launch: CustomAcpLaunchSnapshot, cwd: PathBuf) -> AcpProcessSpec {
+    AcpProcessSpec {
+        program: launch.program.clone(),
+        args: launch.args.clone(),
+        cwd,
+        env: launch.env.clone().into_iter().collect(),
+        runtime_id: launch.runtime_id.clone(),
+        acp_protocol: AcpProtocolFlavor::Current,
+        environment_policy: ProcessEnvironmentPolicy::Isolated,
+        product_profile: RuntimeProductProfile::Conservative,
+        custom_launch: Some(launch),
+        auth_method: None,
+        auth_handshake: None,
+        claude_provider_routing: ClaudeProviderProcessRouting::Inherit,
+    }
+}
+
 fn acp_process_spec(
     runtime_id: &str,
     setup: &RuntimeSetupState,
@@ -7068,6 +7182,8 @@ fn acp_process_spec(
         runtime_id: runtime_id.to_string(),
         acp_protocol: definition.acp_protocol(),
         environment_policy: definition.process_environment_policy(),
+        product_profile: definition.product_profile(),
+        custom_launch: None,
         auth_method,
         auth_handshake: acp_auth_handshake_for_runtime(runtime_id),
         claude_provider_routing,
@@ -7509,8 +7625,8 @@ fn with_runtime_args(runtime_id: &str, mut resolved: ResolvedAcpCommand) -> Reso
     }
     if let Some(definition) = RUNTIME_CATALOG.definition(runtime_id) {
         for arg in definition.acp_args() {
-            if !resolved.args.iter().any(|existing| existing == arg) {
-                resolved.args.push((*arg).to_string());
+            if !resolved.args.contains(&arg) {
+                resolved.args.push(arg);
             }
         }
     }
@@ -7520,7 +7636,7 @@ fn with_runtime_args(runtime_id: &str, mut resolved: ResolvedAcpCommand) -> Reso
 fn runtime_bin_env_var(runtime_id: &str) -> &str {
     RUNTIME_CATALOG
         .definition(runtime_id)
-        .map(|definition| definition.bin_env_var())
+        .and_then(|definition| definition.bin_env_var())
         .unwrap_or("NEVERWRITE_AI_ACP_BIN")
 }
 
@@ -8931,6 +9047,12 @@ fn native_image_attachment_limits_for_runtime(
             max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
             allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
         },
+        Some(runtime_id) if is_custom_acp_runtime_id(runtime_id) => NativeImageAttachmentLimits {
+            runtime_label: "this custom ACP runtime",
+            max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
+        },
         _ => NativeImageAttachmentLimits {
             runtime_label: "this provider",
             max_bytes: MAX_NATIVE_IMAGE_ATTACHMENT_BYTES,
@@ -9819,6 +9941,7 @@ mod tests {
             agent_writes: AgentWriteTracker::default(),
             terminal_output: Arc::new(Mutex::new(HashMap::new())),
             terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+            product_profile: RuntimeProductProfile::BuiltIn,
         }
     }
 
@@ -10146,6 +10269,16 @@ mod tests {
         )
     }
 
+    fn custom_runtime_input(name: &str, command: &str) -> CustomAcpRuntimeDefinitionInput {
+        CustomAcpRuntimeDefinitionInput {
+            display_name: name.to_string(),
+            command: command.to_string(),
+            args: vec!["--stdio".to_string()],
+            env: BTreeMap::from([("AGENT_COLOR".to_string(), "blue".to_string())]),
+            auth_mode: neverwrite_ai::custom_runtimes::CustomAcpAuthMode::External,
+        }
+    }
+
     #[derive(Default)]
     struct FailableRuntimeSecretStore {
         values: Mutex<HashMap<(String, String), String>>,
@@ -10359,6 +10492,153 @@ mod tests {
     }
 
     #[test]
+    fn custom_runtime_descriptor_is_dynamic_and_conservative() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let definition = native_ai
+            .custom_runtimes
+            .create(custom_runtime_input("Local agent", "/missing/agent-acp"))
+            .unwrap();
+
+        let descriptors: Vec<AiRuntimeDescriptor> =
+            serde_json::from_value(native_ai.list_runtimes()).unwrap();
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.runtime.id == definition.id)
+            .unwrap();
+        assert_eq!(descriptor.runtime.name, "Local agent");
+        assert_eq!(descriptor.runtime.capabilities, ["create_session"]);
+        assert!(descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .all(|capability| !capability.contains("auth")));
+        assert_eq!(descriptor.models[0].id, "auto");
+        assert_eq!(descriptor.modes[0].id, "default");
+
+        let status: AiRuntimeSetupStatus = serde_json::from_value(
+            native_ai
+                .get_setup_status(&json!({ "runtimeId": definition.id }))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!status.binary_ready);
+        assert!(status.auth_ready);
+        assert_eq!(status.auth_method.as_deref(), Some("external"));
+        assert!(status.auth_methods.is_empty());
+
+        let session_error = native_ai
+            .create_session(
+                &json!({
+                    "input": {
+                        "runtime_id": definition.id,
+                        "additional_roots": null
+                    }
+                }),
+                Some(temp.path().to_path_buf()),
+            )
+            .unwrap_err();
+        assert!(session_error.contains("executable was not found"));
+        assert!(native_ai.inner.lock().unwrap().sessions.is_empty());
+
+        let auth_error = native_ai
+            .start_auth(&json!({
+                "input": {
+                    "runtimeId": definition.id,
+                    "methodId": "external"
+                }
+            }))
+            .unwrap_err();
+        assert!(auth_error.contains("Unsupported AI runtime"));
+
+        native_ai.custom_runtimes.delete(&definition.id).unwrap();
+        let descriptors: Vec<AiRuntimeDescriptor> =
+            serde_json::from_value(native_ai.list_runtimes()).unwrap();
+        assert!(descriptors
+            .iter()
+            .all(|descriptor| descriptor.runtime.id != definition.id));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_process_spec_preserves_the_validated_isolated_launch_snapshot() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("agent-acp");
+        fs::write(&executable, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let mut input = custom_runtime_input("Local agent", &executable.display().to_string());
+        input.args = vec!["--stdio".to_string(), "; touch never".to_string()];
+        let definition = native_ai.custom_runtimes.create(input).unwrap();
+        let launch = native_ai
+            .custom_runtimes
+            .resolve_launch(&definition.id)
+            .unwrap();
+        let spec = custom_acp_process_spec(launch.clone(), temp.path().to_path_buf());
+
+        validate_acp_process_spec(&spec).unwrap();
+        assert_eq!(spec.program, std::fs::canonicalize(executable).unwrap());
+        assert_eq!(spec.args, ["--stdio", "; touch never"]);
+        assert_eq!(spec.acp_protocol, AcpProtocolFlavor::Current);
+        assert_eq!(spec.environment_policy, ProcessEnvironmentPolicy::Isolated);
+        assert_eq!(spec.product_profile, RuntimeProductProfile::Conservative);
+        assert!(spec.auth_method.is_none());
+        assert!(spec.auth_handshake.is_none());
+        assert!(matches!(
+            spec.claude_provider_routing,
+            ClaudeProviderProcessRouting::Inherit
+        ));
+        assert_eq!(
+            spec.env.get("AGENT_COLOR").map(String::as_str),
+            Some("blue")
+        );
+        assert_eq!(spec.custom_launch.as_ref(), Some(&launch));
+
+        let mut tampered = spec.clone();
+        tampered.args.push("--injected".to_string());
+        assert!(validate_acp_process_spec(&tampered).is_err());
+    }
+
+    #[test]
+    fn custom_runtime_uses_conservative_image_limits() {
+        let limits = native_image_attachment_limits_for_runtime(Some(
+            "custom:123e4567-e89b-12d3-a456-426614174000",
+        ));
+        assert_eq!(
+            limits.max_bytes,
+            CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES
+        );
+        assert_eq!(
+            limits.allowed_mime_types,
+            CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES
+        );
+    }
+
+    #[test]
+    fn conservative_product_profile_ignores_proprietary_subagent_metadata() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let mut client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.product_profile = RuntimeProductProfile::Conservative;
+        let meta = subagent_session_created_meta();
+
+        assert!(client
+            .create_subagent_session_from_meta(CHILD_RUNTIME_SESSION_ID, Some(&meta))
+            .is_none());
+        assert!(!client.handle_turn_lifecycle_update(PARENT_RUNTIME_SESSION_ID, Some(&meta)));
+        assert_eq!(session_state.lock().unwrap().sessions.len(), 1);
+    }
+
+    #[test]
     fn gemini_runtime_is_not_registered() {
         assert!(validate_runtime_id("gemini-acp").is_err());
         assert!(RUNTIME_CATALOG.definition("gemini-acp").is_none());
@@ -10416,7 +10696,7 @@ mod tests {
         let definition = RUNTIME_CATALOG.definition(GROK_RUNTIME_ID).unwrap();
         assert_eq!(definition.name(), "Grok");
         assert_eq!(definition.default_executable(), "grok");
-        assert_eq!(definition.bin_env_var(), "NEVERWRITE_GROK_ACP_BIN");
+        assert_eq!(definition.bin_env_var(), Some("NEVERWRITE_GROK_ACP_BIN"));
         assert_eq!(
             definition.acp_args(),
             ["--no-auto-update", "agent", "stdio"]

@@ -4,16 +4,60 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use neverwrite_ai::custom_runtimes::{
-    create_custom_acp_runtime_definition, is_custom_acp_runtime_id,
-    normalize_persisted_custom_acp_runtime_definition, update_custom_acp_runtime_definition,
-    validate_custom_acp_runtime_input, CustomAcpAuthMode, CustomAcpRuntimeDefinition,
-    CustomAcpRuntimeDefinitionInput, MAX_CUSTOM_ACP_RUNTIME_COUNT,
+use neverwrite_ai::{
+    custom_runtimes::{
+        calculate_custom_acp_launch_fingerprint, create_custom_acp_runtime_definition,
+        is_custom_acp_runtime_id, normalize_persisted_custom_acp_runtime_definition,
+        update_custom_acp_runtime_definition, validate_custom_acp_runtime_input, CustomAcpAuthMode,
+        CustomAcpRuntimeDefinition, CustomAcpRuntimeDefinitionInput, MAX_CUSTOM_ACP_RUNTIME_COUNT,
+    },
+    AiRuntimeBinarySource, AiRuntimeSetupStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const CUSTOM_ACP_RUNTIME_STORE_VERSION: u32 = 1;
+const SAFE_CUSTOM_ACP_ENV_KEYS: &[&str] = &[
+    "APPDATA",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOCALAPPDATA",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+];
+const USER_RUNTIME_PATHS: &[&str] = &[
+    "bin",
+    ".grok/bin",
+    ".opencode/bin",
+    ".local/bin",
+    ".npm-global/bin",
+    ".yarn/bin",
+    ".bun/bin",
+    ".deno/bin",
+    ".cargo/bin",
+    "Library/pnpm",
+    ".volta/bin",
+    ".asdf/shims",
+    ".local/share/mise/shims",
+];
+#[cfg(not(windows))]
+const SYSTEM_RUNTIME_PATHS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +74,26 @@ pub(crate) struct CustomAcpExecutableVerification {
     command: String,
     executable_path: Option<String>,
     message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CustomAcpLaunchSnapshot {
+    pub(crate) runtime_id: String,
+    pub(crate) display_name: String,
+    pub(crate) configured_command: String,
+    pub(crate) program: PathBuf,
+    pub(crate) args: Vec<String>,
+    pub(crate) configured_env: BTreeMap<String, String>,
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) revision: u64,
+    pub(crate) launch_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExecutableResolution {
+    Ready(PathBuf),
+    Missing,
+    NotExecutable(PathBuf),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -178,6 +242,108 @@ impl CustomAcpRuntimeManager {
         Ok(state.settings.deleted_runtimes.clone())
     }
 
+    pub(crate) fn definition(
+        &self,
+        runtime_id: &str,
+    ) -> Result<Option<CustomAcpRuntimeDefinition>, String> {
+        validate_custom_runtime_id(runtime_id)?;
+        let state = self.lock_state()?;
+        ensure_store_loaded(&state)?;
+        Ok(state
+            .settings
+            .runtimes
+            .iter()
+            .find(|definition| definition.id == runtime_id)
+            .cloned())
+    }
+
+    pub(crate) fn setup_status(&self, runtime_id: &str) -> Result<AiRuntimeSetupStatus, String> {
+        let definition = self
+            .definition(runtime_id)?
+            .ok_or_else(|| format!("Custom ACP runtime not found: {runtime_id}"))?;
+        let resolution = resolve_executable(&definition.command);
+        let (binary_ready, binary_path, message) = match resolution {
+            ExecutableResolution::Ready(path) => (true, Some(path.display().to_string()), None),
+            ExecutableResolution::Missing => (
+                false,
+                None,
+                Some(format!(
+                    "Custom ACP executable was not found: {}",
+                    definition.command
+                )),
+            ),
+            ExecutableResolution::NotExecutable(path) => (
+                false,
+                Some(path.display().to_string()),
+                Some(format!(
+                    "Custom ACP executable is not executable: {}",
+                    definition.command
+                )),
+            ),
+        };
+        Ok(AiRuntimeSetupStatus {
+            runtime_id: definition.id,
+            binary_ready,
+            binary_path,
+            binary_source: if binary_ready {
+                AiRuntimeBinarySource::Custom
+            } else {
+                AiRuntimeBinarySource::Missing
+            },
+            has_custom_binary_path: true,
+            auth_ready: true,
+            auth_method: Some("external".to_string()),
+            auth_methods: Vec::new(),
+            claude_provider_routing: None,
+            has_gateway_config: false,
+            has_gateway_url: false,
+            onboarding_required: !binary_ready,
+            message,
+        })
+    }
+
+    pub(crate) fn resolve_launch(
+        &self,
+        runtime_id: &str,
+    ) -> Result<CustomAcpLaunchSnapshot, String> {
+        let definition = self
+            .definition(runtime_id)?
+            .ok_or_else(|| format!("Custom ACP runtime not found: {runtime_id}"))?;
+        let expected_fingerprint = calculate_custom_acp_launch_fingerprint(&definition.as_input());
+        if definition.launch_fingerprint != expected_fingerprint {
+            return Err(format!(
+                "Custom ACP runtime launch fingerprint is invalid: {runtime_id}"
+            ));
+        }
+        let program = match resolve_executable(&definition.command) {
+            ExecutableResolution::Ready(path) => path,
+            ExecutableResolution::Missing => {
+                return Err(format!(
+                    "Custom ACP executable was not found: {}",
+                    definition.command
+                ));
+            }
+            ExecutableResolution::NotExecutable(_) => {
+                return Err(format!(
+                    "Custom ACP executable is not executable: {}",
+                    definition.command
+                ));
+            }
+        };
+        let env = build_isolated_custom_acp_env(&program, &definition.env)?;
+        Ok(CustomAcpLaunchSnapshot {
+            runtime_id: definition.id,
+            display_name: definition.display_name,
+            configured_command: definition.command,
+            program,
+            args: definition.args,
+            configured_env: definition.env,
+            env,
+            revision: definition.revision,
+            launch_fingerprint: definition.launch_fingerprint,
+        })
+    }
+
     pub(crate) fn create(
         &self,
         input: CustomAcpRuntimeDefinitionInput,
@@ -313,6 +479,35 @@ impl CustomAcpRuntimeManager {
             .lock()
             .map_err(|error| format!("Internal custom ACP runtime state error: {error}"))
     }
+}
+
+pub(crate) fn revalidate_custom_acp_launch(launch: &CustomAcpLaunchSnapshot) -> Result<(), String> {
+    validate_custom_runtime_id(&launch.runtime_id)?;
+    if launch.display_name.trim().is_empty()
+        || launch.configured_command.trim().is_empty()
+        || launch.revision == 0
+        || !launch.program.is_absolute()
+        || !is_executable_file(&launch.program)
+    {
+        return Err(format!(
+            "Custom ACP runtime launch snapshot is invalid: {}",
+            launch.runtime_id
+        ));
+    }
+    let fingerprint_input = CustomAcpRuntimeDefinitionInput {
+        display_name: launch.display_name.clone(),
+        command: launch.configured_command.clone(),
+        args: launch.args.clone(),
+        env: launch.configured_env.clone(),
+        auth_mode: CustomAcpAuthMode::External,
+    };
+    if calculate_custom_acp_launch_fingerprint(&fingerprint_input) != launch.launch_fingerprint {
+        return Err(format!(
+            "Custom ACP runtime launch fingerprint is invalid: {}",
+            launch.runtime_id
+        ));
+    }
+    Ok(())
 }
 
 fn validate_custom_runtime_id(runtime_id: &str) -> Result<(), String> {
@@ -475,15 +670,14 @@ fn replace_store_file(temp_path: &Path, target_path: &Path) -> std::io::Result<(
 }
 
 fn verify_executable(command: &str) -> CustomAcpExecutableVerification {
-    let candidate = resolve_executable_candidate(command);
-    match candidate {
-        None => CustomAcpExecutableVerification {
+    match resolve_executable(command) {
+        ExecutableResolution::Missing => CustomAcpExecutableVerification {
             state: CustomAcpExecutableVerificationState::Missing,
             command: command.to_string(),
             executable_path: None,
             message: Some(format!("Custom ACP executable was not found: {command}")),
         },
-        Some(path) if !is_executable_file(&path) => CustomAcpExecutableVerification {
+        ExecutableResolution::NotExecutable(path) => CustomAcpExecutableVerification {
             state: CustomAcpExecutableVerificationState::NotExecutable,
             command: command.to_string(),
             executable_path: Some(path.display().to_string()),
@@ -491,7 +685,7 @@ fn verify_executable(command: &str) -> CustomAcpExecutableVerification {
                 "Custom ACP executable is not executable: {command}"
             )),
         },
-        Some(path) => CustomAcpExecutableVerification {
+        ExecutableResolution::Ready(path) => CustomAcpExecutableVerification {
             state: CustomAcpExecutableVerificationState::Ready,
             command: command.to_string(),
             executable_path: Some(path.display().to_string()),
@@ -500,27 +694,107 @@ fn verify_executable(command: &str) -> CustomAcpExecutableVerification {
     }
 }
 
-fn resolve_executable_candidate(command: &str) -> Option<PathBuf> {
-    let raw_path = PathBuf::from(command);
-    if raw_path.is_absolute() || command.contains('/') || command.contains('\\') {
-        let path = if raw_path.is_absolute() {
-            raw_path
-        } else {
-            std::env::current_dir().ok()?.join(raw_path)
-        };
-        return first_existing_executable_path(path);
-    }
-
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .find_map(|entry| first_existing_executable_path(entry.join(command)))
+fn resolve_executable(command: &str) -> ExecutableResolution {
+    let home = runtime_home_dir();
+    resolve_executable_with_home(command, home.as_deref())
 }
 
-fn first_existing_executable_path(candidate: PathBuf) -> Option<PathBuf> {
-    executable_path_candidates(candidate)
+fn resolve_executable_with_home(command: &str, home: Option<&Path>) -> ExecutableResolution {
+    let raw_path = PathBuf::from(command);
+    let base_candidates =
+        if raw_path.is_absolute() || command.contains('/') || command.contains('\\') {
+            let path = if raw_path.is_absolute() {
+                raw_path
+            } else {
+                match std::env::current_dir() {
+                    Ok(current_dir) => current_dir.join(raw_path),
+                    Err(_) => return ExecutableResolution::Missing,
+                }
+            };
+            vec![path]
+        } else {
+            controlled_runtime_path_entries(None, home)
+                .into_iter()
+                .map(|entry| entry.join(command))
+                .collect()
+        };
+
+    let mut first_non_executable = None;
+    for candidate in base_candidates
         .into_iter()
-        .find(|path| path.is_file())
-        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .flat_map(executable_path_candidates)
+    {
+        if !candidate.is_file() {
+            continue;
+        }
+        let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+        if is_executable_file(&candidate) {
+            return ExecutableResolution::Ready(candidate);
+        }
+        first_non_executable.get_or_insert(candidate);
+    }
+    first_non_executable
+        .map(ExecutableResolution::NotExecutable)
+        .unwrap_or(ExecutableResolution::Missing)
+}
+
+fn runtime_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+}
+
+fn controlled_runtime_path_entries(executable: Option<&Path>, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut entries = Vec::new();
+    if let Some(parent) = executable.and_then(Path::parent) {
+        entries.push(parent.to_path_buf());
+    }
+    if let Some(home) = home {
+        entries.extend(USER_RUNTIME_PATHS.iter().map(|entry| home.join(entry)));
+    }
+    #[cfg(not(windows))]
+    entries.extend(SYSTEM_RUNTIME_PATHS.iter().map(PathBuf::from));
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot").map(PathBuf::from) {
+        entries.push(system_root.join("System32"));
+        entries.push(system_root);
+    }
+
+    let mut seen = HashSet::new();
+    entries.retain(|entry| seen.insert(entry.clone()));
+    entries
+}
+
+fn build_isolated_custom_acp_env(
+    executable: &Path,
+    configured_env: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut env = BTreeMap::new();
+    for key in SAFE_CUSTOM_ACP_ENV_KEYS {
+        if let Ok(value) = std::env::var(key) {
+            if !value.is_empty() {
+                env.insert((*key).to_string(), value);
+            }
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(value) = std::env::var("PATHEXT") {
+        if !value.is_empty() {
+            env.insert("PATHEXT".to_string(), value);
+        }
+    }
+    let home = runtime_home_dir();
+    let path = std::env::join_paths(controlled_runtime_path_entries(
+        Some(executable),
+        home.as_deref(),
+    ))
+    .map_err(|error| format!("Failed to build custom ACP runtime PATH: {error}"))?
+    .into_string()
+    .map_err(|_| "Custom ACP runtime PATH contains non-Unicode text.".to_string())?;
+    env.insert("PATH".to_string(), path);
+    env.extend(configured_env.clone());
+    Ok(env)
 }
 
 fn executable_path_candidates(candidate: PathBuf) -> Vec<PathBuf> {
@@ -529,14 +803,13 @@ fn executable_path_candidates(candidate: PathBuf) -> Vec<PathBuf> {
         if candidate.extension().is_some() {
             return vec![candidate];
         }
-        let extensions =
-            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+        // Batch and command shims require cmd.exe and are intentionally not
+        // accepted as direct custom ACP executables.
         let mut candidates = vec![candidate.clone()];
         candidates.extend(
-            extensions
-                .split(';')
-                .filter(|extension| !extension.is_empty())
-                .map(|extension| candidate.with_extension(extension.trim_start_matches('.'))),
+            ["COM", "EXE"]
+                .into_iter()
+                .map(|extension| candidate.with_extension(extension)),
         );
         candidates
     }
@@ -558,6 +831,12 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(windows)]
 fn is_executable_file(path: &Path) -> bool {
     path.is_file()
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(extension.to_ascii_lowercase().as_str(), "exe" | "com")
+            })
 }
 
 #[cfg(test)]
@@ -717,6 +996,152 @@ mod tests {
                 .unwrap();
         }
         assert!(capacity.restore(&deleted.id).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_command_names_from_the_controlled_runtime_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join(".local/bin/agent-acp");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(
+            resolve_executable_with_home("agent-acp", Some(temp.path())),
+            ExecutableResolution::Ready(std::fs::canonicalize(executable).unwrap())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_snapshot_is_isolated_and_immutable_after_catalog_changes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("custom-acp-runtimes.json");
+        let executable = temp.path().join("agent-acp");
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let manager = manager(&store_path);
+        let mut definition_input = input("Agent", &executable.display().to_string());
+        definition_input.args = vec!["--literal".to_string(), "; touch must-not-run".to_string()];
+        definition_input.env = BTreeMap::from([
+            ("AGENT_COLOR".to_string(), "blue".to_string()),
+            ("AGENT_MODE".to_string(), "review".to_string()),
+        ]);
+        let definition = manager.create(definition_input).unwrap();
+        let launch = manager.resolve_launch(&definition.id).unwrap();
+
+        assert!(launch.program.is_absolute());
+        assert_eq!(launch.args, ["--literal", "; touch must-not-run"]);
+        assert_eq!(
+            launch.env.get("AGENT_COLOR").map(String::as_str),
+            Some("blue")
+        );
+        assert_eq!(
+            launch.env.get("AGENT_MODE").map(String::as_str),
+            Some("review")
+        );
+        assert!(launch.env.contains_key("PATH"));
+        for key in launch.env.keys() {
+            assert!(
+                *key == "PATH"
+                    || SAFE_CUSTOM_ACP_ENV_KEYS.contains(&key.as_str())
+                    || matches!(key.as_str(), "AGENT_COLOR" | "AGENT_MODE")
+                    || cfg!(windows) && key == "PATHEXT",
+                "unexpected inherited environment key: {key}"
+            );
+        }
+        revalidate_custom_acp_launch(&launch).unwrap();
+
+        let mut changed = definition.as_input();
+        changed.command = "/missing/changed-agent-acp".to_string();
+        manager.update(&definition.id, changed).unwrap();
+        manager.delete(&definition.id).unwrap();
+
+        revalidate_custom_acp_launch(&launch).unwrap();
+        assert_eq!(launch.program, std::fs::canonicalize(executable).unwrap());
+        assert!(manager.resolve_launch(&definition.id).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_launches_do_not_share_configured_environment() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("custom-acp-runtimes.json");
+        let executable = temp.path().join("agent-acp");
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let manager = manager(&store_path);
+        let mut first_input = input("First", &executable.display().to_string());
+        first_input.env = BTreeMap::from([("FIRST_ONLY".to_string(), "one".to_string())]);
+        let first = manager.create(first_input).unwrap();
+        let mut second_input = input("Second", &executable.display().to_string());
+        second_input.env = BTreeMap::from([("SECOND_ONLY".to_string(), "two".to_string())]);
+        let second = manager.create(second_input).unwrap();
+
+        let first_launch = manager.resolve_launch(&first.id).unwrap();
+        let second_launch = manager.resolve_launch(&second.id).unwrap();
+        assert_eq!(
+            first_launch.env.get("FIRST_ONLY").map(String::as_str),
+            Some("one")
+        );
+        assert!(!first_launch.env.contains_key("SECOND_ONLY"));
+        assert_eq!(
+            second_launch.env.get("SECOND_ONLY").map(String::as_str),
+            Some("two")
+        );
+        assert!(!second_launch.env.contains_key("FIRST_ONLY"));
+    }
+
+    #[test]
+    fn invalid_identity_and_fingerprint_block_launch_resolution() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("custom-acp-runtimes.json");
+        let manager = manager(&store_path);
+        assert!(manager.resolve_launch("custom:not-a-uuid").is_err());
+        let definition = manager.create(input("Agent", "agent-acp")).unwrap();
+        manager.state.lock().unwrap().settings.runtimes[0].launch_fingerprint =
+            "forged".to_string();
+
+        let error = manager.resolve_launch(&definition.id).unwrap_err();
+        assert!(error.contains("fingerprint is invalid"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_status_requires_an_executable_but_not_internal_authentication() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("custom-acp-runtimes.json");
+        let executable = temp.path().join("agent-acp");
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let manager = manager(&store_path);
+        let ready = manager
+            .create(input("Ready", &executable.display().to_string()))
+            .unwrap();
+        let missing = manager
+            .create(input("Missing", "/missing/custom-agent-acp"))
+            .unwrap();
+
+        let ready_status = manager.setup_status(&ready.id).unwrap();
+        assert!(ready_status.binary_ready);
+        assert!(ready_status.auth_ready);
+        assert_eq!(ready_status.auth_method.as_deref(), Some("external"));
+        assert!(ready_status.auth_methods.is_empty());
+        assert!(!ready_status.onboarding_required);
+
+        let missing_status = manager.setup_status(&missing.id).unwrap();
+        assert!(!missing_status.binary_ready);
+        assert!(missing_status.auth_ready);
+        assert!(missing_status.onboarding_required);
     }
 
     #[cfg(unix)]
