@@ -213,6 +213,7 @@ import { createInterface } from "node:readline";
 const sessionId = "fake-electron-acp-session";
 const requestLogPath = ${JSON.stringify(requestLogPath)};
 const providerFailurePath = ${JSON.stringify(providerFailurePath)};
+const continuation = process.env.FAKE_ACP_CONTINUATION ?? "none";
 const customCapturePath = process.env.CUSTOM_ACP_CAPTURE_FILE;
 if (customCapturePath) {
   writeFileSync(customCapturePath, JSON.stringify({
@@ -255,9 +256,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   appendFileSync(requestLogPath, JSON.stringify(message) + "\\n");
   if (message.method === "initialize") {
     const providerFailure = readFileSync(providerFailurePath, "utf8").trim();
+    const agentCapabilities = providerFailure === "no-capability" ? {} : { providers: {} };
+    if (continuation === "resume") {
+      agentCapabilities.sessionCapabilities = { resume: {} };
+    } else if (continuation === "load") {
+      agentCapabilities.loadSession = true;
+    }
     result(message.id, {
       protocolVersion: 1,
-      agentCapabilities: providerFailure === "no-capability" ? {} : { providers: {} },
+      agentCapabilities,
       agentInfo: { name: "fake-electron-acp", title: "Fake Electron ACP", version: "0.0.0" }
     });
     return;
@@ -299,6 +306,23 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         currentModelId: "auto",
         availableModels: [{ modelId: "auto", name: "Auto" }]
       },
+      modes: {
+        currentModeId: "default",
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "review", name: "Review" }
+        ]
+      },
+      configOptions: configOptions()
+    });
+    return;
+  }
+  if (message.method === "session/resume") {
+    result(message.id, { configOptions: configOptions() });
+    return;
+  }
+  if (message.method === "session/load") {
+    result(message.id, {
       modes: {
         currentModeId: "default",
         availableModes: [
@@ -557,6 +581,7 @@ async function main() {
       env: {
         AGENT_COLOR: "blue",
         CUSTOM_ACP_CAPTURE_FILE: customCapturePath,
+        FAKE_ACP_CONTINUATION: "resume",
       },
       authMode: "external",
     };
@@ -664,6 +689,7 @@ async function main() {
       "PATH",
       "AGENT_COLOR",
       "CUSTOM_ACP_CAPTURE_FILE",
+      "FAKE_ACP_CONTINUATION",
       // macOS injects this process-local locale hint after spawn even when the
       // parent uses env_clear(); it is not inherited from the sidecar payload.
       "__CF_USER_TEXT_ENCODING",
@@ -674,6 +700,33 @@ async function main() {
     assert(
       unexpectedCustomEnv.length === 0,
       `custom runtime inherited environment keys outside the allowlist: ${unexpectedCustomEnv.join(", ")}`,
+    );
+
+    await fs.writeFile(fakeAcpRequestLogPath, "");
+    const resumedCustomSession = await client.invoke(
+      "ai_continue_custom_runtime_session",
+      {
+        input: {
+          runtime_id: customDefinition.id,
+          runtime_session_id: customSession.session_id,
+          runtime_launch_fingerprint: customDefinition.launchFingerprint,
+          continuation_strategy: "resume",
+          confirmed_launch_fingerprint: null,
+          additional_roots: null,
+        },
+        vaultPath,
+      },
+    );
+    assert(
+      resumedCustomSession.status === "connected" &&
+        resumedCustomSession.session.session_id === customSession.session_id,
+      "custom resume continuation should reconnect the persisted ACP session",
+    );
+    const resumeRequests = await readRequestLog(fakeAcpRequestLogPath);
+    assert(
+      resumeRequests.map((request) => request.method).join(",") ===
+        "initialize,session/resume",
+      "a custom runtime advertising resume must receive session/resume",
     );
 
     const secondCapturePath = path.join(
@@ -688,11 +741,12 @@ async function main() {
         env: {
           SECOND_ONLY: "green",
           CUSTOM_ACP_CAPTURE_FILE: secondCapturePath,
+          FAKE_ACP_CONTINUATION: "load",
         },
         authMode: "external",
       },
     });
-    await client.invoke("ai_create_session", {
+    const secondCustomSession = await client.invoke("ai_create_session", {
       input: {
         runtime_id: secondDefinition.id,
         additional_roots: null,
@@ -707,6 +761,33 @@ async function main() {
         secondCapture.env.AGENT_COLOR === undefined &&
         customCapture.env.SECOND_ONLY === undefined,
       "custom runtimes must not share configured environment",
+    );
+
+    await fs.writeFile(fakeAcpRequestLogPath, "");
+    const loadedCustomSession = await client.invoke(
+      "ai_continue_custom_runtime_session",
+      {
+        input: {
+          runtime_id: secondDefinition.id,
+          runtime_session_id: secondCustomSession.session_id,
+          runtime_launch_fingerprint: secondDefinition.launchFingerprint,
+          continuation_strategy: "load",
+          confirmed_launch_fingerprint: null,
+          additional_roots: null,
+        },
+        vaultPath,
+      },
+    );
+    assert(
+      loadedCustomSession.status === "connected" &&
+        loadedCustomSession.session.session_id === secondCustomSession.session_id,
+      "custom load continuation should reconnect the persisted ACP session",
+    );
+    const loadRequests = await readRequestLog(fakeAcpRequestLogPath);
+    assert(
+      loadRequests.map((request) => request.method).join(",") ===
+        "initialize,session/load",
+      "a custom runtime advertising load must receive session/load",
     );
 
     await client.invoke("ai_update_custom_runtime", {

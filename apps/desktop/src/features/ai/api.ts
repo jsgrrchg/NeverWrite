@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@neverwrite/runtime";
 import type { VaultNoteChange } from "../../app/store/vaultStore";
 import { toVaultRelativePath } from "../../app/utils/vaultPaths";
 import type {
+    AcpContinuationStrategy,
     AIAvailableCommandsPayload,
     AIAuthTerminalErrorPayload,
     AIAuthTerminalOutputPayload,
@@ -39,6 +40,7 @@ import type {
     AISessionErrorPayload,
     PersistedSessionHistory,
     PersistedSessionHistoryPage,
+    CustomRuntimeContinuationResult,
 } from "./types";
 import { buildFallbackRuntimeDescriptors } from "./utils/runtimeMetadata";
 import { isClaudeTerminalAuthMethodId } from "./utils/authMethods";
@@ -600,6 +602,35 @@ export async function aiResumeRuntimeSession(
         },
     );
     return normalizeBackendSession(session);
+}
+
+export async function aiContinueCustomRuntimeSession(input: {
+    runtimeId: string;
+    runtimeSessionId: string;
+    runtimeLaunchFingerprint: string;
+    continuationStrategy: AcpContinuationStrategy;
+    confirmedLaunchFingerprint?: string | null;
+    vaultPath: string | null;
+    additionalRoots?: string[] | null;
+}): Promise<CustomRuntimeContinuationResult> {
+    const result = await invoke<
+        | { status: "connected"; session: AIBackendSessionPayload }
+        | Exclude<CustomRuntimeContinuationResult, { status: "connected" }>
+    >("ai_continue_custom_runtime_session", {
+        input: {
+            runtime_id: input.runtimeId,
+            runtime_session_id: input.runtimeSessionId,
+            runtime_launch_fingerprint: input.runtimeLaunchFingerprint,
+            continuation_strategy: input.continuationStrategy,
+            confirmed_launch_fingerprint:
+                input.confirmedLaunchFingerprint ?? null,
+            additional_roots: input.additionalRoots ?? null,
+        },
+        vaultPath: input.vaultPath ?? null,
+    });
+    return result.status === "connected"
+        ? { ...result, session: normalizeBackendSession(result.session) }
+        : result;
 }
 
 export async function aiForkRuntimeSession(

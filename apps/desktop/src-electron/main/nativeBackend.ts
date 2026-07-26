@@ -72,6 +72,7 @@ const SUPPORTED_COMMANDS = new Set([
     "ai_load_session",
     "ai_load_runtime_session",
     "ai_resume_runtime_session",
+    "ai_continue_custom_runtime_session",
     "ai_fork_runtime_session",
     "ai_create_session",
     "ai_set_model",

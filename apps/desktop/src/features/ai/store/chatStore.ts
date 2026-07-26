@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { openUrl } from "@neverwrite/runtime";
+import { confirm, openUrl } from "@neverwrite/runtime";
 import {
     normalizeEditorFontFamily,
     readSettingsForVault,
@@ -8,6 +8,7 @@ import {
 } from "../../../app/store/settingsStore";
 import {
     aiCancelTurn,
+    aiContinueCustomRuntimeSession,
     aiCreateSession,
     aiDeleteRuntimeSession,
     aiDeleteRuntimeSessionsForVault,
@@ -206,6 +207,12 @@ const CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_TITLE =
     "Queued messages were cancelled because this subagent was closed by its parent thread.";
 const SAVED_CHAT_RECONNECT_FAILED_MESSAGE =
     "Could not reconnect this chat. Start a new session with saved transcript context?";
+const CUSTOM_RUNTIME_CONTINUATION_STATUS_EVENT_ID =
+    "neverwrite:recovery:custom-runtime-continuation";
+const CUSTOM_RUNTIME_UNAVAILABLE_MESSAGE =
+    "This custom ACP runtime is no longer available. Restore it in Settings or start a new chat with another runtime.";
+const CUSTOM_RUNTIME_NO_CONTINUATION_MESSAGE =
+    "This runtime cannot continue its previous ACP session. The transcript is still available; start a new chat to keep working.";
 export const REMOVED_GEMINI_ACP_COMPOSER_MESSAGE =
     "Gemini ACP is no longer supported by Google.";
 const _pendingTrackedPersistedReconcileByKey = new Map<
@@ -2303,6 +2310,20 @@ function createSavedChatReconnectingStatus(
         title: SAVED_CHAT_RECONNECTING_STATUS_TITLE,
         detail: null,
         emphasis: "neutral",
+    });
+}
+
+function createCustomRuntimeContinuationStatus(
+    sessionId: string,
+    message: string,
+): AIStatusEventPayload {
+    return createLocalStatusPayload(sessionId, {
+        event_id: CUSTOM_RUNTIME_CONTINUATION_STATUS_EVENT_ID,
+        kind: "session_recovery",
+        status: "blocked",
+        title: message,
+        detail: null,
+        emphasis: "warning",
     });
 }
 
@@ -5545,7 +5566,9 @@ function createPersistedSession(
             isPersistedSession: true,
             resumeContextPending: persistedMessageCount > 0,
             runtimeState:
-                runtimeId.startsWith("custom:") && !matchingRuntime
+                runtimeId.startsWith("custom:") &&
+                (!matchingRuntime ||
+                    history.continuation_strategy === "new_session_only")
                     ? "transcript_only"
                     : "persisted_only",
             persistedCreatedAt: history.created_at,
@@ -5568,13 +5591,25 @@ function createPersistedSession(
         runtime,
     );
 
-    if (history.messages.length === 0) {
-        return replaceSessionTranscript(baseSession, []);
+    const restoredSession =
+        history.messages.length === 0
+            ? replaceSessionTranscript(baseSession, [])
+            : replaceSessionTranscript(
+                  baseSession,
+                  restoreMessagesFromHistory(history),
+              );
+    if (restoredSession.runtimeState !== "transcript_only") {
+        return restoredSession;
     }
 
-    return replaceSessionTranscript(
-        baseSession,
-        restoreMessagesFromHistory(history),
+    return upsertSessionStatusMessage(
+        restoredSession,
+        createCustomRuntimeContinuationStatus(
+            restoredSession.sessionId,
+            matchingRuntime
+                ? CUSTOM_RUNTIME_NO_CONTINUATION_MESSAGE
+                : CUSTOM_RUNTIME_UNAVAILABLE_MESSAGE,
+        ),
     );
 }
 
@@ -5970,6 +6005,7 @@ function runtimeSupportsCapability(
 }
 
 type ResumeRecoveryStrategy =
+    | "custom_acp_continuation"
     | "native_load_session"
     | "transcript_prompt_injection";
 
@@ -9917,23 +9953,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
 
                 const vaultPath = useVaultStore.getState().vaultPath;
+                const isCustomRuntime =
+                    currentSession.runtimeId.startsWith("custom:");
                 const supportsNativeResume = runtimeSupportsCapability(
                     get().runtimes,
                     currentSession.runtimeId,
                     "resume_session",
                 );
-                let resumeStrategy: ResumeRecoveryStrategy =
-                    supportsNativeResume
-                        ? "native_load_session"
-                        : "transcript_prompt_injection";
+                let resumeStrategy: ResumeRecoveryStrategy = isCustomRuntime
+                    ? "custom_acp_continuation"
+                    : supportsNativeResume
+                      ? "native_load_session"
+                      : "transcript_prompt_injection";
                 const runtimeStateBefore =
                     getSessionRuntimeStateForLog(currentSession);
-                const transcriptLoaded = supportsNativeResume
-                    ? await loadPersistedTranscript(sessionId, "latest")
-                    : await loadPersistedTranscript(sessionId, "full");
+                const transcriptLoaded =
+                    supportsNativeResume || isCustomRuntime
+                        ? await loadPersistedTranscript(sessionId, "latest")
+                        : await loadPersistedTranscript(sessionId, "full");
                 if (!transcriptLoaded) {
                     throw new Error(
-                        supportsNativeResume
+                        supportsNativeResume || isCustomRuntime
                             ? "Failed to load the latest saved transcript before resuming."
                             : "Failed to load the full saved transcript before resuming.",
                     );
@@ -9963,7 +10003,130 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let resumedSession: AIChatSession;
                 let resumeContextPending = false;
 
-                if (supportsNativeResume) {
+                if (isCustomRuntime) {
+                    const continuationStrategy =
+                        latestSession.continuationStrategy;
+                    const launchFingerprint =
+                        latestSession.runtimeLaunchFingerprint?.trim();
+                    const runtimeSessionId =
+                        latestSession.runtimeSessionId?.trim() ||
+                        historySessionId;
+                    if (!continuationStrategy || !launchFingerprint) {
+                        set((state) => {
+                            const current = state.sessionsById[sessionId];
+                            if (!current) return state;
+                            return {
+                                sessionsById: {
+                                    ...state.sessionsById,
+                                    [sessionId]: upsertSessionStatusMessage(
+                                        removeSessionMessage(
+                                            {
+                                                ...current,
+                                                runtimeState: "transcript_only",
+                                                isResumingSession: false,
+                                                resumeReconnectFailed: false,
+                                            },
+                                            `status:${SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID}`,
+                                        ),
+                                        createCustomRuntimeContinuationStatus(
+                                            sessionId,
+                                            CUSTOM_RUNTIME_NO_CONTINUATION_MESSAGE,
+                                        ),
+                                    ),
+                                },
+                            };
+                        });
+                        return null;
+                    }
+
+                    let confirmedLaunchFingerprint: string | null = null;
+                    let continuationResult =
+                        await aiContinueCustomRuntimeSession({
+                            runtimeId: latestSession.runtimeId,
+                            runtimeSessionId,
+                            runtimeLaunchFingerprint: launchFingerprint,
+                            continuationStrategy,
+                            confirmedLaunchFingerprint,
+                            vaultPath,
+                            additionalRoots:
+                                latestSession.additionalRoots ?? null,
+                        });
+                    while (
+                        continuationResult.status ===
+                        "confirmation_required"
+                    ) {
+                        const approved = await confirm(
+                            continuationResult.message,
+                            {
+                                title: "Custom ACP runtime changed",
+                                kind: "warning",
+                                okLabel: "Continue",
+                                cancelLabel: "Cancel",
+                            },
+                        );
+                        if (!approved) {
+                            set((state) => {
+                                const current = state.sessionsById[sessionId];
+                                if (!current) return state;
+                                return {
+                                    sessionsById: {
+                                        ...state.sessionsById,
+                                        [sessionId]: removeSessionMessage(
+                                            {
+                                                ...current,
+                                                isResumingSession: false,
+                                                resumeReconnectFailed: false,
+                                            },
+                                            `status:${SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID}`,
+                                        ),
+                                    },
+                                };
+                            });
+                            return null;
+                        }
+                        confirmedLaunchFingerprint =
+                            continuationResult.launchFingerprint;
+                        continuationResult =
+                            await aiContinueCustomRuntimeSession({
+                                runtimeId: latestSession.runtimeId,
+                                runtimeSessionId,
+                                runtimeLaunchFingerprint: launchFingerprint,
+                                continuationStrategy,
+                                confirmedLaunchFingerprint,
+                                vaultPath,
+                                additionalRoots:
+                                    latestSession.additionalRoots ?? null,
+                            });
+                    }
+                    if (continuationResult.status === "transcript_only") {
+                        set((state) => {
+                            const current = state.sessionsById[sessionId];
+                            if (!current) return state;
+                            return {
+                                sessionsById: {
+                                    ...state.sessionsById,
+                                    [sessionId]: upsertSessionStatusMessage(
+                                        removeSessionMessage(
+                                            {
+                                                ...current,
+                                                runtimeState: "transcript_only",
+                                                isResumingSession: false,
+                                                resumeReconnectFailed: false,
+                                            },
+                                            `status:${SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID}`,
+                                        ),
+                                        createCustomRuntimeContinuationStatus(
+                                            sessionId,
+                                            continuationResult.message,
+                                        ),
+                                    ),
+                                },
+                            };
+                        });
+                        return null;
+                    }
+                    resumedSession = continuationResult.session;
+                } else if (supportsNativeResume) {
                     try {
                         resumedSession = await aiResumeRuntimeSession(
                             latestSession.runtimeId,
@@ -10132,9 +10295,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     "resume_session",
                 );
                 logResumeRecovery("failed", {
-                    resume_strategy: supportsNativeResume
-                        ? "native_load_session"
-                        : "transcript_prompt_injection",
+                    resume_strategy: failedSession.runtimeId.startsWith(
+                        "custom:",
+                    )
+                        ? "custom_acp_continuation"
+                        : supportsNativeResume
+                          ? "native_load_session"
+                          : "transcript_prompt_injection",
                     history_session_id: getRuntimeHistorySessionId(
                         failedSession,
                     ),

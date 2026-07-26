@@ -1,4 +1,4 @@
-import { invoke, openUrl } from "@neverwrite/runtime";
+import { confirm, invoke, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isChatTab,
@@ -52,6 +52,7 @@ import { resetClaudeCodeInstalledCacheForTests } from "../../terminal/claudeCode
 import { CLAUDE_TERMINAL_RUNTIME_ID } from "../utils/runtimeMetadata";
 
 const invokeMock = vi.mocked(invoke);
+const confirmMock = vi.mocked(confirm);
 const openUrlMock = vi.mocked(openUrl);
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
@@ -14609,6 +14610,252 @@ describe("chatStore", () => {
                     command === "ai_resume_runtime_session",
             ),
         ).toBe(false);
+    });
+
+    it("continues custom history with its persisted ACP strategy and runtime session id", async () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const persistedSessionId = "persisted:custom-history";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...createSessionWithTrackedFiles(persistedSessionId, []),
+                    historySessionId: "custom-history",
+                    runtimeId,
+                    runtimeDisplayName: "Local reviewer",
+                    runtimeLaunchFingerprint: "launch-v1",
+                    runtimeSessionId: "adapter-session-1",
+                    continuationStrategy: "resume",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_continue_custom_runtime_session") {
+                expect(args).toMatchObject({
+                    input: {
+                        runtime_id: runtimeId,
+                        runtime_session_id: "adapter-session-1",
+                        runtime_launch_fingerprint: "launch-v1",
+                        continuation_strategy: "resume",
+                        confirmed_launch_fingerprint: null,
+                    },
+                    vaultPath: "/vault",
+                });
+                return {
+                    status: "connected",
+                    session: {
+                        ...sessionPayload,
+                        session_id: "adapter-session-1",
+                        runtime_session_id: "adapter-session-1",
+                        runtime_id: runtimeId,
+                        runtime_display_name: "Local reviewer",
+                        runtime_revision: 1,
+                        runtime_launch_fingerprint: "launch-v1",
+                        continuation_strategy: "resume",
+                    },
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const resumedSessionId = await useChatStore
+            .getState()
+            .resumeSession(persistedSessionId);
+
+        expect(resumedSessionId).toBe("adapter-session-1");
+        expect(
+            useChatStore.getState().sessionsById["adapter-session-1"],
+        ).toMatchObject({
+            runtimeId,
+            runtimeSessionId: "adapter-session-1",
+            continuationStrategy: "resume",
+            runtimeState: "live",
+        });
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(false);
+    });
+
+    it("confirms the current fingerprint before continuing modified custom history", async () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const persistedSessionId = "persisted:custom-history";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...createSessionWithTrackedFiles(persistedSessionId, []),
+                    historySessionId: "custom-history",
+                    runtimeId,
+                    runtimeLaunchFingerprint: "launch-v1",
+                    runtimeSessionId: "adapter-session-1",
+                    continuationStrategy: "load",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+        }));
+
+        let continuationCalls = 0;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_continue_custom_runtime_session") {
+                continuationCalls += 1;
+                const confirmed = (
+                    args as {
+                        input?: { confirmed_launch_fingerprint?: string | null };
+                    }
+                ).input?.confirmed_launch_fingerprint;
+                if (!confirmed) {
+                    return {
+                        status: "confirmation_required",
+                        runtimeId,
+                        displayName: "Local reviewer",
+                        launchFingerprint: "launch-v2",
+                        message:
+                            "This custom runtime definition changed since the chat was created. Continue with the modified configuration?",
+                    };
+                }
+                expect(confirmed).toBe("launch-v2");
+                return {
+                    status: "connected",
+                    session: {
+                        ...sessionPayload,
+                        session_id: "adapter-session-1",
+                        runtime_session_id: "adapter-session-1",
+                        runtime_id: runtimeId,
+                        runtime_launch_fingerprint: "launch-v2",
+                        continuation_strategy: "load",
+                    },
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        confirmMock.mockResolvedValue(true);
+
+        await useChatStore.getState().resumeSession(persistedSessionId);
+
+        expect(confirmMock).toHaveBeenCalledWith(
+            "This custom runtime definition changed since the chat was created. Continue with the modified configuration?",
+            expect.objectContaining({
+                title: "Custom ACP runtime changed",
+                okLabel: "Continue",
+            }),
+        );
+        expect(continuationCalls).toBe(2);
+        expect(
+            useChatStore.getState().sessionsById["adapter-session-1"],
+        ).toMatchObject({ runtimeLaunchFingerprint: "launch-v2" });
+    });
+
+    it("keeps custom history transcript-only when its persisted strategy is unavailable", async () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const persistedSessionId = "persisted:custom-history";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...createSessionWithTrackedFiles(persistedSessionId, []),
+                    historySessionId: "custom-history",
+                    runtimeId,
+                    runtimeLaunchFingerprint: "launch-v1",
+                    runtimeSessionId: "adapter-session-1",
+                    continuationStrategy: "resume",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_continue_custom_runtime_session") {
+                return {
+                    status: "transcript_only",
+                    message:
+                        "This runtime cannot continue its previous ACP session. The transcript is still available; start a new chat to keep working.",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        expect(
+            await useChatStore.getState().resumeSession(persistedSessionId),
+        ).toBeNull();
+        expect(
+            useChatStore.getState().sessionsById[persistedSessionId],
+        ).toMatchObject({
+            runtimeState: "transcript_only",
+            isResumingSession: false,
+            resumeReconnectFailed: false,
+        });
+        expect(
+            useChatStore.getState().sessionsById[persistedSessionId]?.messages,
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    kind: "status",
+                    content:
+                        "This runtime cannot continue its previous ACP session. The transcript is still available; start a new chat to keep working.",
+                }),
+            ]),
+        );
     });
 
     it("persists tool diffs when saving session history", async () => {

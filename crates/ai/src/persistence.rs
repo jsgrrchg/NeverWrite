@@ -429,7 +429,7 @@ fn metadata_from_history(
         runtime_revision: history.runtime_revision,
         runtime_launch_fingerprint: history.runtime_launch_fingerprint.clone(),
         runtime_session_id: history.runtime_session_id.clone(),
-        continuation_strategy: history.continuation_strategy.clone(),
+        continuation_strategy: history.continuation_strategy,
         model_id: history.model_id.clone(),
         mode_id: history.mode_id.clone(),
         models: history.models.clone(),

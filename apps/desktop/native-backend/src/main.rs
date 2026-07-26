@@ -862,6 +862,10 @@ impl NativeBackend {
                 let vault_root = self.optional_open_vault_root(&args)?;
                 self.ai.resume_runtime_session(&args, vault_root)
             }
+            "ai_continue_custom_runtime_session" => {
+                let vault_root = self.optional_open_vault_root(&args)?;
+                self.ai.continue_custom_runtime_session(&args, vault_root)
+            }
             "ai_fork_runtime_session" => {
                 let vault_root = self.optional_open_vault_root(&args)?;
                 self.ai.fork_runtime_session(&args, vault_root)
@@ -3598,7 +3602,10 @@ mod tests {
             .find(|note| note.get("id").and_then(Value::as_str) == Some("Notes/A"))
             .expect("note A present");
         assert_eq!(note_a.get("status").and_then(Value::as_str), Some("draft"));
-        assert_eq!(note_a.get("okf_type").and_then(Value::as_str), Some("article"));
+        assert_eq!(
+            note_a.get("okf_type").and_then(Value::as_str),
+            Some("article")
+        );
 
         // Editing the status produces a change event carrying the new value,
         // and the save_note RESPONSE carries it too. The response matters
@@ -3623,8 +3630,14 @@ mod tests {
             Some("article")
         );
         let change = recv_vault_change(&event_rx);
-        assert_eq!(change.get("status").and_then(Value::as_str), Some("published"));
-        assert_eq!(change.get("okf_type").and_then(Value::as_str), Some("article"));
+        assert_eq!(
+            change.get("status").and_then(Value::as_str),
+            Some("published")
+        );
+        assert_eq!(
+            change.get("okf_type").and_then(Value::as_str),
+            Some("article")
+        );
         assert_eq!(
             change
                 .get("note")

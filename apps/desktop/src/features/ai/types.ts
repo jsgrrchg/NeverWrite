@@ -3,6 +3,17 @@ export type AcpContinuationStrategy =
     | "load"
     | "new_session_only";
 
+export type CustomRuntimeContinuationResult =
+    | { status: "connected"; session: AIChatSession }
+    | {
+          status: "confirmation_required";
+          runtimeId: string;
+          displayName: string;
+          launchFingerprint: string;
+          message: string;
+      }
+    | { status: "transcript_only"; message: string };
+
 export type AIChatSessionStatus =
     | "idle"
     | "streaming"
