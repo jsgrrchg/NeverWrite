@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod acp_providers;
 mod ai;
 mod devtools;
+mod runtime_catalog;
 mod spellcheck;
 
 use ai::NativeAi;

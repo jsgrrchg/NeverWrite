@@ -58,7 +58,11 @@ use serde_json::{json, Value};
 use tokio::{process::Command, runtime::Builder, sync::oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::{acp_providers, RpcOutput};
+use crate::{
+    acp_providers,
+    runtime_catalog::{AcpProtocolFlavor, ProcessEnvironmentPolicy, RUNTIME_CATALOG},
+    RpcOutput,
+};
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str = "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
@@ -143,81 +147,6 @@ const CLAUDE_PROVIDER_ROUTING_ENV_KEYS: &[&str] = &[
     "CLOUD_ML_REGION",
     "ANTHROPIC_CUSTOM_HEADERS",
     "AWS_BEARER_TOKEN_BEDROCK",
-];
-
-#[derive(Debug, Clone, Copy)]
-struct RuntimeDefinition {
-    id: &'static str,
-    name: &'static str,
-    description: &'static str,
-    default_executable: &'static str,
-    bin_env_var: &'static str,
-    acp_args: &'static [&'static str],
-    acp_protocol: AcpProtocolFlavor,
-    supports_native_resume: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AcpProtocolFlavor {
-    Current,
-    Legacy12,
-}
-
-const NO_ACP_ARGS: &[&str] = &[];
-const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
-const SHELL_ACP_ARGS: &[&str] = &["acp"];
-
-const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
-    RuntimeDefinition {
-        id: CODEX_RUNTIME_ID,
-        name: "Codex",
-        description: "OpenAI Codex-compatible agent runtime.",
-        default_executable: "codex",
-        bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
-        acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
-        supports_native_resume: true,
-    },
-    RuntimeDefinition {
-        id: CLAUDE_RUNTIME_ID,
-        name: "Claude",
-        description: "Claude ACP-compatible agent runtime.",
-        default_executable: "claude",
-        bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
-        acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
-        supports_native_resume: false,
-    },
-    RuntimeDefinition {
-        id: GROK_RUNTIME_ID,
-        name: "Grok",
-        description: "Grok ACP-compatible agent runtime.",
-        default_executable: "grok",
-        bin_env_var: "NEVERWRITE_GROK_ACP_BIN",
-        acp_args: GROK_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Legacy12,
-        supports_native_resume: false,
-    },
-    RuntimeDefinition {
-        id: KILO_RUNTIME_ID,
-        name: "Kilo",
-        description: "Kilo ACP-compatible agent runtime.",
-        default_executable: "kilo",
-        bin_env_var: "NEVERWRITE_KILO_ACP_BIN",
-        acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
-        supports_native_resume: false,
-    },
-    RuntimeDefinition {
-        id: OPENCODE_RUNTIME_ID,
-        name: "OpenCode",
-        description: "OpenCode ACP-compatible agent runtime.",
-        default_executable: "opencode",
-        bin_env_var: "NEVERWRITE_OPENCODE_ACP_BIN",
-        acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
-        supports_native_resume: false,
-    },
 ];
 
 #[derive(Debug, Clone)]
@@ -938,6 +867,8 @@ struct AcpProcessSpec {
     cwd: PathBuf,
     env: HashMap<String, String>,
     runtime_id: String,
+    acp_protocol: AcpProtocolFlavor,
+    environment_policy: ProcessEnvironmentPolicy,
     auth_method: Option<String>,
     auth_handshake: Option<AcpAuthHandshake>,
     claude_provider_routing: ClaudeProviderProcessRouting,
@@ -1300,8 +1231,9 @@ impl NativeAi {
                     "setup_status": setup_status,
                     "setup_error": setup_error,
                     "launch_program": default_executable_name(&runtime_id),
-                    "launch_args": runtime_definition(&runtime_id)
-                        .map(|definition| definition.acp_args.to_vec())
+                    "launch_args": RUNTIME_CATALOG
+                        .definition(&runtime_id)
+                        .map(|definition| definition.acp_args().to_vec())
                         .unwrap_or_default(),
                     "resolution_display": resolution_display,
                     "auth": runtime_auth_diagnostics(&runtime_id),
@@ -3829,7 +3761,7 @@ fn start_acp_session(
 ) -> Result<CreatedAcpSession, String> {
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
-    let flavor = acp_protocol_flavor(&spec.runtime_id);
+    let flavor = spec.acp_protocol;
     let handle = AcpSessionHandle {
         command_tx: command_tx.clone(),
         prompt_capabilities: Arc::clone(&context.prompt_capabilities),
@@ -3883,7 +3815,7 @@ enum AcpAuthCommand {
 
 fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> Result<(), String> {
     let (result_tx, result_rx) = mpsc::channel();
-    let flavor = acp_protocol_flavor(&spec.runtime_id);
+    let flavor = spec.acp_protocol;
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
@@ -3893,9 +3825,7 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
             }
         };
         let result = match flavor {
-            AcpProtocolFlavor::Current => {
-                runtime.block_on(run_acp_auth_inner(spec, auth_command))
-            }
+            AcpProtocolFlavor::Current => runtime.block_on(run_acp_auth_inner(spec, auth_command)),
             AcpProtocolFlavor::Legacy12 => {
                 runtime.block_on(run_acp12_auth_inner(spec, auth_command))
             }
@@ -4024,6 +3954,9 @@ fn acp_initialize_response_has_auth_method(
 }
 
 fn apply_acp_process_environment(command: &mut Command, spec: &AcpProcessSpec) {
+    if spec.environment_policy == ProcessEnvironmentPolicy::Isolated {
+        command.env_clear();
+    }
     for (key, value) in &spec.env {
         command.env(key, value);
     }
@@ -6681,23 +6614,11 @@ fn reasoning_effort_label(effort: &str) -> String {
     }
 }
 
-fn runtime_definition(runtime_id: &str) -> Option<&'static RuntimeDefinition> {
-    RUNTIME_DEFINITIONS
-        .iter()
-        .find(|definition| definition.id == runtime_id)
-}
-
-fn acp_protocol_flavor(runtime_id: &str) -> AcpProtocolFlavor {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.acp_protocol)
-        .unwrap_or(AcpProtocolFlavor::Current)
-}
-
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
-    RUNTIME_DEFINITIONS
-        .iter()
+    RUNTIME_CATALOG
+        .definitions()
         .map(|definition| {
-            let runtime_id = definition.id;
+            let runtime_id = definition.id();
             let models = default_models(runtime_id);
             let modes = default_modes_for_runtime_descriptor(runtime_id);
             let mut capabilities = vec![
@@ -6705,14 +6626,14 @@ fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
                 "prompt_queueing".to_string(),
                 "user_input".to_string(),
             ];
-            if definition.supports_native_resume {
+            if definition.supports_native_resume() {
                 capabilities.push("resume_session".to_string());
             }
             AiRuntimeDescriptor {
                 runtime: AiRuntimeOption {
                     id: runtime_id.to_string(),
-                    name: definition.name.to_string(),
-                    description: definition.description.to_string(),
+                    name: definition.name().to_string(),
+                    description: definition.description().to_string(),
                     capabilities,
                 },
                 config_options: default_config_options(runtime_id, &models, &modes),
@@ -6725,8 +6646,9 @@ fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
 }
 
 fn runtime_supports_native_resume(runtime_id: &str) -> bool {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.supports_native_resume)
+    RUNTIME_CATALOG
+        .definition(runtime_id)
+        .map(|definition| definition.supports_native_resume())
         .unwrap_or(false)
 }
 
@@ -7039,7 +6961,9 @@ fn acp_process_spec(
     setup: &RuntimeSetupState,
     cwd: PathBuf,
 ) -> Result<AcpProcessSpec, String> {
-    validate_runtime_id(runtime_id)?;
+    let definition = RUNTIME_CATALOG
+        .definition(runtime_id)
+        .ok_or_else(|| format!("Unsupported AI runtime: {runtime_id}"))?;
     let resolved = resolve_acp_command(runtime_id, setup);
     let program = resolved.program.ok_or_else(|| {
         format!(
@@ -7088,6 +7012,8 @@ fn acp_process_spec(
         cwd,
         env,
         runtime_id: runtime_id.to_string(),
+        acp_protocol: definition.acp_protocol(),
+        environment_policy: definition.process_environment_policy(),
         auth_method,
         auth_handshake: acp_auth_handshake_for_runtime(runtime_id),
         claude_provider_routing,
@@ -7527,8 +7453,8 @@ fn with_runtime_args(runtime_id: &str, mut resolved: ResolvedAcpCommand) -> Reso
     if resolved.program.is_none() {
         return resolved;
     }
-    if let Some(definition) = runtime_definition(runtime_id) {
-        for arg in definition.acp_args {
+    if let Some(definition) = RUNTIME_CATALOG.definition(runtime_id) {
+        for arg in definition.acp_args() {
             if !resolved.args.iter().any(|existing| existing == arg) {
                 resolved.args.push((*arg).to_string());
             }
@@ -7537,9 +7463,10 @@ fn with_runtime_args(runtime_id: &str, mut resolved: ResolvedAcpCommand) -> Reso
     resolved
 }
 
-fn runtime_bin_env_var(runtime_id: &str) -> &'static str {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.bin_env_var)
+fn runtime_bin_env_var(runtime_id: &str) -> &str {
+    RUNTIME_CATALOG
+        .definition(runtime_id)
+        .map(|definition| definition.bin_env_var())
         .unwrap_or("NEVERWRITE_AI_ACP_BIN")
 }
 
@@ -8105,9 +8032,10 @@ fn system_time_epoch_ms(time: SystemTime) -> Option<u64> {
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
-fn runtime_name(runtime_id: &str) -> &'static str {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.name)
+fn runtime_name(runtime_id: &str) -> &str {
+    RUNTIME_CATALOG
+        .definition(runtime_id)
+        .map(|definition| definition.name())
         .unwrap_or("AI")
 }
 
@@ -9313,11 +9241,7 @@ fn required_string(args: &Value, names: &[&str]) -> Result<String, String> {
 }
 
 fn validate_runtime_id(runtime_id: &str) -> Result<(), String> {
-    if runtime_definition(runtime_id).is_some() {
-        Ok(())
-    } else {
-        Err(format!("Unsupported AI runtime: {runtime_id}"))
-    }
+    RUNTIME_CATALOG.validate_id(runtime_id)
 }
 
 fn normalize_optional_string(value: String) -> Option<String> {
@@ -9329,16 +9253,17 @@ fn normalize_optional_string(value: String) -> Option<String> {
     }
 }
 
-fn default_executable_name(runtime_id: &str) -> &'static str {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.default_executable)
+fn default_executable_name(runtime_id: &str) -> &str {
+    RUNTIME_CATALOG
+        .definition(runtime_id)
+        .map(|definition| definition.default_executable())
         .unwrap_or("unknown")
 }
 
 fn diagnostic_executable_names() -> Vec<&'static str> {
-    RUNTIME_DEFINITIONS
-        .iter()
-        .map(|definition| definition.default_executable)
+    RUNTIME_CATALOG
+        .definitions()
+        .map(|definition| definition.default_executable())
         .collect()
 }
 
@@ -10382,7 +10307,7 @@ mod tests {
     #[test]
     fn gemini_runtime_is_not_registered() {
         assert!(validate_runtime_id("gemini-acp").is_err());
-        assert!(runtime_definition("gemini-acp").is_none());
+        assert!(RUNTIME_CATALOG.definition("gemini-acp").is_none());
         assert!(runtime_descriptors()
             .iter()
             .all(|descriptor| descriptor.runtime.id != "gemini-acp"));
@@ -10434,11 +10359,14 @@ mod tests {
 
     #[test]
     fn grok_runtime_is_registered_with_expected_launch_contract() {
-        let definition = runtime_definition(GROK_RUNTIME_ID).unwrap();
-        assert_eq!(definition.name, "Grok");
-        assert_eq!(definition.default_executable, "grok");
-        assert_eq!(definition.bin_env_var, "NEVERWRITE_GROK_ACP_BIN");
-        assert_eq!(definition.acp_args, ["--no-auto-update", "agent", "stdio"]);
+        let definition = RUNTIME_CATALOG.definition(GROK_RUNTIME_ID).unwrap();
+        assert_eq!(definition.name(), "Grok");
+        assert_eq!(definition.default_executable(), "grok");
+        assert_eq!(definition.bin_env_var(), "NEVERWRITE_GROK_ACP_BIN");
+        assert_eq!(
+            definition.acp_args(),
+            ["--no-auto-update", "agent", "stdio"]
+        );
 
         let descriptors = runtime_descriptors();
         let descriptor = descriptors
@@ -10519,9 +10447,17 @@ mod tests {
             Some(grok_bin_display.as_str())
         );
         assert_eq!(spec.program, grok_bin);
+        assert_eq!(spec.acp_protocol, AcpProtocolFlavor::Legacy12);
+        assert_eq!(
+            spec.environment_policy,
+            ProcessEnvironmentPolicy::Inherited
+        );
         assert_eq!(
             spec.args,
-            GROK_ACP_ARGS
+            RUNTIME_CATALOG
+                .definition(GROK_RUNTIME_ID)
+                .unwrap()
+                .acp_args()
                 .iter()
                 .map(|arg| (*arg).to_string())
                 .collect::<Vec<_>>()
@@ -13245,7 +13181,10 @@ mod tests {
     #[test]
     fn grok_uses_legacy_acp12_protocol() {
         assert_eq!(
-            acp_protocol_flavor(GROK_RUNTIME_ID),
+            RUNTIME_CATALOG
+                .definition(GROK_RUNTIME_ID)
+                .unwrap()
+                .acp_protocol(),
             AcpProtocolFlavor::Legacy12
         );
     }
@@ -13259,7 +13198,10 @@ mod tests {
             OPENCODE_RUNTIME_ID,
         ] {
             assert_eq!(
-                acp_protocol_flavor(runtime_id),
+                RUNTIME_CATALOG
+                    .definition(runtime_id)
+                    .unwrap()
+                    .acp_protocol(),
                 AcpProtocolFlavor::Current
             );
         }
