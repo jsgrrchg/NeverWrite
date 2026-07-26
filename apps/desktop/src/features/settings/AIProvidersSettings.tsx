@@ -1666,10 +1666,11 @@ export function AIProvidersSettings({
 
     /* ── Render ── */
 
-    // Providers available to be set as default (binary/auth ready).
+    // Providers available to be set as default and ready to start a session.
     const selectableProviders = runtimes
         .filter((runtime) =>
-            setupStatusMap[runtime.runtime.id]?.authReady === true,
+            setupStatusMap[runtime.runtime.id]?.authReady === true &&
+            !setupStatusMap[runtime.runtime.id]?.onboardingRequired,
         )
         .map((runtime) => ({
             id: runtime.runtime.id,

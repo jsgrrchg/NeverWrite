@@ -324,6 +324,30 @@ describe("AIProvidersSettings", () => {
         expect(screen.queryByText("Gemini")).not.toBeInTheDocument();
     });
 
+    it("does not offer a custom runtime with a missing executable as default", async () => {
+        const providers = createDefaultProviders();
+        providers.descriptors.push(
+            createRuntimeDescriptor("custom:missing", "Missing local ACP"),
+        );
+        providers.statuses["custom:missing"] = createSetupStatus({
+            runtimeId: "custom:missing",
+            binaryReady: false,
+            binaryPath: undefined,
+            binarySource: "missing",
+            authReady: true,
+            authMethod: "external",
+            onboardingRequired: true,
+        });
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await screen.findByText("Default agent");
+        expect(
+            screen.queryByRole("option", { name: "Missing local" }),
+        ).not.toBeInTheDocument();
+    });
+
     it("validates Claude gateway URLs before saving provider authentication", async () => {
         renderComponent(<AIProvidersSettings />);
 
