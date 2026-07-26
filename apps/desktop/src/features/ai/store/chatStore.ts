@@ -1704,6 +1704,10 @@ function isAuthenticationErrorMessage(
     message: string,
     runtimeId?: string | null,
 ) {
+    if (runtimeId?.startsWith("custom:")) {
+        return false;
+    }
+
     const normalized = message.trim().toLowerCase();
     const isOpenCodeRuntime = runtimeId === "opencode-acp";
     const isOpenCodeAuthGuidance =
@@ -1784,13 +1788,17 @@ function normalizeAiErrorMessage(message: string, runtimeId?: string | null) {
     return message;
 }
 
-function getAiErrorMessage(error: unknown, fallback: string) {
+function getAiErrorMessage(
+    error: unknown,
+    fallback: string,
+    runtimeId?: string | null,
+) {
     if (error instanceof Error && error.message.trim()) {
-        return normalizeAiErrorMessage(error.message);
+        return normalizeAiErrorMessage(error.message, runtimeId);
     }
 
     if (typeof error === "string" && error.trim()) {
-        return normalizeAiErrorMessage(error);
+        return normalizeAiErrorMessage(error, runtimeId);
     }
 
     if (
@@ -1800,7 +1808,7 @@ function getAiErrorMessage(error: unknown, fallback: string) {
         typeof error.message === "string" &&
         error.message.trim()
     ) {
-        return normalizeAiErrorMessage(error.message);
+        return normalizeAiErrorMessage(error.message, runtimeId);
     }
 
     return fallback;
@@ -7570,6 +7578,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const message = getAiErrorMessage(
                 error,
                 "Failed to send the message.",
+                session.runtimeId,
             );
             if (source === "queue") {
                 restoreActiveQueuedMessage(activeSessionId, (item) => ({
@@ -10369,6 +10378,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const message = getAiErrorMessage(
                     error,
                     "Failed to resume the saved chat.",
+                    (get().sessionsById[sessionId] ?? session).runtimeId,
                 );
                 const failedSession = get().sessionsById[sessionId] ?? session;
                 const supportsNativeResume = runtimeSupportsCapability(
@@ -12715,6 +12725,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const message = getAiErrorMessage(
                     error,
                     "Failed to create a new session.",
+                    nextRuntimeId,
                 );
                 if (provisionalSessionId) {
                     markPendingSessionError(message);

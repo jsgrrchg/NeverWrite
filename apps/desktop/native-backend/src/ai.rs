@@ -71,6 +71,7 @@ use crate::{
 };
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+static ACP_PROCESS_COUNTER: AtomicU64 = AtomicU64::new(1);
 const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str = "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
 const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
     "Grok login looks invalid or expired. Run Grok login again to reconnect.";
@@ -955,6 +956,7 @@ struct AcpAuthHandshakeRequest {
 
 #[derive(Debug, Clone)]
 struct AcpSessionHandle {
+    process_id: u64,
     command_tx: tokio::sync::mpsc::UnboundedSender<AcpCommand>,
     prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
 }
@@ -1132,6 +1134,9 @@ enum AcpCommand {
     RespondPermission {
         request_id: String,
         option_id: Option<String>,
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
+    Shutdown {
         response_tx: mpsc::Sender<Result<(), String>>,
     },
 }
@@ -2115,12 +2120,24 @@ impl NativeAi {
             .inner
             .lock()
             .map_err(|error| format!("Internal AI state error: {error}"))?;
-        state
+        let removed = state
             .sessions
             .remove(&session_id)
             .ok_or_else(|| format!("AI session not found: {session_id}"))?;
         state.session_order.retain(|id| id != &session_id);
+        let shutdown_handle = removed.runtime_handle.filter(|handle| {
+            !state.sessions.values().any(|managed| {
+                managed
+                    .runtime_handle
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.process_id == handle.process_id)
+            })
+        });
+        drop(state);
         self.tool_diffs.clear_session(&session_id);
+        if let Some(handle) = shutdown_handle {
+            handle.shutdown()?;
+        }
         Ok(json!(null))
     }
 
@@ -2138,12 +2155,21 @@ impl NativeAi {
             .filter(|(_, managed)| managed.vault_root == vault_root)
             .map(|(session_id, _)| session_id.clone())
             .collect::<Vec<_>>();
+        let mut shutdown_handles = HashMap::new();
         for session_id in session_ids {
             self.cancel_user_input_waiters_for_session(&session_id);
             self.cancel_url_elicitation_waiters_for_session(&session_id);
-            state.sessions.remove(&session_id);
+            if let Some(removed) = state.sessions.remove(&session_id) {
+                if let Some(handle) = removed.runtime_handle {
+                    shutdown_handles.entry(handle.process_id).or_insert(handle);
+                }
+            }
             state.session_order.retain(|id| id != &session_id);
             self.tool_diffs.clear_session(&session_id);
+        }
+        drop(state);
+        for handle in shutdown_handles.into_values() {
+            handle.shutdown()?;
         }
         Ok(json!(null))
     }
@@ -2740,6 +2766,10 @@ impl AcpSessionHandle {
             option_id: option_id.map(ToString::to_string),
             response_tx,
         })
+    }
+
+    fn shutdown(&self) -> Result<(), String> {
+        self.request(|response_tx| AcpCommand::Shutdown { response_tx })
     }
 }
 
@@ -4073,6 +4103,7 @@ fn start_acp_session(
     let (created_tx, created_rx) = mpsc::channel();
     let flavor = spec.acp_protocol;
     let handle = AcpSessionHandle {
+        process_id: ACP_PROCESS_COUNTER.fetch_add(1, Ordering::Relaxed),
         command_tx: command_tx.clone(),
         prompt_capabilities: Arc::clone(&context.prompt_capabilities),
     };
@@ -4517,6 +4548,17 @@ async fn run_acp12_actor(
     }
 }
 
+async fn shutdown_acp_child(child: &mut tokio::process::Child) -> Result<(), String> {
+    child
+        .start_kill()
+        .map_err(|error| format!("Failed to stop AI runtime process: {error}"))?;
+    child
+        .wait()
+        .await
+        .map_err(|error| format!("Failed to wait for AI runtime process shutdown: {error}"))?;
+    Ok(())
+}
+
 async fn run_acp12_actor_inner(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
@@ -4675,8 +4717,14 @@ async fn run_acp12_actor_inner(
                 tokio::select! {
                     maybe_command = command_rx.recv() => {
                         let Some(command) = maybe_command else {
+                            let _ = shutdown_acp_child(&mut child).await;
                             return Ok(());
                         };
+                        if let AcpCommand::Shutdown { response_tx } = command {
+                            let result = shutdown_acp_child(&mut child).await;
+                            let _ = response_tx.send(result);
+                            return Ok(());
+                        }
                         handle_acp12_command(command, &connection, &client, &permission_waiters).await;
                     }
                     wait_result = child.wait() => {
@@ -4918,8 +4966,14 @@ async fn run_acp_actor_inner(
                 tokio::select! {
                     maybe_command = command_rx.recv() => {
                         let Some(command) = maybe_command else {
+                            let _ = shutdown_acp_child(&mut child).await;
                             return Ok(());
                         };
+                        if let AcpCommand::Shutdown { response_tx } = command {
+                            let result = shutdown_acp_child(&mut child).await;
+                            let _ = response_tx.send(result);
+                            return Ok(());
+                        }
                         handle_acp_command(command, &connection, &client, &permission_waiters).await;
                     }
                     wait_result = child.wait() => {
@@ -5529,6 +5583,11 @@ async fn handle_acp_command(
             let result = resolve_permission_waiter(permission_waiters, &request_id, option_id);
             let _ = response_tx.send(result);
         }
+        AcpCommand::Shutdown { response_tx } => {
+            let _ = response_tx.send(Err(
+                "ACP shutdown must be handled by the runtime actor.".to_string()
+            ));
+        }
     }
 }
 
@@ -5645,6 +5704,11 @@ async fn handle_acp12_command(
         } => {
             let result = resolve_permission_waiter(permission_waiters, &request_id, option_id);
             let _ = response_tx.send(result);
+        }
+        AcpCommand::Shutdown { response_tx } => {
+            let _ = response_tx.send(Err(
+                "ACP shutdown must be handled by the runtime actor.".to_string()
+            ));
         }
     }
 }
@@ -11031,6 +11095,72 @@ mod tests {
         assert!(descriptors
             .iter()
             .all(|descriptor| descriptor.runtime.id != definition.id));
+    }
+
+    #[test]
+    fn deleting_runtime_sessions_shuts_down_each_owned_process_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let vault_root = temp.path().to_path_buf();
+        let (first_tx, mut first_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (second_tx, mut second_rx) = tokio::sync::mpsc::unbounded_channel();
+        let first_handle = AcpSessionHandle {
+            process_id: 41,
+            command_tx: first_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let second_handle = AcpSessionHandle {
+            process_id: 42,
+            command_tx: second_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let mut state = native_ai.inner.lock().unwrap();
+        for (session_id, handle) in [
+            ("custom-session-1", first_handle.clone()),
+            ("custom-session-2", first_handle),
+            ("custom-session-3", second_handle),
+        ] {
+            state.sessions.insert(
+                session_id.to_string(),
+                ManagedAiSession {
+                    session: new_session_with_id(CODEX_RUNTIME_ID, session_id.to_string()).unwrap(),
+                    vault_root: Some(vault_root.clone()),
+                    additional_roots: vec![],
+                    runtime_handle: Some(handle),
+                    active_turn_id: None,
+                },
+            );
+        }
+        drop(state);
+
+        let first_shutdown = thread::spawn(move || match first_rx.blocking_recv() {
+            Some(AcpCommand::Shutdown { response_tx }) => {
+                response_tx.send(Ok(())).unwrap();
+                assert!(first_rx.try_recv().is_err());
+            }
+            _ => panic!("expected a shutdown command for the first process"),
+        });
+        let second_shutdown = thread::spawn(move || match second_rx.blocking_recv() {
+            Some(AcpCommand::Shutdown { response_tx }) => {
+                response_tx.send(Ok(())).unwrap();
+                assert!(second_rx.try_recv().is_err());
+            }
+            _ => panic!("expected a shutdown command for the second process"),
+        });
+
+        native_ai
+            .delete_runtime_session(&json!({ "sessionId": "custom-session-3" }))
+            .unwrap();
+        second_shutdown.join().unwrap();
+        native_ai
+            .delete_runtime_sessions_for_vault(Some(vault_root))
+            .unwrap();
+
+        first_shutdown.join().unwrap();
+        assert!(native_ai.inner.lock().unwrap().sessions.is_empty());
     }
 
     #[cfg(unix)]

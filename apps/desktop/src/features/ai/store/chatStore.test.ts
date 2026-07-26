@@ -2612,6 +2612,67 @@ describe("chatStore", () => {
         ).toBe(false);
     });
 
+    it("keeps custom runtime authentication errors out of built-in onboarding", () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const setupStatus = {
+            ...readySetupStatusState,
+            runtimeId,
+            authMethod: "external",
+            authMethods: [],
+        };
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+                {
+                    runtime: { ...runtimePayload[0].runtime },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                [runtimeId]: setupStatus,
+                "codex-acp": readySetupStatusState,
+            },
+            sessionsById: {
+                "custom-session-1": {
+                    ...createSessionWithTrackedFiles("custom-session-1", []),
+                    runtimeId,
+                    runtimeState: "live",
+                },
+            },
+            selectedRuntimeId: runtimeId,
+        });
+
+        useChatStore.getState().applySessionError({
+            session_id: "custom-session-1",
+            message: "authentication required by the local runtime",
+        });
+
+        expect(useChatStore.getState().setupStatusByRuntimeId[runtimeId]).toEqual(
+            setupStatus,
+        );
+        expect(
+            useChatStore.getState().setupStatusByRuntimeId["codex-acp"],
+        ).toEqual(readySetupStatusState);
+        expect(
+            useChatStore.getState().runtimeConnectionByRuntimeId[runtimeId],
+        ).toMatchObject({
+            status: "error",
+            message: "authentication required by the local runtime",
+        });
+    });
+
     it("treats the normalized signed-out message as an authentication error", () => {
         useChatStore.setState({
             runtimes: [
