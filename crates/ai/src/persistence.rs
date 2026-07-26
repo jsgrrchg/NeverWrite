@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::domain::AcpContinuationStrategy;
+use crate::{custom_runtimes::is_custom_acp_runtime_id, domain::AcpContinuationStrategy};
 
 const PRODUCT_STATE_DIR_NAME: &str = ".neverwrite";
 
@@ -1647,6 +1647,10 @@ pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Resul
         .custom_title
         .or(source_meta.title)
         .map(|t| format!("{t} (fork)"));
+    let is_custom_acp_runtime = source_meta
+        .runtime_id
+        .as_deref()
+        .is_some_and(is_custom_acp_runtime_id);
 
     let new_metadata = PersistedSessionMetadata {
         version: source_meta.version,
@@ -1657,8 +1661,19 @@ pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Resul
         runtime_display_name: source_meta.runtime_display_name,
         runtime_revision: source_meta.runtime_revision,
         runtime_launch_fingerprint: source_meta.runtime_launch_fingerprint,
-        runtime_session_id: source_meta.runtime_session_id,
-        continuation_strategy: source_meta.continuation_strategy,
+        // A transcript fork must not reconnect to the source runtime session.
+        // Custom ACP does not offer a native fork operation, so its fork starts
+        // a fresh session and sends the copied transcript as resume context.
+        runtime_session_id: if is_custom_acp_runtime {
+            None
+        } else {
+            source_meta.runtime_session_id
+        },
+        continuation_strategy: if is_custom_acp_runtime {
+            Some(AcpContinuationStrategy::NewSessionOnly)
+        } else {
+            source_meta.continuation_strategy
+        },
         model_id: source_meta.model_id,
         mode_id: source_meta.mode_id,
         models: source_meta.models,
@@ -2165,6 +2180,32 @@ mod tests {
         assert_eq!(
             summaries[0].continuation_strategy,
             Some(AcpContinuationStrategy::Load)
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn custom_runtime_fork_discards_source_runtime_session_identity() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.runtime_id = Some("custom:123e4567-e89b-12d3-a456-426614174000".to_string());
+        history.runtime_session_id = Some("source-runtime-session".to_string());
+        history.continuation_strategy = Some(AcpContinuationStrategy::Resume);
+
+        save_session_history(&dir, &history).expect("custom history should persist");
+        let forked_session_id =
+            fork_session_history(&dir, &history.session_id).expect("custom history should fork");
+        let forked = load_all_session_histories(&dir, false)
+            .expect("forked history should load")
+            .into_iter()
+            .find(|candidate| candidate.session_id == forked_session_id)
+            .expect("forked history should be present");
+
+        assert_eq!(forked.runtime_session_id, None);
+        assert_eq!(
+            forked.continuation_strategy,
+            Some(AcpContinuationStrategy::NewSessionOnly)
         );
 
         fs::remove_dir_all(dir).ok();

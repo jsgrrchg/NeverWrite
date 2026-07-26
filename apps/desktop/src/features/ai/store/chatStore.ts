@@ -5312,6 +5312,14 @@ function needsFullResumeContextTranscript(session: AIChatSession) {
     );
 }
 
+function isCustomRuntimeTranscriptFork(session: AIChatSession) {
+    return (
+        session.runtimeId.startsWith("custom:") &&
+        session.continuationStrategy === "new_session_only" &&
+        !session.runtimeSessionId?.trim()
+    );
+}
+
 function hasPersistedHistoryContent(history: PersistedSessionHistory) {
     return getPersistedHistoryMessageCount(history) > 0;
 }
@@ -5577,7 +5585,8 @@ function createPersistedSession(
             runtimeState:
                 runtimeId.startsWith("custom:") &&
                 (!matchingRuntime ||
-                    history.continuation_strategy === "new_session_only")
+                    (history.continuation_strategy === "new_session_only" &&
+                        !!history.runtime_session_id?.trim()))
                     ? "transcript_only"
                     : "persisted_only",
             persistedCreatedAt: history.created_at,
@@ -10046,25 +10055,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const vaultPath = useVaultStore.getState().vaultPath;
                 const isCustomRuntime =
                     currentSession.runtimeId.startsWith("custom:");
+                const customRuntimeTranscriptFork =
+                    isCustomRuntimeTranscriptFork(currentSession);
                 const supportsNativeResume = runtimeSupportsCapability(
                     get().runtimes,
                     currentSession.runtimeId,
                     "resume_session",
                 );
                 let resumeStrategy: ResumeRecoveryStrategy = isCustomRuntime
-                    ? "custom_acp_continuation"
+                    ? customRuntimeTranscriptFork
+                        ? "transcript_prompt_injection"
+                        : "custom_acp_continuation"
                     : supportsNativeResume
                       ? "native_load_session"
                       : "transcript_prompt_injection";
                 const runtimeStateBefore =
                     getSessionRuntimeStateForLog(currentSession);
                 const transcriptLoaded =
-                    supportsNativeResume || isCustomRuntime
+                    supportsNativeResume ||
+                    (isCustomRuntime && !customRuntimeTranscriptFork)
                         ? await loadPersistedTranscript(sessionId, "latest")
                         : await loadPersistedTranscript(sessionId, "full");
                 if (!transcriptLoaded) {
                     throw new Error(
-                        supportsNativeResume || isCustomRuntime
+                        supportsNativeResume ||
+                            (isCustomRuntime && !customRuntimeTranscriptFork)
                             ? "Failed to load the latest saved transcript before resuming."
                             : "Failed to load the full saved transcript before resuming.",
                     );
@@ -10094,7 +10109,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let resumedSession: AIChatSession;
                 let resumeContextPending = false;
 
-                if (isCustomRuntime) {
+                if (isCustomRuntime && !customRuntimeTranscriptFork) {
                     const continuationStrategy =
                         latestSession.continuationStrategy;
                     const launchFingerprint =
@@ -13322,6 +13337,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...session,
                     sessionId: forkedSessionId,
                     historySessionId: newHistoryId,
+                    runtimeSessionId: session.runtimeId.startsWith("custom:")
+                        ? null
+                        : session.runtimeSessionId,
+                    continuationStrategy: session.runtimeId.startsWith("custom:")
+                        ? "new_session_only"
+                        : session.continuationStrategy,
                     status: "idle",
                     isResumingSession: false,
                     isPersistedSession: true,
