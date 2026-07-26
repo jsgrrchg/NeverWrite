@@ -1423,6 +1423,7 @@ interface ChatStore {
     setSelectedRuntime: (runtimeId: string | null) => void;
     setDefaultRuntime: (runtimeId: string | null) => void;
     getDefaultNewChatRuntimeId: () => string | null;
+    refreshRuntimeCatalog: () => Promise<void>;
     refreshSetupStatus: (runtimeId?: string) => Promise<void>;
     saveSetup: (input: {
         runtimeId?: string;
@@ -7699,6 +7700,87 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     state.setupStatusByRuntimeId,
                 )
             );
+        },
+
+        refreshRuntimeCatalog: async () => {
+            const backendRuntimes = await aiListRuntimes();
+            const setupResults = await Promise.allSettled(
+                backendRuntimes.map((runtime) =>
+                    aiGetSetupStatus(runtime.runtime.id),
+                ),
+            );
+            const current = get();
+            const setupStatusByRuntimeId = buildSetupStatusMap(
+                setupResults.flatMap((result) =>
+                    result.status === "fulfilled" ? [result.value] : [],
+                ),
+            );
+            const runtimeConnectionByRuntimeId = buildRuntimeConnectionMap(
+                backendRuntimes,
+                current.runtimeConnectionByRuntimeId,
+            );
+
+            for (const result of setupResults) {
+                if (result.status !== "fulfilled") continue;
+                runtimeConnectionByRuntimeId[result.value.runtimeId] =
+                    getRuntimeConnectionForSetup(result.value);
+            }
+
+            const terminalRuntime = current.runtimes.find(
+                (runtime) =>
+                    runtime.runtime.id === CLAUDE_TERMINAL_RUNTIME_ID,
+            );
+            const terminalSetupStatus =
+                current.setupStatusByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID];
+            const runtimes = terminalRuntime
+                ? [...backendRuntimes, terminalRuntime]
+                : backendRuntimes;
+            if (terminalSetupStatus) {
+                setupStatusByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID] =
+                    terminalSetupStatus;
+                runtimeConnectionByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID] =
+                    current.runtimeConnectionByRuntimeId[
+                        CLAUDE_TERMINAL_RUNTIME_ID
+                    ] ?? getRuntimeConnectionForSetup(terminalSetupStatus);
+            }
+
+            const currentDefaultStillSelectable =
+                getSelectableDefaultRuntimeId(
+                    current.defaultRuntimeId,
+                    runtimes,
+                    setupStatusByRuntimeId,
+                );
+            const defaultRuntimeId =
+                currentDefaultStillSelectable ??
+                (current.defaultRuntimeId?.startsWith("custom:")
+                    ? getImplicitDefaultAcpRuntimeId(
+                          runtimes,
+                          setupStatusByRuntimeId,
+                      )
+                    : null);
+            const selectedRuntimeId =
+                getSelectableDefaultRuntimeId(
+                    current.selectedRuntimeId,
+                    runtimes,
+                    setupStatusByRuntimeId,
+                ) ??
+                defaultRuntimeId ??
+                getImplicitDefaultAcpRuntimeId(runtimes, setupStatusByRuntimeId);
+
+            set({
+                runtimes,
+                setupStatusByRuntimeId,
+                runtimeConnectionByRuntimeId,
+                defaultRuntimeId,
+                selectedRuntimeId,
+            });
+
+            if (defaultRuntimeId !== current.defaultRuntimeId) {
+                _defaultRuntimePreferenceVersion += 1;
+                saveAiPreferences({
+                    defaultRuntimeId: defaultRuntimeId ?? undefined,
+                });
+            }
         },
 
         initialize: async (options) => {

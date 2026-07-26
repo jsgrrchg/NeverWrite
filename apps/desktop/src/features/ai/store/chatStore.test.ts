@@ -1123,6 +1123,68 @@ describe("chatStore", () => {
         );
     });
 
+    it("replaces a deleted custom default for new chats without touching live custom sessions", async () => {
+        const customRuntimeId =
+            "custom:123e4567-e89b-12d3-a456-426614174000";
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        id: customRuntimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+                {
+                    runtime: {
+                        id: "codex-acp",
+                        name: "Codex ACP",
+                        description: "Codex runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                [customRuntimeId]: {
+                    ...readySetupStatusState,
+                    runtimeId: customRuntimeId,
+                    authMethod: "external",
+                    authMethods: [],
+                },
+                "codex-acp": readySetupStatusState,
+            },
+            defaultRuntimeId: customRuntimeId,
+            selectedRuntimeId: customRuntimeId,
+            sessionsById: {
+                "custom-session-1": {
+                    ...createSessionWithTrackedFiles("custom-session-1", []),
+                    runtimeId: customRuntimeId,
+                    runtimeDisplayName: "Local reviewer",
+                },
+            },
+            sessionOrder: ["custom-session-1"],
+        });
+
+        await useChatStore.getState().refreshRuntimeCatalog();
+
+        const state = useChatStore.getState();
+        expect(state.runtimes.map((runtime) => runtime.runtime.id)).toEqual([
+            "codex-acp",
+        ]);
+        expect(state.defaultRuntimeId).toBe("codex-acp");
+        expect(state.selectedRuntimeId).toBe("codex-acp");
+        expect(state.sessionsById["custom-session-1"]?.runtimeId).toBe(
+            customRuntimeId,
+        );
+    });
+
     it("falls back when a persisted Claude Code default is no longer ready", async () => {
         localStorage.setItem(
             AI_PREFS_KEY,

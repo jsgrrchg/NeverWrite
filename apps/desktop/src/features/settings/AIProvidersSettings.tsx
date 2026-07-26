@@ -27,6 +27,7 @@ import {
 import { checkClaudeCodeInstalled } from "../terminal/claudeCodeTerminal";
 import { useChatStore } from "../ai/store/chatStore";
 import { getClaudeGatewayUrlValidationMessage } from "../ai/utils/claudeGatewayUrl";
+import { CustomAcpRuntimesSettings } from "./CustomAcpRuntimesSettings";
 import {
     EMPTY_SEARCH_QUERY,
     matchesSettingsSearch,
@@ -312,21 +313,6 @@ function hasPendingSetupUpdate(input: ProviderAuthInput): boolean {
         input.anthropicBedrockBaseUrl !== undefined ||
         input.anthropicCustomHeaders.action !== "unchanged" ||
         input.anthropicAuthToken.action !== "unchanged"
-    );
-}
-
-function EmptyProviderSearchResult() {
-    return (
-        <div
-            style={{
-                fontSize: 12,
-                color: "var(--text-secondary)",
-                lineHeight: 1.5,
-                padding: "24px 0",
-            }}
-        >
-            No matching AI provider settings.
-        </div>
     );
 }
 
@@ -1262,6 +1248,9 @@ export function AIProvidersSettings({
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const defaultRuntimeId = useChatStore((s) => s.defaultRuntimeId);
     const setDefaultRuntime = useChatStore((s) => s.setDefaultRuntime);
+    const refreshRuntimeCatalog = useChatStore(
+        (s) => s.refreshRuntimeCatalog,
+    );
     const [runtimes, setRuntimes] = useState<AIRuntimeDescriptor[]>([]);
     const [setupStatusMap, setSetupStatusMap] = useState<
         Record<string, AIRuntimeSetupStatus>
@@ -1277,6 +1266,7 @@ export function AIProvidersSettings({
         null,
     );
     const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+    const [catalogVersion, setCatalogVersion] = useState(0);
     const [authTerminalRequest, setAuthTerminalRequest] = useState<{
         runtimeId: string;
         methodId: string;
@@ -1380,7 +1370,7 @@ export function AIProvidersSettings({
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [catalogVersion]);
 
     /* ── Handlers ── */
 
@@ -1674,16 +1664,17 @@ export function AIProvidersSettings({
         });
     }, [diagnostics, diagnosticsLoading, loadDiagnostics]);
 
-    if (!showInstalledSection && !showDiagnosticsSection && !showAllSection) {
-        return <EmptyProviderSearchResult />;
-    }
-
     /* ── Render ── */
 
     // Providers available to be set as default (binary/auth ready).
-    const selectableProviders = PROVIDER_CATALOG.filter(
-        (p) => setupStatusMap[p.id]?.authReady === true,
-    );
+    const selectableProviders = runtimes
+        .filter((runtime) =>
+            setupStatusMap[runtime.runtime.id]?.authReady === true,
+        )
+        .map((runtime) => ({
+            id: runtime.runtime.id,
+            name: runtime.runtime.name.replace(/ ACP$/, ""),
+        }));
     const showDefaultSection =
         !isLoading &&
         selectableProviders.length > 0 &&
@@ -1696,6 +1687,11 @@ export function AIProvidersSettings({
             "Claude Code",
             ...selectableProviders.flatMap((p) => [p.name, p.id]),
         );
+
+    const handleCustomCatalogChanged = useCallback(async () => {
+        await refreshRuntimeCatalog();
+        setCatalogVersion((version) => version + 1);
+    }, [refreshRuntimeCatalog]);
 
     return (
         <>
@@ -2124,6 +2120,11 @@ export function AIProvidersSettings({
                     </div>
                 </>
             ) : null}
+
+            <CustomAcpRuntimesSettings
+                searchQuery={searchQuery}
+                onCatalogChanged={handleCustomCatalogChanged}
+            />
 
             {showDiagnosticsSection ? (
                 <>

@@ -4767,11 +4767,20 @@ function getDynamicCategorySearchValues(
                 shortcut.shortcut,
             ]);
         case "ai_providers":
-            return PROVIDER_CATALOG.flatMap((provider) => [
-                provider.id,
-                provider.name,
-                provider.company,
-            ]);
+            return [
+                ...PROVIDER_CATALOG.flatMap((provider) => [
+                    provider.id,
+                    provider.name,
+                    provider.company,
+                ]),
+                "Custom ACP runtimes",
+                "Runtime name",
+                "Command",
+                "Arguments",
+                "Environment",
+                "Authentication managed by the runtime",
+                "Deleted definitions retained for history",
+            ];
         case "ai":
             return EDITOR_FONT_FAMILY_OPTIONS.flatMap((option) => [
                 option.value,
