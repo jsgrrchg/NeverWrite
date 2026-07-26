@@ -465,6 +465,32 @@ function filterConfigOptions(
     }));
 }
 
+function isDuplicateThoughtLevelMode(
+    option: AIConfigOption,
+    modes: AIModeOption[],
+    modeId: string,
+) {
+    if (
+        option.category !== "reasoning" ||
+        option.id.replace(/[^a-z0-9]/gi, "").toLowerCase() !==
+            "thoughtlevel" ||
+        option.value !== modeId ||
+        modes.length === 0 ||
+        modes.some((mode) => mode.disabled)
+    ) {
+        return false;
+    }
+
+    const modeIds = new Set(modes.map((mode) => mode.id));
+    const optionValues = new Set(option.options.map((item) => item.value));
+    return (
+        modeIds.size === modes.length &&
+        optionValues.size === option.options.length &&
+        modeIds.size === optionValues.size &&
+        [...modeIds].every((modeId) => optionValues.has(modeId))
+    );
+}
+
 function normalizeExtraConfigPresentation(
     runtimeId: string | undefined,
     option: AIConfigOption,
@@ -546,14 +572,15 @@ export function AIChatAgentControls({
                 .filter(
                     (option) =>
                         option.category !== "mode" &&
-                        option.category !== "model",
+                        option.category !== "model" &&
+                        !isDuplicateThoughtLevelMode(option, modes, modeId),
                 )
                 .sort((left, right) => {
                     const rank = (option: AIConfigOption) =>
                         option.category === "reasoning" ? 0 : 1;
                     return rank(left) - rank(right);
                 }),
-        [configOptions],
+        [configOptions, modeId, modes],
     );
     const visibleExtraConfigs = useMemo(
         () =>
