@@ -1501,11 +1501,17 @@ impl NativeAi {
         let vault_root_for_spec = vault_root.clone().ok_or_else(|| {
             "An open vault is required to start an AI runtime session.".to_string()
         })?;
-        let (spec, setup) = if is_custom_acp_runtime_id(&input.runtime_id) {
+        let (spec, setup, custom_identity) = if is_custom_acp_runtime_id(&input.runtime_id) {
             let launch = self.custom_runtimes.resolve_launch(&input.runtime_id)?;
+            let identity = (
+                launch.display_name.clone(),
+                launch.revision,
+                launch.launch_fingerprint.clone(),
+            );
             (
                 custom_acp_process_spec(launch, vault_root_for_spec),
                 RuntimeSetupState::default(),
+                Some(identity),
             )
         } else {
             let setup = {
@@ -1520,7 +1526,7 @@ impl NativeAi {
                     .unwrap_or_default()
             };
             let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
-            (spec, setup)
+            (spec, setup, None)
         };
         let created = match start_acp_session(
             spec,
@@ -1546,6 +1552,12 @@ impl NativeAi {
         let mut session = created.session;
         let handle = created.handle;
         session.discarded_additional_roots = normalized.discarded.clone();
+        if let Some((display_name, revision, launch_fingerprint)) = custom_identity {
+            session.runtime_session_id = Some(session.session_id.clone());
+            session.runtime_display_name = Some(display_name);
+            session.runtime_revision = Some(revision);
+            session.runtime_launch_fingerprint = Some(launch_fingerprint);
+        }
 
         let mut state = self
             .inner
@@ -5349,6 +5361,10 @@ fn session_from_acp_response(
         closed_at: None,
         title: None,
         runtime_id: runtime_id.to_string(),
+        runtime_display_name: None,
+        runtime_revision: None,
+        runtime_launch_fingerprint: None,
+        continuation_strategy: None,
         model_id,
         mode_id,
         status: AiSessionStatus::Idle,
@@ -6952,6 +6968,10 @@ fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession
         closed_at: None,
         title: None,
         runtime_id: runtime_id.to_string(),
+        runtime_display_name: None,
+        runtime_revision: None,
+        runtime_launch_fingerprint: None,
+        continuation_strategy: None,
         model_id: models
             .first()
             .map(|model| model.id.clone())

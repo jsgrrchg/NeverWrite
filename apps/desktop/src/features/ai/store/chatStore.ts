@@ -5380,6 +5380,24 @@ function applyPersistedHistoryMetadata(
                 nextSession.parentSessionId ??
                 null,
             closedAt: history.closed_at ?? nextSession.closedAt ?? null,
+            runtimeDisplayName:
+                history.runtime_display_name ??
+                nextSession.runtimeDisplayName ??
+                null,
+            runtimeRevision:
+                history.runtime_revision ?? nextSession.runtimeRevision ?? null,
+            runtimeLaunchFingerprint:
+                history.runtime_launch_fingerprint ??
+                nextSession.runtimeLaunchFingerprint ??
+                null,
+            runtimeSessionId:
+                history.runtime_session_id ??
+                nextSession.runtimeSessionId ??
+                null,
+            continuationStrategy:
+                history.continuation_strategy ??
+                nextSession.continuationStrategy ??
+                null,
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
             persistedTitle: sanitizePersistedDisplayText(history.title),
@@ -5466,23 +5484,26 @@ function createPersistedSession(
     runtimes: AIRuntimeDescriptor[],
     vaultPath: string | null,
 ): AIChatSession | null {
+    const matchingRuntime = history.runtime_id
+        ? runtimes.find(
+              (candidate) => candidate.runtime.id === history.runtime_id,
+          )
+        : undefined;
     const runtime =
-        (history.runtime_id
-            ? runtimes.find(
-                  (candidate) => candidate.runtime.id === history.runtime_id,
-              )
-            : null) ?? runtimes[0];
-    if (!runtime) return null;
-    const runtimeId = history.runtime_id ?? runtime.runtime.id;
+        matchingRuntime ?? (history.runtime_id ? undefined : runtimes[0]);
+    if (!history.runtime_id && !runtime) return null;
+    const runtimeId = history.runtime_id ?? runtime!.runtime.id;
     const persistedMessageCount = getPersistedHistoryMessageCount(history);
     const persistedCatalog = getPersistedHistoryCatalogSnapshot(history);
     const catalogSource = hasRuntimeCatalog(persistedCatalog)
         ? persistedCatalog
-        : {
-              models: runtime.models,
-              modes: runtime.modes,
-              configOptions: runtime.configOptions,
-          };
+        : runtime
+          ? {
+                models: runtime.models,
+                modes: runtime.modes,
+                configOptions: runtime.configOptions,
+            }
+          : { models: [], modes: [], configOptions: [] };
 
     if (hasRuntimeCatalog(persistedCatalog)) {
         saveRuntimeCatalogCache(runtimeId, persistedCatalog);
@@ -5494,9 +5515,14 @@ function createPersistedSession(
             historySessionId: history.session_id,
             parentSessionId: history.parent_session_id ?? null,
             closedAt: history.closed_at ?? null,
-            runtimeSessionId: null,
             vaultPath,
             runtimeId,
+            runtimeDisplayName: history.runtime_display_name ?? null,
+            runtimeRevision: history.runtime_revision ?? null,
+            runtimeLaunchFingerprint:
+                history.runtime_launch_fingerprint ?? null,
+            runtimeSessionId: history.runtime_session_id ?? null,
+            continuationStrategy: history.continuation_strategy ?? null,
             additionalRoots: history.additional_roots ?? [],
             modelId: history.model_id,
             modeId: history.mode_id,
@@ -5518,7 +5544,10 @@ function createPersistedSession(
             attachments: [],
             isPersistedSession: true,
             resumeContextPending: persistedMessageCount > 0,
-            runtimeState: "persisted_only",
+            runtimeState:
+                runtimeId.startsWith("custom:") && !matchingRuntime
+                    ? "transcript_only"
+                    : "persisted_only",
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
             persistedTitle: sanitizePersistedDisplayText(history.title),
@@ -6103,6 +6132,12 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         parent_session_id: session.parentSessionId ?? undefined,
         closed_at: session.closedAt ?? undefined,
         runtime_id: session.runtimeId,
+        runtime_display_name: session.runtimeDisplayName ?? undefined,
+        runtime_revision: session.runtimeRevision ?? undefined,
+        runtime_launch_fingerprint:
+            session.runtimeLaunchFingerprint ?? undefined,
+        runtime_session_id: session.runtimeSessionId ?? undefined,
+        continuation_strategy: session.continuationStrategy ?? undefined,
         model_id: session.modelId,
         mode_id: session.modeId,
         additional_roots: session.additionalRoots ?? [],
@@ -7905,7 +7940,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         get().sessionsById[nextActiveSessionId] &&
                         !isLiveRuntimeSession(
                             get().sessionsById[nextActiveSessionId]!,
-                        )
+                        ) &&
+                        get().sessionsById[nextActiveSessionId]!.runtimeState !==
+                            "transcript_only"
                     ) {
                         await get().resumeSession(nextActiveSessionId);
                     } else if (nextActiveSessionId) {
@@ -8097,6 +8134,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (activeSession) {
                 if (
                     !isLiveRuntimeSession(activeSession) &&
+                    activeSession.runtimeState !== "transcript_only" &&
                     !activeSession.isResumingSession
                 ) {
                     const resumedSessionId =
@@ -9780,6 +9818,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (session.isPendingSessionCreation) return sessionId;
             if (isLiveRuntimeSession(session)) return sessionId;
             if (session.isResumingSession) return sessionId;
+            if (session.runtimeState === "transcript_only") return null;
 
             set((currentState) => {
                 const currentSession = currentState.sessionsById[sessionId];
@@ -10155,7 +10194,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return;
                 }
                 if (!isLiveRuntimeSession(existing)) {
-                    await get().resumeSession(sessionId);
+                    if (existing.runtimeState !== "transcript_only") {
+                        await get().resumeSession(sessionId);
+                    } else {
+                        await get().ensureSessionTranscriptLoaded(
+                            sessionId,
+                            "latest",
+                        );
+                    }
                     return;
                 }
 
@@ -10180,7 +10226,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     if (restored) {
                         get().upsertSession(restored, true);
-                        await get().resumeSession(restored.sessionId);
+                        if (restored.runtimeState !== "transcript_only") {
+                            await get().resumeSession(restored.sessionId);
+                        } else {
+                            await get().ensureSessionTranscriptLoaded(
+                                restored.sessionId,
+                                "latest",
+                            );
+                        }
                         return;
                     }
                 }
@@ -10231,7 +10284,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             restored.sessionId,
                             restored.historySessionId,
                         );
-                    await get().resumeSession(restored.sessionId);
+                    if (restored.runtimeState !== "transcript_only") {
+                        await get().resumeSession(restored.sessionId);
+                    } else {
+                        await get().ensureSessionTranscriptLoaded(
+                            restored.sessionId,
+                            "latest",
+                        );
+                    }
                     return;
                 }
 

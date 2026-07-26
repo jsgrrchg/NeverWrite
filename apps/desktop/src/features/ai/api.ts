@@ -106,6 +106,10 @@ export function normalizeBackendSession(
         customTitle: null,
         persistedTitle: session.title ?? null,
         runtimeId: session.runtime_id,
+        runtimeDisplayName: session.runtime_display_name ?? null,
+        runtimeRevision: session.runtime_revision ?? null,
+        runtimeLaunchFingerprint: session.runtime_launch_fingerprint ?? null,
+        continuationStrategy: session.continuation_strategy ?? null,
         additionalRoots: session.additional_roots ?? [],
         // Client-only flag; never spread from backend payload.
         discardedAdditionalRoots: session.discarded_additional_roots ?? [],

@@ -30,7 +30,7 @@ type SessionTitleSession = Pick<
 
 type ReviewTabTitleSession = Pick<
     AIChatSession,
-    "runtimeId" | "parentSessionId"
+    "runtimeId" | "runtimeDisplayName" | "parentSessionId"
 > &
     SessionTitleSession;
 
@@ -147,7 +147,12 @@ export function getSessionRuntimeName(
     session: AIChatSession,
     runtimes: AIRuntimeOption[],
 ) {
-    return getRuntimeName(session.runtimeId, runtimes);
+    return (
+        session.runtimeDisplayName?.trim() ||
+        runtimes.find((runtime) => runtime.id === session.runtimeId)?.name ||
+        session.runtimeId ||
+        "Chat"
+    );
 }
 
 export function getSessionUpdatedAt(session: AIChatSession) {
@@ -200,9 +205,11 @@ export function getReviewTabTitle(
         return `Review: ${subagentName}`;
     }
 
-    const runtimeName = runtimes.find(
-        (descriptor) => descriptor.runtime.id === session?.runtimeId,
-    )?.runtime.name;
+    const runtimeName =
+        session?.runtimeDisplayName?.trim() ||
+        runtimes.find(
+            (descriptor) => descriptor.runtime.id === session?.runtimeId,
+        )?.runtime.name;
 
     return `Review ${normalizeReviewAgentName(runtimeName)}`;
 }

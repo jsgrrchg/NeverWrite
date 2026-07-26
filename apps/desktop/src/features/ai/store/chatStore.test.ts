@@ -14528,6 +14528,89 @@ describe("chatStore", () => {
         ).toBe(false);
     });
 
+    it("keeps missing custom runtime history autonomous and transcript-only", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState({
+            sessionsById: {},
+            sessionOrder: [],
+            activeSessionId: null,
+        });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_list_sessions") {
+                return [{ ...sessionPayload, session_id: "live-session" }];
+            }
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "custom-history-1",
+                        runtime_id:
+                            "custom:123e4567-e89b-12d3-a456-426614174000",
+                        runtime_display_name: "Local reviewer",
+                        runtime_revision: 3,
+                        runtime_launch_fingerprint: "fingerprint-v3",
+                        runtime_session_id: "runtime-session-7",
+                        model_id: "negotiated-model",
+                        mode_id: "careful",
+                        created_at: 10,
+                        updated_at: 20,
+                        message_count: 1,
+                        messages: [
+                            {
+                                id: "user-1",
+                                role: "user",
+                                kind: "text",
+                                content: "Review this",
+                                timestamp: 10,
+                            },
+                        ],
+                    },
+                ];
+            }
+            if (
+                command === "ai_create_session" ||
+                command === "ai_resume_runtime_session" ||
+                command === "ai_load_session"
+            ) {
+                throw new Error("missing custom runtime must not be replaced");
+            }
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const restored = Object.values(
+            useChatStore.getState().sessionsById,
+        ).find((session) => session.historySessionId === "custom-history-1");
+        expect(restored).toBeDefined();
+        expect(restored).toMatchObject({
+            runtimeId: "custom:123e4567-e89b-12d3-a456-426614174000",
+            runtimeDisplayName: "Local reviewer",
+            runtimeRevision: 3,
+            runtimeLaunchFingerprint: "fingerprint-v3",
+            runtimeSessionId: "runtime-session-7",
+            runtimeState: "transcript_only",
+            models: [],
+            modes: [],
+            configOptions: [],
+        });
+        expect(restored?.messages).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ content: "Review this" }),
+            ]),
+        );
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) =>
+                    command === "ai_create_session" ||
+                    command === "ai_resume_runtime_session",
+            ),
+        ).toBe(false);
+    });
+
     it("persists tool diffs when saving session history", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
