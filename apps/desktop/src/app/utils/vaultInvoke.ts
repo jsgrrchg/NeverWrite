@@ -22,6 +22,14 @@ export async function vaultInvoke<T>(
     args?: Record<string, unknown>,
 ): Promise<T> {
     const vaultPath = useVaultStore.getState().vaultPath ?? "";
+    return vaultInvokeForPath(cmd, vaultPath, args);
+}
+
+export async function vaultInvokeForPath<T>(
+    cmd: string,
+    vaultPath: string,
+    args?: Record<string, unknown>,
+): Promise<T> {
     if (!IPC_DEBUG_ENABLED || !_ipcTracing) {
         return invoke<T>(cmd, { ...args, vaultPath });
     }

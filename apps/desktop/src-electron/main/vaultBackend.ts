@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { app } from "electron";
+import { app, shell } from "electron";
 import type { NativeBackendBridge } from "./nativeBackend";
 import type { AppUpdaterBackend } from "./updater";
 import { syncRecentVaultsForElectron } from "./menu";
@@ -118,6 +118,7 @@ const ignoredDirNames = new Set([
     ".obsidian",
     ".git",
     ".neverwrite",
+    ".neverwrite-managed",
     ".neverwrite-cache",
     ".trash",
     "target",
@@ -213,7 +214,17 @@ function toAbsoluteVaultPath(vaultPath: string) {
     if (!vaultPath || typeof vaultPath !== "string") {
         throw new Error("Vault path is required.");
     }
-    return path.resolve(vaultPath);
+    const resolved = path.resolve(vaultPath);
+    if (
+        resolved
+            .split(path.sep)
+            .some((component) =>
+                component.toLowerCase() === ".neverwrite-managed",
+            )
+    ) {
+        throw new Error("Managed attachment storage cannot be opened as a vault.");
+    }
+    return resolved;
 }
 
 function ensureRelativePath(relativePath: string, allowEmpty = false) {
@@ -248,6 +259,15 @@ function resolveVaultScopedPath(
 ) {
     const root = toAbsoluteVaultPath(vaultPath);
     const normalized = ensureRelativePath(relativePath, allowEmpty);
+    if (
+        normalized
+            .split("/")
+            .some((component) =>
+                component.toLowerCase() === ".neverwrite-managed",
+            )
+    ) {
+        throw new Error("Managed attachment storage is private.");
+    }
     const absolutePath = path.resolve(root, normalized);
     const relative = path.relative(root, absolutePath);
     if (relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -1137,6 +1157,21 @@ export class ElectronVaultBackend {
             case "unregister_window_vault_route":
                 unregisterWindowVaultRoute(args);
                 return { handled: true, result: null };
+            case "ai_reveal_managed_attachment": {
+                const command = "ai_resolve_managed_attachment_path";
+                if (!this.nativeBackend?.supports(command)) {
+                    throw new Error("Managed attachment backend is unavailable.");
+                }
+                const result = (await this.nativeBackend.invoke(
+                    command,
+                    args,
+                )) as { path?: unknown };
+                if (typeof result.path !== "string" || !result.path) {
+                    throw new Error("Managed attachment path was not resolved.");
+                }
+                shell.showItemInFolder(result.path);
+                return { handled: true, result: null };
+            }
             case "get_app_update_configuration":
                 return {
                     handled: true,

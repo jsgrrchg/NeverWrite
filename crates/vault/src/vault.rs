@@ -11,6 +11,7 @@ const IGNORED_DIR_NAMES: &[&str] = &[
     ".obsidian",
     ".git",
     ".neverwrite",
+    ".neverwrite-managed",
     ".neverwrite-cache",
     ".trash",
     "target",

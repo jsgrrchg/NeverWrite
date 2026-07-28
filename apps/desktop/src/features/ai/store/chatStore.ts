@@ -36,6 +36,11 @@ import {
     aiSetModel,
     aiUpdateSetup,
     aiRegisterFileBaseline,
+    getAiHistoryStorageStatus,
+    reconcileAiHistoryStorage,
+    listenToAiHistoryStorageChanged,
+    type AIHistoryStorageStatus,
+    type AIStorageScope,
 } from "../api";
 import {
     isFileTab,
@@ -128,6 +133,7 @@ import {
     type AIChatSession,
     type AIClaudeProviderRouting,
     type AIComposerPart,
+    type DraftAttachmentId,
     type AIImageGenerationPayload,
     type AIPermissionRequestPayload,
     type AIPlanUpdatePayload,
@@ -147,6 +153,7 @@ import {
     type AISessionErrorPayload,
     type PersistedSessionHistory,
     type PersistedSessionHistoryPage,
+    type ManagedAttachmentId,
     type QueuedChatMessage,
     type QueuedChatMessageStatus,
 } from "../types";
@@ -288,6 +295,18 @@ interface QueuedMessageEditState {
     previousAttachments: AIChatAttachment[];
 }
 
+type PreflightFailureRecovery =
+    | { kind: "composer" }
+    | {
+          kind: "queued_item";
+          deferredMessage: DeferredQueuedMessage;
+      }
+    | {
+          kind: "queued_edit";
+          editState: QueuedMessageEditState;
+          editedItem: QueuedChatMessage;
+      };
+
 interface DeferredQueuedMessage {
     item: QueuedChatMessage;
     originalIndex: number;
@@ -305,6 +324,13 @@ interface PausedQueueState {
 interface PendingInterruptedSend {
     item: QueuedChatMessage;
     preserveComposerState?: boolean;
+    preflightFailureRecovery?: PreflightFailureRecovery;
+    composerSnapshotAlreadyTaken?: boolean;
+}
+
+interface ComposerPreflightOwnership {
+    token: string;
+    item: QueuedChatMessage;
 }
 
 interface InterruptedTurnState {
@@ -376,9 +402,7 @@ function saveConfigOptionPreference(optionId: string, value: string) {
 }
 
 function getAutoContextStorageKey(vaultPath: string | null) {
-    return `${AI_AUTO_CONTEXT_KEY_PREFIX}${
-        vaultPath ?? AI_AUTO_CONTEXT_GLOBAL_SCOPE
-    }`;
+    return `${AI_AUTO_CONTEXT_KEY_PREFIX}${vaultPath ?? AI_AUTO_CONTEXT_GLOBAL_SCOPE}`;
 }
 
 function loadAutoContextPreference(vaultPath: string | null) {
@@ -520,6 +544,112 @@ function clearPersistedHistoryCache(vaultPath: string | null) {
     _persistedHistoryCacheBySessionId.clear();
 }
 
+function applyAiHistoryStorageSnapshot(
+    snapshot: AIHistoryStorageStatus,
+    expectedVaultPath?: string,
+) {
+    // Generations are backend-issued per-vault ordering tokens, not timestamps.
+    // They prevent delayed responses or events from restoring an older storage
+    // projection after a vault switch or focus recovery.
+    const activeVaultPath = useVaultStore.getState().vaultPath;
+    if (
+        expectedVaultPath != null &&
+        (useChatStore.getState().historyStorageVaultPath !== expectedVaultPath ||
+            (activeVaultPath != null && activeVaultPath !== expectedVaultPath))
+    ) {
+        return false;
+    }
+    let applied = false;
+    useChatStore.setState((state) => {
+        const current = state.historyStorageStatus;
+        if (
+            current &&
+            (current.vaultKey !== snapshot.vaultKey ||
+                current.generation >= snapshot.generation)
+        ) {
+            return state;
+        }
+        applied = true;
+        return { historyStorageStatus: snapshot };
+    });
+    return applied;
+}
+
+function activateAiHistoryStorageContext(vaultPath: string) {
+    const activeVaultPath = useVaultStore.getState().vaultPath;
+    useChatStore.setState((state) => {
+        if (state.historyStorageVaultPath === vaultPath) return state;
+        const canAdoptActiveProjection =
+            state.historyStorageVaultPath === null &&
+            activeVaultPath === vaultPath;
+        return {
+            historyStorageVaultPath: vaultPath,
+            historyStorageStatus: canAdoptActiveProjection
+                ? state.historyStorageStatus
+                : null,
+        };
+    });
+}
+
+function canAccessAiHistoryStorageForVault(vaultPath: string) {
+    const state = useChatStore.getState();
+    // Moving and recovery states block normal history I/O so a renderer cannot
+    // load from or persist to a root that is not yet canonical.
+    return (
+        state.historyStorageVaultPath !== vaultPath ||
+        state.historyStorageStatus === null ||
+        state.historyStorageStatus.status === "ready"
+    );
+}
+
+async function refreshPersistedHistoryInventory(vaultPath: string) {
+    if (!canAccessAiHistoryStorageForVault(vaultPath)) return;
+    const histories = (
+        await aiLoadSessionHistories(vaultPath, { includeMessages: false })
+    ).filter(hasPersistedHistoryContent);
+    if (useVaultStore.getState().vaultPath !== vaultPath) {
+        return;
+    }
+    setPersistedHistoryCache(vaultPath, histories);
+    useChatStore.setState((state) => {
+        const persistedIds = new Set(histories.map((history) => history.session_id));
+        const nextSessionsById = Object.fromEntries(
+            Object.entries(state.sessionsById).filter(([, session]) => {
+                if (getSessionVaultPath(session) !== vaultPath) return true;
+                if (session.runtimeState !== "persisted_only") return true;
+                return persistedIds.has(session.historySessionId);
+            }),
+        );
+        const existingByHistoryId = new Map(
+            Object.values(nextSessionsById).map((session) => [
+                session.historySessionId,
+                session,
+            ]),
+        );
+        for (const history of histories) {
+            const existing = existingByHistoryId.get(history.session_id);
+            if (existing) {
+                nextSessionsById[existing.sessionId] =
+                    applyPersistedHistoryMetadata(existing, history);
+                continue;
+            }
+            const restored = createPersistedSession(
+                history,
+                state.runtimes,
+                vaultPath,
+            );
+            if (restored) {
+                nextSessionsById[restored.sessionId] = restored;
+            }
+        }
+        return {
+            sessionsById: nextSessionsById,
+            sessionOrder: sortSessionIdsByRecency(nextSessionsById),
+            sessionInventoryLoaded: true,
+        };
+    });
+}
+
 function getPersistedHistoryFromCache(
     vaultPath: string | null,
     historySessionId: string | null | undefined,
@@ -568,7 +698,8 @@ function isRemovedGeminiAcpSession(session: Pick<AIChatSession, "runtimeId">) {
 
 function getWorkspaceHistorySessionIdForSession(sessionId: string) {
     const tab = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
-        (candidate) => isChatTab(candidate) && candidate.sessionId === sessionId,
+        (candidate) =>
+            isChatTab(candidate) && candidate.sessionId === sessionId,
     );
     return tab && isChatTab(tab) ? (tab.historySessionId ?? null) : null;
 }
@@ -642,7 +773,8 @@ function sanitizeRuntimeCatalogSnapshot(
             };
         })
         .filter(
-            (option) => option.category !== "model" || option.options.length > 0,
+            (option) =>
+                option.category !== "model" || option.options.length > 0,
         );
 
     return {
@@ -1079,14 +1211,19 @@ function getSessionModelLabel(
 }
 
 function sessionHasAgentTurns(session: AIChatSession) {
-    return session.messages.length > 0 || (session.persistedMessageCount ?? 0) > 0;
+    return (
+        session.messages.length > 0 || (session.persistedMessageCount ?? 0) > 0
+    );
 }
 
 function getBlockedGrokModelSwitchMessage(
     session: AIChatSession,
     targetModelId: string,
 ) {
-    if (session.runtimeId !== GROK_RUNTIME_ID || !sessionHasAgentTurns(session)) {
+    if (
+        session.runtimeId !== GROK_RUNTIME_ID ||
+        !sessionHasAgentTurns(session)
+    ) {
         return null;
     }
 
@@ -1097,14 +1234,15 @@ function getBlockedGrokModelSwitchMessage(
 
     const currentAgentType = getSessionModelAgentType(session, currentModelId);
     const targetAgentType = getSessionModelAgentType(session, targetModelId);
-    if (!currentAgentType || !targetAgentType || currentAgentType === targetAgentType) {
+    if (
+        !currentAgentType ||
+        !targetAgentType ||
+        currentAgentType === targetAgentType
+    ) {
         return null;
     }
 
-    return `Start a new Grok chat to switch to ${getSessionModelLabel(
-        session,
-        targetModelId,
-    )}.`;
+    return `Start a new Grok chat to switch to ${getSessionModelLabel(session, targetModelId)}.`;
 }
 
 function applyLocalModelSelection(
@@ -1388,6 +1526,8 @@ interface ChatStore {
     selectedRuntimeId: string | null;
     isInitializing: boolean;
     sessionInventoryLoaded: boolean;
+    historyStorageVaultPath: string | null;
+    historyStorageStatus: AIHistoryStorageStatus | null;
     notePickerOpen: boolean;
     autoContextEnabled: boolean;
     requireCmdEnterToSend: boolean;
@@ -1407,9 +1547,15 @@ interface ChatStore {
     pausedQueueBySessionId: Record<string, PausedQueueState>;
     interruptedTurnStateBySessionId: Record<string, InterruptedTurnState>;
     tokenUsageBySessionId: Record<string, AITokenUsage>;
-    initialize: (
-        options?: { createDefaultSession?: boolean },
-    ) => Promise<ChatInitializationResult>;
+    initialize: (options?: {
+        createDefaultSession?: boolean;
+    }) => Promise<ChatInitializationResult>;
+    refreshAiHistoryStorageStatus: (vaultPath: string) => Promise<void>;
+    changeAiHistoryStorage: (
+        vaultPath: string,
+        targetScope: AIStorageScope,
+        sourceVaultKey?: string,
+    ) => Promise<boolean>;
     reconcileRestoredWorkspaceTabs: (
         tabs: Array<{
             id: string;
@@ -1558,7 +1704,10 @@ interface ChatStore {
         sessionId?: string,
         action?: AIUserInputAction,
     ) => Promise<void>;
-    openUrlElicitation: (requestId: string, sessionId?: string) => Promise<void>;
+    openUrlElicitation: (
+        requestId: string,
+        sessionId?: string,
+    ) => Promise<void>;
     respondUrlElicitation: (
         requestId: string,
         action: AIUrlElicitationAction,
@@ -1909,23 +2058,18 @@ function removeSessionMessage(session: AIChatSession, messageId: string) {
         (id) => id !== messageId,
     );
     const nextMessageIndexById = Object.fromEntries(
-        nextMessages.map((message, messageIndex) => [
-            message.id,
-            messageIndex,
-        ]),
+        nextMessages.map((message, messageIndex) => [message.id, messageIndex]),
     );
 
     const lastAssistantMessageId =
         normalized.lastAssistantMessageId === messageId
-            ? [...nextMessages]
-                  .reverse()
-                  .find(isAssistantTextMessage)?.id ?? null
+            ? ([...nextMessages].reverse().find(isAssistantTextMessage)?.id ??
+              null)
             : (normalized.lastAssistantMessageId ?? null);
     const lastTurnStartedMessageId =
         normalized.lastTurnStartedMessageId === messageId
-            ? [...nextMessages]
-                  .reverse()
-                  .find(isTurnStartedStatusMessage)?.id ?? null
+            ? ([...nextMessages].reverse().find(isTurnStartedStatusMessage)
+                  ?.id ?? null)
             : (normalized.lastTurnStartedMessageId ?? null);
 
     const nextSession = {
@@ -2366,7 +2510,8 @@ function isTransientRecoveryStatusMessage(message: AIChatMessage) {
     return (
         message.kind === "status" &&
         (message.meta?.status_event === "session_recovery" ||
-            message.id === `status:${SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID}` ||
+            message.id ===
+                `status:${SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID}` ||
             message.id === `status:${RUNTIME_CONTEXT_RECOVERY_STATUS_EVENT_ID}`)
     );
 }
@@ -2629,7 +2774,25 @@ type ComposerFileBackedPart = Extract<
 
 function composerFilePartToAttachment(
     part: ComposerFileBackedPart,
-): AIChatAttachment {
+): AIChatAttachment | null {
+    if (part.type === "screenshot" && part.draftAttachmentId) {
+        return null;
+    }
+    if (part.type === "screenshot" && part.managedAttachmentId) {
+        return {
+            id: crypto.randomUUID(),
+            type: "file",
+            noteId: null,
+            label: part.label,
+            path: null,
+            managedAttachmentId: part.managedAttachmentId,
+            fileName: part.fileName,
+            mimeType: part.mimeType,
+        };
+    }
+    if (typeof part.filePath !== "string") {
+        return null;
+    }
     return {
         id: crypto.randomUUID(),
         type: "file",
@@ -2662,14 +2825,19 @@ function isComposerOwnedQueuedAttachment(
     }
 
     if (attachment.type !== "file" || attachment.path || !attachment.filePath) {
-        return false;
+        if (!attachment.managedAttachmentId) return false;
+        return composerParts.some(
+            (part) =>
+                part.type === "screenshot" &&
+                part.managedAttachmentId === attachment.managedAttachmentId,
+        );
     }
 
     const attachmentPath = normalizeComparablePath(attachment.filePath);
     return composerParts.some(
         (part) =>
-            (part.type === "screenshot" ||
-                part.type === "file_attachment") &&
+            (part.type === "screenshot" || part.type === "file_attachment") &&
+            typeof part.filePath === "string" &&
             normalizeComparablePath(part.filePath) === attachmentPath &&
             (!attachment.mimeType || part.mimeType === attachment.mimeType),
     );
@@ -2726,6 +2894,9 @@ function getParentDirectory(path: string) {
 function getAdditionalRootCandidateForAttachment(
     attachment: AIChatAttachment,
 ): string | null {
+    if (attachment.managedAttachmentId) {
+        return null;
+    }
     if (attachment.type === "folder") {
         const folderPath = attachment.noteId ?? attachment.path;
         if (!folderPath || !isAbsoluteVaultPath(folderPath)) {
@@ -2997,14 +3168,14 @@ function buildQueuedMessage(
             (p): p is Extract<AIComposerPart, { type: "screenshot" }> =>
                 p.type === "screenshot",
         )
-        .map(composerFilePartToAttachment);
+        .flatMap((part) => composerFilePartToAttachment(part) ?? []);
 
     const fileAttachments: AIChatAttachment[] = composerPartsSnapshot
         .filter(
             (p): p is Extract<AIComposerPart, { type: "file_attachment" }> =>
                 p.type === "file_attachment",
         )
-        .map(composerFilePartToAttachment);
+        .flatMap((part) => composerFilePartToAttachment(part) ?? []);
 
     const attachments = [
         ...session.attachments,
@@ -3031,6 +3202,265 @@ function buildQueuedMessage(
             session.configOptions.map((option) => [option.id, option.value]),
         ),
     };
+}
+
+interface PromotedDraftAttachment {
+    draftAttachmentId: DraftAttachmentId;
+    managedAttachmentId: ManagedAttachmentId;
+    fileName: string;
+    mimeType: string;
+}
+
+function applyDraftPromotionsToComposerParts(
+    parts: AIComposerPart[],
+    promotions: Map<DraftAttachmentId, PromotedDraftAttachment>,
+): AIComposerPart[] {
+    let changed = false;
+    const nextParts = parts.map((part) => {
+        if (part.type !== "screenshot" || !part.draftAttachmentId) {
+            return part;
+        }
+        const promotion = promotions.get(part.draftAttachmentId);
+        if (!promotion) return part;
+        changed = true;
+        return {
+            id: part.id,
+            type: "screenshot" as const,
+            managedAttachmentId: promotion.managedAttachmentId,
+            fileName: promotion.fileName,
+            mimeType: promotion.mimeType,
+            label: part.label,
+            createdAt: part.createdAt,
+        };
+    });
+    return changed ? nextParts : parts;
+}
+
+async function promoteQueuedMessageDrafts(queuedItem: QueuedChatMessage) {
+    const draftParts = queuedItem.composerParts.filter(
+        (
+            part,
+        ): part is Extract<
+            AIComposerPart,
+            { type: "screenshot"; draftAttachmentId: DraftAttachmentId }
+        > => part.type === "screenshot" && Boolean(part.draftAttachmentId),
+    );
+    if (draftParts.length === 0) {
+        return {
+            item: queuedItem,
+            promotions: new Map<DraftAttachmentId, PromotedDraftAttachment>(),
+        };
+    }
+
+    const promotions = new Map<DraftAttachmentId, PromotedDraftAttachment>();
+    for (const part of draftParts) {
+        if (promotions.has(part.draftAttachmentId)) continue;
+        const promoted = await vaultInvoke<{
+            attachment_id: ManagedAttachmentId;
+            file_name: string;
+            mime_type: string;
+        }>("ai_promote_draft_attachment", {
+            draftAttachmentId: part.draftAttachmentId,
+        });
+        promotions.set(part.draftAttachmentId, {
+            draftAttachmentId: part.draftAttachmentId,
+            managedAttachmentId: promoted.attachment_id,
+            fileName: promoted.file_name,
+            mimeType: promoted.mime_type,
+        });
+    }
+
+    const composerParts = applyDraftPromotionsToComposerParts(
+        queuedItem.composerParts,
+        promotions,
+    );
+    const existingManagedIds = new Set(
+        queuedItem.attachments.flatMap((attachment) =>
+            attachment.managedAttachmentId
+                ? [attachment.managedAttachmentId]
+                : [],
+        ),
+    );
+    const attachments = [...queuedItem.attachments];
+    for (const part of composerParts) {
+        if (
+            part.type !== "screenshot" ||
+            !part.managedAttachmentId ||
+            existingManagedIds.has(part.managedAttachmentId)
+        ) {
+            continue;
+        }
+        existingManagedIds.add(part.managedAttachmentId);
+        attachments.push(composerFilePartToAttachment(part)!);
+    }
+
+    return {
+        item: {
+            ...queuedItem,
+            composerParts,
+            attachments,
+        },
+        promotions,
+    };
+}
+
+function containsDraftAttachmentId(
+    value: unknown,
+    draftId: DraftAttachmentId,
+): boolean {
+    if (!value || typeof value !== "object") return false;
+    if ("draftAttachmentId" in value && value.draftAttachmentId === draftId) {
+        return true;
+    }
+    return Object.values(value).some((child) =>
+        containsDraftAttachmentId(child, draftId),
+    );
+}
+
+function cleanupPromotedDrafts(
+    promotions: Map<DraftAttachmentId, PromotedDraftAttachment>,
+) {
+    releaseDraftAttachmentsIfUnreferenced(promotions.keys());
+}
+
+function collectDraftAttachmentIds(
+    value: unknown,
+    ids = new Set<DraftAttachmentId>(),
+) {
+    if (!value || typeof value !== "object") return ids;
+    if ("draftAttachmentId" in value) {
+        const draftAttachmentId = value.draftAttachmentId;
+        if (typeof draftAttachmentId === "string") {
+            ids.add(draftAttachmentId as DraftAttachmentId);
+        }
+    }
+    for (const child of Object.values(value)) {
+        collectDraftAttachmentIds(child, ids);
+    }
+    return ids;
+}
+
+function releaseDraftAttachmentsIfUnreferenced(
+    candidates: Iterable<DraftAttachmentId>,
+) {
+    const state = useChatStore.getState();
+    const retainedState = [
+        state.composerPartsBySessionId,
+        state.queuedMessagesBySessionId,
+        state.queuedMessageEditBySessionId,
+        state.activeQueuedMessageBySessionId,
+        state.pausedQueueBySessionId,
+        state.interruptedTurnStateBySessionId,
+        Array.from(_composerPreflightOwnershipBySessionId.values()),
+    ];
+    for (const draftAttachmentId of new Set(candidates)) {
+        if (
+            retainedState.some((value) =>
+                containsDraftAttachmentId(value, draftAttachmentId),
+            )
+        ) {
+            continue;
+        }
+        void vaultInvoke("ai_delete_draft_attachment", {
+            draftAttachmentId,
+        }).catch((error) => {
+            console.error("[chat] Failed to release draft attachment:", error);
+        });
+    }
+}
+
+function releaseDraftAttachmentsOwnedBy(value: unknown) {
+    releaseDraftAttachmentsIfUnreferenced(collectDraftAttachmentIds(value));
+}
+
+function acquireComposerPreflightOwnership(
+    sessionId: string,
+    item: QueuedChatMessage,
+    clearSnapshot: boolean,
+) {
+    if (_composerPreflightOwnershipBySessionId.has(sessionId)) {
+        return null;
+    }
+    const ownership: ComposerPreflightOwnership = {
+        token: crypto.randomUUID(),
+        item,
+    };
+    let acquired = false;
+    useChatStore.setState((state) => {
+        const session = state.sessionsById[sessionId];
+        if (!session) return state;
+        acquired = true;
+        if (!clearSnapshot) return state;
+        return {
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionId]: { ...session, attachments: [] },
+            },
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [sessionId]: createEmptyComposerParts(),
+            },
+        };
+    });
+    if (!acquired) return null;
+    _composerPreflightOwnershipBySessionId.set(sessionId, ownership);
+    return ownership;
+}
+
+function transferComposerPreflightOwnership(
+    fromSessionId: string,
+    toSessionId: string,
+    token: string,
+) {
+    if (fromSessionId === toSessionId) return true;
+    const ownership = _composerPreflightOwnershipBySessionId.get(fromSessionId);
+    if (!ownership || ownership.token !== token) return false;
+    if (_composerPreflightOwnershipBySessionId.has(toSessionId)) return false;
+    _composerPreflightOwnershipBySessionId.delete(fromSessionId);
+    _composerPreflightOwnershipBySessionId.set(toSessionId, ownership);
+    return true;
+}
+
+function releaseComposerPreflightOwnership(sessionId: string, token: string) {
+    const direct = _composerPreflightOwnershipBySessionId.get(sessionId);
+    if (direct?.token === token) {
+        _composerPreflightOwnershipBySessionId.delete(sessionId);
+        return direct;
+    }
+    for (const [ownerSessionId, ownership] of
+        _composerPreflightOwnershipBySessionId) {
+        if (ownership.token !== token) continue;
+        _composerPreflightOwnershipBySessionId.delete(ownerSessionId);
+        return ownership;
+    }
+    return null;
+}
+
+function mergeRecoveredComposerParts(
+    original: AIComposerPart[],
+    current: AIComposerPart[],
+) {
+    if (
+        current.length === 0 ||
+        current.every((part) => part.type === "text" && part.text.length === 0)
+    ) {
+        return cloneComposerParts(original);
+    }
+    return [...cloneComposerParts(original), ...cloneComposerParts(current)];
+}
+
+function mergeRecoveredAttachments(
+    original: AIChatAttachment[],
+    current: AIChatAttachment[],
+) {
+    const merged = current.map(cloneAttachment);
+    const ids = new Set(merged.map((attachment) => attachment.id));
+    for (const attachment of original) {
+        if (ids.has(attachment.id)) continue;
+        ids.add(attachment.id);
+        merged.unshift(cloneAttachment(attachment));
+    }
+    return merged;
 }
 
 function insertQueuedMessageAtIndex(
@@ -3508,7 +3938,8 @@ function clearClosedSubagentQueueState(
             sessionId,
             [],
         ),
-        activeQueuedMessageBySessionId: cleanupDeferredQueuedMessagesBySessionId(
+        activeQueuedMessageBySessionId:
+            cleanupDeferredQueuedMessagesBySessionId(
             state.activeQueuedMessageBySessionId,
             sessionId,
             null,
@@ -4431,10 +4862,7 @@ function countLinesBeforeOffset(text: string, offset: number) {
     return lineCount;
 }
 
-function getHunkSideLines(
-    hunk: AIFileDiffHunk,
-    side: "old" | "new",
-): string[] {
+function getHunkSideLines(hunk: AIFileDiffHunk, side: "old" | "new"): string[] {
     return hunk.lines
         .filter((line) =>
             side === "old" ? line.type !== "add" : line.type !== "remove",
@@ -5399,8 +5827,7 @@ function applyPersistedHistoryMetadata(
             (session.persistedMessageCount ?? 0) -
                 session.loadedPersistedMessageStart,
         );
-        const liveTail =
-            getSessionTranscriptMessages(session).slice(
+        const liveTail = getSessionTranscriptMessages(session).slice(
                 previousPersistedWindowLength,
             );
         nextSession = replaceSessionTranscript(session, liveTail);
@@ -5811,8 +6238,7 @@ function mergeSession(
                         incoming.isLoadingPersistedMessages ?? false,
                     isPendingSessionCreation:
                         incoming.isPendingSessionCreation ?? false,
-                    pendingSessionError:
-                        incoming.pendingSessionError ?? null,
+                    pendingSessionError: incoming.pendingSessionError ?? null,
                     runtimeState:
                         incoming.runtimeState ??
                         (incoming.isPersistedSession
@@ -5975,9 +6401,7 @@ function getDefaultRuntimeId(
 ) {
     const readyRuntime = setupStatusByRuntimeId
         ? runtimes.find((runtime) =>
-              isRuntimeSetupReady(
-                  setupStatusByRuntimeId[runtime.runtime.id],
-              ),
+              isRuntimeSetupReady(setupStatusByRuntimeId[runtime.runtime.id]),
           )
         : null;
 
@@ -6026,6 +6450,24 @@ type ResumeRecoveryStrategy =
     | "custom_acp_continuation"
     | "native_load_session"
     | "transcript_prompt_injection";
+
+function getResumeRecoveryStrategy(
+    runtimes: AIRuntimeDescriptor[],
+    session: AIChatSession,
+): ResumeRecoveryStrategy {
+    if (session.runtimeId.startsWith("custom:")) {
+        return isCustomRuntimeTranscriptFork(session)
+            ? "transcript_prompt_injection"
+            : "custom_acp_continuation";
+    }
+    return runtimeSupportsCapability(
+        runtimes,
+        session.runtimeId,
+        "resume_session",
+    )
+        ? "native_load_session"
+        : "transcript_prompt_injection";
+}
 
 function getSessionRuntimeStateForLog(session: AIChatSession) {
     return (
@@ -6201,9 +6643,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
                   runtime_id: model.runtimeId,
                   name: model.name,
                   description: model.description,
-                  ...(model.agentType
-                      ? { agent_type: model.agentType }
-                      : {}),
+                  ...(model.agentType ? { agent_type: model.agentType } : {}),
               }))
             : undefined,
         modes: hasCatalog
@@ -6228,9 +6668,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
                       value: item.value,
                       label: item.label,
                       description: item.description ?? null,
-                      ...(item.agentType
-                          ? { agent_type: item.agentType }
-                          : {}),
+                      ...(item.agentType ? { agent_type: item.agentType } : {}),
                   })),
               }))
             : undefined,
@@ -6251,6 +6689,10 @@ function hasPersistableSessionContent(session: AIChatSession) {
 }
 
 const _queueDrainLocks = new Set<string>();
+const _composerPreflightOwnershipBySessionId = new Map<
+    string,
+    ComposerPreflightOwnership
+>();
 const _pendingStopBySessionId = new Map<string, Promise<void>>();
 const _pendingSessionPersistence = new Map<string, AIChatSession>();
 let _sessionPersistenceFlushScheduled = false;
@@ -6651,7 +7093,9 @@ function appendRuntimeTextDelta(
 
     const idTaken = existingMessage != null;
     return appendSessionMessage(normalizedSession, {
-        id: idTaken ? `${payload.message_id}:${Date.now()}` : payload.message_id,
+        id: idTaken
+            ? `${payload.message_id}:${Date.now()}`
+            : payload.message_id,
         role: payload.role,
         kind: "text",
         content: payload.text,
@@ -6678,7 +7122,12 @@ function flushDeltas() {
         let changed = false;
 
         // Apply message deltas
-        for (const { session_id, message_id, role, text } of msgEntries.values()) {
+        for (const {
+            session_id,
+            message_id,
+            role,
+            text,
+        } of msgEntries.values()) {
             const session = sessionsById[session_id];
             if (!session) continue;
             const nextSession = appendRuntimeTextDelta(session, {
@@ -6824,7 +7273,13 @@ function persistCurrentSession(sessionId: string) {
 
 async function pruneSessionHistoriesForCurrentVault(maxAgeDays: number) {
     const vaultPath = useVaultStore.getState().vaultPath;
-    if (!vaultPath || maxAgeDays <= 0) return 0;
+    if (
+        !vaultPath ||
+        maxAgeDays <= 0 ||
+        !canAccessAiHistoryStorageForVault(vaultPath)
+    ) {
+        return 0;
+    }
     return aiPruneSessionHistories(vaultPath, maxAgeDays);
 }
 
@@ -6877,8 +7332,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ): Promise<boolean> {
         const session = get().sessionsById[sessionId];
         if (!session) return false;
-        const expectedHistorySessionId =
-            getRuntimeHistorySessionId(session);
+        const expectedHistorySessionId = getRuntimeHistorySessionId(session);
 
         const persistedCount = session.persistedMessageCount ?? 0;
         if (persistedCount === 0) {
@@ -6969,7 +7423,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (limit <= 0) return true;
 
         const vaultPath = useVaultStore.getState().vaultPath;
-        if (!vaultPath) return false;
+        if (!vaultPath || !canAccessAiHistoryStorageForVault(vaultPath)) {
+            return false;
+        }
 
         set((state) => ({
             sessionsById: updateSessionById(state, sessionId, (current) => ({
@@ -7001,7 +7457,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const shouldPrepend =
                         mode === "older" ||
                         (currentSession.messages.length > 0 &&
-                            currentSession.loadedPersistedMessageStart != null &&
+                            currentSession.loadedPersistedMessageStart !=
+                                null &&
                             currentSession.loadedPersistedMessageStart >=
                                 (currentSession.persistedMessageCount ?? 0));
 
@@ -7177,8 +7634,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     function takeQueuedMessage(
         sessionId: string,
         messageId: string,
-    ): QueuedChatMessage | null {
-        let nextQueuedItem: QueuedChatMessage | null = null;
+    ): DeferredQueuedMessage | null {
+        let deferredMessage: DeferredQueuedMessage | null = null;
 
         set((state) => {
             const queue = state.queuedMessagesBySessionId[sessionId] ?? [];
@@ -7187,11 +7644,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return state;
             }
 
-            nextQueuedItem = {
+            deferredMessage = {
+                ...createDeferredQueuedMessage(queue, queuedStateItem),
+                item: {
                 ...queuedStateItem,
                 status: "queued",
+                },
             };
-
             return {
                 queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
                     state.queuedMessagesBySessionId,
@@ -7201,7 +7660,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             };
         });
 
-        return nextQueuedItem;
+        return deferredMessage;
     }
 
     function restoreActiveQueuedMessage(
@@ -7408,19 +7867,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
         source: "immediate" | "queue",
         options?: {
             preserveComposerState?: boolean;
+            preflightFailureRecovery?: PreflightFailureRecovery;
+            composerSnapshotAlreadyTaken?: boolean;
+            preflightOwnership?: ComposerPreflightOwnership;
         },
     ) {
         let activeSessionId = sessionId;
         let currentItem = queuedItem;
+        let optimisticMessageInserted = false;
+        let preflightOwnership = options?.preflightOwnership ?? null;
         let session = get().sessionsById[activeSessionId];
+        try {
         if (!session || session.isResumingSession) {
             return;
         }
 
+            if (!preflightOwnership) {
+                const recoveryKind = options?.preflightFailureRecovery?.kind;
+                const ownsComposerSnapshot =
+                    source === "immediate" &&
+                    !options?.preserveComposerState &&
+                    (!recoveryKind || recoveryKind === "composer");
+                preflightOwnership = acquireComposerPreflightOwnership(
+                    activeSessionId,
+                    currentItem,
+                    ownsComposerSnapshot &&
+                        !options?.composerSnapshotAlreadyTaken,
+                );
+                if (!preflightOwnership) {
+                    return;
+                }
+            }
+
         clearInterruptedTurnState(activeSessionId);
 
         if (!isLiveRuntimeSession(session)) {
-            const resumedSessionId = await get().resumeSession(activeSessionId);
+                const resumedSessionId =
+                    await get().resumeSession(activeSessionId);
             if (!resumedSessionId) {
                 if (source === "queue") {
                     patchQueuedMessage(activeSessionId, currentItem.id, {
@@ -7430,7 +7913,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
+                const previousSessionId = activeSessionId;
             activeSessionId = resumedSessionId;
+                if (
+                    preflightOwnership &&
+                    !transferComposerPreflightOwnership(
+                        previousSessionId,
+                        activeSessionId,
+                        preflightOwnership.token,
+                    )
+                ) {
+                    return;
+                }
             session = get().sessionsById[activeSessionId];
             if (!session) {
                 return;
@@ -7476,7 +7970,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         currentItem,
                     );
                 if (replacementSessionId !== activeSessionId) {
+                        const previousSessionId = activeSessionId;
                     activeSessionId = replacementSessionId;
+                        if (
+                            preflightOwnership &&
+                            !transferComposerPreflightOwnership(
+                                previousSessionId,
+                                activeSessionId,
+                                preflightOwnership.token,
+                            )
+                        ) {
+                            return;
+                        }
                     session = get().sessionsById[activeSessionId];
                     if (!session || isSessionBusy(session)) {
                         return;
@@ -7485,9 +7990,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             session =
-                (await syncQueuedMessageConfig(activeSessionId, currentItem)) ??
-                session;
+                    (await syncQueuedMessageConfig(
+                        activeSessionId,
+                        currentItem,
+                    )) ?? session;
             if (!session) return;
+
+                const promotedDrafts =
+                    await promoteQueuedMessageDrafts(currentItem);
+                currentItem = promotedDrafts.item;
+                if (source === "queue") {
+                    updateActiveQueuedMessage(activeSessionId, (active) => ({
+                        ...active,
+                        item: currentItem,
+                    }));
+                }
 
             const userMessageId =
                 currentItem.optimisticMessageId ?? crypto.randomUUID();
@@ -7511,15 +8028,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 };
             }
 
+                let didInsertOptimisticMessage = false;
             set((state) => {
                 const targetSession = state.sessionsById[activeSessionId];
                 if (!targetSession) return state;
+                    didInsertOptimisticMessage = true;
                 const nextSession = startNewWorkCycle(targetSession);
                 const userMessage: AIChatMessage = {
                     ...createTextMessage("user", currentItem.content),
                     id: userMessageId,
                     workCycleId: nextSession.activeWorkCycleId,
-                    attachments: cloneMessageAttachments(currentItem.attachments),
+                        attachments: cloneMessageAttachments(
+                            currentItem.attachments,
+                        ),
                 };
 
                 return {
@@ -7531,7 +8052,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 status: "streaming",
                                 attachments:
                                     source === "immediate" &&
-                                    !options?.preserveComposerState
+                                        !options?.preserveComposerState &&
+                                        !preflightOwnership
                                         ? []
                                         : nextSession.attachments,
                             },
@@ -7546,17 +8068,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         state.sessionOrder,
                         activeSessionId,
                     ),
-                    ...(source === "immediate" &&
-                    !options?.preserveComposerState
+                        ...(source === "immediate"
                         ? {
                               composerPartsBySessionId: {
                                   ...state.composerPartsBySessionId,
-                                  [activeSessionId]: createEmptyComposerParts(),
+                                      [activeSessionId]:
+                                          options?.preserveComposerState ||
+                                          preflightOwnership
+                                              ? applyDraftPromotionsToComposerParts(
+                                                    state
+                                                        .composerPartsBySessionId[
+                                                        activeSessionId
+                                                    ] ??
+                                                        createEmptyComposerParts(),
+                                                    promotedDrafts.promotions,
+                                                )
+                                              : createEmptyComposerParts(),
                               },
                           }
                         : {}),
                 };
             });
+                optimisticMessageInserted = didInsertOptimisticMessage;
+                if (!optimisticMessageInserted) {
+                    return;
+                }
+
+                if (preflightOwnership) {
+                    const releasedOwnership =
+                        releaseComposerPreflightOwnership(
+                        activeSessionId,
+                        preflightOwnership.token,
+                    );
+                    if (releasedOwnership) {
+                        preflightOwnership = null;
+                    }
+                }
+
+                cleanupPromotedDrafts(promotedDrafts.promotions);
 
             const afterSend = get().sessionsById[activeSessionId];
             if (afterSend) {
@@ -7603,6 +8152,91 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 await get().refreshSetupStatus(session.runtimeId);
             }
         }
+        } finally {
+            const releasedPreflightOwnership = preflightOwnership
+                ? releaseComposerPreflightOwnership(
+                      activeSessionId,
+                      preflightOwnership.token,
+                  )
+                : null;
+            const preflightFailureRecovery = !optimisticMessageInserted
+                ? (options?.preflightFailureRecovery ??
+                  (releasedPreflightOwnership
+                      ? ({ kind: "composer" } as const)
+                      : undefined))
+                : undefined;
+            if (source === "immediate" && preflightFailureRecovery) {
+                set((state) => {
+                    const targetSession = state.sessionsById[activeSessionId];
+                    if (!targetSession) {
+                        return state;
+                    }
+                    if (preflightFailureRecovery.kind === "queued_item") {
+                        const queue =
+                            state.queuedMessagesBySessionId[activeSessionId] ??
+                            [];
+                        return {
+                            queuedMessagesBySessionId:
+                                cleanupQueuedMessagesBySessionId(
+                                    state.queuedMessagesBySessionId,
+                                    activeSessionId,
+                                    restoreQueuedMessagePosition(
+                                        queue,
+                                        preflightFailureRecovery.deferredMessage,
+                                        {
+                                            ...preflightFailureRecovery
+                                                .deferredMessage.item,
+                                            status: "failed",
+                                        },
+                                    ),
+                                ),
+                        };
+                    }
+                    const restoredItem =
+                        preflightFailureRecovery.kind === "queued_edit"
+                            ? preflightFailureRecovery.editedItem
+                            : (releasedPreflightOwnership?.item ?? currentItem);
+                    const currentComposerParts =
+                        state.composerPartsBySessionId[activeSessionId] ??
+                        createEmptyComposerParts();
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [activeSessionId]: {
+                                ...targetSession,
+                                attachments: mergeRecoveredAttachments(
+                                    getQueuedMessageContextAttachments(
+                                        restoredItem,
+                                    ),
+                                    targetSession.attachments,
+                                ),
+                            },
+                        },
+                        composerPartsBySessionId: {
+                            ...state.composerPartsBySessionId,
+                            [activeSessionId]: mergeRecoveredComposerParts(
+                                restoredItem.composerParts,
+                                currentComposerParts,
+                            ),
+                        },
+                        ...(preflightFailureRecovery.kind === "queued_edit"
+                            ? {
+                                  queuedMessageEditBySessionId: {
+                                      ...state.queuedMessageEditBySessionId,
+                                      [activeSessionId]: {
+                                          ...preflightFailureRecovery.editState,
+                                          item: restoredItem,
+                                      },
+                                  },
+                              }
+                            : {}),
+                    };
+                });
+            }
+            if (releasedPreflightOwnership) {
+                releaseDraftAttachmentsOwnedBy(releasedPreflightOwnership.item);
+            }
+        }
     }
 
     async function flushPendingInterruptedSend(
@@ -7641,6 +8275,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         await dispatchMessage(sessionId, pending.item, "immediate", {
             preserveComposerState: pending.preserveComposerState,
+            composerSnapshotAlreadyTaken:
+                pending.composerSnapshotAlreadyTaken,
+            preflightFailureRecovery:
+                pending.preflightFailureRecovery ??
+                (!pending.preserveComposerState
+                    ? { kind: "composer" }
+                    : undefined),
         });
     }
 
@@ -7657,6 +8298,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedRuntimeId: null,
         isInitializing: false,
         sessionInventoryLoaded: false,
+        historyStorageVaultPath: null,
+        historyStorageStatus: null,
         notePickerOpen: false,
         autoContextEnabled: false,
         requireCmdEnterToSend: DEFAULT_AI_PREFERENCES.requireCmdEnterToSend,
@@ -7685,6 +8328,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ? state
                     : { autoContextEnabled: next },
             );
+        },
+
+        refreshAiHistoryStorageStatus: async (vaultPath) => {
+            activateAiHistoryStorageContext(vaultPath);
+            try {
+                const snapshot = await getAiHistoryStorageStatus(vaultPath);
+                applyAiHistoryStorageSnapshot(snapshot, vaultPath);
+            } catch (error) {
+                if (get().historyStorageVaultPath !== vaultPath) return;
+                logWarn(
+                    "chat-store",
+                    "Failed to refresh AI history storage status",
+                    error,
+                );
+            }
+        },
+
+        changeAiHistoryStorage: async (
+            vaultPath,
+            targetScope,
+            sourceVaultKey,
+        ) => {
+            // The store never flips a local preference optimistically. The
+            // backend snapshot is the sole confirmation that the canonical
+            // scope changed, and inventory reload waits for completed movement.
+            activateAiHistoryStorageContext(vaultPath);
+            try {
+                const result = await reconcileAiHistoryStorage(
+                    vaultPath,
+                    targetScope,
+                    sourceVaultKey,
+                );
+                applyAiHistoryStorageSnapshot(result.status, vaultPath);
+                if (!result.completed) return false;
+                if (useVaultStore.getState().vaultPath === vaultPath) {
+                    await refreshPersistedHistoryInventory(vaultPath);
+                }
+                return true;
+            } catch (error) {
+                await get().refreshAiHistoryStorageStatus(vaultPath);
+                logWarn(
+                    "chat-store",
+                    "Failed to change AI history storage",
+                    error,
+                );
+                return false;
+            }
         },
 
         setSelectedRuntime: (runtimeId) => {
@@ -7859,8 +8549,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 // still available and ready. Otherwise stay on ACP runtimes;
                 // Claude Code remains available but is not promoted to the
                 // default just because the binary exists in PATH.
-                const persistedRuntimeId =
-                    getSelectableDefaultRuntimeId(
+                const persistedRuntimeId = getSelectableDefaultRuntimeId(
                         loadAiPreferences().defaultRuntimeId,
                         runtimes,
                         setupStatusByRuntimeId,
@@ -7908,6 +8597,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 });
 
                 const vaultPath = useVaultStore.getState().vaultPath;
+                if (vaultPath) {
+                    await get().refreshAiHistoryStorageStatus(vaultPath);
+                } else if (!get().historyStorageVaultPath) {
+                    set({ historyStorageStatus: null });
+                }
                 const sessions = await aiListSessions(vaultPath);
                 const hydratedRuntimes = hydrateRuntimesFromSessions(
                     runtimes,
@@ -7919,7 +8613,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     string,
                     PersistedSessionHistory
                 >();
-                if (vaultPath) {
+                if (vaultPath && canAccessAiHistoryStorageForVault(vaultPath)) {
                     try {
                         const retentionDays = get().historyRetentionDays;
                         if (retentionDays > 0) {
@@ -8027,8 +8721,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 existingSessionByHistoryId.get(
                                     restored.historySessionId,
                                 );
-                            nextSessionsById[restored.sessionId] =
-                                mergeSession(existing, restored);
+                            nextSessionsById[restored.sessionId] = mergeSession(
+                                existing,
+                                restored,
+                            );
                         }
 
                         const nextSessionOrder =
@@ -8527,7 +9223,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const currentVaultPath = useVaultStore.getState().vaultPath;
                 const existing = state.sessionsById[session.sessionId];
                 const sessionVaultPath =
-                    session.vaultPath ?? existing?.vaultPath ?? currentVaultPath;
+                    session.vaultPath ??
+                    existing?.vaultPath ??
+                    currentVaultPath;
                 const workspaceTabs = selectEditorWorkspaceTabs(
                     useEditorStore.getState(),
                 );
@@ -8713,7 +9411,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set((state) => {
                 const session = state.sessionsById[sessionId];
                 if (!session) return state;
-                const message = normalizeSessionTranscript(session).messagesById?.[
+                const message =
+                    normalizeSessionTranscript(session).messagesById?.[
                     messageId
                 ];
                 if (!message) return state;
@@ -9990,7 +10689,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                 if (
                     resumedSession.modelId !== latestSession.modelId &&
-                    supportsModelSelection(resumedSession, latestSession.modelId)
+                    supportsModelSelection(
+                        resumedSession,
+                        latestSession.modelId,
+                    )
                 ) {
                     resumedSession = resumedModelConfig
                         ? await aiSetConfigOption(
@@ -10046,6 +10748,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 };
             };
 
+            let resumeStrategy = getResumeRecoveryStrategy(
+                get().runtimes,
+                session,
+            );
             try {
                 const currentSession = get().sessionsById[sessionId];
                 if (!currentSession || isLiveRuntimeSession(currentSession)) {
@@ -10062,13 +10768,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     currentSession.runtimeId,
                     "resume_session",
                 );
-                let resumeStrategy: ResumeRecoveryStrategy = isCustomRuntime
-                    ? customRuntimeTranscriptFork
-                        ? "transcript_prompt_injection"
-                        : "custom_acp_continuation"
-                    : supportsNativeResume
-                      ? "native_load_session"
-                      : "transcript_prompt_injection";
+                resumeStrategy = getResumeRecoveryStrategy(
+                    get().runtimes,
+                    currentSession,
+                );
                 const runtimeStateBefore =
                     getSessionRuntimeStateForLog(currentSession);
                 const transcriptLoaded =
@@ -10101,9 +10804,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     resume_context_pending:
                         latestSession.resumeContextPending === true,
                     runtime_state_before: runtimeStateBefore,
-                    runtime_state_after: getSessionRuntimeStateForLog(
-                        latestSession,
-                    ),
+                    runtime_state_after:
+                        getSessionRuntimeStateForLog(latestSession),
                 });
 
                 let resumedSession: AIChatSession;
@@ -10291,8 +10993,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 getSessionRuntimeStateForLog(latestSession),
                             error_message: nativeResumeMessage,
                         });
-                        const fallback =
-                            await createTranscriptResumeSession(
+                        const fallback = await createTranscriptResumeSession(
                                 latestSession,
                                 vaultPath,
                             );
@@ -10383,9 +11084,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     resume_context_pending:
                         migratedSession.resumeContextPending === true,
                     runtime_state_before: runtimeStateBefore,
-                    runtime_state_after: getSessionRuntimeStateForLog(
-                        migratedSession,
-                    ),
+                    runtime_state_after:
+                        getSessionRuntimeStateForLog(migratedSession),
                 });
 
                 return migratedSession.sessionId;
@@ -10396,19 +11096,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     (get().sessionsById[sessionId] ?? session).runtimeId,
                 );
                 const failedSession = get().sessionsById[sessionId] ?? session;
-                const supportsNativeResume = runtimeSupportsCapability(
-                    get().runtimes,
-                    failedSession.runtimeId,
-                    "resume_session",
-                );
                 logResumeRecovery("failed", {
-                    resume_strategy: failedSession.runtimeId.startsWith(
-                        "custom:",
-                    )
-                        ? "custom_acp_continuation"
-                        : supportsNativeResume
-                          ? "native_load_session"
-                          : "transcript_prompt_injection",
+                    resume_strategy: resumeStrategy,
                     history_session_id: getRuntimeHistorySessionId(
                         failedSession,
                     ),
@@ -10442,7 +11131,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     session_id: sessionId,
                     message: SAVED_CHAT_RECONNECT_FAILED_MESSAGE,
                 });
-                if (isAuthenticationErrorMessage(message, failedSession.runtimeId)) {
+                if (
+                    isAuthenticationErrorMessage(
+                        message,
+                        failedSession.runtimeId,
+                    )
+                ) {
                     await get().refreshSetupStatus(
                         get().sessionsById[sessionId]?.runtimeId,
                     );
@@ -10638,7 +11332,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         throw new Error(blockedMessage);
                     }
 
-                    return aiSetConfigOption(session.sessionId, optionId, value);
+                    return aiSetConfigOption(
+                        session.sessionId,
+                        optionId,
+                        value,
+                    );
                 },
                 persistPreference: () =>
                     persistConfigOptionSelectionPreference(optionId, value),
@@ -10650,7 +11348,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
             set((state) => {
-                const normalizedParts = normalizeScreenshotPartTimestamps(parts);
+                const normalizedParts =
+                    normalizeScreenshotPartTimestamps(parts);
                 const session = state.sessionsById[resolvedSessionId];
                 const mentionIds = new Set(
                     normalizedParts
@@ -10738,6 +11437,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         removeQueuedMessage: (sessionId, messageId) => {
             let removed = false;
+            let removedItem: QueuedChatMessage | undefined;
             set((state) => {
                 const queue = state.queuedMessagesBySessionId[sessionId];
                 if (!queue) return state;
@@ -10747,6 +11447,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return state;
                 }
                 removed = true;
+                removedItem = queue.find((item) => item.id === messageId);
 
                 return {
                     queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
@@ -10756,6 +11457,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
+            releaseDraftAttachmentsOwnedBy(removedItem);
 
             if (
                 removed &&
@@ -10785,6 +11487,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         clearSessionQueue: (sessionId) => {
             _queueDrainLocks.delete(sessionId);
+            const previousState = get();
+            const releasedOwners = [
+                previousState.queuedMessagesBySessionId[sessionId],
+                previousState.queuedMessageEditBySessionId[sessionId],
+                previousState.activeQueuedMessageBySessionId[sessionId],
+                previousState.pausedQueueBySessionId[sessionId],
+            ];
             set((state) => {
                 const hasQueuedState =
                     sessionId in state.queuedMessagesBySessionId ||
@@ -10821,6 +11530,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
+            releaseDraftAttachmentsOwnedBy(releasedOwners);
         },
 
         editQueuedMessage: (sessionId, messageId) =>
@@ -10886,6 +11596,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         cancelQueuedMessageEdit: (sessionId) => {
             let shouldDrainQueue = false;
+            const stateBeforeCancel = get();
+            const releasedOwners = [
+                stateBeforeCancel.queuedMessageEditBySessionId[sessionId],
+                stateBeforeCancel.composerPartsBySessionId[sessionId],
+            ];
             set((state) => {
                 const finalizedEdit = finalizeQueuedMessageEditState(
                     state,
@@ -10910,6 +11625,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         finalizedEdit.nextQueuedMessageEditBySessionId,
                 };
             });
+            releaseDraftAttachmentsOwnedBy(releasedOwners);
 
             if (shouldDrainQueue) {
                 void get().tryDrainQueue(sessionId);
@@ -10964,6 +11680,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     status: "queued",
                     optimisticMessageId: undefined,
                 };
+                const releasedEditDraftIds = collectDraftAttachmentIds(
+                    queuedMessageEdit,
+                );
+                for (const retainedDraftId of collectDraftAttachmentIds(
+                    updatedQueuedItem,
+                )) {
+                    releasedEditDraftIds.delete(retainedDraftId);
+                }
                 const shouldDeferUntilStop = Boolean(pendingStop);
                 const shouldRequeueEditedMessage =
                     !shouldDeferUntilStop && isSessionBusy(session);
@@ -10997,6 +11721,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         ),
                     };
                 });
+                releaseDraftAttachmentsIfUnreferenced(releasedEditDraftIds);
 
                 if (shouldRequeueEditedMessage) {
                     return;
@@ -11008,6 +11733,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         {
                             item: updatedQueuedItem,
                             preserveComposerState: true,
+                            preflightFailureRecovery: {
+                                kind: "queued_edit",
+                                editState: queuedMessageEdit,
+                                editedItem: updatedQueuedItem,
+                            },
                         },
                     );
                     if (queued) {
@@ -11027,6 +11757,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     "immediate",
                     {
                         preserveComposerState: true,
+                        preflightFailureRecovery: {
+                            kind: "queued_edit",
+                            editState: queuedMessageEdit,
+                            editedItem: updatedQueuedItem,
+                        },
                     },
                 );
                 return;
@@ -11035,6 +11770,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (pendingStop) {
                 const queued = queuePendingInterruptedSend(resolvedSessionId, {
                     item: queuedItem,
+                    composerSnapshotAlreadyTaken: true,
                 });
                 if (queued) {
                     void pendingStop.finally(() => {
@@ -11044,7 +11780,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
-            await stabilizeQueueSession(resolvedSessionId);
+            healIdleQueuedState(resolvedSessionId);
             const stabilizedSession = get().sessionsById[resolvedSessionId];
             if (!stabilizedSession || stabilizedSession.isResumingSession) {
                 return;
@@ -11055,7 +11791,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 set((state) => {
                     const targetSession = state.sessionsById[resolvedSessionId];
                     if (!targetSession) return state;
-
                     return {
                         sessionsById: {
                             ...state.sessionsById,
@@ -11073,10 +11808,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
+            const preflightOwnership = acquireComposerPreflightOwnership(
+                resolvedSessionId,
+                queuedItem,
+                true,
+            );
+            if (!preflightOwnership) {
+                return;
+            }
+
             if (get().pausedQueueBySessionId[resolvedSessionId]) {
                 releasePausedQueueForManualSend(resolvedSessionId);
             }
-            await dispatchMessage(resolvedSessionId, queuedItem, "immediate");
+            await dispatchMessage(resolvedSessionId, queuedItem, "immediate", {
+                preflightOwnership,
+            });
         },
 
         retryQueuedMessage: async (sessionId, messageId) => {
@@ -11163,12 +11909,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     releasePausedQueueForManualSend(sessionId);
                 }
 
-                const sendNowItem = takeQueuedMessage(sessionId, messageId);
-                if (!sendNowItem) {
+                const sendNow = takeQueuedMessage(sessionId, messageId);
+                if (!sendNow) {
                     return;
                 }
-
-                await dispatchMessage(sessionId, sendNowItem, "immediate");
+                await dispatchMessage(sessionId, sendNow.item, "immediate", {
+                    preflightFailureRecovery: {
+                        kind: "queued_item",
+                        deferredMessage: sendNow,
+                    },
+                });
             } finally {
                 _queueDrainLocks.delete(sessionId);
             }
@@ -11566,8 +12316,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!resolvedSessionId) return;
             const session = get().sessionsById[resolvedSessionId];
             const message = session?.messages.find(
-                (candidate) =>
-                    candidate.urlElicitationRequestId === requestId,
+                (candidate) => candidate.urlElicitationRequestId === requestId,
             );
             if (!session || !message) return;
             const url = safeHttpUrl(message?.urlElicitationUrl);
@@ -11875,7 +12624,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [resolvedSessionId]: updateUrlElicitationMessageState(
+                            [resolvedSessionId]:
+                                updateUrlElicitationMessageState(
                                 {
                                     ...currentSession,
                                     status: "waiting_user_input",
@@ -12801,6 +13551,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
             _queueDrainLocks.delete(sessionId);
             clearChatRowUiSession(sessionId);
             const state = get();
+            const releasedDraftOwners = [
+                state.composerPartsBySessionId[sessionId],
+                state.queuedMessagesBySessionId[sessionId],
+                state.queuedMessageEditBySessionId[sessionId],
+                state.activeQueuedMessageBySessionId[sessionId],
+                state.pausedQueueBySessionId[sessionId],
+                state.interruptedTurnStateBySessionId[sessionId],
+            ];
             const nextSessionsById = { ...state.sessionsById };
             delete nextSessionsById[sessionId];
             const nextComposerPartsBySessionId = {
@@ -12869,6 +13627,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 interruptedTurnStateBySessionId:
                     nextInterruptedTurnStateBySessionId,
             });
+            releaseDraftAttachmentsOwnedBy(releasedDraftOwners);
             if (shouldCreateReplacementSession) {
                 if (nextActiveId && !nextSessionsById[nextActiveId]) {
                     await get().newSession();
@@ -12910,13 +13669,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
             _queueDrainLocks.clear();
             resetChatRowUiStore();
             const state = get();
+            const releasedDraftOwners = [
+                state.composerPartsBySessionId,
+                state.queuedMessagesBySessionId,
+                state.queuedMessageEditBySessionId,
+                state.activeQueuedMessageBySessionId,
+                state.pausedQueueBySessionId,
+                state.interruptedTurnStateBySessionId,
+            ];
             const defaultRuntimeId =
                 getSelectableDefaultRuntimeId(
                     state.defaultRuntimeId,
                     state.runtimes,
                     state.setupStatusByRuntimeId,
                 ) ??
-                getDefaultRuntimeId(state.runtimes, state.setupStatusByRuntimeId);
+                getDefaultRuntimeId(
+                    state.runtimes,
+                    state.setupStatusByRuntimeId,
+                );
             set({
                 sessionsById: {},
                 sessionOrder: [],
@@ -12932,6 +13702,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 interruptedTurnStateBySessionId: {},
                 tokenUsageBySessionId: {},
             });
+            releaseDraftAttachmentsOwnedBy(releasedDraftOwners);
             await get().newSession();
         },
 
@@ -13107,8 +13878,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     title: createdSession
                         ? getSessionTitle(createdSession)
                         : "Chat",
-                    historySessionId:
-                        createdSession?.historySessionId ?? null,
+                    historySessionId: createdSession?.historySessionId ?? null,
                 });
                 appendSelectionToSession(createdSessionId);
             })();
@@ -13394,8 +14164,18 @@ useSettingsStore.subscribe((state, previousState) => {
 let chatRuntimeInitialized = false;
 let stopChatStorageSync: (() => void) | null = null;
 let stopChatVaultSync: (() => void) | null = null;
+let stopAiHistoryStorageListener: (() => void) | null = null;
+let stopAiHistoryStorageFocusSync: (() => void) | null = null;
 let aiPrefsSyncTimer: number | null = null;
 let autoContextSyncTimer: number | null = null;
+
+function refreshActiveAiHistoryStorageStatus() {
+    const vaultPath =
+        useChatStore.getState().historyStorageVaultPath ??
+        useVaultStore.getState().vaultPath;
+    if (!vaultPath) return;
+    void useChatStore.getState().refreshAiHistoryStorageStatus(vaultPath);
+}
 
 export function hydrateChatStorePreferences() {
     const prefs = getNormalizedAiPreferences();
@@ -13421,6 +14201,42 @@ export function initializeChatStoreRuntime() {
     chatRuntimeInitialized = true;
 
     hydrateChatStorePreferences();
+
+    void listenToAiHistoryStorageChanged((snapshot) => {
+        const current = useChatStore.getState().historyStorageStatus;
+        if (!current || current.vaultKey !== snapshot.vaultKey) {
+            // A detached window can receive a broadcast before its initial
+            // status request completes. Re-read its active vault rather than
+            // adopting a snapshot that cannot be tied to a vault path here.
+            refreshActiveAiHistoryStorageStatus();
+            return;
+        }
+        if (!applyAiHistoryStorageSnapshot(snapshot)) return;
+        if (snapshot.status === "ready") {
+            const vaultPath = useVaultStore.getState().vaultPath;
+            if (vaultPath) {
+                void refreshPersistedHistoryInventory(vaultPath).catch(
+                    (error) =>
+                        logWarn(
+                            "chat-store",
+                            "Failed to refresh AI history after a storage event",
+                            error,
+                        ),
+                );
+            }
+        }
+    }).then((unlisten) => {
+        if (!chatRuntimeInitialized) {
+            unlisten();
+            return;
+        }
+        stopAiHistoryStorageListener = unlisten;
+    });
+
+    const refreshOnFocus = () => refreshActiveAiHistoryStorageStatus();
+    window.addEventListener("focus", refreshOnFocus);
+    stopAiHistoryStorageFocusSync = () =>
+        window.removeEventListener("focus", refreshOnFocus);
 
     stopChatStorageSync = subscribeSafeStorage((event) => {
         if (event.key === AI_PREFS_KEY) {
@@ -13477,6 +14293,15 @@ export function initializeChatStoreRuntime() {
         }
 
         useChatStore.getState().syncAutoContextForVault(state.vaultPath);
+        useChatStore.setState({
+            historyStorageVaultPath: state.vaultPath,
+            historyStorageStatus: null,
+        });
+        if (state.vaultPath) {
+            void useChatStore
+                .getState()
+                .refreshAiHistoryStorageStatus(state.vaultPath);
+        }
     });
 }
 
@@ -13493,6 +14318,7 @@ export function resetChatStore() {
     _persistedHistoryCacheBySessionId.clear();
     const prefs = getNormalizedAiPreferences();
     _queueDrainLocks.clear();
+    _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
     _pendingSessionPersistence.clear();
     _deltaBuffer.messageDelta.clear();
@@ -13520,6 +14346,8 @@ export function resetChatStore() {
         selectedRuntimeId: null,
         isInitializing: false,
         sessionInventoryLoaded: false,
+        historyStorageVaultPath: null,
+        historyStorageStatus: null,
         notePickerOpen: false,
         autoContextEnabled: loadAutoContextPreference(
             useVaultStore.getState().vaultPath,
@@ -13547,8 +14375,12 @@ export function resetChatStore() {
 export function disposeChatStoreRuntime() {
     stopChatStorageSync?.();
     stopChatVaultSync?.();
+    stopAiHistoryStorageListener?.();
+    stopAiHistoryStorageFocusSync?.();
     stopChatStorageSync = null;
     stopChatVaultSync = null;
+    stopAiHistoryStorageListener = null;
+    stopAiHistoryStorageFocusSync = null;
     if (typeof window !== "undefined" && aiPrefsSyncTimer != null) {
         window.clearTimeout(aiPrefsSyncTimer);
     }
@@ -13558,6 +14390,7 @@ export function disposeChatStoreRuntime() {
     aiPrefsSyncTimer = null;
     autoContextSyncTimer = null;
     chatRuntimeInitialized = false;
+    _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
     clearTrackedPersistedReconciliationTimers();
 }

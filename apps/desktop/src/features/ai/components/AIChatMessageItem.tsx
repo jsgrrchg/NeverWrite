@@ -51,8 +51,10 @@ import { useVaultStore } from "../../../app/store/vaultStore";
 import { toVaultRelativePath } from "../../../app/utils/vaultPaths";
 import {
     buildCodexGeneratedImagePreviewUrl,
+    buildManagedAttachmentPreviewUrl,
     buildVaultPreviewUrlFromAbsolutePath,
 } from "../../../app/utils/filePreviewUrl";
+import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import { ChangeReviewToolRail } from "./ChangeReviewToolRail";
 import { ResizableDiffContainer } from "./ResizableDiffContainer";
@@ -77,7 +79,7 @@ interface UserMentionContextMenuPayload {
 function isImageFileAttachment(attachment: AIChatAttachment) {
     return (
         attachment.type === "file" &&
-        Boolean(attachment.filePath) &&
+        Boolean(attachment.filePath || attachment.managedAttachmentId) &&
         attachment.mimeType?.startsWith("image/") === true
     );
 }
@@ -96,21 +98,27 @@ function UserMessageAttachmentThumbnail({
     const [loadFailed, setLoadFailed] = useState(false);
     const [copied, setCopied] = useState(false);
     const filePath = attachment.filePath;
-    if (!filePath) return null;
+    const managedAttachmentId = attachment.managedAttachmentId;
+    if (!filePath && !managedAttachmentId) return null;
 
-    const previewUrl = buildVaultPreviewUrlFromAbsolutePath(filePath, vaultPath);
+    const previewUrl = managedAttachmentId
+        ? buildManagedAttachmentPreviewUrl(vaultPath, managedAttachmentId)
+        : buildVaultPreviewUrlFromAbsolutePath(filePath!, vaultPath);
     const unavailable = !previewUrl || loadFailed;
-    const label = attachment.label || fileNameFromPath(filePath);
-    const fileName = fileNameFromPath(filePath);
+    const fileName =
+        attachment.fileName ?? (filePath ? fileNameFromPath(filePath) : "Image");
+    const label = attachment.label || fileName;
+    const displayReference = managedAttachmentId ?? filePath!;
 
-    const copyPath = () => {
-        void navigator.clipboard?.writeText(filePath).then(() => {
+    const copyReference = () => {
+        void navigator.clipboard?.writeText(displayReference).then(() => {
             setCopied(true);
             window.setTimeout(() => setCopied(false), 1200);
         });
     };
 
     const openInApp = () => {
+        if (!filePath) return;
         const relativePath = toVaultRelativePath(filePath, vaultPath);
         if (!relativePath) return;
         useEditorStore.getState().openFile(
@@ -122,6 +130,16 @@ function UserMessageAttachmentThumbnail({
             "image",
             { contentTruncated: false },
         );
+    };
+
+    const reveal = () => {
+        if (managedAttachmentId) {
+            void vaultInvoke("ai_reveal_managed_attachment", {
+                attachmentId: managedAttachmentId,
+            });
+            return;
+        }
+        void revealItemInDir(filePath!);
     };
 
     return (
@@ -155,7 +173,7 @@ function UserMessageAttachmentThumbnail({
                     <img
                         src={previewUrl}
                         alt={label}
-                        title={filePath}
+                        title={fileName}
                         className="block h-full w-full"
                         draggable={false}
                         loading="lazy"
@@ -170,7 +188,7 @@ function UserMessageAttachmentThumbnail({
                 <div className="min-w-0">
                     <div
                         className="truncate font-medium"
-                        title={filePath}
+                        title={fileName}
                         style={{
                             color: "var(--text-primary)",
                             fontSize: "0.82em",
@@ -192,23 +210,26 @@ function UserMessageAttachmentThumbnail({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5">
-                    <ImageActionButton
-                        icon="open"
-                        onClick={openInApp}
-                    >
-                        Open
-                    </ImageActionButton>
+                    {filePath ? (
+                        <ImageActionButton icon="open" onClick={openInApp}>
+                            Open
+                        </ImageActionButton>
+                    ) : null}
                     <ImageActionButton
                         icon="reveal"
-                        onClick={() => void revealItemInDir(filePath)}
+                        onClick={reveal}
                     >
                         Reveal in Finder
                     </ImageActionButton>
                     <ImageActionButton
                         icon={copied ? "check" : "copy"}
-                        onClick={copyPath}
+                        onClick={copyReference}
                     >
-                        {copied ? "Copied" : "Copy Path"}
+                        {copied
+                            ? "Copied"
+                            : managedAttachmentId
+                              ? "Copy ID"
+                              : "Copy Path"}
                     </ImageActionButton>
                 </div>
             </div>
@@ -251,7 +272,8 @@ function renderUserContent(
     const parts: Array<string | ReactElement> = [];
     const unmatchedFileAttachments = attachments.filter(
         (attachment) =>
-            attachment.type === "file" && Boolean(attachment.filePath),
+            attachment.type === "file" &&
+            Boolean(attachment.filePath || attachment.managedAttachmentId),
     );
     const takeFileAttachment = (label: string) => {
         const index = unmatchedFileAttachments.findIndex(

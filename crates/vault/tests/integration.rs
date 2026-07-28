@@ -62,6 +62,13 @@ fn discover_markdown_files_ignores_internal_dirs() {
     fs::write(dir.path().join(".obsidian/plugins/ignored.md"), "# Ignored").unwrap();
     fs::create_dir_all(dir.path().join("target/docs")).unwrap();
     fs::write(dir.path().join("target/docs/ignored.md"), "# Ignored").unwrap();
+    fs::create_dir_all(dir.path().join("assets/chat/.neverwrite-managed/v1")).unwrap();
+    fs::write(
+        dir.path()
+            .join("assets/chat/.neverwrite-managed/v1/ignored.md"),
+        "# Ignored",
+    )
+    .unwrap();
     fs::create_dir_all(dir.path().join(".cargo-home/registry")).unwrap();
     fs::write(
         dir.path().join(".cargo-home/registry/ignored.md"),
@@ -75,6 +82,7 @@ fn discover_markdown_files_ignores_internal_dirs() {
     assert_eq!(files.len(), 3);
     assert!(!ids.contains(&".obsidian/plugins/ignored"));
     assert!(!ids.contains(&"target/docs/ignored"));
+    assert!(!ids.contains(&"assets/chat/.neverwrite-managed/v1/ignored"));
     assert!(!ids.contains(&".cargo-home/registry/ignored"));
 }
 

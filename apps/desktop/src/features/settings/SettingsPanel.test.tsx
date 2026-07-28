@@ -7,6 +7,7 @@ import { SettingsPanel } from "./SettingsPanel";
 import { mockInvoke, renderComponent } from "../../test/test-utils";
 import { useAppUpdateStore } from "../updates/store";
 import { APP_ZOOM_STORAGE_KEY } from "../../app/utils/appZoom";
+import { useVaultStore } from "../../app/store/vaultStore";
 
 const aiApiMocks = vi.hoisted(() => ({
     aiListRuntimes: vi.fn(async () => [
@@ -98,6 +99,14 @@ const aiApiMocks = vi.hoisted(() => ({
     listenToAiAuthTerminalOutput: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalExited: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalError: vi.fn(async () => vi.fn()),
+    getAiHistoryStorageStatus: vi.fn(async () => ({
+        vaultKey: "vault-key",
+        generation: 1,
+        status: "ready" as const,
+        scope: "device" as const,
+    })),
+    reconcileAiHistoryStorage: vi.fn(),
+    listenToAiHistoryStorageChanged: vi.fn(async () => vi.fn()),
 }));
 
 vi.mock("../ai/api", () => aiApiMocks);
@@ -159,14 +168,41 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    window.history.replaceState({}, "", "/");
     setNavigatorIdentity(originalUserAgent, originalPlatform);
     localStorage.clear();
     mockInvoke().mockReset();
     vi.mocked(getAllWebviewWindows).mockResolvedValue([] as never[]);
     useAppUpdateStore.getState().reset();
+    useVaultStore.setState({ vaultPath: null });
 });
 
 describe("SettingsPanel", () => {
+    it("uses the standalone window vault for AI history storage", async () => {
+        window.history.replaceState(
+            {},
+            "",
+            "/?window=settings&section=ai&vault=%2Fvaults%2FProject%20Notes",
+        );
+        useVaultStore.setState({ vaultPath: null });
+        useChatStore.setState({
+            historyStorageVaultPath: null,
+            historyStorageStatus: null,
+        });
+        aiApiMocks.getAiHistoryStorageStatus.mockClear();
+
+        renderComponent(<SettingsPanel onClose={() => {}} standalone />);
+
+        expect(
+            await screen.findByRole("switch", {
+                name: "Store AI chats inside this vault",
+            }),
+        ).toBeInTheDocument();
+        expect(aiApiMocks.getAiHistoryStorageStatus).toHaveBeenCalledWith(
+            "/vaults/Project Notes",
+        );
+    });
+
     it("renders AI providers management inside AI settings", async () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 
@@ -314,6 +350,26 @@ describe("SettingsPanel", () => {
         expect(
             screen.getByText("No vaults match your search."),
         ).toBeInTheDocument();
+    });
+
+    it("disables destructive Recent cleanup for the active vault", () => {
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([{ path: "/vault", name: "Current Vault" }]),
+        );
+        useVaultStore.setState({ vaultPath: "/vault" });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Vault" }));
+
+        const removeButton = screen.getByRole("button", {
+            name: "Remove Current Vault from Recents",
+        });
+        expect(removeButton).toBeDisabled();
+        expect(removeButton).toHaveAttribute(
+            "title",
+            "Switch to another vault before removing this one from Recents",
+        );
     });
 
     it("searches settings by row content and switches to the matching panel", () => {
