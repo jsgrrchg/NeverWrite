@@ -34,6 +34,25 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.6.0] - 2026-07-29
+
+### Added
+
+- Added configurable custom ACP runtimes under Settings > AI Providers, with executable verification, isolated launch environments, capability-driven chat integration, and safe reconnection when a runtime definition changes.
+- Added device-local AI chat history as the default for new vaults, plus a per-vault setting to move history and managed screenshot attachments between device and vault storage with transactional recovery controls.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.63.0` and Claude Agent SDK to `0.3.220`.
+
+### Fixed
+
+- Fixed Claude tool activity attribution for progress heartbeats, Bash terminal metadata, and denied tool calls.
+
+### Security
+
+- Patched dependency vulnerabilities in the desktop updater, PostCSS, Nano ID, and QUIC protocol stack.
+
 ## [0.5.2] - 2026-07-24
 
 ### Added
