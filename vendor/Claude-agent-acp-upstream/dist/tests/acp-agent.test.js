@@ -95,6 +95,7 @@ function mockSessionState(overrides = {}) {
         currentAgent: "default",
         abortController: new AbortController(),
         emitRawSDKMessages: false,
+        forwardSubagentText: false,
         contextWindowSize: 200000,
         contextWindowAuthoritative: false,
         providerCacheKey: "default",
@@ -401,6 +402,20 @@ describe("tool conversions", () => {
             ],
         });
     });
+    it("should use the Bash command as the title when no description is provided", () => {
+        const tool_use = {
+            type: "tool_use",
+            id: "toolu_01VtsS2mxUFwpBJZYd7BmbC9",
+            name: "Bash",
+            input: {
+                command: "git diff",
+            },
+        };
+        expect(toolInfoFromToolUse(tool_use)).toMatchObject({
+            kind: "execute",
+            title: "git diff",
+        });
+    });
     it("should handle Glob nicely", () => {
         const tool_use = {
             type: "tool_use",
@@ -440,6 +455,40 @@ describe("tool conversions", () => {
                     type: "content",
                 },
             ],
+        });
+    });
+    it("marks Agent and legacy Task tool calls as subagent launches", () => {
+        for (const name of ["Agent", "Task"]) {
+            const notifications = toAcpNotifications([
+                {
+                    type: "tool_use",
+                    id: `toolu_${name}`,
+                    name,
+                    input: { description: "Explore", prompt: "Inspect the project" },
+                },
+            ], "assistant", "test-session", {}, {}, console);
+            expect(notifications[0]?.update).toMatchObject({
+                sessionUpdate: "tool_call",
+                _meta: { claudeCode: { toolName: name, subagent: true } },
+            });
+        }
+        const nestedAgent = toAcpNotifications([
+            {
+                type: "tool_use",
+                id: "nested-agent",
+                name: "Agent",
+                input: { description: "Review tests", prompt: "Inspect tests" },
+            },
+        ], "assistant", "test-session", {}, {}, console, { parentToolUseId: "outer-agent" });
+        expect(nestedAgent[0]?.update).toMatchObject({
+            sessionUpdate: "tool_call",
+            _meta: {
+                claudeCode: {
+                    toolName: "Agent",
+                    subagent: true,
+                    parentToolUseId: "outer-agent",
+                },
+            },
         });
     });
     it("should handle Grep tool calls", () => {
@@ -744,6 +793,7 @@ describe("tool conversions", () => {
                     inference_geo: null,
                     iterations: null,
                     output_tokens_details: null,
+                    fallback_credit: null,
                     speed: null,
                 },
                 context_management: null,
@@ -1300,6 +1350,77 @@ describe("synthetic login message (issue #863)", () => {
         expect(JSON.stringify(updates)).not.toContain("/login");
     });
 });
+describe("subagent transcript replay", () => {
+    const replayHistory = [
+        {
+            type: "assistant",
+            uuid: "subagent-message",
+            session_id: "s1",
+            parent_tool_use_id: "parent-agent-call",
+            parent_agent_id: "agent-1",
+            message: {
+                id: "api-subagent-message",
+                model: "claude-sonnet-4-5",
+                role: "assistant",
+                type: "message",
+                stop_reason: "tool_use",
+                content: [
+                    { type: "text", text: "nested report" },
+                    { type: "tool_use", id: "child-tool", name: "Bash", input: { command: "pwd" } },
+                ],
+            },
+        },
+    ];
+    async function replay(capable) {
+        const updates = [];
+        const client = {
+            sessionUpdate: async (update) => updates.push(update),
+        };
+        const agent = new ClaudeAcpAgent(client, { log: () => { }, error: () => { } });
+        agent.clientCapabilities = capable ? { _meta: { "subagent-transcript": true } } : {};
+        vi.mocked(getSessionMessages).mockResolvedValueOnce(replayHistory);
+        await agent.replaySessionHistory("s1");
+        return updates;
+    }
+    it("preserves nested text and child tool attribution for capable clients", async () => {
+        const updates = await replay(true);
+        expect(updates).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                update: expect.objectContaining({
+                    sessionUpdate: "agent_message_chunk",
+                    content: { type: "text", text: "nested report" },
+                    _meta: expect.objectContaining({
+                        claudeCode: expect.objectContaining({ parentToolUseId: "parent-agent-call" }),
+                    }),
+                }),
+            }),
+            expect.objectContaining({
+                update: expect.objectContaining({
+                    sessionUpdate: "tool_call",
+                    toolCallId: "child-tool",
+                    _meta: expect.objectContaining({
+                        claudeCode: expect.objectContaining({ parentToolUseId: "parent-agent-call" }),
+                    }),
+                }),
+            }),
+        ]));
+    });
+    it("keeps legacy text filtering without losing child tool attribution", async () => {
+        const updates = await replay(false);
+        expect(updates.some(({ update }) => update.sessionUpdate === "agent_message_chunk")).toBe(false);
+        expect(updates).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                update: expect.objectContaining({
+                    sessionUpdate: "tool_call",
+                    toolCallId: "child-tool",
+                    _meta: expect.objectContaining({
+                        claudeCode: expect.objectContaining({ parentToolUseId: "parent-agent-call" }),
+                    }),
+                }),
+            }),
+        ]));
+    });
+});
 describe("escape markdown", () => {
     it("should escape markdown characters", () => {
         let text = "Hello *world*!";
@@ -1641,6 +1762,7 @@ describe("permission request cancellation", () => {
             fastModeEnabled: false,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            forwardSubagentText: false,
             contextWindowSize: 200000,
             contextWindowAuthoritative: false,
             providerCacheKey: "default",
@@ -1727,7 +1849,7 @@ describe("tool_call emitted before permission request", () => {
     }
     it("emits the tool_call (then asks permission) when the stream hasn't yet", async () => {
         const { agent, events, updates, session } = setup();
-        const result = await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+        const result = await agent.canUseTool("session-1")("Bash", { command: "git diff", description: "Show current diff" }, {
             signal: new AbortController().signal,
             suggestions: [],
             toolUseID: "tool-1",
@@ -1738,6 +1860,10 @@ describe("tool_call emitted before permission request", () => {
             sessionUpdate: "tool_call",
             toolCallId: "tool-1",
             status: "pending",
+            title: "git diff",
+            _meta: {
+                claudeCode: { toolName: "Bash", title: "Show current diff" },
+            },
         });
         expect(session.emittedToolCalls.has("tool-1")).toBe(true);
         expect(result).toMatchObject({ behavior: "allow" });
@@ -3180,6 +3306,7 @@ describe("session/close", () => {
             fastModeEnabled: false,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            forwardSubagentText: false,
             contextWindowSize: 200000,
             contextWindowAuthoritative: false,
             providerCacheKey: "default",
@@ -3255,6 +3382,7 @@ describe("session/delete", () => {
             fastModeEnabled: false,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            forwardSubagentText: false,
             contextWindowSize: 200000,
             contextWindowAuthoritative: false,
             providerCacheKey: "default",
@@ -3344,6 +3472,7 @@ describe("getOrCreateSession param change detection", () => {
             fastModeEnabled: false,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            forwardSubagentText: false,
             contextWindowSize: 200000,
             contextWindowAuthoritative: false,
             providerCacheKey: "default",
@@ -5042,6 +5171,29 @@ describe("assembled assistant text fallback", () => {
         expect(messageChunkTexts(updates)).toEqual([]);
         expect(thoughtChunkTexts(updates)).toEqual([]);
     });
+    it("forwards subagent text and thinking as nested chunks for capable clients", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        agent.clientCapabilities = { _meta: { "subagent-transcript": true } };
+        injectSession(agent, [
+            assistantMessage("msg-subagent", [
+                { type: "thinking", thinking: "checking" },
+                { type: "text", text: "nested report" },
+            ], "tool_use_1"),
+            result(),
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+        const nestedUpdates = updates.filter(({ update }) => update.sessionUpdate === "agent_message_chunk" ||
+            update.sessionUpdate === "agent_thought_chunk");
+        expect(nestedUpdates).toHaveLength(2);
+        for (const { update } of nestedUpdates) {
+            expect(update._meta).toMatchObject({
+                claudeCode: { parentToolUseId: "tool_use_1" },
+            });
+        }
+        expect(messageChunkTexts(updates)).toContain("nested report");
+        expect(thoughtChunkTexts(updates)).toContain("checking");
+    });
     it("forwards distinct blocks that a gateway splits across same-id messages", async () => {
         const { agent, updates } = createMockAgentWithCapture();
         // Observed with OpenAI-compatible gateways: one response id split into an
@@ -5798,6 +5950,7 @@ describe("post-error recovery", () => {
             fastModeEnabled: false,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            forwardSubagentText: false,
             contextWindowSize: 200000,
             contextWindowAuthoritative: false,
             providerCacheKey: "default",
@@ -8428,6 +8581,7 @@ describe("session/cancel wedge recovery (issue #680)", () => {
             fastModeEnabled: false,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            forwardSubagentText: false,
             contextWindowSize: 200000,
             contextWindowAuthoritative: false,
             providerCacheKey: "default",
@@ -8902,6 +9056,14 @@ describe("streamEventToAcpNotifications", () => {
                 rawInput: { description: "Research dependencies" },
             },
             {
+                case: "Bash description",
+                name: "Bash",
+                partialJson: '{"command":"git diff","description":"Show current diff","timeout":',
+                title: "git diff",
+                metaTitle: "Show current diff",
+                rawInput: { command: "git diff", description: "Show current diff" },
+            },
+            {
                 case: "Bash command with comma and escaped quotes",
                 name: "Bash",
                 partialJson: `{"command":${JSON.stringify('sleep 900, then echo "done"')},"timeout":`,
@@ -9013,6 +9175,11 @@ describe("streamEventToAcpNotifications", () => {
                 title: testCase.title,
                 rawInput: testCase.rawInput,
             });
+            if ("metaTitle" in testCase) {
+                expect(refined[0].update._meta).toMatchObject({
+                    claudeCode: { title: testCase.metaTitle },
+                });
+            }
             // Refinements never carry `content`: content built from partial input is
             // misleading (an Edit missing new_string renders as a deletion) or
             // invalid (a Write diff without content lacks the required newText).
@@ -9433,6 +9600,7 @@ describe("agent selection config option", () => {
                 fastModeEnabled: false,
                 abortController: new AbortController(),
                 emitRawSDKMessages: false,
+                forwardSubagentText: false,
                 contextWindowSize: 200000,
                 contextWindowAuthoritative: false,
                 providerCacheKey: "default",
@@ -9490,5 +9658,336 @@ describe("agent selection config option", () => {
             const agentOption = session.configOptions.find((o) => o.id === "agent");
             expect(agentOption?.currentValue).toBe("default");
         });
+    });
+});
+describe("tool_progress heartbeats", () => {
+    /** Run a turn carrying `messages`, with `inFlight` tool calls already emitted,
+     *  and return the tool_call_updates it produced. */
+    async function run(messages, inFlight) {
+        const updates = [];
+        const mockClient = {
+            sessionUpdate: async (n) => {
+                updates.push(n);
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const input = new Pushable();
+        async function* messageGenerator() {
+            const { value, done } = await input[Symbol.asyncIterator]().next();
+            if (!done && value) {
+                yield {
+                    type: "user",
+                    message: value.message,
+                    parent_tool_use_id: null,
+                    uuid: value.uuid,
+                    session_id: "test-session",
+                    isReplay: true,
+                };
+            }
+            yield* messages;
+            yield {
+                type: "result",
+                subtype: "success",
+                stop_reason: null,
+                is_error: false,
+                result: "",
+                usage: {},
+                uuid: randomUUID(),
+                session_id: "test-session",
+            };
+            yield { type: "system", subtype: "session_state_changed", state: "idle" };
+        }
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
+            input,
+            emittedToolCalls: new Set(inFlight),
+        });
+        await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "test" }],
+        });
+        return updates
+            .map((n) => n.update)
+            .filter((u) => u.sessionUpdate === "tool_call_update");
+    }
+    /** A heartbeat as the SDK emits it: a derived `tool_use_id`, with
+     *  `parent_tool_use_id` stamped with the real id of the executing tool. */
+    function beat(toolUseId, parentToolUseId, extra = {}) {
+        return {
+            type: "tool_progress",
+            tool_use_id: toolUseId,
+            tool_name: "Bash",
+            parent_tool_use_id: parentToolUseId,
+            elapsed_time_seconds: 30,
+            heartbeat: true,
+            uuid: randomUUID(),
+            session_id: "test-session",
+            ...extra,
+        };
+    }
+    it("reports every beat against the tool call it describes", async () => {
+        const sent = await run([beat("toolu_abc-heartbeat-0", "toolu_abc"), beat("toolu_abc-heartbeat-1", "toolu_abc")], ["toolu_abc"]);
+        expect(sent.map((u) => u.toolCallId)).toEqual(["toolu_abc", "toolu_abc"]);
+        expect(sent[0].status).toBe("in_progress");
+    });
+    // Covers a call that was never emitted and one whose tool_result already
+    // removed it, so a straggling beat can't reopen a call seen to finish.
+    it("drops a beat for a tool call that is not in flight", async () => {
+        expect(await run([beat("toolu_ghost-heartbeat-0", "toolu_ghost")], [])).toHaveLength(0);
+    });
+    it("preserves the elapsed time", async () => {
+        const sent = await run([beat("toolu_abc-heartbeat-2", "toolu_abc", { elapsed_time_seconds: 90 })], ["toolu_abc"]);
+        expect(sent[0].toolCallId).toBe("toolu_abc");
+        expect(sent[0]._meta.claudeCode).toMatchObject({
+            toolName: "Bash",
+            toolResponse: { elapsedTimeSeconds: 90 },
+        });
+    });
+    // `agent_api_retry` beats — the only source of `subagentType`/`subagentRetry`
+    // — are not heartbeats and don't use the `-heartbeat-<n>` id shape: they
+    // report under `agent_<assistant_message_id>`, with the retrying Agent call's
+    // real id in `parent_tool_use_id`. Resolving via the suffix alone dropped
+    // them, leaving a stalled spawn with no explanation.
+    it("reports a subagent retry beat against the Agent call that is retrying", async () => {
+        const sent = await run([
+            {
+                type: "tool_progress",
+                tool_use_id: "agent_msg_01xyz",
+                tool_name: "Task",
+                parent_tool_use_id: "toolu_task",
+                elapsed_time_seconds: 0,
+                subagent_type: "code-reviewer",
+                subagent_retry: {
+                    agent_id: "agent-1",
+                    attempt: 2,
+                    max_retries: 5,
+                    retry_delay_ms: 4000,
+                    error_status: 529,
+                    error_category: "overloaded",
+                },
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+        ], ["toolu_task"]);
+        expect(sent[0].toolCallId).toBe("toolu_task");
+        expect(sent[0]._meta.claudeCode).toMatchObject({
+            toolName: "Task",
+            toolResponse: {
+                subagentType: "code-reviewer",
+                subagentRetry: { attempt: 2, max_retries: 5, error_status: 529 },
+            },
+        });
+    });
+    // A subagent's own `bash_progress` reports the inner tool's real id, with the
+    // spawning Agent call as its parent. The real id wins so the beat lands on the
+    // nested call rather than being hoisted onto the Agent card.
+    it("leaves a beat that reports a real tool call alone", async () => {
+        const sent = await run([beat("toolu_inner", "toolu_task", { heartbeat: undefined })], ["toolu_task", "toolu_inner"]);
+        expect(sent.map((u) => u.toolCallId)).toEqual(["toolu_inner"]);
+    });
+});
+describe("permission_denied", () => {
+    /** Run a turn carrying `messages` and return the updates it produced. */
+    async function run(messages, overrides = {}) {
+        const updates = [];
+        const mockClient = {
+            sessionUpdate: async (n) => {
+                updates.push(n.update);
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const input = new Pushable();
+        async function* messageGenerator() {
+            const { value, done } = await input[Symbol.asyncIterator]().next();
+            if (!done && value) {
+                yield {
+                    type: "user",
+                    message: value.message,
+                    parent_tool_use_id: null,
+                    uuid: value.uuid,
+                    session_id: "test-session",
+                    isReplay: true,
+                };
+            }
+            yield* messages;
+            yield {
+                type: "result",
+                subtype: "success",
+                stop_reason: null,
+                is_error: false,
+                result: "",
+                usage: {},
+                uuid: randomUUID(),
+                session_id: "test-session",
+            };
+            yield { type: "system", subtype: "session_state_changed", state: "idle" };
+        }
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
+            input,
+            ...overrides,
+        });
+        await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "test" }],
+        });
+        return updates;
+    }
+    /** The assistant message announcing `toolUseId`, as the streamed tool_use
+     *  arrives when partial messages are off. */
+    function toolUse(toolUseId, parentToolUseId = null) {
+        return {
+            type: "assistant",
+            message: {
+                role: "assistant",
+                content: [
+                    {
+                        type: "tool_use",
+                        id: toolUseId,
+                        name: "Write",
+                        input: { file_path: "/tmp/denied.txt", content: "hi" },
+                    },
+                ],
+                usage: {},
+            },
+            parent_tool_use_id: parentToolUseId,
+            uuid: randomUUID(),
+            session_id: "test-session",
+        };
+    }
+    /** The rejection the model sees, which follows the denial frame. */
+    function toolResult(toolUseId, parentToolUseId = null) {
+        return {
+            type: "user",
+            message: {
+                role: "user",
+                content: [
+                    {
+                        type: "tool_result",
+                        tool_use_id: toolUseId,
+                        content: "Permission to use Write has been denied.",
+                        is_error: true,
+                    },
+                ],
+            },
+            parent_tool_use_id: parentToolUseId,
+            uuid: randomUUID(),
+            session_id: "test-session",
+        };
+    }
+    function denial(toolUseId, extra = {}) {
+        return {
+            type: "system",
+            subtype: "permission_denied",
+            tool_name: "Write",
+            tool_use_id: toolUseId,
+            decision_reason_type: "mode",
+            decision_reason: "dontAsk mode denies tools that require approval",
+            message: "Permission to use Write has been denied.",
+            uuid: randomUUID(),
+            session_id: "test-session",
+            ...extra,
+        };
+    }
+    const denials = (updates) => updates.filter((u) => u.sessionUpdate === "tool_call_update" &&
+        JSON.stringify(u.content ?? "").includes("Permission denied"));
+    it("marks the announced tool call failed with the denial reason", async () => {
+        const updates = await run([
+            toolUse("toolu_denied"),
+            denial("toolu_denied"),
+            toolResult("toolu_denied"),
+        ]);
+        // The denial resolves the call the preceding tool_call announced, before the
+        // tool_result's own failed update lands.
+        expect(updates[0]).toMatchObject({ sessionUpdate: "tool_call", toolCallId: "toolu_denied" });
+        const sent = denials(updates);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]).toMatchObject({
+            toolCallId: "toolu_denied",
+            status: "failed",
+            content: [
+                {
+                    type: "content",
+                    content: {
+                        type: "text",
+                        text: "Permission denied: dontAsk mode denies tools that require approval",
+                    },
+                },
+            ],
+        });
+        expect(sent[0]._meta.claudeCode).toMatchObject({
+            toolName: "Write",
+            toolResponse: { decisionReasonType: "mode" },
+        });
+        // Top-level denial: nothing to attribute it to.
+        expect(sent[0]._meta.claudeCode).not.toHaveProperty("parentToolUseId");
+    });
+    it("falls back to the SDK's rejection message when there is no decision reason", async () => {
+        const updates = await run([
+            toolUse("toolu_denied"),
+            denial("toolu_denied", { decision_reason: undefined }),
+        ]);
+        expect(denials(updates)[0].content).toEqual([
+            {
+                type: "content",
+                content: {
+                    type: "text",
+                    text: "Permission denied: Permission to use Write has been denied.",
+                },
+            },
+        ]);
+    });
+    // A cancel drops the assistant message carrying the tool_use, so no tool_call
+    // is emitted; a denial for it still arrives. Forwarding that left the client
+    // resolving an id it was never given — the case the tool_result fallback in
+    // `toAcpNotifications` already gates on `wasEmitted` for.
+    it("drops a denial for a tool call that was never announced", async () => {
+        expect(denials(await run([denial("toolu_ghost")]))).toHaveLength(0);
+    });
+    // Ids leave `emittedToolCalls` at `tool_result`, so a denial that somehow
+    // trails its own result can't flip a call the client has seen finish back to
+    // failed.
+    it("drops a denial for a tool call that already resolved", async () => {
+        const updates = await run([
+            toolUse("toolu_denied"),
+            toolResult("toolu_denied"),
+            denial("toolu_denied"),
+        ]);
+        expect(denials(updates)).toHaveLength(0);
+    });
+    // A subagent's denial names the subagent (`agent_id`), never the Agent/Task
+    // call that spawned it, so without the `liveBackgroundTasks` lookup the update
+    // lands at the top level while the tool_call it resolves sits in the
+    // subagent's transcript.
+    it("attributes a subagent denial to the Agent call that spawned it", async () => {
+        const updates = await run([
+            {
+                type: "system",
+                subtype: "task_started",
+                task_id: "agent-1",
+                tool_use_id: "toolu_agent",
+                subagent_type: "general-purpose",
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            toolUse("toolu_inner", "toolu_agent"),
+            denial("toolu_inner", { agent_id: "agent-1" }),
+        ]);
+        expect(denials(updates)[0]._meta.claudeCode).toMatchObject({
+            toolName: "Write",
+            parentToolUseId: "toolu_agent",
+        });
+    });
+    // The attribution rests on `task_started` having been seen for the agent id.
+    // If it wasn't, the denial still resolves the call — unattributed beats
+    // dropped.
+    it("still resolves a subagent denial when the parent is unknown", async () => {
+        const updates = await run([
+            toolUse("toolu_inner", "toolu_agent"),
+            denial("toolu_inner", { agent_id: "agent-unknown" }),
+        ]);
+        const sent = denials(updates);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]._meta.claudeCode).not.toHaveProperty("parentToolUseId");
     });
 });

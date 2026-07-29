@@ -1,5 +1,5 @@
 import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, DisableProviderRequest, DisableProviderResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListProvidersRequest, ListProvidersResponse, LlmProtocol, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, SetProviderRequest, SetProviderResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
-import { AgentInfo, CanUseTool, FastModeState, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { AgentInfo, CanUseTool, FastModeDisabledReason, FastModeState, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
@@ -229,6 +229,13 @@ type Session = {
      *  user's intent so it persists across model switches; the Fast mode config
      *  option is only surfaced while the selected model supports it. */
     fastModeEnabled: boolean;
+    /** Why the SDK currently can't serve Fast mode, when the reason is one worth
+     *  telling the user about (see {@link FAST_MODE_UNAVAILABLE_EXPLANATIONS} —
+     *  routine states like the SDK's own opt-in requirement normalize to
+     *  `undefined`). Refreshed from every `fast_mode_disabled_reason` the SDK
+     *  reports on `system`/init and user-turn `result`s; surfaced in the Fast mode
+     *  option's description so a toggle that snaps back off explains itself. */
+    fastModeDisabledReason?: FastModeDisabledReason;
     abortController: AbortController;
     /** Signal the consumer races `query.next()` against. Aborted by cancel()
      *  (after a grace period) to force the active turn to settle "cancelled" when
@@ -242,6 +249,9 @@ type Session = {
      *  cancel. */
     forceCancelTimer?: ReturnType<typeof setTimeout>;
     emitRawSDKMessages: boolean | SDKMessageFilter[];
+    /** Whether nested subagent text/thinking is forwarded to the ACP client.
+     *  Enabled by either the ACP capability or the pre-existing SDK option. */
+    forwardSubagentText: boolean;
     /** Context window size of the session's current model, carried across
      *  prompts so mid-stream usage_update notifications report a correct `size`
      *  before the turn's first result message arrives. Seeded synchronously at
@@ -496,10 +506,12 @@ type ProviderConfig = {
 export type ToolUpdateMeta = {
     claudeCode?: {
         toolName: string;
+        title?: string;
         toolResponse?: unknown;
         parentToolUseId?: string;
         nonExecutionKind?: string;
         userFeedback?: string;
+        subagent?: true;
     };
     terminal_info?: {
         terminal_id: string;
@@ -819,7 +831,14 @@ export declare class ClaudeAcpAgent {
      *     here).
      *   - `cooldown`: a transient suspension of an already-enabled fast mode.
      *     Leave the toggle as-is rather than flapping it — and never let a stray
-     *     cooldown spuriously enable a toggle the user has off. */
+     *     cooldown spuriously enable a toggle the user has off.
+     *
+     *  `reason` is the SDK's `fast_mode_disabled_reason`, reported alongside the
+     *  state. Only explainable reasons are retained (see
+     *  {@link normalizeFastModeDisabledReason}), so the comparison below tracks
+     *  exactly what the user can see: a routine `sdk_opt_in_required` report on
+     *  every turn's result can't churn the option, while a real blocker updates
+     *  the description even when the toggle's own value is unchanged. */
     private syncFastModeState;
     private getOrCreateSession;
     /**
@@ -856,6 +875,12 @@ export declare const FAST_MODE_OFF = "off";
  *  docs) keeps the toggle on so it reflects the user's intent — only an
  *  explicit `off` clears it. */
 export declare function fastModeStateEnabled(state: FastModeState): boolean;
+/** Normalize an SDK-reported `fast_mode_disabled_reason` to the one we retain:
+ *  a reason we have an explanation for, else `undefined`. Keeping only
+ *  explainable reasons means state comparisons (see `syncFastModeState`) track
+ *  exactly what the user can see, so routine reports like
+ *  `sdk_opt_in_required` never churn the config option. */
+export declare function normalizeFastModeDisabledReason(reason: FastModeDisabledReason | undefined): FastModeDisabledReason | undefined;
 /** Whether the Client advertised support for boolean session config options
  *  (`session.configOptions.boolean`). Agents MUST only send `type: "boolean"`
  *  config options to Clients that opt in; otherwise we fall back to a `select`.
@@ -864,8 +889,14 @@ export declare function clientSupportsBooleanConfigOptions(clientCapabilities?: 
 /** Build the Fast mode config option. When the Client supports boolean config
  *  options we expose a native `type: "boolean"` toggle; otherwise we degrade to
  *  a two-value `select` ("on"/"off") so older Clients still get a usable
- *  control. */
-export declare function createFastModeConfigOption(enabled: boolean, useBooleanOption: boolean): SessionConfigOption;
+ *  control.
+ *
+ *  `disabledReason` (the SDK's `fast_mode_disabled_reason`) is folded into the
+ *  description while the toggle reads off, so a user whose account or provider
+ *  can't serve Fast mode sees why instead of a switch that silently refuses to
+ *  stay on. Ignored while enabled: a reason reported alongside an `on`/`cooldown`
+ *  state isn't blocking anything right now. */
+export declare function createFastModeConfigOption(enabled: boolean, useBooleanOption: boolean, disabledReason?: FastModeDisabledReason): SessionConfigOption;
 /** Resolve the requested Fast mode value from a `session/set_config_option`
  *  request. Accepts a native boolean (boolean-capable Clients) or the
  *  "on"/"off" select-fallback strings. */
@@ -877,6 +908,9 @@ export type FastModeOptionState = {
     enabled: boolean;
     /** Whether the Client opted into boolean config options. */
     useBooleanOption: boolean;
+    /** Latest explainable `fast_mode_disabled_reason`, folded into the option's
+     *  description while the toggle reads off. */
+    disabledReason?: FastModeDisabledReason;
 };
 export declare function buildConfigOptions(modes: SessionModeState, models: SessionModelState, modelInfos: ModelInfo[], currentEffortLevel?: string, agents?: AgentInfo[], currentAgent?: string, fastMode?: FastModeOptionState): SessionConfigOption[];
 export declare function resolveModelPreference(models: ModelInfo[], preference: string): ModelInfo | null;
