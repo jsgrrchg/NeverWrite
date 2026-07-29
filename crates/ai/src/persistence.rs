@@ -7,6 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::{custom_runtimes::is_custom_acp_runtime_id, domain::AcpContinuationStrategy};
+
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
@@ -76,6 +78,16 @@ pub struct PersistedSessionHistory {
     pub closed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_launch_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_strategy: Option<AcpContinuationStrategy>,
     pub model_id: String,
     pub mode_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,6 +214,16 @@ struct PersistedSessionMetadata {
     closed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_launch_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continuation_strategy: Option<AcpContinuationStrategy>,
     model_id: String,
     mode_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -967,6 +989,36 @@ fn history_content_hasher(history: &PersistedSessionHistory) -> Result<Sha256, S
     update_history_content_field(&mut hasher, "parent_session_id", &history.parent_session_id)?;
     update_history_content_field(&mut hasher, "closed_at", &history.closed_at)?;
     update_history_content_field(&mut hasher, "runtime_id", &history.runtime_id)?;
+    // Keep fingerprints stable for pre-custom-runtime histories while making
+    // every continuation identity field part of custom history equality.
+    if history.runtime_display_name.is_some()
+        || history.runtime_revision.is_some()
+        || history.runtime_launch_fingerprint.is_some()
+        || history.runtime_session_id.is_some()
+        || history.continuation_strategy.is_some()
+    {
+        update_history_content_field(
+            &mut hasher,
+            "runtime_display_name",
+            &history.runtime_display_name,
+        )?;
+        update_history_content_field(&mut hasher, "runtime_revision", &history.runtime_revision)?;
+        update_history_content_field(
+            &mut hasher,
+            "runtime_launch_fingerprint",
+            &history.runtime_launch_fingerprint,
+        )?;
+        update_history_content_field(
+            &mut hasher,
+            "runtime_session_id",
+            &history.runtime_session_id,
+        )?;
+        update_history_content_field(
+            &mut hasher,
+            "continuation_strategy",
+            &history.continuation_strategy,
+        )?;
+    }
     update_history_content_field(&mut hasher, "model_id", &history.model_id)?;
     update_history_content_field(&mut hasher, "mode_id", &history.mode_id)?;
     update_history_content_field(&mut hasher, "models", &history.models)?;
@@ -1722,6 +1774,11 @@ fn metadata_from_history(
         parent_session_id: history.parent_session_id.clone(),
         closed_at: history.closed_at.clone(),
         runtime_id: history.runtime_id.clone(),
+        runtime_display_name: history.runtime_display_name.clone(),
+        runtime_revision: history.runtime_revision,
+        runtime_launch_fingerprint: history.runtime_launch_fingerprint.clone(),
+        runtime_session_id: history.runtime_session_id.clone(),
+        continuation_strategy: history.continuation_strategy,
         model_id: history.model_id.clone(),
         mode_id: history.mode_id.clone(),
         models: history.models.clone(),
@@ -1754,6 +1811,11 @@ fn history_from_metadata(
         parent_session_id: metadata.parent_session_id,
         closed_at: metadata.closed_at,
         runtime_id: metadata.runtime_id,
+        runtime_display_name: metadata.runtime_display_name,
+        runtime_revision: metadata.runtime_revision,
+        runtime_launch_fingerprint: metadata.runtime_launch_fingerprint,
+        runtime_session_id: metadata.runtime_session_id,
+        continuation_strategy: metadata.continuation_strategy,
         model_id: metadata.model_id,
         mode_id: metadata.mode_id,
         models: metadata.models,
@@ -1783,6 +1845,11 @@ fn normalize_legacy_history(history: PersistedSessionHistory) -> PersistedSessio
         parent_session_id: history.parent_session_id,
         closed_at: history.closed_at,
         runtime_id: history.runtime_id,
+        runtime_display_name: history.runtime_display_name,
+        runtime_revision: history.runtime_revision,
+        runtime_launch_fingerprint: history.runtime_launch_fingerprint,
+        runtime_session_id: history.runtime_session_id,
+        continuation_strategy: history.continuation_strategy,
         model_id: history.model_id,
         mode_id: history.mode_id,
         models: history.models,
@@ -2681,6 +2748,11 @@ pub fn load_all_session_histories(
                     parent_session_id: history.parent_session_id,
                     closed_at: history.closed_at,
                     runtime_id: history.runtime_id,
+                    runtime_display_name: history.runtime_display_name,
+                    runtime_revision: history.runtime_revision,
+                    runtime_launch_fingerprint: history.runtime_launch_fingerprint,
+                    runtime_session_id: history.runtime_session_id,
+                    continuation_strategy: history.continuation_strategy,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
                     models: history.models,
@@ -2711,6 +2783,11 @@ pub fn load_all_session_histories(
                     parent_session_id: history.parent_session_id,
                     closed_at: history.closed_at,
                     runtime_id: history.runtime_id,
+                    runtime_display_name: history.runtime_display_name,
+                    runtime_revision: history.runtime_revision,
+                    runtime_launch_fingerprint: history.runtime_launch_fingerprint,
+                    runtime_session_id: history.runtime_session_id,
+                    continuation_strategy: history.continuation_strategy,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
                     models: history.models,
@@ -2926,6 +3003,10 @@ pub fn fork_session_history(
         .custom_title
         .or(source_meta.title)
         .map(|t| format!("{t} (fork)"));
+    let is_custom_acp_runtime = source_meta
+        .runtime_id
+        .as_deref()
+        .is_some_and(is_custom_acp_runtime_id);
 
     let new_metadata = PersistedSessionMetadata {
         version: source_meta.version,
@@ -2933,6 +3014,22 @@ pub fn fork_session_history(
         parent_session_id: None,
         closed_at: None,
         runtime_id: source_meta.runtime_id,
+        runtime_display_name: source_meta.runtime_display_name,
+        runtime_revision: source_meta.runtime_revision,
+        runtime_launch_fingerprint: source_meta.runtime_launch_fingerprint,
+        // A transcript fork must not reconnect to the source runtime session.
+        // Custom ACP does not offer a native fork operation, so its fork starts
+        // a fresh session and sends the copied transcript as resume context.
+        runtime_session_id: if is_custom_acp_runtime {
+            None
+        } else {
+            source_meta.runtime_session_id
+        },
+        continuation_strategy: if is_custom_acp_runtime {
+            Some(AcpContinuationStrategy::NewSessionOnly)
+        } else {
+            source_meta.continuation_strategy
+        },
         model_id: source_meta.model_id,
         mode_id: source_meta.mode_id,
         models: source_meta.models,
@@ -3012,6 +3109,11 @@ mod tests {
             parent_session_id: None,
             closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
+            runtime_display_name: None,
+            runtime_revision: None,
+            runtime_launch_fingerprint: None,
+            runtime_session_id: None,
+            continuation_strategy: None,
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
             models: None,
@@ -3101,6 +3203,11 @@ mod tests {
             parent_session_id: None,
             closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
+            runtime_display_name: None,
+            runtime_revision: None,
+            runtime_launch_fingerprint: None,
+            runtime_session_id: None,
+            continuation_strategy: None,
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
             models: None,
@@ -3492,6 +3599,34 @@ mod tests {
     }
 
     #[test]
+    fn content_fingerprint_includes_custom_runtime_continuation_identity() {
+        let first_root = make_temp_dir();
+        let second_root = make_temp_dir();
+        let mut first = sample_history();
+        first.runtime_id = Some("custom:123e4567-e89b-12d3-a456-426614174000".to_string());
+        first.runtime_display_name = Some("Local reviewer".to_string());
+        first.runtime_revision = Some(1);
+        first.runtime_launch_fingerprint = Some("launch-v1".to_string());
+        first.runtime_session_id = Some("runtime-session-1".to_string());
+        first.continuation_strategy = Some(AcpContinuationStrategy::Resume);
+        let mut second = first.clone();
+        second.runtime_session_id = Some("runtime-session-2".to_string());
+
+        save_session_history(&first_root, &first).expect("first history should persist");
+        save_session_history(&second_root, &second).expect("second history should persist");
+
+        let first_inventory = inspect_history_storage(&first_root);
+        let second_inventory = inspect_history_storage(&second_root);
+        assert_ne!(
+            first_inventory.histories.sessions[0].content_fingerprint,
+            second_inventory.histories.sessions[0].content_fingerprint
+        );
+
+        fs::remove_dir_all(first_root).ok();
+        fs::remove_dir_all(second_root).ok();
+    }
+
+    #[test]
     fn strict_inventory_fingerprint_covers_unindexed_transcript_bytes() {
         let storage_root = make_temp_dir();
         let history = sample_history();
@@ -3787,6 +3922,69 @@ mod tests {
     }
 
     #[test]
+    fn preserves_custom_runtime_identity_in_lazy_metadata() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.runtime_id = Some("custom:123e4567-e89b-12d3-a456-426614174000".to_string());
+        history.runtime_display_name = Some("Local reviewer".to_string());
+        history.runtime_revision = Some(4);
+        history.runtime_launch_fingerprint = Some("fingerprint-v4".to_string());
+        history.runtime_session_id = Some("runtime-session-9".to_string());
+        history.continuation_strategy = Some(AcpContinuationStrategy::Load);
+
+        save_session_history(&dir, &history).expect("custom history should persist");
+
+        let summaries =
+            load_all_session_histories(&dir, false).expect("history summaries should load");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].runtime_display_name.as_deref(),
+            Some("Local reviewer")
+        );
+        assert_eq!(summaries[0].runtime_revision, Some(4));
+        assert_eq!(
+            summaries[0].runtime_launch_fingerprint.as_deref(),
+            Some("fingerprint-v4")
+        );
+        assert_eq!(
+            summaries[0].runtime_session_id.as_deref(),
+            Some("runtime-session-9")
+        );
+        assert_eq!(
+            summaries[0].continuation_strategy,
+            Some(AcpContinuationStrategy::Load)
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn custom_runtime_fork_discards_source_runtime_session_identity() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.runtime_id = Some("custom:123e4567-e89b-12d3-a456-426614174000".to_string());
+        history.runtime_session_id = Some("source-runtime-session".to_string());
+        history.continuation_strategy = Some(AcpContinuationStrategy::Resume);
+
+        save_session_history(&dir, &history).expect("custom history should persist");
+        let forked_session_id =
+            fork_session_history(&dir, &history.session_id).expect("custom history should fork");
+        let forked = load_all_session_histories(&dir, false)
+            .expect("forked history should load")
+            .into_iter()
+            .find(|candidate| candidate.session_id == forked_session_id)
+            .expect("forked history should be present");
+
+        assert_eq!(forked.runtime_session_id, None);
+        assert_eq!(
+            forked.continuation_strategy,
+            Some(AcpContinuationStrategy::NewSessionOnly)
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn preserves_empty_persisted_subagent_sessions() {
         let dir = make_temp_dir();
         let mut history = sample_history_with_session_id("empty-child-session");
@@ -3838,6 +4036,11 @@ mod tests {
         assert_eq!(histories.len(), 1);
         assert_eq!(histories[0].session_id, "legacy-no-parent");
         assert_eq!(histories[0].parent_session_id, None);
+        assert_eq!(histories[0].runtime_display_name, None);
+        assert_eq!(histories[0].runtime_revision, None);
+        assert_eq!(histories[0].runtime_launch_fingerprint, None);
+        assert_eq!(histories[0].runtime_session_id, None);
+        assert_eq!(histories[0].continuation_strategy, None);
 
         fs::remove_dir_all(dir).ok();
     }
@@ -3912,6 +4115,11 @@ mod tests {
             parent_session_id: None,
             closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
+            runtime_display_name: None,
+            runtime_revision: None,
+            runtime_launch_fingerprint: None,
+            runtime_session_id: None,
+            continuation_strategy: None,
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
             models: None,
@@ -4338,6 +4546,11 @@ mod tests {
             parent_session_id: None,
             closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
+            runtime_display_name: None,
+            runtime_revision: None,
+            runtime_launch_fingerprint: None,
+            runtime_session_id: None,
+            continuation_strategy: None,
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
             models: None,

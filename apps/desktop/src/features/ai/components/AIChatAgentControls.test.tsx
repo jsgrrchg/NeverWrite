@@ -204,6 +204,61 @@ describe("AIChatAgentControls", () => {
         expect(screen.queryByText("Medium")).not.toBeInTheDocument();
     });
 
+    it("hides a thought level config option duplicated by ACP modes", () => {
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="custom:pi"
+                modelId=""
+                modeId="low"
+                models={[]}
+                modes={[
+                    {
+                        id: "off",
+                        runtimeId: "custom:pi",
+                        name: "Thinking: off",
+                        description: "",
+                        disabled: false,
+                    },
+                    {
+                        id: "low",
+                        runtimeId: "custom:pi",
+                        name: "Thinking: low",
+                        description: "",
+                        disabled: false,
+                    },
+                    {
+                        id: "high",
+                        runtimeId: "custom:pi",
+                        name: "Thinking: high",
+                        description: "",
+                        disabled: false,
+                    },
+                ]}
+                configOptions={[
+                    {
+                        id: "thought_level",
+                        runtimeId: "custom:pi",
+                        category: "reasoning",
+                        label: "Thinking",
+                        type: "select",
+                        value: "low",
+                        options: [
+                            { value: "off", label: "Thinking: off" },
+                            { value: "low", label: "Thinking: low" },
+                            { value: "high", label: "Thinking: high" },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+
+        expect(screen.getByTitle("Approval Preset")).toBeInTheDocument();
+        expect(screen.queryByTitle("Thinking")).not.toBeInTheDocument();
+    });
+
     it("presents Claude fast mode as Off/Fast while preserving ACP values", () => {
         const onConfigOptionChange = vi.fn();
 

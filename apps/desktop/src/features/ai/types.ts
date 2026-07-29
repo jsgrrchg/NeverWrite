@@ -1,3 +1,19 @@
+export type AcpContinuationStrategy =
+    | "resume"
+    | "load"
+    | "new_session_only";
+
+export type CustomRuntimeContinuationResult =
+    | { status: "connected"; session: AIChatSession }
+    | {
+          status: "confirmation_required";
+          runtimeId: string;
+          displayName: string;
+          launchFingerprint: string;
+          message: string;
+      }
+    | { status: "transcript_only"; message: string };
+
 export type AIChatSessionStatus =
     | "idle"
     | "streaming"
@@ -62,6 +78,35 @@ export type AISecretPatch =
     | { action: "unchanged" }
     | { action: "clear" }
     | { action: "set"; value: string };
+
+export type AICustomAcpRuntimeId = `custom:${string}`;
+
+export interface AICustomAcpRuntimeDefinitionInput {
+    displayName: string;
+    command: string;
+    args: string[];
+    env: Record<string, string>;
+    authMode: "external";
+}
+
+export interface AICustomAcpRuntimeDefinition
+    extends AICustomAcpRuntimeDefinitionInput {
+    id: AICustomAcpRuntimeId;
+    revision: number;
+    launchFingerprint: string;
+}
+
+export type AICustomAcpExecutableVerificationState =
+    | "ready"
+    | "missing"
+    | "not_executable";
+
+export interface AICustomAcpExecutableVerification {
+    state: AICustomAcpExecutableVerificationState;
+    command: string;
+    executablePath: string | null;
+    message: string | null;
+}
 
 export type AIClaudeProviderRouting =
     | { type: "default" }
@@ -429,6 +474,10 @@ export interface AIChatSession {
     isResumingSession?: boolean;
     effortsByModel?: Record<string, string[]>;
     runtimeId: string;
+    runtimeDisplayName?: string | null;
+    runtimeRevision?: number | null;
+    runtimeLaunchFingerprint?: string | null;
+    continuationStrategy?: AcpContinuationStrategy | null;
     additionalRoots?: string[];
     /**
      * Roots the user previously approved that could not be re-resolved on
@@ -470,7 +519,11 @@ export interface AIChatSession {
     pendingSessionError?: string | null;
     resumeContextPending?: boolean;
     resumeReconnectFailed?: boolean;
-    runtimeState?: "live" | "persisted_only" | "detached";
+    runtimeState?:
+        | "live"
+        | "persisted_only"
+        | "transcript_only"
+        | "detached";
 }
 
 export interface AIRuntimeDescriptor {
@@ -487,6 +540,10 @@ export interface AIBackendSessionPayload {
     closed_at?: string | null;
     title?: string | null;
     runtime_id: string;
+    runtime_display_name?: string | null;
+    runtime_revision?: number | null;
+    runtime_launch_fingerprint?: string | null;
+    continuation_strategy?: AcpContinuationStrategy | null;
     model_id: string;
     mode_id: string;
     status: AIChatSessionStatus;
@@ -788,6 +845,11 @@ export interface PersistedSessionHistory {
     parent_session_id?: string | null;
     closed_at?: string | null;
     runtime_id?: string;
+    runtime_display_name?: string;
+    runtime_revision?: number;
+    runtime_launch_fingerprint?: string;
+    runtime_session_id?: string;
+    continuation_strategy?: AcpContinuationStrategy;
     model_id: string;
     mode_id: string;
     models?: AIBackendRuntimeDescriptorPayload["models"];

@@ -13,6 +13,13 @@ const apiMocks = vi.hoisted(() => ({
     aiGetEnvironmentDiagnostics: vi.fn(),
     aiGetSetupStatus: vi.fn(),
     aiListRuntimes: vi.fn(),
+    aiListCustomRuntimes: vi.fn(),
+    aiListDeletedCustomRuntimes: vi.fn(),
+    aiCreateCustomRuntime: vi.fn(),
+    aiUpdateCustomRuntime: vi.fn(),
+    aiDeleteCustomRuntime: vi.fn(),
+    aiRestoreCustomRuntime: vi.fn(),
+    aiVerifyCustomRuntime: vi.fn(),
     aiLogout: vi.fn(),
     aiStartAuth: vi.fn(),
     aiUpdateSetup: vi.fn(),
@@ -244,6 +251,14 @@ function mockProviders({
     apiMocks.listenToAiAuthTerminalOutput.mockResolvedValue(vi.fn());
     apiMocks.listenToAiAuthTerminalExited.mockResolvedValue(vi.fn());
     apiMocks.listenToAiAuthTerminalError.mockResolvedValue(vi.fn());
+    apiMocks.aiListCustomRuntimes.mockResolvedValue([]);
+    apiMocks.aiListDeletedCustomRuntimes.mockResolvedValue([]);
+    apiMocks.aiVerifyCustomRuntime.mockResolvedValue({
+        state: "ready",
+        command: "local-acp",
+        executablePath: "/usr/local/bin/local-acp",
+        message: "Executable is ready.",
+    });
 }
 
 function getButtonFromText(text: string) {
@@ -307,6 +322,30 @@ describe("AIProvidersSettings", () => {
         expect(await screen.findByText("Codex")).toBeInTheDocument();
         expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
         expect(screen.queryByText("Gemini")).not.toBeInTheDocument();
+    });
+
+    it("does not offer a custom runtime with a missing executable as default", async () => {
+        const providers = createDefaultProviders();
+        providers.descriptors.push(
+            createRuntimeDescriptor("custom:missing", "Missing local ACP"),
+        );
+        providers.statuses["custom:missing"] = createSetupStatus({
+            runtimeId: "custom:missing",
+            binaryReady: false,
+            binaryPath: undefined,
+            binarySource: "missing",
+            authReady: true,
+            authMethod: "external",
+            onboardingRequired: true,
+        });
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await screen.findByText("Default agent");
+        expect(
+            screen.queryByRole("option", { name: "Missing local" }),
+        ).not.toBeInTheDocument();
     });
 
     it("validates Claude gateway URLs before saving provider authentication", async () => {
@@ -945,6 +984,106 @@ describe("AIProvidersSettings", () => {
                 runtimeId: "opencode-acp",
                 vaultPath: null,
             });
+        });
+    });
+
+    it("manages custom ACP definitions without exposing provider authentication", async () => {
+        apiMocks.aiCreateCustomRuntime.mockResolvedValue({
+            id: "custom:123e4567-e89b-12d3-a456-426614174000",
+            revision: 1,
+            launchFingerprint: "a".repeat(64),
+            displayName: "Local reviewer",
+            command: "local-acp",
+            args: ["--stdio", "--safe"],
+            env: { LOG_LEVEL: "debug" },
+            authMode: "external",
+        });
+
+        renderComponent(<AIProvidersSettings />);
+
+        expect(await screen.findByText("Custom ACP runtimes")).toBeInTheDocument();
+        fireEvent.click(
+            screen.getAllByRole("button", { name: "Add runtime" }).at(-1)!,
+        );
+        fireEvent.change(screen.getByLabelText("Runtime name"), {
+            target: { value: "Local reviewer" },
+        });
+        fireEvent.change(screen.getByLabelText("Command"), {
+            target: { value: "local-acp" },
+        });
+        fireEvent.change(screen.getByLabelText("Arguments"), {
+            target: { value: "--stdio\n--safe" },
+        });
+        fireEvent.change(screen.getByLabelText("Environment"), {
+            target: { value: "LOG_LEVEL=debug" },
+        });
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Verify executable" }),
+        );
+        await waitFor(() => {
+            expect(apiMocks.aiVerifyCustomRuntime).toHaveBeenCalledWith({
+                displayName: "Local reviewer",
+                command: "local-acp",
+                args: ["--stdio", "--safe"],
+                env: { LOG_LEVEL: "debug" },
+                authMode: "external",
+            });
+        });
+        expect(screen.getByText("Executable is ready.")).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getAllByRole("button", { name: "Add runtime" }).at(-1)!,
+        );
+        await waitFor(() => {
+            expect(apiMocks.aiCreateCustomRuntime).toHaveBeenCalledWith({
+                displayName: "Local reviewer",
+                command: "local-acp",
+                args: ["--stdio", "--safe"],
+                env: { LOG_LEVEL: "debug" },
+                authMode: "external",
+            });
+        });
+        expect(
+            screen.queryByRole("button", { name: /sign-in terminal|log out/i }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("keeps deleted custom definitions out of active settings and restores their stable ID", async () => {
+        const deletedDefinition = {
+            id: "custom:123e4567-e89b-12d3-a456-426614174001",
+            revision: 2,
+            launchFingerprint: "b".repeat(64),
+            displayName: "Archived reviewer",
+            command: "archived-acp",
+            args: ["--stdio"],
+            env: {},
+            authMode: "external" as const,
+        };
+        apiMocks.aiListDeletedCustomRuntimes.mockResolvedValue([
+            deletedDefinition,
+        ]);
+        apiMocks.aiRestoreCustomRuntime.mockResolvedValue(deletedDefinition);
+
+        renderComponent(
+            <AIProvidersSettings
+                searchQuery={createSettingsSearchQuery("archived-acp")}
+            />,
+        );
+
+        expect(
+            await screen.findByText(
+                "Deleted definitions retained for history",
+            ),
+        ).toBeInTheDocument();
+        expect(screen.getByText("Archived reviewer")).toBeInTheDocument();
+        expect(screen.queryByText("archived-acp")).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+        await waitFor(() => {
+            expect(apiMocks.aiRestoreCustomRuntime).toHaveBeenCalledWith(
+                deletedDefinition.id,
+            );
         });
     });
 });

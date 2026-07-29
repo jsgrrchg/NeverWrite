@@ -44,6 +44,14 @@ kept as provider-owned fallback behavior. Grok does not receive synthetic
 not advertise them. The frontend falls back to the static catalog if backend
 inventory cannot be loaded.
 
+## Custom ACP Runtimes
+
+Settings can register local ACP-compatible executables in addition to the built-in provider catalog. A custom runtime is active only when its configured command passes **Verify executable**; it uses external/runtime-managed authentication rather than a NeverWrite provider login or secret form.
+
+Custom definitions are launched directly without a shell, with an isolated environment and controlled `PATH`. NeverWrite does not inject built-in provider credentials and rejects secret-like custom environment keys. Custom runtime capabilities, including continuation, options, slash commands, permissions, user input, images, and diffs, are negotiated through ACP rather than hardcoded in the UI.
+
+See [Configurable Custom ACP Runtimes](custom-acp-runtimes.md) for the definition format, continuation semantics, history identity, limits, and troubleshooting.
+
 ## Runtime Discovery
 
 For every provider, the backend resolves the runtime command in this order:

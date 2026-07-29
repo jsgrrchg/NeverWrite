@@ -92,6 +92,14 @@ pub struct AiAuthMethod {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpContinuationStrategy {
+    Resume,
+    Load,
+    NewSessionOnly,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AiSession {
     pub session_id: String,
@@ -104,6 +112,14 @@ pub struct AiSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub runtime_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_launch_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_strategy: Option<AcpContinuationStrategy>,
     pub model_id: String,
     pub mode_id: String,
     pub status: AiSessionStatus,

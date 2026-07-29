@@ -1956,6 +1956,7 @@ fn reject_existing_transaction_path(path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use neverwrite_ai::persistence::PersistedMessage;
+    use neverwrite_ai::AcpContinuationStrategy;
     use serde_json::json;
 
     fn history(session_id: &str, content: &str) -> PersistedSessionHistory {
@@ -1964,7 +1965,12 @@ mod tests {
             session_id: session_id.into(),
             parent_session_id: None,
             closed_at: None,
-            runtime_id: None,
+            runtime_id: Some("custom:123e4567-e89b-12d3-a456-426614174000".into()),
+            runtime_display_name: Some("Local reviewer".into()),
+            runtime_revision: Some(3),
+            runtime_launch_fingerprint: Some("launch-v3".into()),
+            runtime_session_id: Some("runtime-session-3".into()),
+            continuation_strategy: Some(AcpContinuationStrategy::Resume),
             model_id: "model".into(),
             mode_id: "mode".into(),
             models: None,
@@ -2102,6 +2108,27 @@ mod tests {
         assert!(!source.histories.exists());
         let loaded = persistence::load_all_session_histories(&destination.histories, true).unwrap();
         assert_eq!(loaded.len(), 2);
+        let moved = loaded
+            .iter()
+            .find(|history| history.session_id == "a")
+            .unwrap();
+        assert_eq!(
+            moved.runtime_display_name.as_deref(),
+            Some("Local reviewer")
+        );
+        assert_eq!(moved.runtime_revision, Some(3));
+        assert_eq!(
+            moved.runtime_launch_fingerprint.as_deref(),
+            Some("launch-v3")
+        );
+        assert_eq!(
+            moved.runtime_session_id.as_deref(),
+            Some("runtime-session-3")
+        );
+        assert_eq!(
+            moved.continuation_strategy,
+            Some(AcpContinuationStrategy::Resume)
+        );
         assert!(!journal_path(temp.path()).exists());
     }
 
@@ -2247,6 +2274,25 @@ mod tests {
         persistence::save_session_history(&source.histories, &history("same", "one")).unwrap();
         persistence::save_session_history(&destination.histories, &history("same", "two")).unwrap();
         assert!(reconcile(second.path(), &source, &destination).is_err());
+        assert!(source.histories.exists());
+        assert!(destination.histories.exists());
+    }
+
+    #[test]
+    fn blocks_equal_custom_transcripts_with_different_runtime_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = layout(temp.path(), "source");
+        let destination = layout(temp.path(), "destination");
+        let mut source_history = history("same", "one");
+        source_history.runtime_session_id = Some("source-runtime-session".into());
+        let mut destination_history = source_history.clone();
+        destination_history.runtime_session_id = Some("destination-runtime-session".into());
+        persistence::save_session_history(&source.histories, &source_history).unwrap();
+        persistence::save_session_history(&destination.histories, &destination_history).unwrap();
+
+        let error = reconcile(temp.path(), &source, &destination).unwrap_err();
+
+        assert!(error.contains("Session same differs between AI history roots."));
         assert!(source.histories.exists());
         assert!(destination.histories.exists());
     }

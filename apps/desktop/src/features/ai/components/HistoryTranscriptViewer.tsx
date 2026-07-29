@@ -4,7 +4,7 @@ import { useChatStore } from "../store/chatStore";
 import {
     findSessionForHistorySelection,
     formatSessionTime,
-    getRuntimeName,
+    getSessionRuntimeName,
     getSessionTitle,
 } from "../sessionPresentation";
 import type { AIChatSession } from "../types";
@@ -40,7 +40,7 @@ function TranscriptHeader({
         [runtimes],
     );
     const title = getSessionTitle(session);
-    const runtimeLabel = getRuntimeName(session.runtimeId, runtimeOptions);
+    const runtimeLabel = getSessionRuntimeName(session, runtimeOptions);
     const modelLabel = session.modelId;
     const updatedAt = session.persistedUpdatedAt ?? 0;
     const parentSession = useMemo(

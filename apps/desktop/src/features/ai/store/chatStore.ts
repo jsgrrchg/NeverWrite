@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { openUrl } from "@neverwrite/runtime";
+import { confirm, openUrl } from "@neverwrite/runtime";
 import {
     normalizeEditorFontFamily,
     readSettingsForVault,
@@ -8,6 +8,7 @@ import {
 } from "../../../app/store/settingsStore";
 import {
     aiCancelTurn,
+    aiContinueCustomRuntimeSession,
     aiCreateSession,
     aiDeleteRuntimeSession,
     aiDeleteRuntimeSessionsForVault,
@@ -213,6 +214,12 @@ const CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_TITLE =
     "Queued messages were cancelled because this subagent was closed by its parent thread.";
 const SAVED_CHAT_RECONNECT_FAILED_MESSAGE =
     "Could not reconnect this chat. Start a new session with saved transcript context?";
+const CUSTOM_RUNTIME_CONTINUATION_STATUS_EVENT_ID =
+    "neverwrite:recovery:custom-runtime-continuation";
+const CUSTOM_RUNTIME_UNAVAILABLE_MESSAGE =
+    "This custom ACP runtime is no longer available. Restore it in Settings or start a new chat with another runtime.";
+const CUSTOM_RUNTIME_NO_CONTINUATION_MESSAGE =
+    "This runtime cannot continue its previous ACP session. The transcript is still available; start a new chat to keep working.";
 export const REMOVED_GEMINI_ACP_COMPOSER_MESSAGE =
     "Gemini ACP is no longer supported by Google.";
 const _pendingTrackedPersistedReconcileByKey = new Map<
@@ -1562,6 +1569,7 @@ interface ChatStore {
     setSelectedRuntime: (runtimeId: string | null) => void;
     setDefaultRuntime: (runtimeId: string | null) => void;
     getDefaultNewChatRuntimeId: () => string | null;
+    refreshRuntimeCatalog: () => Promise<void>;
     refreshSetupStatus: (runtimeId?: string) => Promise<void>;
     saveSetup: (input: {
         runtimeId?: string;
@@ -1845,6 +1853,10 @@ function isAuthenticationErrorMessage(
     message: string,
     runtimeId?: string | null,
 ) {
+    if (runtimeId?.startsWith("custom:")) {
+        return false;
+    }
+
     const normalized = message.trim().toLowerCase();
     const isOpenCodeRuntime = runtimeId === "opencode-acp";
     const isOpenCodeAuthGuidance =
@@ -1925,13 +1937,17 @@ function normalizeAiErrorMessage(message: string, runtimeId?: string | null) {
     return message;
 }
 
-function getAiErrorMessage(error: unknown, fallback: string) {
+function getAiErrorMessage(
+    error: unknown,
+    fallback: string,
+    runtimeId?: string | null,
+) {
     if (error instanceof Error && error.message.trim()) {
-        return normalizeAiErrorMessage(error.message);
+        return normalizeAiErrorMessage(error.message, runtimeId);
     }
 
     if (typeof error === "string" && error.trim()) {
-        return normalizeAiErrorMessage(error);
+        return normalizeAiErrorMessage(error, runtimeId);
     }
 
     if (
@@ -1941,7 +1957,7 @@ function getAiErrorMessage(error: unknown, fallback: string) {
         typeof error.message === "string" &&
         error.message.trim()
     ) {
-        return normalizeAiErrorMessage(error.message);
+        return normalizeAiErrorMessage(error.message, runtimeId);
     }
 
     return fallback;
@@ -2447,6 +2463,20 @@ function createSavedChatReconnectingStatus(
         title: SAVED_CHAT_RECONNECTING_STATUS_TITLE,
         detail: null,
         emphasis: "neutral",
+    });
+}
+
+function createCustomRuntimeContinuationStatus(
+    sessionId: string,
+    message: string,
+): AIStatusEventPayload {
+    return createLocalStatusPayload(sessionId, {
+        event_id: CUSTOM_RUNTIME_CONTINUATION_STATUS_EVENT_ID,
+        kind: "session_recovery",
+        status: "blocked",
+        title: message,
+        detail: null,
+        emphasis: "warning",
     });
 }
 
@@ -5710,6 +5740,14 @@ function needsFullResumeContextTranscript(session: AIChatSession) {
     );
 }
 
+function isCustomRuntimeTranscriptFork(session: AIChatSession) {
+    return (
+        session.runtimeId.startsWith("custom:") &&
+        session.continuationStrategy === "new_session_only" &&
+        !session.runtimeSessionId?.trim()
+    );
+}
+
 function hasPersistedHistoryContent(history: PersistedSessionHistory) {
     return getPersistedHistoryMessageCount(history) > 0;
 }
@@ -5807,6 +5845,24 @@ function applyPersistedHistoryMetadata(
                 nextSession.parentSessionId ??
                 null,
             closedAt: history.closed_at ?? nextSession.closedAt ?? null,
+            runtimeDisplayName:
+                history.runtime_display_name ??
+                nextSession.runtimeDisplayName ??
+                null,
+            runtimeRevision:
+                history.runtime_revision ?? nextSession.runtimeRevision ?? null,
+            runtimeLaunchFingerprint:
+                history.runtime_launch_fingerprint ??
+                nextSession.runtimeLaunchFingerprint ??
+                null,
+            runtimeSessionId:
+                history.runtime_session_id ??
+                nextSession.runtimeSessionId ??
+                null,
+            continuationStrategy:
+                history.continuation_strategy ??
+                nextSession.continuationStrategy ??
+                null,
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
             persistedTitle: sanitizePersistedDisplayText(history.title),
@@ -5893,23 +5949,26 @@ function createPersistedSession(
     runtimes: AIRuntimeDescriptor[],
     vaultPath: string | null,
 ): AIChatSession | null {
+    const matchingRuntime = history.runtime_id
+        ? runtimes.find(
+              (candidate) => candidate.runtime.id === history.runtime_id,
+          )
+        : undefined;
     const runtime =
-        (history.runtime_id
-            ? runtimes.find(
-                  (candidate) => candidate.runtime.id === history.runtime_id,
-              )
-            : null) ?? runtimes[0];
-    if (!runtime) return null;
-    const runtimeId = history.runtime_id ?? runtime.runtime.id;
+        matchingRuntime ?? (history.runtime_id ? undefined : runtimes[0]);
+    if (!history.runtime_id && !runtime) return null;
+    const runtimeId = history.runtime_id ?? runtime!.runtime.id;
     const persistedMessageCount = getPersistedHistoryMessageCount(history);
     const persistedCatalog = getPersistedHistoryCatalogSnapshot(history);
     const catalogSource = hasRuntimeCatalog(persistedCatalog)
         ? persistedCatalog
-        : {
-              models: runtime.models,
-              modes: runtime.modes,
-              configOptions: runtime.configOptions,
-          };
+        : runtime
+          ? {
+                models: runtime.models,
+                modes: runtime.modes,
+                configOptions: runtime.configOptions,
+            }
+          : { models: [], modes: [], configOptions: [] };
 
     if (hasRuntimeCatalog(persistedCatalog)) {
         saveRuntimeCatalogCache(runtimeId, persistedCatalog);
@@ -5921,9 +5980,14 @@ function createPersistedSession(
             historySessionId: history.session_id,
             parentSessionId: history.parent_session_id ?? null,
             closedAt: history.closed_at ?? null,
-            runtimeSessionId: null,
             vaultPath,
             runtimeId,
+            runtimeDisplayName: history.runtime_display_name ?? null,
+            runtimeRevision: history.runtime_revision ?? null,
+            runtimeLaunchFingerprint:
+                history.runtime_launch_fingerprint ?? null,
+            runtimeSessionId: history.runtime_session_id ?? null,
+            continuationStrategy: history.continuation_strategy ?? null,
             additionalRoots: history.additional_roots ?? [],
             modelId: history.model_id,
             modeId: history.mode_id,
@@ -5945,7 +6009,13 @@ function createPersistedSession(
             attachments: [],
             isPersistedSession: true,
             resumeContextPending: persistedMessageCount > 0,
-            runtimeState: "persisted_only",
+            runtimeState:
+                runtimeId.startsWith("custom:") &&
+                (!matchingRuntime ||
+                    (history.continuation_strategy === "new_session_only" &&
+                        !!history.runtime_session_id?.trim()))
+                    ? "transcript_only"
+                    : "persisted_only",
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
             persistedTitle: sanitizePersistedDisplayText(history.title),
@@ -5966,13 +6036,25 @@ function createPersistedSession(
         runtime,
     );
 
-    if (history.messages.length === 0) {
-        return replaceSessionTranscript(baseSession, []);
+    const restoredSession =
+        history.messages.length === 0
+            ? replaceSessionTranscript(baseSession, [])
+            : replaceSessionTranscript(
+                  baseSession,
+                  restoreMessagesFromHistory(history),
+              );
+    if (restoredSession.runtimeState !== "transcript_only") {
+        return restoredSession;
     }
 
-    return replaceSessionTranscript(
-        baseSession,
-        restoreMessagesFromHistory(history),
+    return upsertSessionStatusMessage(
+        restoredSession,
+        createCustomRuntimeContinuationStatus(
+            restoredSession.sessionId,
+            matchingRuntime
+                ? CUSTOM_RUNTIME_NO_CONTINUATION_MESSAGE
+                : CUSTOM_RUNTIME_UNAVAILABLE_MESSAGE,
+        ),
     );
 }
 
@@ -6365,7 +6447,27 @@ function runtimeSupportsCapability(
 }
 
 type ResumeRecoveryStrategy =
-    "native_load_session" | "transcript_prompt_injection";
+    | "custom_acp_continuation"
+    | "native_load_session"
+    | "transcript_prompt_injection";
+
+function getResumeRecoveryStrategy(
+    runtimes: AIRuntimeDescriptor[],
+    session: AIChatSession,
+): ResumeRecoveryStrategy {
+    if (session.runtimeId.startsWith("custom:")) {
+        return isCustomRuntimeTranscriptFork(session)
+            ? "transcript_prompt_injection"
+            : "custom_acp_continuation";
+    }
+    return runtimeSupportsCapability(
+        runtimes,
+        session.runtimeId,
+        "resume_session",
+    )
+        ? "native_load_session"
+        : "transcript_prompt_injection";
+}
 
 function getSessionRuntimeStateForLog(session: AIChatSession) {
     return (
@@ -6526,6 +6628,12 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         parent_session_id: session.parentSessionId ?? undefined,
         closed_at: session.closedAt ?? undefined,
         runtime_id: session.runtimeId,
+        runtime_display_name: session.runtimeDisplayName ?? undefined,
+        runtime_revision: session.runtimeRevision ?? undefined,
+        runtime_launch_fingerprint:
+            session.runtimeLaunchFingerprint ?? undefined,
+        runtime_session_id: session.runtimeSessionId ?? undefined,
+        continuation_strategy: session.continuationStrategy ?? undefined,
         model_id: session.modelId,
         mode_id: session.modeId,
         additional_roots: session.additionalRoots ?? [],
@@ -8028,6 +8136,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const message = getAiErrorMessage(
                 error,
                 "Failed to send the message.",
+                session.runtimeId,
             );
             if (source === "queue") {
                 restoreActiveQueuedMessage(activeSessionId, (item) => ({
@@ -8299,6 +8408,87 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     state.setupStatusByRuntimeId,
                 )
             );
+        },
+
+        refreshRuntimeCatalog: async () => {
+            const backendRuntimes = await aiListRuntimes();
+            const setupResults = await Promise.allSettled(
+                backendRuntimes.map((runtime) =>
+                    aiGetSetupStatus(runtime.runtime.id),
+                ),
+            );
+            const current = get();
+            const setupStatusByRuntimeId = buildSetupStatusMap(
+                setupResults.flatMap((result) =>
+                    result.status === "fulfilled" ? [result.value] : [],
+                ),
+            );
+            const runtimeConnectionByRuntimeId = buildRuntimeConnectionMap(
+                backendRuntimes,
+                current.runtimeConnectionByRuntimeId,
+            );
+
+            for (const result of setupResults) {
+                if (result.status !== "fulfilled") continue;
+                runtimeConnectionByRuntimeId[result.value.runtimeId] =
+                    getRuntimeConnectionForSetup(result.value);
+            }
+
+            const terminalRuntime = current.runtimes.find(
+                (runtime) =>
+                    runtime.runtime.id === CLAUDE_TERMINAL_RUNTIME_ID,
+            );
+            const terminalSetupStatus =
+                current.setupStatusByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID];
+            const runtimes = terminalRuntime
+                ? [...backendRuntimes, terminalRuntime]
+                : backendRuntimes;
+            if (terminalSetupStatus) {
+                setupStatusByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID] =
+                    terminalSetupStatus;
+                runtimeConnectionByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID] =
+                    current.runtimeConnectionByRuntimeId[
+                        CLAUDE_TERMINAL_RUNTIME_ID
+                    ] ?? getRuntimeConnectionForSetup(terminalSetupStatus);
+            }
+
+            const currentDefaultStillSelectable =
+                getSelectableDefaultRuntimeId(
+                    current.defaultRuntimeId,
+                    runtimes,
+                    setupStatusByRuntimeId,
+                );
+            const defaultRuntimeId =
+                currentDefaultStillSelectable ??
+                (current.defaultRuntimeId?.startsWith("custom:")
+                    ? getImplicitDefaultAcpRuntimeId(
+                          runtimes,
+                          setupStatusByRuntimeId,
+                      )
+                    : null);
+            const selectedRuntimeId =
+                getSelectableDefaultRuntimeId(
+                    current.selectedRuntimeId,
+                    runtimes,
+                    setupStatusByRuntimeId,
+                ) ??
+                defaultRuntimeId ??
+                getImplicitDefaultAcpRuntimeId(runtimes, setupStatusByRuntimeId);
+
+            set({
+                runtimes,
+                setupStatusByRuntimeId,
+                runtimeConnectionByRuntimeId,
+                defaultRuntimeId,
+                selectedRuntimeId,
+            });
+
+            if (defaultRuntimeId !== current.defaultRuntimeId) {
+                _defaultRuntimePreferenceVersion += 1;
+                saveAiPreferences({
+                    defaultRuntimeId: defaultRuntimeId ?? undefined,
+                });
+            }
         },
 
         initialize: async (options) => {
@@ -8582,7 +8772,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         get().sessionsById[nextActiveSessionId] &&
                         !isLiveRuntimeSession(
                             get().sessionsById[nextActiveSessionId]!,
-                        )
+                        ) &&
+                        get().sessionsById[nextActiveSessionId]!.runtimeState !==
+                            "transcript_only"
                     ) {
                         await get().resumeSession(nextActiveSessionId);
                     } else if (nextActiveSessionId) {
@@ -8774,6 +8966,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (activeSession) {
                 if (
                     !isLiveRuntimeSession(activeSession) &&
+                    activeSession.runtimeState !== "transcript_only" &&
                     !activeSession.isResumingSession
                 ) {
                     const resumedSessionId =
@@ -10460,6 +10653,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (session.isPendingSessionCreation) return sessionId;
             if (isLiveRuntimeSession(session)) return sessionId;
             if (session.isResumingSession) return sessionId;
+            if (session.runtimeState === "transcript_only") return null;
 
             set((currentState) => {
                 const currentSession = currentState.sessionsById[sessionId];
@@ -10554,6 +10748,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 };
             };
 
+            let resumeStrategy = getResumeRecoveryStrategy(
+                get().runtimes,
+                session,
+            );
             try {
                 const currentSession = get().sessionsById[sessionId];
                 if (!currentSession || isLiveRuntimeSession(currentSession)) {
@@ -10561,23 +10759,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
 
                 const vaultPath = useVaultStore.getState().vaultPath;
+                const isCustomRuntime =
+                    currentSession.runtimeId.startsWith("custom:");
+                const customRuntimeTranscriptFork =
+                    isCustomRuntimeTranscriptFork(currentSession);
                 const supportsNativeResume = runtimeSupportsCapability(
                     get().runtimes,
                     currentSession.runtimeId,
                     "resume_session",
                 );
-                let resumeStrategy: ResumeRecoveryStrategy =
-                    supportsNativeResume
-                        ? "native_load_session"
-                        : "transcript_prompt_injection";
+                resumeStrategy = getResumeRecoveryStrategy(
+                    get().runtimes,
+                    currentSession,
+                );
                 const runtimeStateBefore =
                     getSessionRuntimeStateForLog(currentSession);
-                const transcriptLoaded = supportsNativeResume
-                    ? await loadPersistedTranscript(sessionId, "latest")
-                    : await loadPersistedTranscript(sessionId, "full");
+                const transcriptLoaded =
+                    supportsNativeResume ||
+                    (isCustomRuntime && !customRuntimeTranscriptFork)
+                        ? await loadPersistedTranscript(sessionId, "latest")
+                        : await loadPersistedTranscript(sessionId, "full");
                 if (!transcriptLoaded) {
                     throw new Error(
-                        supportsNativeResume
+                        supportsNativeResume ||
+                            (isCustomRuntime && !customRuntimeTranscriptFork)
                             ? "Failed to load the latest saved transcript before resuming."
                             : "Failed to load the full saved transcript before resuming.",
                     );
@@ -10606,7 +10811,130 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let resumedSession: AIChatSession;
                 let resumeContextPending = false;
 
-                if (supportsNativeResume) {
+                if (isCustomRuntime && !customRuntimeTranscriptFork) {
+                    const continuationStrategy =
+                        latestSession.continuationStrategy;
+                    const launchFingerprint =
+                        latestSession.runtimeLaunchFingerprint?.trim();
+                    const runtimeSessionId =
+                        latestSession.runtimeSessionId?.trim() ||
+                        historySessionId;
+                    if (!continuationStrategy || !launchFingerprint) {
+                        set((state) => {
+                            const current = state.sessionsById[sessionId];
+                            if (!current) return state;
+                            return {
+                                sessionsById: {
+                                    ...state.sessionsById,
+                                    [sessionId]: upsertSessionStatusMessage(
+                                        removeSessionMessage(
+                                            {
+                                                ...current,
+                                                runtimeState: "transcript_only",
+                                                isResumingSession: false,
+                                                resumeReconnectFailed: false,
+                                            },
+                                            `status:${SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID}`,
+                                        ),
+                                        createCustomRuntimeContinuationStatus(
+                                            sessionId,
+                                            CUSTOM_RUNTIME_NO_CONTINUATION_MESSAGE,
+                                        ),
+                                    ),
+                                },
+                            };
+                        });
+                        return null;
+                    }
+
+                    let confirmedLaunchFingerprint: string | null = null;
+                    let continuationResult =
+                        await aiContinueCustomRuntimeSession({
+                            runtimeId: latestSession.runtimeId,
+                            runtimeSessionId,
+                            runtimeLaunchFingerprint: launchFingerprint,
+                            continuationStrategy,
+                            confirmedLaunchFingerprint,
+                            vaultPath,
+                            additionalRoots:
+                                latestSession.additionalRoots ?? null,
+                        });
+                    while (
+                        continuationResult.status ===
+                        "confirmation_required"
+                    ) {
+                        const approved = await confirm(
+                            continuationResult.message,
+                            {
+                                title: "Custom ACP runtime changed",
+                                kind: "warning",
+                                okLabel: "Continue",
+                                cancelLabel: "Cancel",
+                            },
+                        );
+                        if (!approved) {
+                            set((state) => {
+                                const current = state.sessionsById[sessionId];
+                                if (!current) return state;
+                                return {
+                                    sessionsById: {
+                                        ...state.sessionsById,
+                                        [sessionId]: removeSessionMessage(
+                                            {
+                                                ...current,
+                                                isResumingSession: false,
+                                                resumeReconnectFailed: false,
+                                            },
+                                            `status:${SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID}`,
+                                        ),
+                                    },
+                                };
+                            });
+                            return null;
+                        }
+                        confirmedLaunchFingerprint =
+                            continuationResult.launchFingerprint;
+                        continuationResult =
+                            await aiContinueCustomRuntimeSession({
+                                runtimeId: latestSession.runtimeId,
+                                runtimeSessionId,
+                                runtimeLaunchFingerprint: launchFingerprint,
+                                continuationStrategy,
+                                confirmedLaunchFingerprint,
+                                vaultPath,
+                                additionalRoots:
+                                    latestSession.additionalRoots ?? null,
+                            });
+                    }
+                    if (continuationResult.status === "transcript_only") {
+                        set((state) => {
+                            const current = state.sessionsById[sessionId];
+                            if (!current) return state;
+                            return {
+                                sessionsById: {
+                                    ...state.sessionsById,
+                                    [sessionId]: upsertSessionStatusMessage(
+                                        removeSessionMessage(
+                                            {
+                                                ...current,
+                                                runtimeState: "transcript_only",
+                                                isResumingSession: false,
+                                                resumeReconnectFailed: false,
+                                            },
+                                            `status:${SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID}`,
+                                        ),
+                                        createCustomRuntimeContinuationStatus(
+                                            sessionId,
+                                            continuationResult.message,
+                                        ),
+                                    ),
+                                },
+                            };
+                        });
+                        return null;
+                    }
+                    resumedSession = continuationResult.session;
+                } else if (supportsNativeResume) {
                     try {
                         resumedSession = await aiResumeRuntimeSession(
                             latestSession.runtimeId,
@@ -10765,19 +11093,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const message = getAiErrorMessage(
                     error,
                     "Failed to resume the saved chat.",
+                    (get().sessionsById[sessionId] ?? session).runtimeId,
                 );
                 const failedSession = get().sessionsById[sessionId] ?? session;
-                const supportsNativeResume = runtimeSupportsCapability(
-                    get().runtimes,
-                    failedSession.runtimeId,
-                    "resume_session",
-                );
                 logResumeRecovery("failed", {
-                    resume_strategy: supportsNativeResume
-                        ? "native_load_session"
-                        : "transcript_prompt_injection",
-                    history_session_id:
-                        getRuntimeHistorySessionId(failedSession),
+                    resume_strategy: resumeStrategy,
+                    history_session_id: getRuntimeHistorySessionId(
+                        failedSession,
+                    ),
                     runtime_id: failedSession.runtimeId,
                     persisted_message_count:
                         getSessionPersistedMessageCount(failedSession),
@@ -10839,7 +11162,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return;
                 }
                 if (!isLiveRuntimeSession(existing)) {
-                    await get().resumeSession(sessionId);
+                    if (existing.runtimeState !== "transcript_only") {
+                        await get().resumeSession(sessionId);
+                    } else {
+                        await get().ensureSessionTranscriptLoaded(
+                            sessionId,
+                            "latest",
+                        );
+                    }
                     return;
                 }
 
@@ -10864,7 +11194,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     if (restored) {
                         get().upsertSession(restored, true);
-                        await get().resumeSession(restored.sessionId);
+                        if (restored.runtimeState !== "transcript_only") {
+                            await get().resumeSession(restored.sessionId);
+                        } else {
+                            await get().ensureSessionTranscriptLoaded(
+                                restored.sessionId,
+                                "latest",
+                            );
+                        }
                         return;
                     }
                 }
@@ -10915,7 +11252,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             restored.sessionId,
                             restored.historySessionId,
                         );
-                    await get().resumeSession(restored.sessionId);
+                    if (restored.runtimeState !== "transcript_only") {
+                        await get().resumeSession(restored.sessionId);
+                    } else {
+                        await get().ensureSessionTranscriptLoaded(
+                            restored.sessionId,
+                            "latest",
+                        );
+                    }
                     return;
                 }
 
@@ -13146,6 +13490,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const message = getAiErrorMessage(
                     error,
                     "Failed to create a new session.",
+                    nextRuntimeId,
                 );
                 if (provisionalSessionId) {
                     markPendingSessionError(message);
@@ -13762,6 +14107,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...session,
                     sessionId: forkedSessionId,
                     historySessionId: newHistoryId,
+                    runtimeSessionId: session.runtimeId.startsWith("custom:")
+                        ? null
+                        : session.runtimeSessionId,
+                    continuationStrategy: session.runtimeId.startsWith("custom:")
+                        ? "new_session_only"
+                        : session.continuationStrategy,
                     status: "idle",
                     isResumingSession: false,
                     isPersistedSession: true,

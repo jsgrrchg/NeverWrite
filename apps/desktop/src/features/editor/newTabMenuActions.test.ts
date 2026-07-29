@@ -106,4 +106,33 @@ describe("newTabMenuActions", () => {
         ).not.toHaveBeenCalled();
         expect(useChatStore.getState().selectedRuntimeId).toBe("codex-acp");
     });
+
+    it("offers custom ACP runtimes and creates chats with their runtime ID", async () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+        }));
+
+        getNewAgentChild("Local reviewer").action?.();
+
+        await waitFor(() => {
+            expect(
+                chatPaneMovementMock.createNewChatInWorkspace,
+            ).toHaveBeenCalledWith(runtimeId, { paneId: "secondary" });
+        });
+        expect(useChatStore.getState().selectedRuntimeId).toBe(runtimeId);
+    });
 });

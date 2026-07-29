@@ -9,8 +9,8 @@ import {
     formatDuration,
     formatSessionTime,
     getHistorySelectionId,
-    getRuntimeName,
     getSessionPreview,
+    getSessionRuntimeName,
     getSessionTitle,
     getSessionTitleText,
     getSessionUpdatedAt,
@@ -69,7 +69,7 @@ export function HistorySessionCard({
 
     const title = getSessionTitle(session);
     const preview = getSessionPreview(session);
-    const runtimeLabel = getRuntimeName(session.runtimeId, runtimes).replace(
+    const runtimeLabel = getSessionRuntimeName(session, runtimes).replace(
         / ACP$/,
         "",
     );

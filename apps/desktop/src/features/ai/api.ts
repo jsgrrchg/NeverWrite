@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@neverwrite/runtime";
 import type { VaultNoteChange } from "../../app/store/vaultStore";
 import { toVaultRelativePath } from "../../app/utils/vaultPaths";
 import type {
+    AcpContinuationStrategy,
     AIAvailableCommandsPayload,
     AIAuthTerminalErrorPayload,
     AIAuthTerminalOutputPayload,
@@ -12,6 +13,10 @@ import type {
     AIBackendSessionPayload,
     AIChatAttachment,
     AIClaudeProviderRouting,
+    AICustomAcpExecutableVerification,
+    AICustomAcpRuntimeDefinition,
+    AICustomAcpRuntimeDefinitionInput,
+    AICustomAcpRuntimeId,
     AIChatSession,
     AIConfigOption,
     AIMessageCompletedPayload,
@@ -35,6 +40,7 @@ import type {
     AISessionErrorPayload,
     PersistedSessionHistory,
     PersistedSessionHistoryPage,
+    CustomRuntimeContinuationResult,
 } from "./types";
 import { buildFallbackRuntimeDescriptors } from "./utils/runtimeMetadata";
 import { isClaudeTerminalAuthMethodId } from "./utils/authMethods";
@@ -177,6 +183,10 @@ export function normalizeBackendSession(
         customTitle: null,
         persistedTitle: session.title ?? null,
         runtimeId: session.runtime_id,
+        runtimeDisplayName: session.runtime_display_name ?? null,
+        runtimeRevision: session.runtime_revision ?? null,
+        runtimeLaunchFingerprint: session.runtime_launch_fingerprint ?? null,
+        continuationStrategy: session.continuation_strategy ?? null,
         additionalRoots: session.additional_roots ?? [],
         // Client-only flag; never spread from backend payload.
         discardedAdditionalRoots: session.discarded_additional_roots ?? [],
@@ -384,6 +394,54 @@ export async function aiListRuntimes() {
         );
         return FALLBACK_RUNTIMES;
     }
+}
+
+export async function aiListCustomRuntimes() {
+    return invoke<AICustomAcpRuntimeDefinition[]>("ai_list_custom_runtimes");
+}
+
+export async function aiListDeletedCustomRuntimes() {
+    return invoke<AICustomAcpRuntimeDefinition[]>(
+        "ai_list_deleted_custom_runtimes",
+    );
+}
+
+export async function aiCreateCustomRuntime(
+    definition: AICustomAcpRuntimeDefinitionInput,
+) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_create_custom_runtime", {
+        input: definition,
+    });
+}
+
+export async function aiUpdateCustomRuntime(input: {
+    id: AICustomAcpRuntimeId;
+    definition: AICustomAcpRuntimeDefinitionInput;
+}) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_update_custom_runtime", {
+        input,
+    });
+}
+
+export async function aiDeleteCustomRuntime(id: AICustomAcpRuntimeId) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_delete_custom_runtime", {
+        input: { id },
+    });
+}
+
+export async function aiRestoreCustomRuntime(id: AICustomAcpRuntimeId) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_restore_custom_runtime", {
+        input: { id },
+    });
+}
+
+export async function aiVerifyCustomRuntime(
+    definition: AICustomAcpRuntimeDefinitionInput,
+) {
+    return invoke<AICustomAcpExecutableVerification>(
+        "ai_verify_custom_runtime",
+        { input: definition },
+    );
 }
 
 export async function aiListSessions(vaultPath: string | null) {
@@ -619,6 +677,35 @@ export async function aiResumeRuntimeSession(
         },
     );
     return normalizeBackendSession(session);
+}
+
+export async function aiContinueCustomRuntimeSession(input: {
+    runtimeId: string;
+    runtimeSessionId: string;
+    runtimeLaunchFingerprint: string;
+    continuationStrategy: AcpContinuationStrategy;
+    confirmedLaunchFingerprint?: string | null;
+    vaultPath: string | null;
+    additionalRoots?: string[] | null;
+}): Promise<CustomRuntimeContinuationResult> {
+    const result = await invoke<
+        | { status: "connected"; session: AIBackendSessionPayload }
+        | Exclude<CustomRuntimeContinuationResult, { status: "connected" }>
+    >("ai_continue_custom_runtime_session", {
+        input: {
+            runtime_id: input.runtimeId,
+            runtime_session_id: input.runtimeSessionId,
+            runtime_launch_fingerprint: input.runtimeLaunchFingerprint,
+            continuation_strategy: input.continuationStrategy,
+            confirmed_launch_fingerprint:
+                input.confirmedLaunchFingerprint ?? null,
+            additional_roots: input.additionalRoots ?? null,
+        },
+        vaultPath: input.vaultPath ?? null,
+    });
+    return result.status === "connected"
+        ? { ...result, session: normalizeBackendSession(result.session) }
+        : result;
 }
 
 export async function aiForkRuntimeSession(

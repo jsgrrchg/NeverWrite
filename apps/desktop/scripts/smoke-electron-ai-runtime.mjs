@@ -33,6 +33,8 @@ class SidecarClient {
         // backed by OS secure storage.
         NEVERWRITE_AI_SECRET_STORE:
           process.env.NEVERWRITE_AI_SECRET_STORE?.trim() || "memory",
+        NEVERWRITE_CUSTOM_ACP_TEST_SECRET: "must-not-reach-custom-runtime",
+        CUSTOM_ACP_INHERITED_ONLY: "must-not-be-inherited",
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -205,12 +207,23 @@ async function writeFakeAcpRuntime(runtimeDir) {
   await fs.writeFile(
     modulePath,
     `
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-const sessionId = "fake-electron-acp-session";
+const sessionId = process.env.FAKE_ACP_SESSION_ID ?? "fake-electron-acp-session";
 const requestLogPath = ${JSON.stringify(requestLogPath)};
 const providerFailurePath = ${JSON.stringify(providerFailurePath)};
+const continuation = process.env.FAKE_ACP_CONTINUATION ?? "none";
+const customCapturePath = process.env.CUSTOM_ACP_CAPTURE_FILE;
+const interactive = process.env.FAKE_ACP_INTERACTIVE === "true";
+if (process.env.FAKE_ACP_EXIT_EARLY === "true") process.exit(17);
+if (customCapturePath) {
+  writeFileSync(customCapturePath, JSON.stringify({
+    argv: process.argv.slice(2),
+    env: process.env,
+    pid: process.pid
+  }));
+}
 function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
 }
@@ -245,10 +258,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   appendFileSync(requestLogPath, JSON.stringify(message) + "\\n");
   if (message.method === "initialize") {
+    if (process.env.FAKE_ACP_INVALID_HANDSHAKE === "true") {
+      result(message.id, "invalid initialize response");
+      return;
+    }
     const providerFailure = readFileSync(providerFailurePath, "utf8").trim();
+    const agentCapabilities = providerFailure === "no-capability" ? {} : { providers: {} };
+    if (continuation === "resume") {
+      agentCapabilities.sessionCapabilities = { resume: {} };
+    } else if (continuation === "load") {
+      agentCapabilities.loadSession = true;
+    }
     result(message.id, {
       protocolVersion: 1,
-      agentCapabilities: providerFailure === "no-capability" ? {} : { providers: {} },
+      agentCapabilities,
       agentInfo: { name: "fake-electron-acp", title: "Fake Electron ACP", version: "0.0.0" }
     });
     return;
@@ -301,6 +324,23 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     });
     return;
   }
+  if (message.method === "session/resume") {
+    result(message.id, { configOptions: configOptions() });
+    return;
+  }
+  if (message.method === "session/load") {
+    result(message.id, {
+      modes: {
+        currentModeId: "default",
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "review", name: "Review" }
+        ]
+      },
+      configOptions: configOptions()
+    });
+    return;
+  }
   if (message.method === "session/set_model" || message.method === "session/set_mode") {
     result(message.id, {});
     return;
@@ -310,6 +350,71 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (message.method === "session/prompt") {
+    if (interactive) {
+      send({
+        method: "session/update",
+        params: {
+          sessionId: message.params.sessionId,
+          update: {
+            sessionUpdate: "config_option_update",
+            configOptions: configOptions("review")
+          }
+        }
+      });
+      send({
+        method: "session/update",
+        params: {
+          sessionId: message.params.sessionId,
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [{
+              name: "inspect",
+              description: "Inspect the custom runtime",
+              input: { hint: "target" }
+            }]
+          }
+        }
+      });
+      send({
+        method: "session/update",
+        params: {
+          sessionId: message.params.sessionId,
+          update: { sessionUpdate: "usage_update", used: 123, size: 456 }
+        }
+      });
+      send({
+        id: "fake-permission-request",
+        method: "session/request_permission",
+        params: {
+          sessionId: message.params.sessionId,
+          toolCall: {
+            toolCallId: "tool-permission-1",
+            title: "Allow reversible edit",
+            kind: "edit",
+            status: "pending",
+            rawInput: { file_path: "Notes/A.md", content: "# Alpha changed\\n" },
+            locations: [{ path: "Notes/A.md" }]
+          },
+          options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }]
+        }
+      });
+      send({
+        id: "fake-user-input-request",
+        method: "elicitation/create",
+        params: {
+          mode: "form",
+          sessionId: message.params.sessionId,
+          message: "Confirm the custom runtime input",
+          requestedSchema: {
+            type: "object",
+            properties: {
+              answer: { type: "string", title: "Answer" }
+            },
+            required: ["answer"]
+          }
+        }
+      });
+    }
     send({
       method: "session/update",
       params: {
@@ -355,7 +460,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   );
   await fs.writeFile(providerFailurePath, "");
   await fs.chmod(runtimePath, 0o755).catch(() => {});
-  return { runtimePath, requestLogPath, providerFailurePath };
+  return { runtimePath, modulePath, requestLogPath, providerFailurePath };
 }
 
 async function readRequestLog(requestLogPath) {
@@ -364,6 +469,20 @@ async function readRequestLog(requestLogPath) {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+}
+
+async function waitForProcessExit(pid, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error.code === "ESRCH") return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Custom ACP process ${pid} did not exit`);
 }
 
 async function writeFakeGrokAcpRuntime(runtimeDir) {
@@ -510,6 +629,7 @@ async function main() {
   );
   const {
     runtimePath: fakeAcpPath,
+    modulePath: fakeAcpModulePath,
     requestLogPath: fakeAcpRequestLogPath,
     providerFailurePath: fakeAcpProviderFailurePath,
   } = await writeFakeAcpRuntime(runtimeDir);
@@ -533,6 +653,533 @@ async function main() {
         `${runtimeId} runtime descriptor missing`,
       );
     }
+
+    const customCapturePath = path.join(runtimeDir, "custom-acp-capture.json");
+    const customShellMarkerPath = path.join(runtimeDir, "shell-must-not-run");
+    const customDefinitionInput = {
+      displayName: "Smoke custom ACP",
+      command: process.execPath,
+      args: [
+        fakeAcpModulePath,
+        "--literal-argument",
+        `; touch ${customShellMarkerPath}`,
+      ],
+      env: {
+        AGENT_COLOR: "blue",
+        CUSTOM_ACP_CAPTURE_FILE: customCapturePath,
+        FAKE_ACP_CONTINUATION: "resume",
+        FAKE_ACP_INTERACTIVE: "true",
+        FAKE_ACP_SESSION_ID: "fake-custom-resume-session",
+      },
+      authMode: "external",
+    };
+    const customDefinition = await client.invoke("ai_create_custom_runtime", {
+      input: customDefinitionInput,
+    });
+    assert(
+      customDefinition.id.startsWith("custom:") &&
+        customDefinition.revision === 1 &&
+        customDefinition.launchFingerprint.length === 64,
+      "custom runtime definition should have stable launch identity",
+    );
+    const runtimesWithCustom = await client.invoke("ai_list_runtimes");
+    const customDescriptor = runtimesWithCustom.find(
+      (runtime) => runtime.runtime.id === customDefinition.id,
+    );
+    assert(customDescriptor, "custom runtime descriptor missing");
+    assert(
+      customDescriptor.runtime.capabilities.join(",") === "create_session",
+      "custom runtime descriptor should advertise conservative capabilities",
+    );
+    const customSetup = await client.invoke("ai_get_setup_status", {
+      runtimeId: customDefinition.id,
+    });
+    assert(
+      customSetup.binary_ready === true &&
+        customSetup.auth_ready === true &&
+        customSetup.auth_method === "external" &&
+        customSetup.auth_methods.length === 0,
+      "custom runtime setup should use executable readiness and external auth",
+    );
+
+    await fs.writeFile(fakeAcpRequestLogPath, "");
+    let cursor = client.eventCursor();
+    const customSession = await client.invoke("ai_create_session", {
+      input: {
+        runtime_id: customDefinition.id,
+        additional_roots: null,
+      },
+      vaultPath,
+    });
+    assert(customSession.status === "idle", "custom session should start idle");
+    await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://runtime-connection" &&
+        event.payload?.runtime_id === customDefinition.id &&
+        event.payload?.status === "ready",
+      "custom runtime ready after session create",
+    );
+    const customRequests = await readRequestLog(fakeAcpRequestLogPath);
+    assert(
+      customRequests.map((request) => request.method).join(",") ===
+        "initialize,session/new",
+      "custom runtime should use current ACP without provider or auth handshakes",
+    );
+    const customCapture = JSON.parse(
+      await fs.readFile(customCapturePath, "utf8"),
+    );
+    assert(
+      customCapture.argv.join("|") ===
+        `--literal-argument|; touch ${customShellMarkerPath}`,
+      "custom arguments must be passed literally without a shell",
+    );
+    assert(
+      !(await fs.stat(customShellMarkerPath).catch(() => null)),
+      "custom arguments must never be evaluated as shell syntax",
+    );
+    assert(
+      customCapture.env.AGENT_COLOR === "blue" &&
+        customCapture.env.CUSTOM_ACP_CAPTURE_FILE === customCapturePath,
+      "configured custom environment should reach only its runtime",
+    );
+    const resolvedNodeDir = path.dirname(await fs.realpath(process.execPath));
+    const capturedRuntimePath = customCapture.env.PATH.split(path.delimiter);
+    assert(
+      (customCapture.env.HOME === process.env.HOME ||
+        customCapture.env.USERPROFILE === process.env.USERPROFILE) &&
+        capturedRuntimePath.includes(resolvedNodeDir),
+      "custom runtime should receive safe platform environment and a controlled PATH",
+    );
+    assert(
+      customCapture.env.NEVERWRITE_CUSTOM_ACP_TEST_SECRET === undefined &&
+        customCapture.env.CUSTOM_ACP_INHERITED_ONLY === undefined &&
+        customCapture.env.NEVERWRITE_AI_SECRET_STORE === undefined &&
+        customCapture.env.CODEX_API_KEY === undefined &&
+        customCapture.env.OPENAI_API_KEY === undefined,
+      "custom runtime must not inherit sidecar or provider secrets",
+    );
+    const allowedCustomEnv = new Set([
+      "APPDATA",
+      "HOME",
+      "LANG",
+      "LC_ALL",
+      "LOCALAPPDATA",
+      "SystemRoot",
+      "TEMP",
+      "TMP",
+      "TMPDIR",
+      "USERPROFILE",
+      "XDG_CACHE_HOME",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "PATHEXT",
+      "PATH",
+      "AGENT_COLOR",
+      "CUSTOM_ACP_CAPTURE_FILE",
+      "FAKE_ACP_CONTINUATION",
+      "FAKE_ACP_INTERACTIVE",
+      "FAKE_ACP_SESSION_ID",
+      // macOS injects this process-local locale hint after spawn even when the
+      // parent uses env_clear(); it is not inherited from the sidecar payload.
+      "__CF_USER_TEXT_ENCODING",
+    ]);
+    const unexpectedCustomEnv = Object.keys(customCapture.env).filter(
+      (key) => !allowedCustomEnv.has(key),
+    );
+    assert(
+      unexpectedCustomEnv.length === 0,
+      `custom runtime inherited environment keys outside the allowlist: ${unexpectedCustomEnv.join(", ")}`,
+    );
+
+    cursor = client.eventCursor();
+    await client.invoke("ai_send_message", {
+      sessionId: customSession.session_id,
+      content: "Exercise custom ACP events.",
+      attachments: [],
+    });
+    const customCommands = await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://available-commands-updated" &&
+        event.payload?.session_id === customSession.session_id,
+      "custom ACP slash commands",
+    );
+    assert(
+      customCommands.payload?.commands?.[0]?.label === "/inspect",
+      "custom ACP slash commands should update the owning session",
+    );
+    const customUsage = await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://token-usage" &&
+        event.payload?.session_id === customSession.session_id,
+      "custom ACP token usage",
+    );
+    assert(
+      customUsage.payload?.used === 123 && customUsage.payload?.size === 456,
+      "custom ACP usage should update the owning session",
+    );
+    const customSessionAfterUpdates = await client.invoke("ai_load_session", {
+      sessionId: customSession.session_id,
+    });
+    assert(
+      customSessionAfterUpdates.config_options?.some(
+        (option) => option.id === "mode" && option.value === "review",
+      ),
+      "custom ACP config updates should update the owning session",
+    );
+    const permission = await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://permission-request" &&
+        event.payload?.session_id === customSession.session_id,
+      "custom ACP permission request",
+    );
+    assert(
+      permission.payload?.diffs?.[0]?.reversible === true,
+      "custom ACP permission diffs should be reversible",
+    );
+    const userInput = await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://user-input-request" &&
+        event.payload?.session_id === customSession.session_id,
+      "custom ACP user input request",
+    );
+    await client.invoke("ai_respond_permission", {
+      input: {
+        session_id: customSession.session_id,
+        request_id: permission.payload.request_id,
+        option_id: "allow",
+      },
+    });
+    await client.invoke("ai_respond_user_input", {
+      input: {
+        session_id: customSession.session_id,
+        request_id: userInput.payload.request_id,
+        answers: { answer: ["confirmed"] },
+        action: "accept",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await fs.writeFile(fakeAcpRequestLogPath, "");
+    const resumedCustomSession = await client.invoke(
+      "ai_continue_custom_runtime_session",
+      {
+        input: {
+          runtime_id: customDefinition.id,
+          runtime_session_id: customSession.session_id,
+          runtime_launch_fingerprint: customDefinition.launchFingerprint,
+          continuation_strategy: "resume",
+          confirmed_launch_fingerprint: null,
+          additional_roots: null,
+        },
+        vaultPath,
+      },
+    );
+    assert(
+      resumedCustomSession.status === "connected" &&
+        resumedCustomSession.session.session_id === customSession.session_id,
+      "custom resume continuation should reconnect the persisted ACP session",
+    );
+    const resumeRequests = await readRequestLog(fakeAcpRequestLogPath);
+    assert(
+      resumeRequests.map((request) => request.method).join(",") ===
+        "initialize,session/resume",
+      "a custom runtime advertising resume must receive session/resume",
+    );
+
+    const secondCapturePath = path.join(
+      runtimeDir,
+      "second-custom-acp-capture.json",
+    );
+    const secondDefinition = await client.invoke("ai_create_custom_runtime", {
+      input: {
+        displayName: "Second smoke custom ACP",
+        command: process.execPath,
+        args: [fakeAcpModulePath, "--second-runtime"],
+        env: {
+          SECOND_ONLY: "green",
+          CUSTOM_ACP_CAPTURE_FILE: secondCapturePath,
+          FAKE_ACP_CONTINUATION: "load",
+          FAKE_ACP_SESSION_ID: "fake-custom-load-session",
+        },
+        authMode: "external",
+      },
+    });
+    const secondCustomSession = await client.invoke("ai_create_session", {
+      input: {
+        runtime_id: secondDefinition.id,
+        additional_roots: null,
+      },
+      vaultPath,
+    });
+    const secondCapture = JSON.parse(
+      await fs.readFile(secondCapturePath, "utf8"),
+    );
+    assert(
+      secondCapture.env.SECOND_ONLY === "green" &&
+        secondCapture.env.AGENT_COLOR === undefined &&
+        customCapture.env.SECOND_ONLY === undefined,
+      "custom runtimes must not share configured environment",
+    );
+
+    await fs.writeFile(fakeAcpRequestLogPath, "");
+    const loadedCustomSession = await client.invoke(
+      "ai_continue_custom_runtime_session",
+      {
+        input: {
+          runtime_id: secondDefinition.id,
+          runtime_session_id: secondCustomSession.session_id,
+          runtime_launch_fingerprint: secondDefinition.launchFingerprint,
+          continuation_strategy: "load",
+          confirmed_launch_fingerprint: null,
+          additional_roots: null,
+        },
+        vaultPath,
+      },
+    );
+    assert(
+      loadedCustomSession.status === "connected" &&
+        loadedCustomSession.session.session_id === secondCustomSession.session_id,
+      "custom load continuation should reconnect the persisted ACP session",
+    );
+    const loadRequests = await readRequestLog(fakeAcpRequestLogPath);
+    assert(
+      loadRequests.map((request) => request.method).join(",") ===
+        "initialize,session/load",
+      "a custom runtime advertising load must receive session/load",
+    );
+    const loadedSecondCapture = JSON.parse(
+      await fs.readFile(secondCapturePath, "utf8"),
+    );
+    await client.invoke("ai_delete_runtime_session", {
+      sessionId: loadedCustomSession.session.session_id,
+    });
+    await waitForProcessExit(loadedSecondCapture.pid);
+
+    const newOnlyDefinition = await client.invoke("ai_create_custom_runtime", {
+      input: {
+        displayName: "New-session-only custom ACP",
+        command: process.execPath,
+        args: [fakeAcpModulePath, "--new-session-only"],
+        env: {
+          FAKE_ACP_CONTINUATION: "none",
+          FAKE_ACP_SESSION_ID: "fake-custom-new-only-session",
+        },
+        authMode: "external",
+      },
+    });
+    const newOnlySession = await client.invoke("ai_create_session", {
+      input: { runtime_id: newOnlyDefinition.id, additional_roots: null },
+      vaultPath,
+    });
+    assert(
+      newOnlySession.continuation_strategy === "new_session_only",
+      "a custom ACP without continuation capabilities should be transcript-only",
+    );
+    const newOnlyContinuation = await client.invoke(
+      "ai_continue_custom_runtime_session",
+      {
+        input: {
+          runtime_id: newOnlyDefinition.id,
+          runtime_session_id: newOnlySession.session_id,
+          runtime_launch_fingerprint: newOnlyDefinition.launchFingerprint,
+          continuation_strategy: "new_session_only",
+          confirmed_launch_fingerprint: null,
+          additional_roots: null,
+        },
+        vaultPath,
+      },
+    );
+    assert(
+      newOnlyContinuation.status === "transcript_only",
+      "a new-session-only custom ACP must not attempt to reconnect",
+    );
+    await client.invoke("ai_delete_runtime_session", {
+      sessionId: newOnlySession.session_id,
+    });
+
+    const missingDefinition = await client.invoke("ai_create_custom_runtime", {
+      input: {
+        displayName: "Missing custom ACP",
+        command: path.join(runtimeDir, "does-not-exist"),
+        args: [],
+        env: {},
+        authMode: "external",
+      },
+    });
+    const missingSetup = await client.invoke("ai_get_setup_status", {
+      runtimeId: missingDefinition.id,
+    });
+    assert(
+      missingSetup.binary_ready === false,
+      "a missing custom executable must not be ready",
+    );
+    await client
+      .invoke("ai_create_session", {
+        input: { runtime_id: missingDefinition.id, additional_roots: null },
+        vaultPath,
+      })
+      .then(
+        () => {
+          throw new Error("a missing custom executable should not start");
+        },
+        () => {},
+      );
+    const earlyExitDefinition = await client.invoke("ai_create_custom_runtime", {
+      input: {
+        displayName: "Early-exit custom ACP",
+        command: process.execPath,
+        args: [fakeAcpModulePath],
+        env: { FAKE_ACP_EXIT_EARLY: "true" },
+        authMode: "external",
+      },
+    });
+    await client
+      .invoke("ai_create_session", {
+        input: { runtime_id: earlyExitDefinition.id, additional_roots: null },
+        vaultPath,
+      })
+      .then(
+        () => {
+          throw new Error("an early-exit custom ACP should not start");
+        },
+        () => {},
+      );
+    const invalidHandshakeDefinition = await client.invoke(
+      "ai_create_custom_runtime",
+      {
+        input: {
+          displayName: "Invalid-handshake custom ACP",
+          command: process.execPath,
+          args: [fakeAcpModulePath],
+          env: { FAKE_ACP_INVALID_HANDSHAKE: "true" },
+          authMode: "external",
+        },
+      },
+    );
+    await client
+      .invoke("ai_create_session", {
+        input: {
+          runtime_id: invalidHandshakeDefinition.id,
+          additional_roots: null,
+        },
+        vaultPath,
+      })
+      .then(
+        () => {
+          throw new Error("an invalid custom ACP handshake should not start");
+        },
+        () => {},
+      );
+
+    await client.invoke("ai_save_session_history", {
+      vaultPath,
+      history: {
+        ...minimalHistory(customSession.session_id),
+        runtime_id: customDefinition.id,
+        runtime_display_name: customDefinition.displayName,
+        runtime_revision: customDefinition.revision,
+        runtime_launch_fingerprint: customDefinition.launchFingerprint,
+        runtime_session_id: customSession.session_id,
+        continuation_strategy: "resume",
+      },
+    });
+    await client.invoke("ai_update_custom_runtime", {
+      input: {
+        id: customDefinition.id,
+        definition: {
+          ...customDefinitionInput,
+          command: path.join(runtimeDir, "missing-after-session-start"),
+        },
+      },
+    });
+    await client.invoke("ai_delete_custom_runtime", {
+      input: { id: customDefinition.id },
+    });
+    cursor = client.eventCursor();
+    await client.invoke("ai_send_message", {
+      sessionId: customSession.session_id,
+      content: "Continue after the custom definition was changed and deleted.",
+      attachments: [],
+    });
+    await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://message-completed" &&
+        event.payload?.session_id === customSession.session_id,
+      "active custom session survives definition edit and deletion",
+    );
+    const runtimesAfterCustomDelete = await client.invoke("ai_list_runtimes");
+    assert(
+      !runtimesAfterCustomDelete.some(
+        (runtime) => runtime.runtime.id === customDefinition.id,
+      ) &&
+        runtimesAfterCustomDelete.some(
+          (runtime) => runtime.runtime.id === secondDefinition.id,
+        ),
+      "deleting one custom definition must not affect other runtimes",
+    );
+    const customHistories = await client.invoke("ai_load_session_histories", {
+      vaultPath,
+      includeMessages: true,
+    });
+    assert(
+      customHistories.some(
+        (history) =>
+          history.session_id === customSession.session_id &&
+          history.runtime_id === customDefinition.id,
+      ),
+      "deleting a custom definition must retain its transcript",
+    );
+    await client.invoke("ai_restore_custom_runtime", {
+      input: { id: customDefinition.id },
+    });
+    const restoredDefinition = await client.invoke("ai_update_custom_runtime", {
+      input: {
+        id: customDefinition.id,
+        definition: {
+          ...customDefinitionInput,
+          args: [...customDefinitionInput.args, "--restored-definition"],
+        },
+      },
+    });
+    const confirmation = await client.invoke("ai_continue_custom_runtime_session", {
+      input: {
+        runtime_id: customDefinition.id,
+        runtime_session_id: customSession.session_id,
+        runtime_launch_fingerprint: customDefinition.launchFingerprint,
+        continuation_strategy: "resume",
+        confirmed_launch_fingerprint: null,
+        additional_roots: null,
+      },
+      vaultPath,
+    });
+    assert(
+      confirmation.status === "confirmation_required",
+      "a restored changed custom definition should require continuation confirmation",
+    );
+    const restoredContinuation = await client.invoke(
+      "ai_continue_custom_runtime_session",
+      {
+        input: {
+          runtime_id: customDefinition.id,
+          runtime_session_id: customSession.session_id,
+          runtime_launch_fingerprint: customDefinition.launchFingerprint,
+          continuation_strategy: "resume",
+          confirmed_launch_fingerprint: restoredDefinition.launchFingerprint,
+          additional_roots: null,
+        },
+        vaultPath,
+      },
+    );
+    assert(
+      restoredContinuation.status === "connected",
+      "a restored custom definition should reconnect after confirmation",
+    );
 
     const setup = await client.invoke("ai_get_setup_status", {
       runtimeId: "codex-acp",
@@ -558,7 +1205,7 @@ async function main() {
       "diagnostics missing codex runtime",
     );
 
-    let cursor = client.eventCursor();
+    cursor = client.eventCursor();
     const session = await client.invoke("ai_create_session", {
       input: {
         runtime_id: "codex-acp",
@@ -885,7 +1532,10 @@ async function main() {
       vaultPath,
       includeMessages: false,
     });
-    assert(histories.length === 1, "history summary should load");
+    assert(
+      histories.some((history) => history.session_id === session.session_id),
+      "history summary should load",
+    );
     const page = await client.invoke("ai_load_session_history_page", {
       vaultPath,
       sessionId: session.session_id,
@@ -897,7 +1547,7 @@ async function main() {
       vaultPath,
       query: "searchable",
     });
-    assert(search.length === 1, "history search should find content");
+    assert(search.length >= 1, "history search should find content");
     const forkedId = await client.invoke("ai_fork_session_history", {
       vaultPath,
       sourceSessionId: session.session_id,

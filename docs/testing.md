@@ -107,7 +107,7 @@ npm run electron:ai-runtime:smoke
 
 `electron:vault-editor:smoke` exercises opening a fixture vault, note/file CRUD, search, backlinks, wikilinks, maps, and filesystem watcher events through the sidecar.
 
-`electron:ai-runtime:smoke` uses a fake ACP runtime to validate runtime descriptors, setup state, session creation, streamed assistant output, tool diff projection, session history persistence/search/fork/delete, agent-origin file restoration, and unsupported terminal auth handling.
+`electron:ai-runtime:smoke` uses a fake ACP runtime to validate runtime descriptors, built-in and custom setup state, isolated custom environment launch, capability-driven resume/load/new-session-only behavior, negotiated options/commands/usage, permission and user-input requests, tool diff projection, history persistence/search/fork/delete, custom definition restore/reconnect, process cleanup, agent-origin file restoration, and unsupported terminal auth handling.
 
 Packaged smokes require a packaged Electron output first:
 
