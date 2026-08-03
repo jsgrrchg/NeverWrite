@@ -196,10 +196,22 @@ describe("askUserQuestionsToCreateRequest", () => {
         expect(schema.properties?.["question_0_custom"]).toMatchObject({
             type: "string",
             title: "Other",
+            _meta: {
+                _askUserQuestionCustomAnswer: {
+                    questionId: "question_0",
+                    isCustomAnswer: true,
+                },
+            },
         });
         expect(schema.properties?.["question_1_custom"]).toMatchObject({
             type: "string",
             title: "Other",
+            _meta: {
+                _askUserQuestionCustomAnswer: {
+                    questionId: "question_1",
+                    isCustomAnswer: true,
+                },
+            },
         });
     });
     it("builds an array property for multi-select questions and includes per-field question text", () => {

@@ -1,5 +1,5 @@
 import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, DisableProviderRequest, DisableProviderResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListProvidersRequest, ListProvidersResponse, LlmProtocol, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, SetProviderRequest, SetProviderResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
-import { AgentInfo, CanUseTool, FastModeDisabledReason, FastModeState, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { AgentInfo, CanUseTool, FastModeDisabledReason, FastModeState, ModelInfo, Options, PermissionMode, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
@@ -19,6 +19,14 @@ type AccumulatedUsage = {
     cachedReadTokens: number;
     cachedWriteTokens: number;
 };
+/** Request-level steering options. `promptRequired` is opt-in so existing Hosts
+ *  keep the established idle fallback behavior. */
+type SteerMeta = {
+    [key: string]: unknown;
+    steering?: {
+        idleBehavior?: "promptRequired";
+    };
+};
 /** Params of a {@link STEER_METHOD} request. Shaped like the relevant subset of
  *  a `PromptRequest` so the same `promptToClaude` conversion applies. Delivery
  *  priority is deliberately NOT exposed here — it's an internal detail the agent
@@ -26,20 +34,18 @@ type AccumulatedUsage = {
 export type SteerRequest = {
     sessionId: string;
     prompt: PromptRequest["prompt"];
+    _meta?: SteerMeta | null;
 };
-/** Where a steering message was accepted, per the wire protocol's two
- *  successful outcomes:
- *   - `injected`: a turn was still running and the message was applied to it;
- *   - `startedNewTurn`: the turn we meant to steer had already finished (an
- *     unavoidable race), so the message began a fresh turn instead of being
- *     dropped.
- *  Both are success results — never a JSON-RPC error — and tell the client
- *  where the message landed. */
-type SteerOutcome = "injected" | "startedNewTurn";
-/** Result of a {@link STEER_METHOD} request: the single required `outcome`
- *  field the client reads to learn where its steering message was accepted. */
+/** Result of a {@link STEER_METHOD} request. The legacy `startedNewTurn` result
+ *  remains the default idle behavior; `promptRequired` is returned only when the
+ *  Host explicitly opts into the host-owned fallback in request `_meta`. */
 export type SteerResponse = {
-    outcome: SteerOutcome;
+    outcome: "injected";
+} | {
+    outcome: "startedNewTurn";
+} | {
+    outcome: "promptRequired";
+    reason: "noRunningTurn";
 };
 /** Internal model-selection state. Mirrors the shape the ACP SDK exposed as
  *  `SessionModelState` before model selection moved entirely into
@@ -581,13 +587,6 @@ export declare function isLocalCommandMetadata(content: unknown): boolean;
 export declare function isSyntheticLoginMessage(apiMessage: unknown): boolean;
 export declare function resolvePermissionMode(defaultMode?: unknown, logger?: Logger): PermissionMode;
 /**
- * Builds the label for the "Always Allow" permission option so the user can see
- * the exact scope they are committing to. Uses the SDK-provided suggestions
- * when available (e.g. `Bash(npm test:*)`) and falls back to naming the whole
- * tool so "Always Allow" is never a blank check without disclosure.
- */
-export declare function describeAlwaysAllow(suggestions: PermissionUpdate[] | undefined, toolName: string): string;
-/**
  * Client-facing surface the agent calls back into. This is the subset of ACP
  * client methods the agent actually uses, expressed as a narrow interface so
  * tests can supply lightweight mocks. In production it is backed by
@@ -670,11 +669,10 @@ export declare class ClaudeAcpAgent {
     resolveProviderConfig(): ProviderConfig | null;
     logout(_params: LogoutRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
-    /** Steer the session per the ACP steering wire protocol: apply a follow-up
-     *  message to the turn that is currently running, or — if that turn already
-     *  finished — start a fresh turn with it. Never drops the message and never
-     *  returns a JSON-RPC error for the "arrived too late" race; both paths are
-     *  success outcomes (see {@link SteerOutcome}).
+    /** Steer the session per the ACP steering wire protocol: inject a follow-up
+     *  message into the turn that is currently running. If that turn already
+     *  settled, the established default starts a new detached turn; Hosts may opt
+     *  into the host-owned `promptRequired` fallback through request `_meta`.
      *
      *  When a turn is in flight this injects (returns `injected`): unlike
      *  `prompt()`, it does NOT create a Turn or enqueue on `turnQueue`; it pushes
@@ -687,12 +685,11 @@ export declare class ClaudeAcpAgent {
      *  calls). The steered message's own output streams via `session/update`, not
      *  this response.
      *
-     *  When the session is idle (no unsettled turn — the turn we meant to steer
-     *  raced ahead and finished), this starts a normal new turn with the message
-     *  and returns `startedNewTurn`. That turn is fire-and-forget from the steer
-     *  request's view: its `PromptResponse` and output flow through the usual
-     *  `prompt()`/`session/update` path, so we return the outcome immediately
-     *  rather than awaiting turn completion. */
+     *  When the session is idle, the opt-in path returns `promptRequired` WITHOUT
+     *  calling `prompt()`, pushing SDK input, or mutating `turnQueue`: the content
+     *  stays Host-owned so the Host can submit it through a standard
+     *  `session/prompt`. Without the opt-in, the existing detached `prompt()` and
+     *  `startedNewTurn` result are preserved for compatibility. */
     steer(params: SteerRequest): Promise<SteerResponse>;
     /** Lazily start the per-session consumer that drains the SDK query stream for
      *  the session's whole life. Idempotent: only the first `prompt()` starts it. */

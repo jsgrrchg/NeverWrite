@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.64.2](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.64.1...v0.64.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* restore the single-tool representation for ExitPlanMode ([#942](https://github.com/agentclientprotocol/claude-agent-acp/issues/942)) ([4302a4b](https://github.com/agentclientprotocol/claude-agent-acp/commit/4302a4b0b6df821b164cbe4857f26cf5b44b532c))
+
+## [0.64.1](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.64.0...v0.64.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* release 0.65.0 ([#939](https://github.com/agentclientprotocol/claude-agent-acp/issues/939)) ([0936ec2](https://github.com/agentclientprotocol/claude-agent-acp/commit/0936ec281ec730714c605e3da732069ff47d8969))
+
+## [0.64.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.63.0...v0.64.0) (2026-07-30)
+
+
+### Features
+
+* **deps:** Bump actions/checkout from 7.0.0 to 7.0.1 ([#925](https://github.com/agentclientprotocol/claude-agent-acp/issues/925)) ([8e099e8](https://github.com/agentclientprotocol/claude-agent-acp/commit/8e099e844254c3e91508c79a02e3e7dc2239fcbb))
+* **deps:** Bump the minor group with 7 updates ([#928](https://github.com/agentclientprotocol/claude-agent-acp/issues/928)) ([3f60921](https://github.com/agentclientprotocol/claude-agent-acp/commit/3f609219592e63b947539f79c696b3cedb421060))
+
+
+### Bug Fixes
+
+* **steering:** add opt-in host-owned fallback ([#919](https://github.com/agentclientprotocol/claude-agent-acp/issues/919)) ([43af4ec](https://github.com/agentclientprotocol/claude-agent-acp/commit/43af4ec29ea5396c2614813af05967bfb0b1bac8)), closes [#903](https://github.com/agentclientprotocol/claude-agent-acp/issues/903)
+
 ## [0.63.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.62.0...v0.63.0) (2026-07-27)
 
 

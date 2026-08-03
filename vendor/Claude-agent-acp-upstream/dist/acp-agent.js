@@ -68,16 +68,24 @@ function parseSteerRequest(params) {
     if (!params || typeof params !== "object") {
         throw RequestError.invalidParams(undefined, "steer params must be an object");
     }
-    const { sessionId, prompt } = params;
+    const { sessionId, prompt, _meta } = params;
     if (typeof sessionId !== "string" || sessionId.length === 0) {
         throw RequestError.invalidParams(undefined, "steer params require a non-empty sessionId");
     }
     if (!Array.isArray(prompt) || prompt.length === 0) {
         throw RequestError.invalidParams(undefined, "steer params require a non-empty prompt array");
     }
+    const steering = _meta && typeof _meta === "object" ? _meta.steering : undefined;
+    const idleBehavior = steering && typeof steering === "object"
+        ? steering.idleBehavior
+        : undefined;
+    if (idleBehavior !== undefined && idleBehavior !== "promptRequired") {
+        throw RequestError.invalidParams(undefined, "unsupported steering idleBehavior");
+    }
     return {
         sessionId,
         prompt: prompt,
+        _meta: _meta,
     };
 }
 /** Result-message origin kinds that mark an AUTONOMOUS cycle — work the
@@ -416,39 +424,110 @@ export function resolvePermissionMode(defaultMode, logger = console) {
     }
     return mapped;
 }
-/**
- * Builds the label for the "Always Allow" permission option so the user can see
- * the exact scope they are committing to. Uses the SDK-provided suggestions
- * when available (e.g. `Bash(npm test:*)`) and falls back to naming the whole
- * tool so "Always Allow" is never a blank check without disclosure.
- */
-export function describeAlwaysAllow(suggestions, toolName) {
-    if (!suggestions || suggestions.length === 0) {
-        return `Always Allow all ${toolName}`;
+function permissionLifetime(destination) {
+    switch (destination) {
+        case "session":
+            return { scope: "session" };
+        case "cliArg":
+            return { scope: "process", storage: "cli_argument" };
+        case "userSettings":
+            return { scope: "persistent", storage: "user" };
+        case "projectSettings":
+            return { scope: "persistent", storage: "project" };
+        case "localSettings":
+            return { scope: "persistent", storage: "project_local" };
+        default:
+            return { scope: "unknown" };
     }
-    const ruleLabels = [];
-    const directories = [];
-    for (const update of suggestions) {
-        if (update.type === "addRules" && update.behavior === "allow") {
-            for (const rule of update.rules) {
-                ruleLabels.push(rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : `all ${rule.toolName}`);
+}
+function permissionMetadataForAlwaysAllow(suggestions, toolName) {
+    const effectiveSuggestions = suggestions && suggestions.length > 0
+        ? suggestions
+        : [
+            {
+                type: "addRules",
+                rules: [{ toolName }],
+                behavior: "allow",
+                destination: "session",
+            },
+        ];
+    const changes = [];
+    for (const update of effectiveSuggestions) {
+        switch (update.type) {
+            case "addRules":
+            case "removeRules":
+            case "replaceRules": {
+                const operation = update.type === "addRules" ? "add" : update.type === "removeRules" ? "remove" : "replace";
+                const targets = update.rules.map((rule) => ({
+                    type: "tool",
+                    toolName: rule.toolName,
+                    ...(rule.ruleContent
+                        ? {
+                            matcher: {
+                                type: "provider_rule",
+                                provider: "claudeCode",
+                                value: rule.ruleContent,
+                            },
+                        }
+                        : {}),
+                }));
+                const renderedRules = update.rules
+                    .map((rule) => rule.ruleContent
+                    ? `${rule.toolName} calls matching ${rule.ruleContent}`
+                    : `all ${rule.toolName} calls`)
+                    .join(", ");
+                const verb = operation === "add"
+                    ? update.behavior === "allow"
+                        ? "Allow"
+                        : update.behavior === "deny"
+                            ? "Deny"
+                            : "Ask before"
+                    : operation === "remove"
+                        ? `Remove ${update.behavior} rules for`
+                        : `Replace ${update.behavior} rules with`;
+                changes.push({
+                    type: "policy_rule",
+                    operation,
+                    ruleBehavior: update.behavior,
+                    description: `${verb} ${renderedRules}`,
+                    lifetime: permissionLifetime(update.destination),
+                    targets,
+                });
+                break;
             }
+            case "addDirectories":
+            case "removeDirectories": {
+                const operation = update.type === "addDirectories" ? "add" : "remove";
+                changes.push({
+                    type: "policy_rule",
+                    operation,
+                    ruleBehavior: "allow",
+                    description: operation === "add"
+                        ? `Allow filesystem access under ${update.directories.join(", ")}`
+                        : `Remove additional filesystem access under ${update.directories.join(", ")}`,
+                    lifetime: permissionLifetime(update.destination),
+                    targets: update.directories.map((path) => ({
+                        type: "filesystem",
+                        matcher: { type: "directory", path },
+                    })),
+                });
+                break;
+            }
+            case "setMode":
+                changes.push({
+                    type: "permission_mode",
+                    operation: "set",
+                    provider: "claudeCode",
+                    mode: update.mode,
+                    description: `Set Claude Code permission mode to ${update.mode}`,
+                    lifetime: permissionLifetime(update.destination),
+                });
+                break;
+            default:
+                break;
         }
-        else if (update.type === "addDirectories") {
-            directories.push(...update.directories);
-        }
     }
-    const parts = [];
-    if (ruleLabels.length > 0) {
-        parts.push(ruleLabels.join(", "));
-    }
-    if (directories.length > 0) {
-        parts.push(`access to ${directories.join(", ")}`);
-    }
-    if (parts.length === 0) {
-        return `Always Allow all ${toolName}`;
-    }
-    return `Always Allow ${parts.join(" and ")}`;
+    return { version: 1, changes };
 }
 /**
  * Bridges {@link AcpClient} to the connection-scoped {@link AgentContext}
@@ -645,10 +724,9 @@ export class ClaudeAcpAgent {
                 ...terminalAuthMethods,
                 ...(supportsGatewayAuth ? [gatewayAuthMethod, gatewayBedrockAuthMethod] : []),
             ],
-            // Top-level `_meta` (sibling of `agentCapabilities`), per the ACP steering
-            // wire protocol: advertises the `_session/steering` extension request so
-            // clients know they may inject a follow-up into the running turn (see
-            // STEER_METHOD) instead of queuing it as a separate `session/prompt`.
+            // Top-level `_meta` (sibling of `agentCapabilities`), per the existing ACP
+            // steering extension contract: advertises the `_session/steering` request
+            // so clients know they may inject a follow-up into a running turn.
             _meta: {
                 steering: {
                     supported: true,
@@ -905,11 +983,10 @@ export class ClaudeAcpAgent {
         this.ensureConsumer(session, params.sessionId);
         return response;
     }
-    /** Steer the session per the ACP steering wire protocol: apply a follow-up
-     *  message to the turn that is currently running, or — if that turn already
-     *  finished — start a fresh turn with it. Never drops the message and never
-     *  returns a JSON-RPC error for the "arrived too late" race; both paths are
-     *  success outcomes (see {@link SteerOutcome}).
+    /** Steer the session per the ACP steering wire protocol: inject a follow-up
+     *  message into the turn that is currently running. If that turn already
+     *  settled, the established default starts a new detached turn; Hosts may opt
+     *  into the host-owned `promptRequired` fallback through request `_meta`.
      *
      *  When a turn is in flight this injects (returns `injected`): unlike
      *  `prompt()`, it does NOT create a Turn or enqueue on `turnQueue`; it pushes
@@ -922,15 +999,13 @@ export class ClaudeAcpAgent {
      *  calls). The steered message's own output streams via `session/update`, not
      *  this response.
      *
-     *  When the session is idle (no unsettled turn — the turn we meant to steer
-     *  raced ahead and finished), this starts a normal new turn with the message
-     *  and returns `startedNewTurn`. That turn is fire-and-forget from the steer
-     *  request's view: its `PromptResponse` and output flow through the usual
-     *  `prompt()`/`session/update` path, so we return the outcome immediately
-     *  rather than awaiting turn completion. */
+     *  When the session is idle, the opt-in path returns `promptRequired` WITHOUT
+     *  calling `prompt()`, pushing SDK input, or mutating `turnQueue`: the content
+     *  stays Host-owned so the Host can submit it through a standard
+     *  `session/prompt`. Without the opt-in, the existing detached `prompt()` and
+     *  `startedNewTurn` result are preserved for compatibility. */
     async steer(params) {
         const sessionId = params.sessionId;
-        const prompt = params.prompt;
         const session = this.sessions[sessionId];
         if (!session) {
             throw new Error("Session not found");
@@ -940,24 +1015,31 @@ export class ClaudeAcpAgent {
         }
         // "A turn is running" = the queue holds an unsettled turn. This covers both
         // the activated turn and one just submitted but not yet echoed/activated,
-        // which is exactly the window in which steering is meaningful.
-        const turnInFlight = (session.turnQueue ?? []).some((t) => !t.settled);
-        const promptRequest = {
-            sessionId: sessionId,
-            prompt: prompt,
-        };
+        // which is exactly the window in which steering is meaningful. This check
+        // and the active-path push below stay in one synchronous section so the
+        // turn cannot settle in the gap between deciding to inject and enqueueing.
+        const turnInFlight = (session.turnQueue ?? []).some((turn) => !turn.settled);
         if (!turnInFlight) {
-            // Race: the turn we meant to steer already finished. Per the protocol the
-            // message must not be dropped nor surfaced as an error — start a fresh
-            // turn with it. Don't await: the new turn streams via session/update and
-            // its PromptResponse is consumed by the normal prompt() path; we only owe
-            // the client the outcome. `.catch` keeps the detached promise from
-            // becoming an unhandled rejection.
+            const promptRequest = {
+                sessionId,
+                prompt: params.prompt,
+            };
+            if (params._meta?.steering?.idleBehavior === "promptRequired") {
+                // The opt-in path leaves the content untouched so the Host can retry via
+                // a normal session/prompt whose lifecycle owns the continuation result.
+                return { outcome: "promptRequired", reason: "noRunningTurn" };
+            }
+            // Preserve the established default for Hosts that do not opt in. This is
+            // intentionally detached for compatibility with the existing contract.
             this.prompt(promptRequest).catch((error) => {
                 this.logger.error(`Session ${sessionId}: steered new turn failed: ${error}`);
             });
             return { outcome: "startedNewTurn" };
         }
+        const promptRequest = {
+            sessionId,
+            prompt: params.prompt,
+        };
         const userMessage = promptToClaude(promptRequest);
         userMessage.uuid = randomUUID();
         // Deliver into the running turn rather than queuing behind it as a fresh
@@ -3415,7 +3497,6 @@ export class ClaudeAcpAgent {
     }
     canUseTool(sessionId) {
         return async (toolName, toolInput, { signal, suggestions, toolUseID, agentID, matchedAskRule }) => {
-            const alwaysAllowLabel = describeAlwaysAllow(suggestions, toolName);
             const supportsTerminalOutput = this.clientCapabilities?._meta?.["terminal_output"] === true;
             const session = this.sessions[sessionId];
             if (!session) {
@@ -3540,13 +3621,16 @@ export class ClaudeAcpAgent {
             }
             const response = await this.requestPermissionFromClient({
                 options: [
+                    { kind: "reject_once", name: "Deny", optionId: "reject" },
+                    { kind: "allow_once", name: "Allow Once", optionId: "allow" },
                     {
                         kind: "allow_always",
-                        name: alwaysAllowLabel,
+                        name: "Always Allow",
                         optionId: "allow_always",
+                        _meta: {
+                            permission: permissionMetadataForAlwaysAllow(suggestions, toolName),
+                        },
                     },
-                    { kind: "allow_once", name: "Allow", optionId: "allow" },
-                    { kind: "reject_once", name: "Reject", optionId: "reject" },
                 ],
                 sessionId,
                 toolCall: {
