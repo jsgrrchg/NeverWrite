@@ -6223,6 +6223,7 @@ fn acp_config_option_remote_command(
     AcpConfigOptionRemoteCommand::SetConfigOption
 }
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
+    let permission_scope = permission_scope_descriptions(option.meta.as_ref());
     AiPermissionOptionPayload {
         option_id: option.option_id.0.to_string(),
         name: option.name,
@@ -6233,7 +6234,35 @@ fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload 
             PermissionOptionKind::RejectAlways => "reject_always".to_string(),
             _ => "other".to_string(),
         },
+        permission_scope,
     }
+}
+
+/// Extract the stable v1 permission scope supplied by agents that support it.
+/// Unknown versions and malformed extension metadata intentionally remain opaque.
+fn permission_scope_descriptions(meta: Option<&Meta>) -> Vec<String> {
+    let Some(permission) = meta
+        .and_then(|meta| meta.get("permission"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+
+    if permission.get("version").and_then(Value::as_u64) != Some(1) {
+        return Vec::new();
+    }
+
+    permission
+        .get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|change| change.get("description").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn map_tool_call(
@@ -10790,6 +10819,67 @@ mod tests {
     const CODEX_ACP_SUBAGENT_WAITING_END_EVENT: &str = "waiting_end";
     const PARENT_RUNTIME_SESSION_ID: &str = "parent-runtime-session-id";
     const CHILD_RUNTIME_SESSION_ID: &str = "child-runtime-session-id";
+
+    #[test]
+    fn permission_option_preserves_v1_permission_scope_descriptions() {
+        let option = PermissionOption::new(
+            "always-allow-bash",
+            "Always Allow",
+            PermissionOptionKind::AllowAlways,
+        )
+        .meta(Meta::from_iter([(
+            "permission".to_string(),
+            json!({
+                "version": 1,
+                "changes": [
+                    { "description": " Bash(pnpm test:*) " },
+                    { "description": "Edit(src/**)" },
+                    { "description": "" },
+                    { "description": 42 }
+                ]
+            }),
+        )]));
+
+        let payload = map_permission_option(option);
+
+        assert_eq!(
+            payload.permission_scope,
+            vec!["Bash(pnpm test:*)", "Edit(src/**)"]
+        );
+    }
+
+    #[test]
+    fn permission_option_ignores_unknown_permission_scope_versions() {
+        let option = PermissionOption::new(
+            "always-allow-bash",
+            "Always Allow",
+            PermissionOptionKind::AllowAlways,
+        )
+        .meta(Meta::from_iter([(
+            "permission".to_string(),
+            json!({
+                "version": 2,
+                "changes": [{ "description": "Bash(pnpm test:*)" }]
+            }),
+        )]));
+
+        assert!(map_permission_option(option).permission_scope.is_empty());
+    }
+
+    #[test]
+    fn permission_option_ignores_malformed_permission_scope_metadata() {
+        let option = PermissionOption::new(
+            "always-allow-bash",
+            "Always Allow",
+            PermissionOptionKind::AllowAlways,
+        )
+        .meta(Meta::from_iter([(
+            "permission".to_string(),
+            json!({ "version": 1, "changes": { "description": "Bash(*)" } }),
+        )]));
+
+        assert!(map_permission_option(option).permission_scope.is_empty());
+    }
 
     #[test]
     fn session_plan_update_emits_plan_event_without_tool_activity() {

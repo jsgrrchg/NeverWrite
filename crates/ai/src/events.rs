@@ -204,6 +204,8 @@ pub struct AiPermissionOptionPayload {
     pub option_id: String,
     pub name: String,
     pub kind: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub permission_scope: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

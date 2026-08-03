@@ -1719,6 +1719,10 @@ function PermissionDecisionButton({
 }) {
     const [hovered, setHovered] = useState(false);
     const isReject = option.kind.startsWith("reject");
+    const permissionScope =
+        option.kind === "allow_always" && option.permission_scope?.length
+            ? option.permission_scope
+            : undefined;
     const interactive = !disabled;
     const hovering = hovered && interactive;
 
@@ -1786,7 +1790,14 @@ function PermissionDecisionButton({
                     <path d="M2.5 6.2L4.9 8.6L9.6 3.6" />
                 )}
             </svg>
-            {option.name}
+            <span className="flex flex-col items-start leading-tight">
+                <span>{option.name}</span>
+                {permissionScope ? (
+                    <span className="max-w-80 break-all text-left text-[0.86em] opacity-85">
+                        {permissionScope.join(", ")}
+                    </span>
+                ) : null}
+            </span>
         </button>
     );
 }

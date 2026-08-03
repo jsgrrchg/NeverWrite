@@ -679,6 +679,7 @@ export interface AIPermissionOption {
     option_id: string;
     name: string;
     kind: string;
+    permission_scope?: string[];
 }
 
 export interface AIFileDiffHunkLine {

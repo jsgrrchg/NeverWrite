@@ -1186,6 +1186,44 @@ describe("AIChatMessageItem tool diffs", () => {
         ).not.toBeInTheDocument();
     });
 
+    it("shows the Always Allow permission scope on the decision button", () => {
+        renderMessage({
+            id: "permission:always-allow",
+            role: "assistant",
+            kind: "permission",
+            title: "Permission request",
+            content: "Run tests",
+            timestamp: Date.now(),
+            permissionRequestId: "req-always-allow",
+            permissionOptions: [
+                {
+                    option_id: "allow_always",
+                    name: "Always Allow",
+                    kind: "allow_always",
+                    permission_scope: ["Bash(pnpm test:*)"],
+                },
+                {
+                    option_id: "plan-auto",
+                    name: 'Yes, and use "auto" mode',
+                    kind: "allow_once",
+                    permission_scope: ["This must not appear on plan options"],
+                },
+            ],
+            meta: {
+                status: "pending",
+            },
+        });
+
+        expect(
+            screen.getByRole("button", {
+                name: "Always Allow Bash(pnpm test:*)",
+            }),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByText("This must not appear on plan options"),
+        ).not.toBeInTheDocument();
+    });
+
     it("labels moved files without showing a fake textual diff", () => {
         renderMessage(
             createDiffMessage("tool:move", {

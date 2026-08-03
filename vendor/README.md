@@ -64,10 +64,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty/`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.63.0`
-  - upstream tag: `v0.63.0`
-  - upstream commit: `15979bba7907484ee22111cdc33b79b0bdcd452d`
-  - dependencies match the upstream `0.63.0` release (`@agentclientprotocol/sdk` `1.3.0`, `@anthropic-ai/claude-agent-sdk` `0.3.220`, `@anthropic-ai/sdk` `0.115.0`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.64.2`
+  - upstream tag: `v0.64.2`
+  - upstream commit: `c98141201e50778d6679f2c578cbbebe1402d7e6`
+  - dependencies match the upstream `0.64.2` release (`@agentclientprotocol/sdk` `1.3.0`, `@anthropic-ai/claude-agent-sdk` `0.3.220`, `@anthropic-ai/sdk` `0.115.0`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 - `acp12/`
   - local package names: `agent-client-protocol-legacy` and
@@ -217,11 +217,11 @@ compatibility paths that NeverWrite depends on.
 
 ## Current Claude Delta
 
-The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.63.0` at commit `15979bba7907484ee22111cdc33b79b0bdcd452d`, with no NeverWrite-specific runtime source delta.
+The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.64.2` at commit `c98141201e50778d6679f2c578cbbebe1402d7e6`, with no NeverWrite-specific runtime source delta.
 
-The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.63.0` retains the linear-time ReDoS protection and its whole-line matching, so no local runtime patch needs to be reapplied.
+The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.64.2` retains the linear-time ReDoS protection and its whole-line matching, so no local runtime patch needs to be reapplied.
 
-Upstream `0.63.0` includes an opt-in `subagent-transcript` client capability. NeverWrite does not advertise that capability, so Claude keeps the legacy behavior that filters nested subagent text and thinking from the top-level feed. Rich nested transcript integration remains intentionally out of scope.
+Upstream `0.64.2` includes an opt-in `subagent-transcript` client capability. NeverWrite does not advertise that capability, so Claude keeps the legacy behavior that filters nested subagent text and thinking from the top-level feed. Rich nested transcript integration remains intentionally out of scope.
 
 The `dist/` directory is rebuilt from the vendored source snapshot because the
 desktop packaging flow stages the compiled runtime files, while upstream does

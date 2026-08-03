@@ -137,7 +137,7 @@ dictionary licenses.
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.63.0  | Apache-2.0                      |
+| @agentclientprotocol/claude-agent-acp   | 0.64.2  | Apache-2.0                      |
 | @agentclientprotocol/sdk                | 1.3.0   | Apache-2.0                      |
 | @anthropic-ai/claude-agent-sdk          | 0.3.220 | Anthropic SDK terms in LICENSE.md |
 | @anthropic-ai/claude-agent-sdk-*        | 0.3.220 | Anthropic SDK terms in LICENSE.md |
@@ -308,7 +308,7 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.62.0` (`53a0c36ce3b0b76929d11d8b9565e319da745608`) with generated `dist/` runtime files required by desktop packaging |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.64.2` (`c98141201e50778d6679f2c578cbbebe1402d7e6`) with generated `dist/` runtime files required by desktop packaging |
 | `dist/`               | Generated from the exact vendored source and force-added because upstream ignores build output |
 
 > All original copyright notices and license headers have been preserved.
