@@ -99,8 +99,12 @@ dictionary licenses.
 | @xterm/xterm                   | MIT         |
 | @xterm/addon-fit               | MIT         |
 | @xterm/addon-search            | MIT         |
+| @xterm/addon-serialize         | MIT         |
 | @xterm/addon-web-links         | MIT         |
+| @xterm/addon-webgl             | MIT         |
+| @replit/codemirror-vim         | MIT         |
 | katex                          | MIT         |
+| mermaid                        | MIT         |
 | papaparse                      | MIT         |
 | pdfjs-dist                     | Apache-2.0  |
 | react-datasheet-grid           | MIT         |
@@ -112,6 +116,7 @@ dictionary licenses.
 | Package                              | License     |
 | ------------------------------------ | ----------- |
 | eslint                               | MIT         |
+| @eslint/js                           | MIT         |
 | eslint-plugin-react-hooks            | MIT         |
 | eslint-plugin-react-refresh          | MIT         |
 | typescript-eslint                    | MIT         |
@@ -120,16 +125,23 @@ dictionary licenses.
 | @testing-library/react              | MIT         |
 | @testing-library/jest-dom           | MIT         |
 | @testing-library/user-event         | MIT         |
+| @playwright/test                    | Apache-2.0  |
+| @types/node, @types/papaparse       | MIT         |
+| @types/react, @types/react-dom      | MIT         |
+| @types/three                        | MIT         |
+| globals                             | MIT         |
+| rcedit                              | MIT         |
+| yaml                                | ISC         |
 
 ### Embedded Claude ACP Runtime
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.62.0  | Apache-2.0                      |
+| @agentclientprotocol/claude-agent-acp   | 0.63.0  | Apache-2.0                      |
 | @agentclientprotocol/sdk                | 1.3.0   | Apache-2.0                      |
-| @anthropic-ai/claude-agent-sdk          | 0.3.219 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/claude-agent-sdk-*        | 0.3.219 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/sdk                       | 0.114.0 | MIT                             |
+| @anthropic-ai/claude-agent-sdk          | 0.3.220 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/claude-agent-sdk-*        | 0.3.220 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/sdk                       | 0.115.0 | MIT                             |
 | @modelcontextprotocol/sdk               | 1.29.0  | MIT                             |
 | zod                                     | 4.4.3   | MIT                             |
 
@@ -147,8 +159,11 @@ being packaged.
 | ----------------------- | ------- |
 | defuddle                | MIT     |
 | dompurify               | MIT     |
-| react-markdown          | MIT     |
-| remark-gfm              | MIT     |
+| react, react-dom        | MIT     |
+| tailwindcss, @tailwindcss/vite | MIT |
+| typescript              | Apache-2.0 |
+| vitest, jsdom           | MIT     |
+| @types/jsdom            | MIT     |
 | @wxt-dev/module-react   | MIT     |
 | wxt                     | MIT     |
 
@@ -172,6 +187,9 @@ The Fliege Mono license text is included at
 | Crate                      | License               |
 | -------------------------- | --------------------- |
 | agent-client-protocol, codex-extension-items | Apache-2.0            |
+| agent-client-protocol-legacy, agent-client-protocol-schema | Apache-2.0 |
+| base64, keyring, libc, tempfile, windows-sys | MIT OR Apache-2.0 |
+| cap-std | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | serde, serde_json          | MIT OR Apache-2.0     |
 | tokio                      | MIT                   |
 | tokio-util                 | MIT                   |
@@ -260,7 +278,8 @@ The bundled dictionary metadata lives in
 
 | Package                          | License     | Source                                  |
 | -------------------------------- | ----------- | --------------------------------------- |
-| codex-acp                        | Apache-2.0  | github.com/zed-industries/codex         |
+| codex-acp 0.16.0                 | Apache-2.0  | github.com/zed-industries/codex-acp     |
+| OpenAI Codex runtime rust-v0.144.6 | Apache-2.0 | github.com/openai/codex                 |
 | Claude-agent-acp-upstream        | Apache-2.0  | Anthropic                               |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
@@ -274,7 +293,11 @@ As required by the Apache-2.0 license, modifications are documented below.
 
 ### `vendor/codex-acp` — Zed Industries (Apache-2.0)
 
-Original source: https://github.com/zed-industries/codex
+Original source: https://github.com/zed-industries/codex-acp (version 0.16.0).
+
+Zed Industries has deprecated Codex ACP. NeverWrite maintains this vendored adapter internally to preserve its Codex integration and compatibility with the application's review and session workflows.
+
+The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.144.6`; its packages are declared as Git dependencies in `vendor/codex-acp/Cargo.toml`.
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
@@ -309,4 +332,4 @@ Original source: https://github.com/zed-industries/codex
 
 ---
 
-*This file is maintained from project dependency metadata. Last updated: 2026-07-11.*
+*This file is maintained from project dependency metadata. Last updated: 2026-08-03.*
