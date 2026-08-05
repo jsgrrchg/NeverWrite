@@ -13,6 +13,7 @@ The short version:
   legacy data.
 - AI chat preferences are mostly global, except auto-context, which is
   per-vault.
+- Customizable application shortcuts are global and stored separately from vault settings.
 - Some persisted values are UI state or caches, not user-facing settings. They
   are listed separately because they still affect debugging and privacy.
 
@@ -38,6 +39,7 @@ The main settings store uses these keys:
 | `neverwrite:settings` | Global fallback | Legacy fallback data plus the explicitly global Vim settings. |
 | `neverwrite:settings:<vault-path>` | Per-vault | Main `Settings` values for the vault, excluding explicitly global keys. |
 | `neverwrite:lastVaultPath` | Global app state | Initial vault path lookup for hydration, not a user-facing setting itself. |
+| `neverwrite:shortcut-overrides` | Global preference | Versioned platform-specific overrides for configurable application shortcuts. |
 
 `GLOBAL_SETTING_KEYS` currently contains:
 
@@ -118,8 +120,31 @@ the same Settings stores.
 | Vault | Recent vaults | Global | `[]` | `neverwrite:recentVaults` | Recent and pinned vault metadata. The main process also mirrors a shortened list to `<app-data>/recent_vaults.json`. |
 | Vault | Last vault path | Global | `null` | `neverwrite:lastVaultPath` | Used for startup and initial settings/theme hydration. |
 | Updates | Update configuration/status | Derived runtime state | N/A | Electron updater APIs | Settings shows version, channel, endpoint, status, and available update. These are not persisted user preferences in the renderer. |
-| Shortcuts | Shortcut reference | Static/derived | N/A | Shortcut registry | Settings currently displays registered shortcuts; it does not persist user shortcut overrides. |
+| Shortcuts | Configurable global shortcuts | Global | Registry binding for the current platform | `neverwrite:shortcut-overrides` | Stores overrides only; defaults, labels, categories, and aliases remain in the shortcut registry. |
+| Shortcuts | Fixed shortcut reference | Static/derived | Shortcut registry | Shortcut registry | Contextual editor, selection, and agent-stop shortcuts remain read-only. |
 | Feedback / Sponsors | Links | Static | N/A | Settings UI | No persisted settings. |
+
+## Global Shortcut Preferences
+
+Customizable application shortcuts are stored under the single global key `neverwrite:shortcut-overrides`; they never use `neverwrite:settings:<vault-path>` and therefore apply across every vault in the installation.
+
+The payload is versioned and keeps macOS and Windows/Linux bindings separate so a restored installation can preserve platform-appropriate choices:
+
+```ts
+type ShortcutOverrides = {
+    version: 1;
+    macos: Partial<Record<ConfigurableShortcutActionId, ShortcutBinding>>;
+    windows: Partial<Record<ConfigurableShortcutActionId, ShortcutBinding>>;
+};
+```
+
+The loader validates action IDs, keys, and modifiers independently and discards only invalid or non-configurable entries. Missing, malformed, or unsupported-version payloads fall back to the registry defaults without changing fixed actions.
+
+An override replaces the action's primary default and its aliases for the current platform. Resetting the action removes its override and restores the exact registry default plus aliases.
+
+The configurable scope contains the 22 global actions shown under `Customizable shortcuts` in Settings. Conflict replacement swaps the displaced action onto the target action's previous binding, preserving one active binding per action without silently creating duplicates or disabling commands.
+
+The 15 entries under `Fixed shortcuts` remain read-only: agent stop, selection-to-chat, find in note, live preview, headings 1–6, remove heading, bold, highlight, link preview, and manual save. Local interaction keys and handlers for inputs, menus, dialogs, terminal, review surfaces, and other contextual UI also remain hardcoded.
 
 ## Graph Settings
 
@@ -251,4 +276,4 @@ when they are persisted or visible in Settings:
 - Review anchors, resolved hunk positions, and transient review synchronization
   state.
 
-Last updated: July 11, 2026.
+Last updated: August 5, 2026.

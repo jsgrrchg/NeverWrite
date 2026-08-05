@@ -19,6 +19,11 @@ type PlatformShortcutOverrides = Partial<
     Record<ConfigurableShortcutActionId, ShortcutBinding>
 >;
 
+export interface ShortcutOverrideChange {
+    actionId: ConfigurableShortcutActionId;
+    binding: ShortcutBinding | null;
+}
+
 export interface ShortcutOverrides {
     version: 1;
     macos: PlatformShortcutOverrides;
@@ -192,14 +197,41 @@ export function setShortcutOverride(
     platform: DesktopPlatform,
     binding: ShortcutBinding,
 ): boolean {
-    const normalizedBinding = normalizeShortcutBinding(binding);
-    if (!normalizedBinding) {
-        return false;
+    return applyShortcutOverrideChanges(platform, [{ actionId, binding }]);
+}
+
+export function applyShortcutOverrideChanges(
+    platform: DesktopPlatform,
+    changes: readonly ShortcutOverrideChange[],
+): boolean {
+    const normalizedChanges: ShortcutOverrideChange[] = [];
+    for (const change of changes) {
+        if (change.binding === null) {
+            normalizedChanges.push(change);
+            continue;
+        }
+
+        const binding = normalizeShortcutBinding(change.binding);
+        if (!binding) {
+            return false;
+        }
+        normalizedChanges.push({ actionId: change.actionId, binding });
     }
 
     const overrides = readShortcutOverrides();
-    overrides[resolveShortcutOverridePlatform(platform)][actionId] =
-        normalizedBinding;
+    const platformOverrides =
+        overrides[resolveShortcutOverridePlatform(platform)];
+    for (const change of normalizedChanges) {
+        if (change.binding) {
+            platformOverrides[change.actionId] = change.binding;
+        } else {
+            delete platformOverrides[change.actionId];
+        }
+    }
+
+    if (!hasAnyShortcutOverrides(overrides)) {
+        return safeStorageRemoveItem(SHORTCUT_OVERRIDES_STORAGE_KEY);
+    }
     return writeShortcutOverrides(overrides);
 }
 
@@ -207,18 +239,9 @@ export function resetShortcutOverride(
     actionId: ConfigurableShortcutActionId,
     platform: DesktopPlatform = getDesktopPlatform(),
 ): boolean {
-    const overrides = readShortcutOverrides();
-    const platformOverrides =
-        overrides[resolveShortcutOverridePlatform(platform)];
-    if (!(actionId in platformOverrides)) {
-        return true;
-    }
-
-    delete platformOverrides[actionId];
-    if (!hasAnyShortcutOverrides(overrides)) {
-        return safeStorageRemoveItem(SHORTCUT_OVERRIDES_STORAGE_KEY);
-    }
-    return writeShortcutOverrides(overrides);
+    return applyShortcutOverrideChanges(platform, [
+        { actionId, binding: null },
+    ]);
 }
 
 export function resetAllShortcutOverrides(

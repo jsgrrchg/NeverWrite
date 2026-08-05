@@ -8,7 +8,10 @@ import { mockInvoke, renderComponent } from "../../test/test-utils";
 import { useAppUpdateStore } from "../updates/store";
 import { APP_ZOOM_STORAGE_KEY } from "../../app/utils/appZoom";
 import { useVaultStore } from "../../app/store/vaultStore";
-import { setShortcutOverride } from "../../app/shortcuts/preferences";
+import {
+    setShortcutOverride,
+    SHORTCUT_OVERRIDES_STORAGE_KEY,
+} from "../../app/shortcuts/preferences";
 
 const aiApiMocks = vi.hoisted(() => ({
     aiListRuntimes: vi.fn(async () => [
@@ -510,6 +513,250 @@ describe("SettingsPanel", () => {
 
         expect(screen.getByText("Ctrl+Alt+Q")).toBeInTheDocument();
         expect(screen.queryByText("Ctrl+O")).not.toBeInTheDocument();
+    });
+
+    it("separates 22 customizable shortcuts from 15 fixed references", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        expect(screen.getByText("Customizable shortcuts")).toBeInTheDocument();
+        expect(screen.getByText("Fixed shortcuts")).toBeInTheDocument();
+        expect(
+            document.querySelectorAll(
+                "section[aria-labelledby='customizable-shortcuts-heading'] [data-shortcut-action]",
+            ),
+        ).toHaveLength(22);
+        expect(
+            document.querySelectorAll(
+                "section[aria-labelledby='fixed-shortcuts-heading'] [data-shortcut-action]",
+            ),
+        ).toHaveLength(15);
+
+        const fixedRow = document.querySelector(
+            "[data-shortcut-action='stop_active_agent']",
+        );
+        expect(fixedRow).not.toBeNull();
+        expect(
+            within(fixedRow as HTMLElement).queryByRole("button"),
+        ).not.toBeInTheDocument();
+    });
+
+    it("records and persists a modified shortcut from the keyboard", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for Quick Switcher",
+        });
+
+        fireEvent.click(record);
+        expect(record).toHaveAttribute("aria-pressed", "true");
+        fireEvent.keyDown(record, {
+            key: "q",
+            ctrlKey: true,
+            altKey: true,
+        });
+
+        expect(
+            within(row).getByLabelText(
+                "Current shortcut for Quick Switcher: Ctrl+Alt+Q",
+            ),
+        ).toBeInTheDocument();
+        expect(
+            JSON.parse(
+                localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
+            ).windows.quick_switcher,
+        ).toEqual({ key: "q", modifiers: ["ctrl", "alt"] });
+    });
+
+    it("cancels recording with Escape and leaves Tab navigation uncaptured", () => {
+        const onClose = vi.fn();
+        renderComponent(<SettingsPanel onClose={onClose} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+
+        act(() => record.focus());
+        fireEvent.click(record);
+        fireEvent.keyDown(record, { key: "Escape" });
+        expect(record).toHaveFocus();
+        expect(record).toHaveAttribute("aria-pressed", "false");
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+        expect(onClose).not.toHaveBeenCalled();
+
+        fireEvent.click(record);
+        expect(fireEvent.keyDown(record, { key: "Tab" })).toBe(true);
+        expect(record).toHaveAttribute("aria-pressed", "false");
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+    });
+
+    it("rejects incomplete and operating-system-reserved combinations", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+        fireEvent.click(record);
+
+        fireEvent.keyDown(record, { key: "n" });
+        expect(
+            screen.getByText("Include at least one modifier key."),
+        ).toBeInTheDocument();
+
+        fireEvent.keyDown(record, { key: "Control", ctrlKey: true });
+        expect(
+            screen.getByText(
+                "Press a non-modifier key to complete the shortcut.",
+            ),
+        ).toBeInTheDocument();
+
+        fireEvent.keyDown(record, { key: "F4", altKey: true });
+        expect(
+            screen.getByText(
+                "This shortcut is reserved by the operating system.",
+            ),
+        ).toBeInTheDocument();
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+    });
+
+    it("requires explicit replacement and swaps conflicting bindings atomically", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const newNoteRow = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(newNoteRow).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+
+        fireEvent.click(record);
+        fireEvent.keyDown(record, { key: "o", ctrlKey: true });
+
+        let dialog = screen.getByRole("alertdialog");
+        expect(dialog).toHaveTextContent("Shortcut already in use");
+        expect(dialog).toHaveTextContent("Quick Switcher will move to Ctrl+N");
+        fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+
+        fireEvent.click(record);
+        fireEvent.keyDown(record, { key: "o", ctrlKey: true });
+        dialog = screen.getByRole("alertdialog");
+        fireEvent.click(
+            within(dialog).getByRole("button", {
+                name: "Replace shortcut",
+            }),
+        );
+
+        const quickSwitcherRow = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        expect(
+            within(newNoteRow).getByLabelText(
+                "Current shortcut for New Note: Ctrl+O",
+            ),
+        ).toBeInTheDocument();
+        expect(
+            within(quickSwitcherRow).getByLabelText(
+                "Current shortcut for Quick Switcher: Ctrl+N",
+            ),
+        ).toBeInTheDocument();
+
+        const stored = JSON.parse(
+            localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
+        );
+        expect(stored.windows).toMatchObject({
+            new_note: { key: "o", modifiers: ["ctrl"] },
+            quick_switcher: { key: "n", modifiers: ["ctrl"] },
+        });
+    });
+
+    it("resets individual shortcuts and confirms reset all", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        setShortcutOverride("quick_switcher", "windows", {
+            key: "q",
+            modifiers: ["ctrl", "alt"],
+        });
+        setShortcutOverride("new_note", "windows", {
+            key: "d",
+            modifiers: ["ctrl", "alt"],
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const quickSwitcherRow = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        fireEvent.click(
+            within(quickSwitcherRow).getByRole("button", {
+                name: "Reset shortcut for Quick Switcher",
+            }),
+        );
+        expect(
+            within(quickSwitcherRow).getByLabelText(
+                "Current shortcut for Quick Switcher: Ctrl+O",
+            ),
+        ).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Reset all" }));
+        const dialog = screen.getByRole("alertdialog");
+        expect(dialog).toHaveTextContent("Reset all shortcuts?");
+        fireEvent.click(
+            within(dialog).getByRole("button", { name: "Reset all" }),
+        );
+
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+        expect(screen.getByText("All shortcuts restored to their defaults.")).toBeInTheDocument();
+    });
+
+    it("filters customizable and fixed shortcut search results", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        fireEvent.change(
+            screen.getByRole("textbox", { name: "Search settings" }),
+            { target: { value: "stop active agent" } },
+        );
+
+        expect(screen.getByText("Fixed shortcuts")).toBeInTheDocument();
+        expect(screen.getByText("Stop active agent")).toBeInTheDocument();
+        expect(screen.queryByText("Quick Switcher")).not.toBeInTheDocument();
+
+        fireEvent.change(
+            screen.getByRole("textbox", { name: "Search settings" }),
+            { target: { value: "record shortcut" } },
+        );
+        expect(screen.getByText("Customizable shortcuts")).toBeInTheDocument();
+        expect(screen.getAllByText("Record shortcut")).toHaveLength(22);
+        expect(screen.queryByText("Fixed shortcuts")).not.toBeInTheDocument();
     });
 
     it("hides the inline close button in standalone Windows settings", () => {

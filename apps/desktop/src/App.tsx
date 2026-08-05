@@ -965,12 +965,16 @@ function useRegisterCommands(
 function useGlobalShortcuts(
     openSettings: () => void,
     shortcutOverrides: ShortcutOverrides,
+    enabled: boolean,
 ) {
     const openCommandPalette = useCommandStore((s) => s.openCommandPalette);
     const closeModal = useCommandStore((s) => s.closeModal);
     const activeModal = useCommandStore((s) => s.activeModal);
 
     useEffect(() => {
+        if (!enabled) {
+            return;
+        }
         const platform = getDesktopPlatform();
         const handler = (e: KeyboardEvent) => {
             if (e.defaultPrevented) return;
@@ -1124,6 +1128,7 @@ function useGlobalShortcuts(
     }, [
         activeModal,
         closeModal,
+        enabled,
         openCommandPalette,
         openSettings,
         shortcutOverrides,
@@ -1491,7 +1496,11 @@ export default function App() {
         windowMode === "main",
         shortcutOverrides,
     );
-    useGlobalShortcuts(openSettings, shortcutOverrides);
+    useGlobalShortcuts(
+        openSettings,
+        shortcutOverrides,
+        windowMode !== "settings" && windowMode !== "ghost",
+    );
     useNativeMenuShortcutSync(shortcutOverrides, windowMode === "main");
     useAppWebviewZoom();
     useNativeMenuActions(windowMode);

@@ -468,7 +468,10 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
 ];
 
 function normalizeShortcutKey(key: string): string {
-    return key.length === 1 ? key.toLowerCase() : key.toLowerCase();
+    const normalized = key.toLowerCase();
+    return normalized === " " || normalized === "spacebar"
+        ? "space"
+        : normalized;
 }
 
 function formatShortcutKey(key: string): string {
