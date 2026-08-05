@@ -48,7 +48,7 @@ function createNewTerminal(paneId?: string) {
     useEditorStore.getState().openTerminal({ paneId });
 }
 
-function openSearch(paneId?: string) {
+export function openSearchInWorkspace(paneId?: string) {
     const editor = useEditorStore.getState();
     const targetPane =
         (paneId
@@ -105,7 +105,7 @@ export function buildNewTabContextMenuEntries(options?: {
         },
         {
             label: SEARCH_TAB_TITLE,
-            action: () => openSearch(paneId),
+            action: () => openSearchInWorkspace(paneId),
         },
         {
             label: "New Agent",

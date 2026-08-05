@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { getAllWebviewWindows, listen, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
@@ -8,6 +8,7 @@ import { mockInvoke, renderComponent } from "../../test/test-utils";
 import { useAppUpdateStore } from "../updates/store";
 import { APP_ZOOM_STORAGE_KEY } from "../../app/utils/appZoom";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { setShortcutOverride } from "../../app/shortcuts/preferences";
 
 const aiApiMocks = vi.hoisted(() => ({
     aiListRuntimes: vi.fn(async () => [
@@ -489,6 +490,26 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("Ctrl+L")).toBeInTheDocument();
         expect(screen.getByText("Stop active agent")).toBeInTheDocument();
         expect(screen.getByText("Escape")).toBeInTheDocument();
+    });
+
+    it("updates shortcut references when global preferences change", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        act(() => {
+            setShortcutOverride("quick_switcher", "windows", {
+                key: "Q",
+                modifiers: ["ctrl", "alt"],
+            });
+        });
+
+        expect(screen.getByText("Ctrl+Alt+Q")).toBeInTheDocument();
+        expect(screen.queryByText("Ctrl+O")).not.toBeInTheDocument();
     });
 
     it("hides the inline close button in standalone Windows settings", () => {

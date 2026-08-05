@@ -26,6 +26,7 @@ import { useChatStore } from "../ai/store/chatStore";
 import type { ActivityDisplayMode } from "../ai/activityDisplayMode";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { getShortcutSettingsEntries } from "../../app/shortcuts/registry";
+import { useShortcutOverrides } from "../../app/shortcuts/useShortcutOverrides";
 import {
     formatPrimaryShortcut,
     formatShortcutAction,
@@ -4883,6 +4884,8 @@ export function SettingsPanel({
     standalone?: boolean;
     initialCategory?: Category;
 }) {
+    useShortcutOverrides();
+
     const initializeUpdates = useAppUpdateStore((state) => state.initialize);
     const updateAvailable = useAppUpdateStore(
         (state) => !!state.status?.update,

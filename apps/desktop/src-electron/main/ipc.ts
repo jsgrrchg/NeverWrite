@@ -29,6 +29,7 @@ import { getSystemUsername } from "./systemUser";
 import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
 import { installDeepLinkRuntime } from "./deepLink";
+import { syncNativeMenuShortcutAccelerators } from "./menu";
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object"
@@ -247,6 +248,11 @@ function registerInvokeHandler(backend: ElectronVaultBackend) {
         // pure TS backend.
         if (envelope.command === "get_system_username") {
             return getSystemUsername();
+        }
+        if (envelope.command === "sync_native_menu_shortcuts") {
+            return syncNativeMenuShortcutAccelerators(
+                asRecord(envelope.args).accelerators,
+            );
         }
         if (envelope.command === "ai_resolve_managed_attachment_path") {
             throw new Error("Private backend command.");

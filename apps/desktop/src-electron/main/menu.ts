@@ -41,7 +41,7 @@ const nativeMenuCommands = new Set([
     "editor:heading-6",
     "editor:heading-0",
     "editor:toggle-live-preview",
-    "developer:new-terminal-tab",
+    "workspace:new-terminal-tab",
     "layout:toggle-sidebar",
     "layout:toggle-right-panel",
     "nav:command-palette",
@@ -54,6 +54,31 @@ const nativeMenuCommands = new Set([
     "nav:next-tab",
     "nav:previous-tab",
 ]);
+
+const configurableNativeMenuCommands = new Set([
+    "app:open-settings",
+    "vault:new-note",
+    "editor:new-tab",
+    "workspace:new-terminal-tab",
+    "vault:open",
+    "editor:close-tab",
+    "editor:reopen-closed-tab",
+    "vault:search",
+    "layout:toggle-sidebar",
+    "layout:toggle-right-panel",
+    "nav:command-palette",
+    "nav:quick-switcher",
+    "app:zoom-in",
+    "app:zoom-out",
+    "app:zoom-reset",
+    "nav:back",
+    "nav:forward",
+    "nav:next-tab",
+    "nav:previous-tab",
+]);
+
+let nativeMenuShortcutAccelerators: Record<string, string | null> | null =
+    null;
 
 function sendRuntimeEvent(
     window: BrowserWindow | null,
@@ -144,10 +169,22 @@ function commandItem(
     label: string,
     accelerator?: string,
 ): MenuItemConstructorOptions {
+    const hasSyncedAccelerator =
+        nativeMenuShortcutAccelerators !== null &&
+        Object.prototype.hasOwnProperty.call(
+            nativeMenuShortcutAccelerators,
+            id,
+        );
+    const effectiveAccelerator =
+        accelerator !== undefined &&
+        configurableNativeMenuCommands.has(id) &&
+        hasSyncedAccelerator
+            ? (nativeMenuShortcutAccelerators?.[id] ?? undefined)
+            : accelerator;
     return {
         id,
         label,
-        accelerator,
+        accelerator: effectiveAccelerator,
         click: () => emitMenuAction(id),
     };
 }
@@ -182,7 +219,7 @@ function buildApplicationMenu() {
             commandItem("vault:new-note", "New Note", "CommandOrControl+N"),
             commandItem("editor:new-tab", "New Tab", "CommandOrControl+T"),
             commandItem(
-                "developer:new-terminal-tab",
+                "workspace:new-terminal-tab",
                 "New Terminal",
                 "CommandOrControl+R",
             ),
@@ -326,6 +363,30 @@ export async function refreshDockMenu() {
 export async function syncRecentVaultsForElectron(rawVaults: unknown) {
     await syncRecentVaults(rawVaults);
     await refreshDockMenu();
+}
+
+export function syncNativeMenuShortcutAccelerators(rawValue: unknown) {
+    const value =
+        rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)
+            ? (rawValue as Record<string, unknown>)
+            : {};
+    const nextAccelerators: Record<string, string | null> = {};
+    for (const commandId of configurableNativeMenuCommands) {
+        if (!Object.prototype.hasOwnProperty.call(value, commandId)) {
+            continue;
+        }
+        const accelerator = value[commandId];
+        nextAccelerators[commandId] =
+            typeof accelerator === "string" && accelerator.length > 0
+                ? accelerator
+                : null;
+    }
+
+    nativeMenuShortcutAccelerators = nextAccelerators;
+    if (process.platform === "darwin") {
+        Menu.setApplicationMenu(buildApplicationMenu());
+    }
+    return true;
 }
 
 export async function installNativeMenus() {
