@@ -675,6 +675,68 @@ describe("MarkdownContent", () => {
         expect(container.querySelector(".chat-code-block")).not.toBeNull();
     });
 
+    it("forms and updates an open code fence while content is streaming", () => {
+        const { container, rerender } = renderComponent(
+            <MarkdownContent
+                content={["```ts", "const answer = 4"].join("\n")}
+                live
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(container.querySelector(".chat-code-frame")).not.toBeNull();
+        expect(container.querySelector("code")).toHaveTextContent(
+            "const answer = 4",
+        );
+        expect(
+            container.querySelector('[data-code-highlight-deferred="true"]'),
+        ).not.toBeNull();
+
+        rerender(
+            <MarkdownContent
+                content={["```ts", "const answer = 42;"].join("\n")}
+                live
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(container.querySelector("code")).toHaveTextContent(
+            "const answer = 42;",
+        );
+    });
+
+    it("stabilizes a streaming code fence as soon as its closing marker arrives", () => {
+        const { container, rerender } = renderComponent(
+            <MarkdownContent
+                content={["~~~ts", "const answer = 42;"].join("\n")}
+                live
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            container.querySelector('[data-code-highlight-deferred="true"]'),
+        ).not.toBeNull();
+
+        rerender(
+            <MarkdownContent
+                content={[
+                    "~~~ts",
+                    "const answer = 42;",
+                    "~~~",
+                    "After the fence.",
+                ].join("\n")}
+                live
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            container.querySelector('[data-code-highlight-deferred="true"]'),
+        ).toBeNull();
+        expect(screen.getByText("After the fence.")).toBeInTheDocument();
+    });
+
     it("previews markdown fences and lets the user inspect their source", () => {
         renderComponent(
             <MarkdownContent

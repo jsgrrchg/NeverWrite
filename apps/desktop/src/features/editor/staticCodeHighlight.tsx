@@ -199,18 +199,29 @@ export function HighlightedCodeText({
     text,
     language,
     segmentKeyPrefix = "cm-static",
+    deferHighlighting = false,
 }: {
     text: string;
     language: LanguageSupport | CodeLanguage | null;
     segmentKeyPrefix?: string;
+    deferHighlighting?: boolean;
 }) {
     const segments = useMemo(
-        () => buildHighlightSegments(text, toLanguage(language)),
-        [language, text],
+        () =>
+            buildHighlightSegments(
+                text,
+                deferHighlighting ? null : toLanguage(language),
+            ),
+        [deferHighlighting, language, text],
     );
 
     return (
-        <span className="cm-static-code">
+        <span
+            className="cm-static-code"
+            data-code-highlight-deferred={
+                deferHighlighting ? "true" : undefined
+            }
+        >
             {renderHighlightSegments(segments, segmentKeyPrefix)}
         </span>
     );

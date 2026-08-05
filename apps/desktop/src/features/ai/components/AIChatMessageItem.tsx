@@ -3403,6 +3403,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
         >
             <MarkdownContent
                 content={message.content}
+                live={message.inProgress === true}
                 pillMetrics={pillMetrics}
                 chatFontSize={chatFontSize}
                 fileReferenceAppearance="link"

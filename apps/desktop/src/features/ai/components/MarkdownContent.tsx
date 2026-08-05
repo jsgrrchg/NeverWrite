@@ -52,6 +52,7 @@ import {
 interface MarkdownContentProps {
     content: string;
     className?: string;
+    live?: boolean;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
     blockQuoteAppearance?: "accent" | "plain";
@@ -345,7 +346,15 @@ function noteIconPath(reference: string) {
 interface Block {
     type: "code" | "text";
     content: string;
+    id: string;
     info?: string;
+    isMutable: boolean;
+}
+
+interface MarkdownFenceOpening {
+    char: "`" | "~";
+    info: string;
+    length: number;
 }
 
 interface MarkdownTable {
@@ -376,37 +385,114 @@ function rememberParsedBlocks(text: string, blocks: Block[]) {
     return blocks;
 }
 
-function parseBlocks(text: string): Block[] {
-    const cached = parsedBlockCache.get(text);
+function parseFenceOpening(line: string): MarkdownFenceOpening | null {
+    const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (!match) return null;
+
+    const marker = match[1] ?? "";
+    const char = marker[0];
+    const info = (match[2] ?? "").trim();
+    if (
+        (char !== "`" && char !== "~") ||
+        (char === "`" && info.includes("`"))
+    ) {
+        return null;
+    }
+
+    return { char, info, length: marker.length };
+}
+
+function isFenceClosingLine(line: string, opening: MarkdownFenceOpening) {
+    let cursor = 0;
+    while (cursor < line.length && line[cursor] === " " && cursor < 3) {
+        cursor += 1;
+    }
+
+    let markerLength = 0;
+    while (line[cursor + markerLength] === opening.char) {
+        markerLength += 1;
+    }
+
+    return (
+        markerLength >= opening.length &&
+        line.slice(cursor + markerLength).trim().length === 0
+    );
+}
+
+function findFenceClosing(
+    text: string,
+    startOffset: number,
+    opening: MarkdownFenceOpening,
+) {
+    let cursor = startOffset;
+    while (cursor < text.length) {
+        const lineEnd = text.indexOf("\n", cursor);
+        const lineTo = lineEnd === -1 ? text.length : lineEnd;
+        if (isFenceClosingLine(text.slice(cursor, lineTo), opening)) {
+            return {
+                from: cursor,
+                to: lineEnd === -1 ? lineTo : lineEnd + 1,
+            };
+        }
+        if (lineEnd === -1) break;
+        cursor = lineEnd + 1;
+    }
+    return null;
+}
+
+function parseBlocks(text: string, live: boolean): Block[] {
+    const cacheKey = `${live ? "live" : "static"}:${text}`;
+    const cached = parsedBlockCache.get(cacheKey);
     if (cached) {
         return cached;
     }
 
     const blocks: Block[] = [];
-    const codeBlockRegex = /```([^\n`]*)\n([\s\S]*?)```/g;
+    let cursor = 0;
     let lastIndex = 0;
-    let match: RegExpExecArray | null;
 
-    while ((match = codeBlockRegex.exec(text)) !== null) {
-        if (match.index > lastIndex) {
+    while (cursor < text.length) {
+        const lineEnd = text.indexOf("\n", cursor);
+        const lineTo = lineEnd === -1 ? text.length : lineEnd;
+        const opening = parseFenceOpening(text.slice(cursor, lineTo));
+        if (!opening) {
+            cursor = lineEnd === -1 ? text.length : lineEnd + 1;
+            continue;
+        }
+
+        if (cursor > lastIndex) {
             blocks.push({
                 type: "text",
-                content: text.slice(lastIndex, match.index),
+                content: text.slice(lastIndex, cursor),
+                id: `text:${lastIndex}`,
+                isMutable: false,
             });
         }
+
+        const contentStart = lineEnd === -1 ? lineTo : lineEnd + 1;
+        const closing = findFenceClosing(text, contentStart, opening);
+        const contentEnd = closing?.from ?? text.length;
         blocks.push({
             type: "code",
-            content: match[2].replace(/\n$/, ""),
-            info: match[1]?.trim() || undefined,
+            content: text.slice(contentStart, contentEnd).replace(/\n$/, ""),
+            id: `code:${cursor}`,
+            info: opening.info || undefined,
+            isMutable: live && closing === null,
         });
-        lastIndex = match.index + match[0].length;
+        lastIndex = closing?.to ?? text.length;
+        cursor = lastIndex;
     }
 
     if (lastIndex < text.length) {
-        blocks.push({ type: "text", content: text.slice(lastIndex) });
+        blocks.push({
+            type: "text",
+            content: text.slice(lastIndex),
+            id: `text:${lastIndex}`,
+            isMutable: live,
+        });
     }
 
-    return rememberParsedBlocks(text, blocks);
+    return rememberParsedBlocks(cacheKey, blocks);
 }
 
 function parseMarkdownTableRow(line: string): string[] | null {
@@ -1418,12 +1504,14 @@ function TextBlock({
 function CodeBlock({
     content,
     info,
+    isMutable,
     pillMetrics,
     chatFontSize = 14,
     fileReferenceAppearance = "pill",
 }: {
     content: string;
     info?: string;
+    isMutable: boolean;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
     fileReferenceAppearance?: FileReferenceAppearance;
@@ -1559,6 +1647,7 @@ function CodeBlock({
                         }}
                     >
                         <HighlightedCodeText
+                            deferHighlighting={isMutable}
                             text={content}
                             language={languageSupport}
                             segmentKeyPrefix={`chat-code:${languageToken ?? "plain"}:${content.length}`}
@@ -1573,12 +1662,13 @@ function CodeBlock({
 export const MarkdownContent = memo(function MarkdownContent({
     content,
     className,
+    live = false,
     pillMetrics,
     chatFontSize = 14,
     blockQuoteAppearance = "accent",
     fileReferenceAppearance = "pill",
 }: MarkdownContentProps) {
-    const blocks = useMemo(() => parseBlocks(content), [content]);
+    const blocks = useMemo(() => parseBlocks(content, live), [content, live]);
 
     return (
         <div
@@ -1590,19 +1680,20 @@ export const MarkdownContent = memo(function MarkdownContent({
                 wordBreak: "break-word",
             }}
         >
-            {blocks.map((block, i) =>
+            {blocks.map((block) =>
                 block.type === "code" ? (
                     <CodeBlock
-                        key={i}
+                        key={block.id}
                         content={block.content}
                         info={block.info}
+                        isMutable={block.isMutable}
                         pillMetrics={pillMetrics}
                         chatFontSize={chatFontSize}
                         fileReferenceAppearance={fileReferenceAppearance}
                     />
                 ) : (
                     <TextBlock
-                        key={i}
+                        key={block.id}
                         content={block.content}
                         pillMetrics={pillMetrics}
                         blockQuoteAppearance={blockQuoteAppearance}
