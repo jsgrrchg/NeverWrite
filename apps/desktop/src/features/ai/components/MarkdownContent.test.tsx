@@ -737,6 +737,19 @@ describe("MarkdownContent", () => {
         expect(screen.getByText("After the fence.")).toBeInTheDocument();
     });
 
+    it("removes a complete trailing CRLF delimiter from fenced code", () => {
+        const { container } = renderComponent(
+            <MarkdownContent
+                content={"```ts\r\nconst answer = 42;\r\n```"}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(container.querySelector(".chat-code-block")?.textContent).toBe(
+            "const answer = 42;",
+        );
+    });
+
     it("previews markdown fences and lets the user inspect their source", () => {
         renderComponent(
             <MarkdownContent

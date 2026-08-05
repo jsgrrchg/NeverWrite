@@ -386,7 +386,7 @@ function rememberParsedBlocks(text: string, blocks: Block[]) {
 }
 
 function parseFenceOpening(line: string): MarkdownFenceOpening | null {
-    const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    const match = line.match(/^ {0,3}(`{3,}|~{3,})([^\n]*)$/);
     if (!match) return null;
 
     const marker = match[1] ?? "";
@@ -474,7 +474,7 @@ function parseBlocks(text: string, live: boolean): Block[] {
         const contentEnd = closing?.from ?? text.length;
         blocks.push({
             type: "code",
-            content: text.slice(contentStart, contentEnd).replace(/\n$/, ""),
+            content: text.slice(contentStart, contentEnd).replace(/\r?\n$/, ""),
             id: `code:${cursor}`,
             info: opening.info || undefined,
             isMutable: live && closing === null,
