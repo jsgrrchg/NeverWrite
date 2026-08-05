@@ -55,12 +55,51 @@ export interface ShortcutDefinition {
     note?: string;
 }
 
-export interface ShortcutSettingsEntry {
-    id: ShortcutActionId;
+export interface ShortcutSettingsEntry<
+    ActionId extends ShortcutActionId = ShortcutActionId,
+> {
+    id: ActionId;
     label: string;
     category: string;
     shortcut: string;
 }
+
+export const CONFIGURABLE_SHORTCUT_ACTION_IDS = [
+    "command_palette",
+    "quick_switcher",
+    "search_in_vault",
+    "next_tab",
+    "previous_tab",
+    "next_file",
+    "previous_file",
+    "go_back",
+    "go_forward",
+    "open_vault",
+    "new_note",
+    "new_agent",
+    "new_terminal",
+    "new_tab",
+    "close_tab",
+    "reopen_closed_tab",
+    "toggle_left_sidebar",
+    "toggle_right_panel",
+    "zoom_in",
+    "zoom_out",
+    "reset_zoom",
+    "open_settings",
+] as const satisfies readonly ShortcutActionId[];
+
+export type ConfigurableShortcutActionId =
+    (typeof CONFIGURABLE_SHORTCUT_ACTION_IDS)[number];
+
+export type FixedShortcutActionId = Exclude<
+    ShortcutActionId,
+    ConfigurableShortcutActionId
+>;
+
+const configurableShortcutActionIds: ReadonlySet<string> = new Set(
+    CONFIGURABLE_SHORTCUT_ACTION_IDS,
+);
 
 const shortcutDefinitions = [
     {
@@ -521,6 +560,15 @@ export function getShortcutDefinition(
     return SHORTCUT_REGISTRY[actionId];
 }
 
+export function isConfigurableShortcutAction(
+    actionId: unknown,
+): actionId is ConfigurableShortcutActionId {
+    return (
+        typeof actionId === "string" &&
+        configurableShortcutActionIds.has(actionId)
+    );
+}
+
 export function getShortcutBindings(
     actionId: ShortcutActionId,
     platform: DesktopPlatform = getDesktopPlatform(),
@@ -628,6 +676,26 @@ export function getShortcutSettingsEntries(
             }),
         };
     });
+}
+
+export function getConfigurableShortcutSettingsEntries(
+    platform: DesktopPlatform = getDesktopPlatform(),
+): ShortcutSettingsEntry<ConfigurableShortcutActionId>[] {
+    return getShortcutSettingsEntries(platform).filter(
+        (
+            entry,
+        ): entry is ShortcutSettingsEntry<ConfigurableShortcutActionId> =>
+            isConfigurableShortcutAction(entry.id),
+    );
+}
+
+export function getFixedShortcutSettingsEntries(
+    platform: DesktopPlatform = getDesktopPlatform(),
+): ShortcutSettingsEntry<FixedShortcutActionId>[] {
+    return getShortcutSettingsEntries(platform).filter(
+        (entry): entry is ShortcutSettingsEntry<FixedShortcutActionId> =>
+            !isConfigurableShortcutAction(entry.id),
+    );
 }
 
 export function matchesShortcutBinding(
