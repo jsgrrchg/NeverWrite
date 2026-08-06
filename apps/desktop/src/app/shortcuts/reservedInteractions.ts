@@ -45,6 +45,7 @@ export const RESERVED_INTERACTION_SHORTCUTS = {
         reservedInteraction("Highlight Selection", "h", ["meta", "shift"]),
         reservedInteraction("Preview Link at Caret", "p", ["meta", "alt"]),
         reservedInteraction("Save Note", "s", ["meta", "shift"]),
+        reservedInteraction("Add Selection to Chat", "l", ["meta"]),
     ],
     windows: [
         reservedInteraction("Copy", "c", ["ctrl"]),
@@ -75,6 +76,7 @@ export const RESERVED_INTERACTION_SHORTCUTS = {
         reservedInteraction("Highlight Selection", "h", ["ctrl", "shift"]),
         reservedInteraction("Preview Link at Caret", "p", ["ctrl", "alt"]),
         reservedInteraction("Save Note", "s", ["ctrl", "shift"]),
+        reservedInteraction("Add Selection to Chat", "l", ["ctrl"]),
     ],
 } as const satisfies Record<
     "macos" | "windows",

@@ -34,6 +34,7 @@ const reservedCases: readonly [
     ["macos", "h", ["meta", "shift"], "Highlight Selection"],
     ["macos", "p", ["meta", "alt"], "Preview Link at Caret"],
     ["macos", "s", ["meta", "shift"], "Save Note"],
+    ["macos", "l", ["meta"], "Add Selection to Chat"],
     ["windows", "c", ["ctrl"], "Copy"],
     ["windows", "v", ["ctrl"], "Paste"],
     ["windows", "x", ["ctrl"], "Cut"],
@@ -64,12 +65,13 @@ const reservedCases: readonly [
     ["windows", "h", ["ctrl", "shift"], "Highlight Selection"],
     ["windows", "p", ["ctrl", "alt"], "Preview Link at Caret"],
     ["windows", "s", ["ctrl", "shift"], "Save Note"],
+    ["windows", "l", ["ctrl"], "Add Selection to Chat"],
 ];
 
 describe("reserved interaction shortcuts", () => {
     it("keeps the agreed platform inventories complete", () => {
-        expect(RESERVED_INTERACTION_SHORTCUTS.macos).toHaveLength(22);
-        expect(RESERVED_INTERACTION_SHORTCUTS.windows).toHaveLength(25);
+        expect(RESERVED_INTERACTION_SHORTCUTS.macos).toHaveLength(23);
+        expect(RESERVED_INTERACTION_SHORTCUTS.windows).toHaveLength(26);
     });
 
     it.each(reservedCases)(

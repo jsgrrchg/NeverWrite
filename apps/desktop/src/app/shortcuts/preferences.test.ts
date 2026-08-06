@@ -242,6 +242,18 @@ describe("shortcut preferences persistence", () => {
                 modifiers: ["meta"],
             }),
         ).toBe(false);
+        expect(
+            setShortcutOverride("new_note", "windows", {
+                key: "l",
+                modifiers: ["ctrl"],
+            }),
+        ).toBe(false);
+        expect(
+            setShortcutOverride("new_note", "macos", {
+                key: "l",
+                modifiers: ["meta"],
+            }),
+        ).toBe(false);
 
         localStorage.setItem(
             SHORTCUT_OVERRIDES_STORAGE_KEY,
@@ -249,9 +261,11 @@ describe("shortcut preferences persistence", () => {
                 version: 1,
                 macos: {
                     new_note: { key: "x", modifiers: ["meta"] },
+                    new_agent: { key: "l", modifiers: ["meta"] },
                 },
                 windows: {
                     new_note: { key: "a", modifiers: ["ctrl"] },
+                    quick_switcher: { key: "l", modifiers: ["ctrl"] },
                     new_agent: {
                         key: "q",
                         modifiers: ["ctrl", "alt"],
