@@ -188,7 +188,7 @@ describe("shortcut preferences persistence", () => {
                     unknown_action: { key: "U", modifiers: ["meta"] },
                 },
                 windows: {
-                    open_vault: { key: "V", modifiers: ["ctrl", "shift"] },
+                    open_vault: { key: "G", modifiers: ["ctrl", "shift"] },
                 },
             }),
         );
@@ -203,7 +203,7 @@ describe("shortcut preferences persistence", () => {
             },
             windows: {
                 open_vault: {
-                    key: "V",
+                    key: "G",
                     modifiers: ["ctrl", "shift"],
                 },
             },
@@ -227,6 +227,49 @@ describe("shortcut preferences persistence", () => {
             ).toBeNull();
         },
     );
+
+    it("rejects reserved interaction shortcuts from writes and stored payloads", () => {
+        expect(
+            setShortcutOverride("new_note", "windows", {
+                key: "c",
+                modifiers: ["ctrl"],
+            }),
+        ).toBe(false);
+        expect(
+            setShortcutOverride("new_note", "macos", {
+                key: "v",
+                modifiers: ["meta"],
+            }),
+        ).toBe(false);
+
+        localStorage.setItem(
+            SHORTCUT_OVERRIDES_STORAGE_KEY,
+            JSON.stringify({
+                version: 1,
+                macos: {
+                    new_note: { key: "x", modifiers: ["meta"] },
+                },
+                windows: {
+                    new_note: { key: "a", modifiers: ["ctrl"] },
+                    new_agent: {
+                        key: "q",
+                        modifiers: ["ctrl", "alt"],
+                    },
+                },
+            }),
+        );
+
+        expect(readShortcutOverrides()).toEqual({
+            version: 1,
+            macos: {},
+            windows: {
+                new_agent: {
+                    key: "q",
+                    modifiers: ["ctrl", "alt"],
+                },
+            },
+        });
+    });
 
     it("falls back to defaults for malformed or unsupported payloads", () => {
         localStorage.setItem(SHORTCUT_OVERRIDES_STORAGE_KEY, "not json");

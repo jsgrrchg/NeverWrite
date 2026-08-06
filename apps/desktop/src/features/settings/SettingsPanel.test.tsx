@@ -651,6 +651,14 @@ describe("SettingsPanel", () => {
             ),
         ).toBeInTheDocument();
 
+        fireEvent.keyDown(record, { key: "c", ctrlKey: true });
+        expect(
+            screen.getByText(
+                "This shortcut is reserved for Copy and cannot be reassigned.",
+            ),
+        ).toBeInTheDocument();
+        expect(record).toHaveAttribute("aria-pressed", "true");
+
         fireEvent.keyDown(record, { key: "F4", altKey: true });
         expect(
             screen.getByText(

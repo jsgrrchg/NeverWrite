@@ -4,6 +4,7 @@ import type {
     ShortcutModifier,
 } from "../../app/shortcuts/registry";
 import type { DesktopPlatform } from "../../app/utils/platform";
+import { getReservedInteractionShortcut } from "../../app/shortcuts/reservedInteractions";
 
 const MODIFIER_KEYS = new Set([
     "alt",
@@ -111,6 +112,16 @@ function captureShortcutBinding(
         return {
             kind: "error",
             message: "This shortcut is reserved by the operating system.",
+        };
+    }
+    const reservedInteraction = getReservedInteractionShortcut(
+        binding,
+        platform,
+    );
+    if (reservedInteraction) {
+        return {
+            kind: "error",
+            message: `This shortcut is reserved for ${reservedInteraction.label} and cannot be reassigned.`,
         };
     }
     return { kind: "binding", binding };

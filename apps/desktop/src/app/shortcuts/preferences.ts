@@ -10,6 +10,7 @@ import {
     isConfigurableShortcutAction,
     type ConfigurableShortcutActionId,
 } from "./scope";
+import { getReservedInteractionShortcut } from "./reservedInteractions";
 
 export const SHORTCUT_OVERRIDES_STORAGE_KEY =
     "neverwrite:shortcut-overrides";
@@ -109,6 +110,7 @@ export function normalizeShortcutBinding(
 
 function normalizePlatformShortcutOverrides(
     value: unknown,
+    platform: ShortcutOverridePlatform,
 ): PlatformShortcutOverrides {
     if (!isRecord(value)) {
         return {};
@@ -121,7 +123,7 @@ function normalizePlatformShortcutOverrides(
         }
 
         const binding = normalizeShortcutBinding(bindingValue);
-        if (binding) {
+        if (binding && !getReservedInteractionShortcut(binding, platform)) {
             overrides[actionId] = binding;
         }
     }
@@ -135,8 +137,8 @@ export function normalizeShortcutOverrides(value: unknown): ShortcutOverrides {
 
     return {
         version: 1,
-        macos: normalizePlatformShortcutOverrides(value.macos),
-        windows: normalizePlatformShortcutOverrides(value.windows),
+        macos: normalizePlatformShortcutOverrides(value.macos, "macos"),
+        windows: normalizePlatformShortcutOverrides(value.windows, "windows"),
     };
 }
 
@@ -215,7 +217,7 @@ export function applyShortcutOverrideChanges(
         }
 
         const binding = normalizeShortcutBinding(change.binding);
-        if (!binding) {
+        if (!binding || getReservedInteractionShortcut(binding, platform)) {
             return false;
         }
         normalizedChanges.push({ actionId: change.actionId, binding });
