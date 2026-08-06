@@ -19,8 +19,7 @@ function reportsAltGraph(event: AltGraphKeyboardEvent) {
 function isAltGraphPress(event: AltGraphKeyboardEvent) {
     return (
         event.key.toLowerCase() === "altgraph" ||
-        reportsAltGraph(event) ||
-        (event.code === "AltRight" && event.ctrlKey && event.altKey)
+        reportsAltGraph(event)
     );
 }
 

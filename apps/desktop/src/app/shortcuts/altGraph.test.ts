@@ -39,7 +39,7 @@ describe("AltGraphTracker", () => {
         }
     });
 
-    it("tracks AltRight as a fallback until the modifier is released", () => {
+    it("tracks explicit AltGraph until the modifier is released", () => {
         const tracker = new AltGraphTracker();
         expect(
             tracker.shouldIgnoreKeyDown(
@@ -63,6 +63,27 @@ describe("AltGraphTracker", () => {
             keyboardEvent({ key: "Alt", code: "AltRight" }),
             "windows",
         );
+        expect(
+            tracker.shouldIgnoreKeyDown(
+                keyboardEvent({ ctrlKey: true, altKey: true }),
+                "windows",
+            ),
+        ).toBe(false);
+    });
+
+    it("keeps physical Ctrl+Right Alt available for shortcuts", () => {
+        const tracker = new AltGraphTracker();
+        expect(
+            tracker.shouldIgnoreKeyDown(
+                keyboardEvent({
+                    key: "Alt",
+                    code: "AltRight",
+                    ctrlKey: true,
+                    altKey: true,
+                }),
+                "windows",
+            ),
+        ).toBe(false);
         expect(
             tracker.shouldIgnoreKeyDown(
                 keyboardEvent({ ctrlKey: true, altKey: true }),
