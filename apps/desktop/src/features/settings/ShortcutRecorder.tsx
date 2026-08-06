@@ -1,4 +1,10 @@
-import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+    useEffect,
+    useRef,
+    useState,
+    type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
+import { invoke } from "@neverwrite/runtime";
 import type {
     ShortcutBinding,
     ShortcutModifier,
@@ -6,6 +12,7 @@ import type {
 import type { DesktopPlatform } from "../../app/utils/platform";
 import { getReservedInteractionShortcut } from "../../app/shortcuts/reservedInteractions";
 import { AltGraphTracker } from "../../app/shortcuts/altGraph";
+import { SET_NATIVE_MENU_SHORTCUT_CAPTURE_COMMAND } from "../../app/shortcuts/nativeMenu";
 
 const MODIFIER_KEYS = new Set([
     "alt",
@@ -145,6 +152,30 @@ export function ShortcutRecorder({
     const statusId = `shortcut-recorder-${actionLabel
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")}`;
+
+    useEffect(() => {
+        if (platform !== "macos" || !recording) {
+            return;
+        }
+
+        void Promise.resolve(
+            invoke(SET_NATIVE_MENU_SHORTCUT_CAPTURE_COMMAND, {
+                active: true,
+            }),
+        ).catch(() => {
+            // Browser development does not expose Electron's application menu.
+        });
+
+        return () => {
+            void Promise.resolve(
+                invoke(SET_NATIVE_MENU_SHORTCUT_CAPTURE_COMMAND, {
+                    active: false,
+                }),
+            ).catch(() => {
+                // Browser development does not expose Electron's application menu.
+            });
+        };
+    }, [platform, recording]);
 
     const stopRecording = () => {
         altGraphTrackerRef.current?.reset();

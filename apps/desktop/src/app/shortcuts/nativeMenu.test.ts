@@ -37,5 +37,20 @@ describe("native menu shortcut accelerators", () => {
                 modifiers: ["meta"],
             }),
         ).toBeNull();
+        expect(
+            formatNativeMenuAccelerator({
+                key: "é",
+                modifiers: ["meta"],
+            }),
+        ).toBeNull();
+    });
+
+    it("uses Electron's Plus key name instead of an empty accelerator token", () => {
+        expect(
+            formatNativeMenuAccelerator({
+                key: "+",
+                modifiers: ["meta", "shift"],
+            }),
+        ).toBe("Command+Shift+Plus");
     });
 });

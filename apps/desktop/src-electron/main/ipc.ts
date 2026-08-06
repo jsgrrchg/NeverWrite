@@ -29,7 +29,10 @@ import { getSystemUsername } from "./systemUser";
 import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
 import { installDeepLinkRuntime } from "./deepLink";
-import { syncNativeMenuShortcutAccelerators } from "./menu";
+import {
+    setNativeMenuShortcutCaptureActive,
+    syncNativeMenuShortcutAccelerators,
+} from "./menu";
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object"
@@ -252,6 +255,11 @@ function registerInvokeHandler(backend: ElectronVaultBackend) {
         if (envelope.command === "sync_native_menu_shortcuts") {
             return syncNativeMenuShortcutAccelerators(
                 asRecord(envelope.args).accelerators,
+            );
+        }
+        if (envelope.command === "set_native_menu_shortcut_capture") {
+            return setNativeMenuShortcutCaptureActive(
+                asRecord(envelope.args).active,
             );
         }
         if (envelope.command === "ai_resolve_managed_attachment_path") {

@@ -7,6 +7,8 @@ import {
 
 export const SYNC_NATIVE_MENU_SHORTCUTS_COMMAND =
     "sync_native_menu_shortcuts";
+export const SET_NATIVE_MENU_SHORTCUT_CAPTURE_COMMAND =
+    "set_native_menu_shortcut_capture";
 
 const NATIVE_MENU_SHORTCUT_ACTIONS = {
     "app:open-settings": "open_settings",
@@ -51,6 +53,7 @@ const ELECTRON_KEY_LABELS: Readonly<Record<string, string>> = {
     insert: "Insert",
     pagedown: "PageDown",
     pageup: "PageUp",
+    "+": "Plus",
     space: "Space",
     tab: "Tab",
 };
@@ -64,7 +67,7 @@ function formatElectronAcceleratorKey(key: string): string | null {
     if (/^f(?:[1-9]|1\d|2[0-4])$/i.test(key)) {
         return key.toUpperCase();
     }
-    if (key.length === 1) {
+    if (key.length === 1 && key.charCodeAt(0) <= 0x7f) {
         return /[a-z]/i.test(key) ? key.toUpperCase() : key;
     }
     return null;

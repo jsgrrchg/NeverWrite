@@ -590,6 +590,39 @@ describe("SettingsPanel", () => {
         ).toEqual({ key: "q", modifiers: ["ctrl", "alt"] });
     });
 
+    it("suspends native macOS menu accelerators while recording", async () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36",
+            "MacIntel",
+        );
+        const invoke = mockInvoke().mockResolvedValue(undefined);
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for Quick Switcher",
+        });
+
+        fireEvent.click(record);
+        await waitFor(() =>
+            expect(invoke).toHaveBeenCalledWith(
+                "set_native_menu_shortcut_capture",
+                { active: true },
+            ),
+        );
+
+        fireEvent.keyDown(record, { key: "Escape" });
+        await waitFor(() =>
+            expect(invoke).toHaveBeenCalledWith(
+                "set_native_menu_shortcut_capture",
+                { active: false },
+            ),
+        );
+    });
+
     it("cancels recording with Escape and leaves Tab navigation uncaptured", () => {
         const onClose = vi.fn();
         renderComponent(<SettingsPanel onClose={onClose} />);

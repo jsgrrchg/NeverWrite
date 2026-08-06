@@ -79,6 +79,7 @@ const configurableNativeMenuCommands = new Set([
 
 let nativeMenuShortcutAccelerators: Record<string, string | null> | null =
     null;
+let nativeMenuShortcutCaptureActive = false;
 
 function sendRuntimeEvent(
     window: BrowserWindow | null,
@@ -100,7 +101,13 @@ function canReceiveMenuAction(window: BrowserWindow | null) {
     if (!window || window.isDestroyed()) return false;
 
     const label = getWindowLabel(window);
-    if (label === "settings" || label.startsWith("ghost")) return false;
+    if (
+        label === "settings" ||
+        label.startsWith("settings-") ||
+        label.startsWith("ghost")
+    ) {
+        return false;
+    }
 
     const route = getWindowVaultRoute(label);
     if (!route) return true;
@@ -195,6 +202,15 @@ function separator(): MenuItemConstructorOptions {
 
 function platformShortcut(macos: string, other: string) {
     return process.platform === "darwin" ? macos : other;
+}
+
+function suspendMenuAccelerators(items: MenuItemConstructorOptions[]) {
+    for (const item of items) {
+        item.registerAccelerator = false;
+        if (Array.isArray(item.submenu)) {
+            suspendMenuAccelerators(item.submenu);
+        }
+    }
 }
 
 function buildApplicationMenu() {
@@ -323,7 +339,7 @@ function buildApplicationMenu() {
         submenu: [commandItem("app:open-settings", "Keyboard Shortcuts")],
     };
 
-    return Menu.buildFromTemplate([
+    const template = [
         appMenu,
         fileMenu,
         editMenu,
@@ -332,7 +348,11 @@ function buildApplicationMenu() {
         goMenu,
         windowMenu,
         helpMenu,
-    ]);
+    ];
+    if (nativeMenuShortcutCaptureActive) {
+        suspendMenuAccelerators(template);
+    }
+    return Menu.buildFromTemplate(template);
 }
 
 function buildDockMenu() {
@@ -383,6 +403,19 @@ export function syncNativeMenuShortcutAccelerators(rawValue: unknown) {
     }
 
     nativeMenuShortcutAccelerators = nextAccelerators;
+    if (process.platform === "darwin") {
+        Menu.setApplicationMenu(buildApplicationMenu());
+    }
+    return true;
+}
+
+export function setNativeMenuShortcutCaptureActive(rawValue: unknown) {
+    const nextActive = rawValue === true;
+    if (nativeMenuShortcutCaptureActive === nextActive) {
+        return true;
+    }
+
+    nativeMenuShortcutCaptureActive = nextActive;
     if (process.platform === "darwin") {
         Menu.setApplicationMenu(buildApplicationMenu());
     }
