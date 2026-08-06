@@ -146,6 +146,26 @@ type Turn = {
      *  pre-hold behavior (pending wakes are not countable: notifications can
      *  batch into one followup). */
     deferredSettle?: PromptResponse;
+    /** Uuids of `steer()`-injected messages the SDK has not replayed back yet.
+     *
+     *  A steer is delivered at {@link STEER_PRIORITY} (`now`), so the CLI ABORTS
+     *  the running cycle: it emits its own human-origin `result` —
+     *  indistinguishable from a turn's terminal one — and the steered message runs
+     *  as a SECOND cycle. Settling at that result would answer `session/prompt`
+     *  mid-work, so a steered turn's results only RECORD their outcome
+     *  (`steeredSettle`) and it settles at the SDK's `idle`, the only signal
+     *  spanning both cycles (CLI 2.1.220).
+     *
+     *  A non-empty set at an idle means the steered cycle hasn't started — the CLI
+     *  replays a message only when it picks it up, always after the interrupted
+     *  cycle's result — so that idle is swallowed. Drained by the replay handler.
+     *
+     *  Residual: a message the CLI drops unreplayed parks the turn until
+     *  `session/cancel` or the next prompt (both settle it). */
+    steeredEchoes?: Set<string>;
+    /** What a steered turn settles with once its steered work has run: the outcome
+     *  of its latest result, so its usage covers every cycle the turn ran. */
+    steeredSettle?: PromptResponse;
     resolve: (response: PromptResponse) => void;
     reject: (error: unknown) => void;
 };
@@ -684,6 +704,10 @@ export declare class ClaudeAcpAgent {
      *  a single-shot response, or slotting in between a multi-step turn's tool
      *  calls). The steered message's own output streams via `session/update`, not
      *  this response.
+     *
+     *  Pre-empting means ABORTING: the interrupted cycle emits a `result` of its
+     *  own and the steered message runs as a second one, so the turn is marked
+     *  (`Turn.steeredEchoes`) to settle at the SDK's `idle` instead of that result.
      *
      *  When the session is idle, the opt-in path returns `promptRequired` WITHOUT
      *  calling `prompt()`, pushing SDK input, or mutating `turnQueue`: the content
