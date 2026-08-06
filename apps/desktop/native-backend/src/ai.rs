@@ -2012,11 +2012,11 @@ impl NativeAi {
         };
 
         if let Err(error) = handle.prompt(&session_id, prompt) {
-            if is_acp_transport_disconnect_error(&error) {
+            if error.is_transport_disconnected() {
                 self.disconnect_runtime_session_after_send_failure(&session_id, handle.process_id)?;
                 return Err("The AI runtime disconnected while sending. Reconnect the chat and retry the message.".to_string());
             }
-            return Err(error);
+            return Err(error.into_message());
         }
         self.load_session(&json!({ "sessionId": session_id }))
     }
@@ -2810,16 +2810,43 @@ struct AcpSessionStartResponse {
     continuation_strategy: Option<AcpContinuationStrategy>,
 }
 
+#[derive(Debug)]
+enum AcpRequestError {
+    CommandChannelClosed,
+    ResponseChannelClosed,
+    Remote(String),
+}
+
+impl AcpRequestError {
+    fn is_transport_disconnected(&self) -> bool {
+        matches!(
+            self,
+            Self::CommandChannelClosed | Self::ResponseChannelClosed
+        )
+    }
+
+    fn into_message(self) -> String {
+        match self {
+            Self::CommandChannelClosed => "The AI runtime command channel is closed.".to_string(),
+            Self::ResponseChannelClosed => "The AI runtime response channel is closed.".to_string(),
+            Self::Remote(message) => message,
+        }
+    }
+}
+
 impl AcpSessionHandle {
     fn request<T>(
         &self,
         build: impl FnOnce(mpsc::Sender<Result<T, String>>) -> AcpCommand,
-    ) -> Result<T, String> {
+    ) -> Result<T, AcpRequestError> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
             .send(build(response_tx))
-            .map_err(|error| error.to_string())?;
-        response_rx.recv().map_err(|error| error.to_string())?
+            .map_err(|_| AcpRequestError::CommandChannelClosed)?;
+        response_rx
+            .recv()
+            .map_err(|_| AcpRequestError::ResponseChannelClosed)?
+            .map_err(AcpRequestError::Remote)
     }
 
     fn prompt_capabilities(&self) -> AcpPromptCapabilities {
@@ -2829,7 +2856,7 @@ impl AcpSessionHandle {
             .unwrap_or_default()
     }
 
-    fn prompt(&self, session_id: &str, prompt: Vec<ContentBlock>) -> Result<(), String> {
+    fn prompt(&self, session_id: &str, prompt: Vec<ContentBlock>) -> Result<(), AcpRequestError> {
         self.request(|response_tx| AcpCommand::Prompt {
             session_id: session_id.to_string(),
             prompt,
@@ -2843,6 +2870,7 @@ impl AcpSessionHandle {
             mode_id: mode_id.to_string(),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
     }
 
     fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), String> {
@@ -2851,6 +2879,7 @@ impl AcpSessionHandle {
             model_id: model_id.to_string(),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
     }
 
     fn set_config_option(
@@ -2865,6 +2894,7 @@ impl AcpSessionHandle {
             value: value.to_string(),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
     }
 
     fn cancel(&self, session_id: &str) -> Result<(), String> {
@@ -2872,6 +2902,7 @@ impl AcpSessionHandle {
             session_id: session_id.to_string(),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
     }
 
     fn respond_permission(&self, request_id: &str, option_id: Option<&str>) -> Result<(), String> {
@@ -2880,10 +2911,12 @@ impl AcpSessionHandle {
             option_id: option_id.map(ToString::to_string),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
     }
 
     fn shutdown(&self) -> Result<(), String> {
         self.request(|response_tx| AcpCommand::Shutdown { response_tx })
+            .map_err(AcpRequestError::into_message)
     }
 }
 
@@ -4199,13 +4232,6 @@ fn remember_prompt_capabilities(
     if let Ok(mut target) = target.lock() {
         *target = capabilities;
     }
-}
-
-fn is_acp_transport_disconnect_error(error: &str) -> bool {
-    let normalized = error.trim().to_lowercase();
-    normalized.contains("sending on a closed channel")
-        || normalized.contains("receiving on a closed channel")
-        || normalized.contains("channel closed")
 }
 
 fn neverwrite_acp12_client_capabilities(_runtime_id: &str) -> acp12::schema::ClientCapabilities {
@@ -11495,6 +11521,42 @@ mod tests {
             payload.get("session_id").and_then(Value::as_str),
             Some(session_id)
         );
+    }
+
+    #[test]
+    fn acp_request_classifies_a_closed_command_channel() {
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(command_rx);
+        let handle = AcpSessionHandle {
+            process_id: 1,
+            command_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+
+        assert!(matches!(
+            handle.prompt("session", vec![]),
+            Err(AcpRequestError::CommandChannelClosed)
+        ));
+    }
+
+    #[test]
+    fn acp_request_classifies_a_closed_response_channel() {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = AcpSessionHandle {
+            process_id: 1,
+            command_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let responder = thread::spawn(move || match command_rx.blocking_recv() {
+            Some(AcpCommand::Prompt { response_tx, .. }) => drop(response_tx),
+            _ => panic!("expected prompt command"),
+        });
+
+        assert!(matches!(
+            handle.prompt("session", vec![]),
+            Err(AcpRequestError::ResponseChannelClosed)
+        ));
+        responder.join().unwrap();
     }
 
     #[cfg(unix)]
