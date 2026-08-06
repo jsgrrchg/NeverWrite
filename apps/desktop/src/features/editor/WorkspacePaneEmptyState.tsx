@@ -1,6 +1,5 @@
 import { formatShortcutAction } from "../../app/shortcuts/format";
 import type { ShortcutActionId } from "../../app/shortcuts/registry";
-import { useShortcutOverrides } from "../../app/shortcuts/useShortcutOverrides";
 import { getDesktopPlatform } from "../../app/utils/platform";
 
 interface WorkspacePaneEmptyStateProps {
@@ -32,8 +31,6 @@ function ShortcutHint({ action }: { action: ShortcutActionId }) {
 export function WorkspacePaneEmptyState({
     paneId,
 }: WorkspacePaneEmptyStateProps) {
-    useShortcutOverrides();
-
     return (
         <div
             className="flex h-full items-center justify-center p-6"

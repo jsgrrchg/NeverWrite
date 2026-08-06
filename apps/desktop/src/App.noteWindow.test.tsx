@@ -15,10 +15,6 @@ import { useSettingsStore } from "./app/store/settingsStore";
 import { useVaultStore } from "./app/store/vaultStore";
 import { getDesktopPlatform } from "./app/utils/platform";
 import {
-    setShortcutOverride,
-    SHORTCUT_OVERRIDES_STORAGE_KEY,
-} from "./app/shortcuts/preferences";
-import {
     resetTerminalRuntimeStoreForTests,
     useTerminalRuntimeStore,
 } from "./features/terminal/terminalRuntimeStore";
@@ -27,20 +23,6 @@ const detachedWindowMock = vi.hoisted(() => ({
     label: "note-test",
     mode: "note" as "main" | "note",
 }));
-
-const originalUserAgent = navigator.userAgent;
-const originalPlatform = navigator.platform;
-
-function setNavigatorIdentity(userAgent: string, platform: string) {
-    Object.defineProperty(window.navigator, "userAgent", {
-        configurable: true,
-        value: userAgent,
-    });
-    Object.defineProperty(window.navigator, "platform", {
-        configurable: true,
-        value: platform,
-    });
-}
 
 vi.mock("./features/editor/UnifiedBar", () => ({
     UnifiedBar: ({ windowMode }: { windowMode: string }) => (
@@ -114,8 +96,6 @@ vi.mock("./app/windowSession", () => ({
 
 describe("App note window", () => {
     beforeEach(() => {
-        setNavigatorIdentity(originalUserAgent, originalPlatform);
-        localStorage.clear();
         detachedWindowMock.label = "note-test";
         detachedWindowMock.mode = "note";
         getMockCurrentWindow().label = "note-test";
@@ -136,10 +116,6 @@ describe("App note window", () => {
             },
         ]);
         useVaultStore.setState({ vaultPath: "/vault" });
-        useCommandStore.setState({
-            commands: new Map(),
-            activeModal: null,
-        });
     });
 
     it("preserves the min-size constrained layout chain for detached file tabs", async () => {
@@ -260,285 +236,6 @@ describe("App note window", () => {
         expect(activeTab && isTerminalTab(activeTab)).toBe(true);
     });
 
-    it("applies changed global bindings immediately across configurable categories", async () => {
-        detachedWindowMock.label = "main";
-        detachedWindowMock.mode = "main";
-        window.history.replaceState({}, "", "/");
-
-        renderComponent(<App />);
-        await flushPromises();
-
-        const platform = getDesktopPlatform();
-        const primaryModifier = platform === "macos" ? "meta" : "ctrl";
-        const cases = [
-            {
-                action: "quick_switcher" as const,
-                commandId: "nav:quick-switcher",
-                customKey: "1",
-                defaultKey: "o",
-                defaultShift: false,
-            },
-            {
-                action: "new_note" as const,
-                commandId: "vault:new-note",
-                customKey: "2",
-                defaultKey: "n",
-                defaultShift: false,
-            },
-            {
-                action: "search_in_vault" as const,
-                commandId: "vault:search",
-                customKey: "7",
-                defaultKey: "f",
-                defaultShift: true,
-            },
-            {
-                action: "new_agent" as const,
-                commandId: "ai:new-agent",
-                customKey: "3",
-                defaultKey: "n",
-                defaultShift: true,
-            },
-            {
-                action: "new_terminal" as const,
-                commandId: "workspace:new-terminal-tab",
-                customKey: "4",
-                defaultKey: "r",
-                defaultShift: false,
-            },
-            {
-                action: "close_tab" as const,
-                commandId: "editor:close-tab",
-                customKey: "5",
-                defaultKey: "w",
-                defaultShift: false,
-            },
-            {
-                action: "toggle_left_sidebar" as const,
-                commandId: "layout:toggle-sidebar",
-                customKey: "6",
-                defaultKey: "s",
-                defaultShift: false,
-            },
-        ];
-
-        await act(async () => {
-            for (const shortcutCase of cases) {
-                setShortcutOverride(shortcutCase.action, platform, {
-                    key: shortcutCase.customKey,
-                    modifiers: [primaryModifier, "alt"],
-                });
-            }
-            await Promise.resolve();
-        });
-        await flushPromises();
-
-        for (const shortcutCase of cases) {
-            expect(
-                useCommandStore.getState().commands.get(shortcutCase.commandId)
-                    ?.shortcut,
-            ).toContain(shortcutCase.customKey);
-        }
-        if (platform === "macos") {
-            expect(mockInvoke()).toHaveBeenCalledWith(
-                "sync_native_menu_shortcuts",
-                {
-                    accelerators: expect.objectContaining({
-                        "nav:quick-switcher": "Command+Alt+1",
-                        "vault:new-note": "Command+Alt+2",
-                        "vault:search": "Command+Alt+7",
-                    }),
-                },
-            );
-        }
-
-        const execute = vi.fn();
-        useCommandStore.setState({ execute });
-
-        for (const shortcutCase of cases) {
-            execute.mockClear();
-            window.dispatchEvent(
-                new KeyboardEvent("keydown", {
-                    key: shortcutCase.customKey,
-                    metaKey: platform === "macos",
-                    ctrlKey: platform !== "macos",
-                    altKey: true,
-                }),
-            );
-            expect(execute).toHaveBeenCalledWith(shortcutCase.commandId);
-
-            execute.mockClear();
-            window.dispatchEvent(
-                new KeyboardEvent("keydown", {
-                    key: shortcutCase.defaultKey,
-                    metaKey: platform === "macos",
-                    ctrlKey: platform !== "macos",
-                    shiftKey: shortcutCase.defaultShift,
-                }),
-            );
-            expect(execute).not.toHaveBeenCalled();
-        }
-    });
-
-    it("ignores AltGr without suppressing physical Ctrl+Alt shortcuts on Windows", async () => {
-        setNavigatorIdentity(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Win32",
-        );
-        detachedWindowMock.label = "main";
-        detachedWindowMock.mode = "main";
-        window.history.replaceState({}, "", "/");
-        setShortcutOverride("quick_switcher", "windows", {
-            key: "@",
-            modifiers: ["ctrl", "alt"],
-        });
-
-        renderComponent(<App />);
-        await flushPromises();
-
-        const execute = vi.fn();
-        useCommandStore.setState({ execute });
-        const altGraphEvent = new KeyboardEvent("keydown", {
-            key: "@",
-            code: "KeyQ",
-            ctrlKey: true,
-            altKey: true,
-            cancelable: true,
-        });
-        Object.defineProperty(altGraphEvent, "getModifierState", {
-            configurable: true,
-            value: (modifier: string) => modifier === "AltGraph",
-        });
-
-        window.dispatchEvent(altGraphEvent);
-        expect(execute).not.toHaveBeenCalled();
-        expect(altGraphEvent.defaultPrevented).toBe(false);
-
-        window.dispatchEvent(
-            new KeyboardEvent("keyup", {
-                key: "AltGraph",
-                code: "AltRight",
-            }),
-        );
-        window.dispatchEvent(
-            new KeyboardEvent("keydown", {
-                key: "@",
-                code: "KeyQ",
-                ctrlKey: true,
-                altKey: true,
-            }),
-        );
-        expect(execute).toHaveBeenCalledWith("nav:quick-switcher");
-    });
-
-    it("keeps Escape priority and fixed editor shortcuts unchanged", async () => {
-        detachedWindowMock.label = "main";
-        detachedWindowMock.mode = "main";
-        window.history.replaceState({}, "", "/");
-
-        renderComponent(<App />);
-        await flushPromises();
-
-        const platform = getDesktopPlatform();
-        const execute = vi.fn();
-        useCommandStore.setState({ execute });
-
-        window.dispatchEvent(
-            new KeyboardEvent("keydown", {
-                key: "e",
-                metaKey: platform === "macos",
-                ctrlKey: platform !== "macos",
-            }),
-        );
-        expect(execute).toHaveBeenCalledWith("editor:toggle-live-preview");
-
-        execute.mockClear();
-        act(() => {
-            useCommandStore.getState().openCommandPalette();
-        });
-        await flushPromises();
-
-        act(() => {
-            window.dispatchEvent(
-                new KeyboardEvent("keydown", { key: "Escape" }),
-            );
-        });
-
-        expect(useCommandStore.getState().activeModal).toBeNull();
-        expect(execute).not.toHaveBeenCalled();
-    });
-
-    it("keeps stored configurable overrides from winning capture-phase precedence over fixed editor bindings", async () => {
-        setNavigatorIdentity(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Win32",
-        );
-        detachedWindowMock.label = "main";
-        detachedWindowMock.mode = "main";
-        window.history.replaceState({}, "", "/");
-        localStorage.setItem(
-            SHORTCUT_OVERRIDES_STORAGE_KEY,
-            JSON.stringify({
-                version: 1,
-                macos: {},
-                windows: {
-                    quick_switcher: { key: "e", modifiers: ["ctrl"] },
-                    new_note: { key: "f", modifiers: ["ctrl"] },
-                    new_agent: {
-                        key: "s",
-                        modifiers: ["ctrl", "shift"],
-                    },
-                    new_terminal: { key: "1", modifiers: ["ctrl"] },
-                    command_palette: { key: "b", modifiers: ["ctrl"] },
-                },
-            }),
-        );
-
-        renderComponent(<App />);
-        await flushPromises();
-
-        const execute = vi.fn();
-        useCommandStore.setState({ execute });
-
-        const togglePreview = new KeyboardEvent("keydown", {
-            key: "e",
-            ctrlKey: true,
-            cancelable: true,
-        });
-        window.dispatchEvent(togglePreview);
-        expect(execute).toHaveBeenCalledWith("editor:toggle-live-preview");
-        expect(execute).toHaveBeenCalledTimes(1);
-        expect(togglePreview.defaultPrevented).toBe(true);
-
-        for (const event of [
-            new KeyboardEvent("keydown", {
-                key: "f",
-                ctrlKey: true,
-                cancelable: true,
-            }),
-            new KeyboardEvent("keydown", {
-                key: "s",
-                ctrlKey: true,
-                shiftKey: true,
-                cancelable: true,
-            }),
-            new KeyboardEvent("keydown", {
-                key: "1",
-                ctrlKey: true,
-                cancelable: true,
-            }),
-            new KeyboardEvent("keydown", {
-                key: "b",
-                ctrlKey: true,
-                cancelable: true,
-            }),
-        ]) {
-            execute.mockClear();
-            window.dispatchEvent(event);
-            expect(execute).not.toHaveBeenCalled();
-            expect(event.defaultPrevented).toBe(false);
-        }
-    });
 
     it("starts workspace terminal runtimes inside detached note windows", async () => {
         mockInvoke().mockResolvedValue({

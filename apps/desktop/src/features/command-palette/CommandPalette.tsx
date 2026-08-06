@@ -6,11 +6,7 @@ import {
     useMemo,
     useDeferredValue,
 } from "react";
-import {
-    searchCommands,
-    useCommandStore,
-    type Command,
-} from "./store/commandStore";
+import { useCommandStore, type Command } from "./store/commandStore";
 
 export function CommandPalette() {
     const activeModal = useCommandStore((s) => s.activeModal);
@@ -25,12 +21,12 @@ function CommandPaletteDialog() {
     const [selectedIndex, setSelectedIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
-    const commands = useCommandStore((s) => s.commands);
+    const search = useCommandStore((s) => s.search);
     const closeModal = useCommandStore((s) => s.closeModal);
     const deferredQuery = useDeferredValue(query);
     const results = useMemo(
-        () => searchCommands(commands, deferredQuery),
-        [commands, deferredQuery],
+        () => search(deferredQuery),
+        [deferredQuery, search],
     );
 
     useEffect(() => {

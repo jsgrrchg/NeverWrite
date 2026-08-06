@@ -1,16 +1,14 @@
 import "@testing-library/jest-dom/vitest";
-import { act, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { formatShortcutAction } from "../../app/shortcuts/format";
 import { useEditorStore } from "../../app/store/editorStore";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { renderComponent } from "../../test/test-utils";
-import { setShortcutOverride } from "../../app/shortcuts/preferences";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 
 describe("WorkspacePaneEmptyState", () => {
     beforeEach(() => {
-        localStorage.clear();
         useEditorStore.getState().hydrateWorkspace(
             [
                 {
@@ -64,23 +62,5 @@ describe("WorkspacePaneEmptyState", () => {
         expect(
             document.querySelector("[data-workspace-empty-pane='secondary']"),
         ).toBeInTheDocument();
-    });
-
-    it("updates hints when shortcut preferences change", () => {
-        const { container } = renderComponent(
-            <WorkspacePaneEmptyState paneId="primary" />,
-        );
-        const platform = getDesktopPlatform();
-
-        act(() => {
-            setShortcutOverride("quick_switcher", platform, {
-                key: "Y",
-                modifiers: [platform === "macos" ? "meta" : "ctrl", "alt"],
-            });
-        });
-
-        expect(container.querySelector("kbd")?.textContent).toBe(
-            formatShortcutAction("quick_switcher", platform),
-        );
     });
 });

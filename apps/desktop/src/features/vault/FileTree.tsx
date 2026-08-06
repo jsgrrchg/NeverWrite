@@ -88,8 +88,6 @@ import {
 import { logError } from "../../app/utils/runtimeLog";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { matchesShortcutAction } from "../../app/shortcuts/registry";
-import { AltGraphTracker } from "../../app/shortcuts/altGraph";
-import { getDesktopPlatform } from "../../app/utils/platform";
 
 // --- Sort ---
 
@@ -4689,12 +4687,7 @@ export function FileTree() {
     ]);
 
     useEffect(() => {
-        const platform = getDesktopPlatform();
-        const altGraphTracker = new AltGraphTracker();
         const handleDocumentKeyDown = (event: KeyboardEvent) => {
-            if (altGraphTracker.shouldIgnoreKeyDown(event, platform)) {
-                return;
-            }
             if (
                 event.target instanceof HTMLElement &&
                 event.target.closest("input, textarea, select")
@@ -4713,23 +4706,14 @@ export function FileTree() {
             event.stopPropagation();
             navigateShortcutToOpenableRow(direction);
         };
-        const handleDocumentKeyUp = (event: KeyboardEvent) => {
-            altGraphTracker.handleKeyUp(event, platform);
-        };
-        const resetAltGraph = () => altGraphTracker.reset();
 
         document.addEventListener("keydown", handleDocumentKeyDown, true);
-        document.addEventListener("keyup", handleDocumentKeyUp, true);
-        window.addEventListener("blur", resetAltGraph);
-        return () => {
+        return () =>
             document.removeEventListener(
                 "keydown",
                 handleDocumentKeyDown,
                 true,
             );
-            document.removeEventListener("keyup", handleDocumentKeyUp, true);
-            window.removeEventListener("blur", resetAltGraph);
-        };
     }, [navigateShortcutToOpenableRow]);
 
     const handleTreeKeyDown = useCallback(
