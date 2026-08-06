@@ -523,14 +523,22 @@ export function getShortcutBindingsWithAliases(
     actionId: ShortcutActionId,
     platform: DesktopPlatform = getDesktopPlatform(),
 ): ShortcutBinding[] {
-    const definition = SHORTCUT_REGISTRY[actionId];
-    const shortcutPlatform = resolveShortcutPlatform(platform);
     if (isConfigurableShortcutAction(actionId)) {
         const override = getShortcutOverride(actionId, platform);
         if (override) {
             return [override];
         }
     }
+
+    return getDefaultShortcutBindingsWithAliases(actionId, platform);
+}
+
+export function getDefaultShortcutBindingsWithAliases(
+    actionId: ShortcutActionId,
+    platform: DesktopPlatform = getDesktopPlatform(),
+): ShortcutBinding[] {
+    const definition = SHORTCUT_REGISTRY[actionId];
+    const shortcutPlatform = resolveShortcutPlatform(platform);
     return [
         ...definition.bindings[shortcutPlatform],
         ...(definition.aliases?.[shortcutPlatform] ?? []),

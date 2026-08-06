@@ -9,6 +9,7 @@ import { useAppUpdateStore } from "../updates/store";
 import { APP_ZOOM_STORAGE_KEY } from "../../app/utils/appZoom";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
+    getShortcutOverride,
     setShortcutOverride,
     SHORTCUT_OVERRIDES_STORAGE_KEY,
 } from "../../app/shortcuts/preferences";
@@ -930,6 +931,48 @@ describe("SettingsPanel", () => {
 
         expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
         expect(screen.getByText("All shortcuts restored to their defaults.")).toBeInTheDocument();
+    });
+
+    it("does not restore aliases that are assigned to another shortcut", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        act(() => {
+            setShortcutOverride("zoom_in", "windows", {
+                key: "i",
+                modifiers: ["ctrl", "alt"],
+            });
+            setShortcutOverride("new_note", "windows", {
+                key: "+",
+                modifiers: ["ctrl", "shift"],
+            });
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const zoomInRow = document.querySelector(
+            "[data-shortcut-action='zoom_in']",
+        ) as HTMLElement;
+        fireEvent.click(
+            within(zoomInRow).getByRole("button", {
+                name: "Reset shortcut for Zoom In",
+            }),
+        );
+
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "Zoom In cannot be restored because Ctrl+Shift++ is assigned to New Note. Reassign New Note first.",
+        );
+        expect(
+            within(zoomInRow).getByText("Ctrl+Alt+I", {
+                selector: "kbd",
+            }),
+        ).toBeInTheDocument();
+        expect(getShortcutOverride("zoom_in", "windows")).toEqual({
+            key: "i",
+            modifiers: ["ctrl", "alt"],
+        });
     });
 
     it("filters customizable and fixed shortcut search results", () => {

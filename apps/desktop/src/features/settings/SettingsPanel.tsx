@@ -33,6 +33,7 @@ import type { ActivityDisplayMode } from "../ai/activityDisplayMode";
 import { useSpellcheckStore } from "../spellcheck/store";
 import {
     getConfigurableShortcutSettingsEntries,
+    getDefaultShortcutBindingsWithAliases,
     getFixedShortcutSettingsEntries,
     getShortcutBindings,
     getShortcutBindingsWithAliases,
@@ -4186,6 +4187,15 @@ function ShortcutsSettings({
             ),
         ) ?? null;
 
+    const findConflictsForBindings = (
+        targetActionId: ConfigurableShortcutActionId,
+        bindings: readonly ShortcutBinding[],
+    ) =>
+        bindings.flatMap((binding) => {
+            const conflict = findConflict(targetActionId, binding);
+            return conflict ? [{ binding, conflict }] : [];
+        });
+
     const saveBinding = (
         actionId: ConfigurableShortcutActionId,
         binding: ShortcutBinding,
@@ -4227,15 +4237,32 @@ function ShortcutsSettings({
 
     const resetBinding = (actionId: ConfigurableShortcutActionId) => {
         const definition = getShortcutDefinition(actionId);
-        const shortcutPlatform = platform === "macos" ? "macos" : "windows";
-        const defaultBinding = definition.bindings[shortcutPlatform][0];
+        const defaultBindings = getDefaultShortcutBindingsWithAliases(
+            actionId,
+            platform,
+        );
+        const defaultBinding = defaultBindings[0];
         const previousTargetBinding = getShortcutBindings(
             actionId,
             platform,
         )[0];
         if (!defaultBinding || !previousTargetBinding) return;
 
-        const conflict = findConflict(actionId, defaultBinding);
+        const restoredBindingConflicts = findConflictsForBindings(
+            actionId,
+            defaultBindings,
+        );
+        const aliasConflict = restoredBindingConflicts.find(
+            ({ binding }) => !shortcutBindingsEqual(binding, defaultBinding),
+        );
+        if (aliasConflict) {
+            setStatus(
+                `${definition.label} cannot be restored because ${formatShortcutBinding(aliasConflict.binding, platform)} is assigned to ${aliasConflict.conflict.label}. Reassign ${aliasConflict.conflict.label} first.`,
+            );
+            return;
+        }
+
+        const conflict = restoredBindingConflicts[0]?.conflict ?? null;
         if (conflict) {
             setPendingConflict({
                 targetActionId: actionId,
