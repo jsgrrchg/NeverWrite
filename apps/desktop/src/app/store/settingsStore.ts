@@ -273,6 +273,17 @@ function normalizeIntInRange(
     return Math.min(max, Math.max(min, Math.round(parsed)));
 }
 
+function normalizeAiChatContentWidth(value: unknown): number {
+    const width = normalizeIntInRange(
+        value,
+        defaults.aiChatContentWidth,
+        480,
+        1200,
+    );
+
+    return Math.round(width / 20) * 20;
+}
+
 function normalizeTabSize(value: unknown): 2 | 4 {
     const normalized = normalizeIntInRange(value, defaults.tabSize, 2, 4);
     return normalized <= 2 ? 2 : 4;
@@ -480,11 +491,8 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 600,
                 1200,
             ),
-            aiChatContentWidth: normalizeIntInRange(
+            aiChatContentWidth: normalizeAiChatContentWidth(
                 parsed.state.aiChatContentWidth,
-                defaults.aiChatContentWidth,
-                480,
-                1200,
             ),
             lineWrapping: parsed.state.lineWrapping ?? defaults.lineWrapping,
             editorActiveLineHighlight:
@@ -880,6 +888,12 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
                 return {
                     fileTreeExtensionFilter:
                         normalizeFileTreeExtensionFilter(value),
+                };
+            }
+
+            if (key === "aiChatContentWidth") {
+                return {
+                    aiChatContentWidth: normalizeAiChatContentWidth(value),
                 };
             }
 

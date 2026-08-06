@@ -71,6 +71,10 @@ describe("settingsStore", () => {
         useSettingsStore.getState().setSetting("aiChatContentWidth", 1_600);
 
         expect(useSettingsStore.getState().aiChatContentWidth).toBe(1_200);
+
+        useSettingsStore.getState().setSetting("aiChatContentWidth", 601);
+
+        expect(useSettingsStore.getState().aiChatContentWidth).toBe(600);
     });
 
     it("persists vim settings globally across vaults", () => {
