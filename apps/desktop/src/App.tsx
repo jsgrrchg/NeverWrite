@@ -85,6 +85,7 @@ import {
     getNativeMenuShortcutAccelerators,
     SYNC_NATIVE_MENU_SHORTCUTS_COMMAND,
 } from "./app/shortcuts/nativeMenu";
+import { AltGraphTracker } from "./app/shortcuts/altGraph";
 import { useShortcutOverrides } from "./app/shortcuts/useShortcutOverrides";
 import { getDesktopPlatform } from "./app/utils/platform";
 import {
@@ -976,8 +977,10 @@ function useGlobalShortcuts(
             return;
         }
         const platform = getDesktopPlatform();
+        const altGraphTracker = new AltGraphTracker();
         const handler = (e: KeyboardEvent) => {
-            if (e.defaultPrevented) return;
+            const isAltGraph = altGraphTracker.shouldIgnoreKeyDown(e, platform);
+            if (e.defaultPrevented || isAltGraph) return;
 
             // Escape closes any modal
             if (e.key === "Escape" && activeModal) {
@@ -1123,8 +1126,19 @@ function useGlobalShortcuts(
             }
         };
 
+        const handleKeyUp = (event: KeyboardEvent) => {
+            altGraphTracker.handleKeyUp(event, platform);
+        };
+        const resetAltGraph = () => altGraphTracker.reset();
+
         window.addEventListener("keydown", handler, true);
-        return () => window.removeEventListener("keydown", handler, true);
+        window.addEventListener("keyup", handleKeyUp, true);
+        window.addEventListener("blur", resetAltGraph);
+        return () => {
+            window.removeEventListener("keydown", handler, true);
+            window.removeEventListener("keyup", handleKeyUp, true);
+            window.removeEventListener("blur", resetAltGraph);
+        };
     }, [
         activeModal,
         closeModal,

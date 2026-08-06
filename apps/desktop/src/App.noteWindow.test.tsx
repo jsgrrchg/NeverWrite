@@ -25,6 +25,20 @@ const detachedWindowMock = vi.hoisted(() => ({
     mode: "note" as "main" | "note",
 }));
 
+const originalUserAgent = navigator.userAgent;
+const originalPlatform = navigator.platform;
+
+function setNavigatorIdentity(userAgent: string, platform: string) {
+    Object.defineProperty(window.navigator, "userAgent", {
+        configurable: true,
+        value: userAgent,
+    });
+    Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: platform,
+    });
+}
+
 vi.mock("./features/editor/UnifiedBar", () => ({
     UnifiedBar: ({ windowMode }: { windowMode: string }) => (
         <div data-testid="unified-bar" data-window-mode={windowMode} />
@@ -97,6 +111,7 @@ vi.mock("./app/windowSession", () => ({
 
 describe("App note window", () => {
     beforeEach(() => {
+        setNavigatorIdentity(originalUserAgent, originalPlatform);
         localStorage.clear();
         detachedWindowMock.label = "note-test";
         detachedWindowMock.mode = "note";
@@ -360,6 +375,57 @@ describe("App note window", () => {
             );
             expect(execute).not.toHaveBeenCalled();
         }
+    });
+
+    it("ignores AltGr without suppressing physical Ctrl+Alt shortcuts on Windows", async () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        detachedWindowMock.label = "main";
+        detachedWindowMock.mode = "main";
+        window.history.replaceState({}, "", "/");
+        setShortcutOverride("quick_switcher", "windows", {
+            key: "@",
+            modifiers: ["ctrl", "alt"],
+        });
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        const execute = vi.fn();
+        useCommandStore.setState({ execute });
+        const altGraphEvent = new KeyboardEvent("keydown", {
+            key: "@",
+            code: "KeyQ",
+            ctrlKey: true,
+            altKey: true,
+            cancelable: true,
+        });
+        Object.defineProperty(altGraphEvent, "getModifierState", {
+            configurable: true,
+            value: (modifier: string) => modifier === "AltGraph",
+        });
+
+        window.dispatchEvent(altGraphEvent);
+        expect(execute).not.toHaveBeenCalled();
+        expect(altGraphEvent.defaultPrevented).toBe(false);
+
+        window.dispatchEvent(
+            new KeyboardEvent("keyup", {
+                key: "AltGraph",
+                code: "AltRight",
+            }),
+        );
+        window.dispatchEvent(
+            new KeyboardEvent("keydown", {
+                key: "@",
+                code: "KeyQ",
+                ctrlKey: true,
+                altKey: true,
+            }),
+        );
+        expect(execute).toHaveBeenCalledWith("nav:quick-switcher");
     });
 
     it("keeps Escape priority and fixed editor shortcuts unchanged", async () => {

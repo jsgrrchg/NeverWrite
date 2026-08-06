@@ -668,6 +668,60 @@ describe("SettingsPanel", () => {
         expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
     });
 
+    it("rejects AltGr while preserving physical Ctrl+Alt shortcuts", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for Quick Switcher",
+        });
+        fireEvent.click(record);
+        fireEvent.keyDown(record, {
+            key: "AltGraph",
+            code: "AltRight",
+            ctrlKey: true,
+            altKey: true,
+        });
+        fireEvent.keyDown(record, {
+            key: "@",
+            code: "KeyQ",
+            ctrlKey: true,
+            altKey: true,
+        });
+
+        expect(
+            screen.getByText(
+                "AltGr combinations cannot be used as global shortcuts.",
+            ),
+        ).toBeInTheDocument();
+        expect(record).toHaveAttribute("aria-pressed", "true");
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+
+        fireEvent.keyUp(record, {
+            key: "AltGraph",
+            code: "AltRight",
+        });
+        fireEvent.keyDown(record, {
+            key: "q",
+            code: "KeyQ",
+            ctrlKey: true,
+            altKey: true,
+        });
+
+        expect(
+            JSON.parse(
+                localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
+            ).windows.quick_switcher,
+        ).toEqual({ key: "q", modifiers: ["ctrl", "alt"] });
+    });
+
     it("requires explicit replacement and swaps conflicting bindings atomically", () => {
         setNavigatorIdentity(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

@@ -5,6 +5,7 @@ import type {
 } from "../../app/shortcuts/registry";
 import type { DesktopPlatform } from "../../app/utils/platform";
 import { getReservedInteractionShortcut } from "../../app/shortcuts/reservedInteractions";
+import { AltGraphTracker } from "../../app/shortcuts/altGraph";
 
 const MODIFIER_KEYS = new Set([
     "alt",
@@ -137,6 +138,8 @@ export function ShortcutRecorder({
     onRecord: (binding: ShortcutBinding) => void;
 }) {
     const buttonRef = useRef<HTMLButtonElement>(null);
+    const altGraphTrackerRef = useRef<AltGraphTracker | null>(null);
+    altGraphTrackerRef.current ??= new AltGraphTracker();
     const [recording, setRecording] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const statusId = `shortcut-recorder-${actionLabel
@@ -144,12 +147,28 @@ export function ShortcutRecorder({
         .replace(/[^a-z0-9]+/g, "-")}`;
 
     const stopRecording = () => {
+        altGraphTrackerRef.current?.reset();
         setRecording(false);
         setError(null);
     };
 
     const handleKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-        if (!recording || event.repeat) return;
+        if (!recording) return;
+
+        if (
+            altGraphTrackerRef.current?.shouldIgnoreKeyDown(
+                event.nativeEvent,
+                platform,
+            )
+        ) {
+            event.preventDefault();
+            event.stopPropagation();
+            setError(
+                "AltGr combinations cannot be used as global shortcuts.",
+            );
+            return;
+        }
+        if (event.repeat) return;
 
         const result = captureShortcutBinding(event.nativeEvent, platform);
         if (result.kind === "navigate") {
@@ -193,6 +212,12 @@ export function ShortcutRecorder({
                     if (recording) stopRecording();
                 }}
                 onKeyDown={handleKeyDown}
+                onKeyUp={(event) =>
+                    altGraphTrackerRef.current?.handleKeyUp(
+                        event.nativeEvent,
+                        platform,
+                    )
+                }
                 style={{
                     minWidth: 108,
                     padding: "4px 8px",
