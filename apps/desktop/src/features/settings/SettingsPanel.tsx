@@ -1,4 +1,10 @@
-import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import {
+    useState,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@neverwrite/runtime";
 import { getCurrentWebviewWindow } from "@neverwrite/runtime";
@@ -25,11 +31,32 @@ import {
 import { useChatStore } from "../ai/store/chatStore";
 import type { ActivityDisplayMode } from "../ai/activityDisplayMode";
 import { useSpellcheckStore } from "../spellcheck/store";
-import { getShortcutSettingsEntries } from "../../app/shortcuts/registry";
 import {
+    getConfigurableShortcutSettingsEntries,
+    getDefaultShortcutBindingsWithAliases,
+    getFixedShortcutSettingsEntries,
+    getShortcutBindings,
+    getShortcutBindingsWithAliases,
+    getShortcutDefinition,
+    getShortcutSettingsEntries,
+    type ConfigurableShortcutActionId,
+    type ShortcutActionId,
+    type ShortcutBinding,
+    type ShortcutSettingsEntry,
+} from "../../app/shortcuts/registry";
+import { useShortcutOverrides } from "../../app/shortcuts/useShortcutOverrides";
+import {
+    formatShortcutBinding,
     formatPrimaryShortcut,
     formatShortcutAction,
 } from "../../app/shortcuts/format";
+import {
+    applyShortcutOverrideChanges,
+    getShortcutOverride,
+    resetAllShortcutOverrides,
+    resetShortcutOverride,
+    setShortcutOverride,
+} from "../../app/shortcuts/preferences";
 import {
     buildSpellcheckLanguageDescription,
     buildSpellcheckLanguageSelectOptions,
@@ -58,6 +85,7 @@ import { SCREENSHOT_RETENTION_OPTIONS } from "../ai/screenshotRetention";
 import { PROVIDER_CATALOG } from "../ai/utils/runtimeMetadata";
 import { AIProvidersSettings } from "./AIProvidersSettings";
 import { AIHistoryStorageControl } from "../ai/components/AIHistoryStorageControl";
+import { ShortcutRecorder } from "./ShortcutRecorder";
 import { ExtensionFilterInput } from "./ExtensionFilterInput";
 import { useAppUpdateStore } from "../updates/store";
 import {
@@ -735,9 +763,16 @@ function Row({
     );
 }
 
-function SectionLabel({ children }: { children: string }) {
+function SectionLabel({
+    children,
+    id,
+}: {
+    children: string;
+    id?: string;
+}) {
     return (
         <div
+            id={id}
             style={{
                 fontSize: 10,
                 fontWeight: 600,
@@ -3855,40 +3890,455 @@ function FileTreeSettings({
     );
 }
 
+function shortcutBindingsEqual(
+    left: ShortcutBinding,
+    right: ShortcutBinding,
+) {
+    const normalizeKey = (key: string) =>
+        key === " " || key.toLowerCase() === "spacebar"
+            ? "space"
+            : key.toLowerCase();
+    const modifiers = ["meta", "ctrl", "alt", "shift"] as const;
+    return (
+        normalizeKey(left.key) === normalizeKey(right.key) &&
+        modifiers.every(
+            (modifier) =>
+                Boolean(left.modifiers?.includes(modifier)) ===
+                Boolean(right.modifiers?.includes(modifier)),
+        )
+    );
+}
+
+function ShortcutConfirmationDialog({
+    title,
+    description,
+    confirmLabel,
+    onConfirm,
+    onCancel,
+}: {
+    title: string;
+    description: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+    onCancel: () => void;
+}) {
+    const cancelRef = useRef<HTMLButtonElement>(null);
+    const confirmRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        const previousFocus = document.activeElement as HTMLElement | null;
+        cancelRef.current?.focus();
+        return () => previousFocus?.focus();
+    }, []);
+
+    return createPortal(
+        <div
+            role="presentation"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) onCancel();
+            }}
+            style={{
+                position: "fixed",
+                inset: 0,
+                zIndex: 10020,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 20,
+                backgroundColor: "rgba(0, 0, 0, 0.42)",
+            }}
+        >
+            <div
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="shortcut-confirmation-title"
+                aria-describedby="shortcut-confirmation-description"
+                onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onCancel();
+                        return;
+                    }
+                    if (event.key !== "Tab") return;
+                    if (event.shiftKey && event.target === cancelRef.current) {
+                        event.preventDefault();
+                        confirmRef.current?.focus();
+                    } else if (
+                        !event.shiftKey &&
+                        event.target === confirmRef.current
+                    ) {
+                        event.preventDefault();
+                        cancelRef.current?.focus();
+                    }
+                }}
+                style={{
+                    width: "min(420px, 100%)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: 18,
+                    backgroundColor: "var(--bg-secondary)",
+                    boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
+                }}
+            >
+                <h2
+                    id="shortcut-confirmation-title"
+                    style={{
+                        margin: 0,
+                        color: "var(--text-primary)",
+                        fontSize: 15,
+                        fontWeight: 600,
+                    }}
+                >
+                    {title}
+                </h2>
+                <p
+                    id="shortcut-confirmation-description"
+                    style={{
+                        margin: "8px 0 16px",
+                        color: "var(--text-secondary)",
+                        fontSize: 12,
+                        lineHeight: 1.55,
+                    }}
+                >
+                    {description}
+                </p>
+                <div
+                    style={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        gap: 7,
+                    }}
+                >
+                    <button
+                        ref={cancelRef}
+                        type="button"
+                        onClick={onCancel}
+                        style={{
+                            padding: "5px 10px",
+                            border: "1px solid var(--border)",
+                            borderRadius: 6,
+                            backgroundColor: "var(--bg-tertiary)",
+                            color: "var(--text-primary)",
+                            fontFamily: "inherit",
+                            fontSize: 12,
+                            cursor: "pointer",
+                        }}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        ref={confirmRef}
+                        type="button"
+                        onClick={onConfirm}
+                        style={{
+                            padding: "5px 10px",
+                            border: "1px solid var(--accent)",
+                            borderRadius: 6,
+                            backgroundColor: "var(--accent)",
+                            color: "#fff",
+                            fontFamily: "inherit",
+                            fontSize: 12,
+                            cursor: "pointer",
+                        }}
+                    >
+                        {confirmLabel}
+                    </button>
+                </div>
+            </div>
+        </div>,
+        document.body,
+    );
+}
+
+interface PendingShortcutConflict {
+    targetActionId: ConfigurableShortcutActionId;
+    targetLabel: string;
+    conflictingActionId: ConfigurableShortcutActionId;
+    conflictingLabel: string;
+    requestedBinding: ShortcutBinding;
+    previousTargetBinding: ShortcutBinding;
+    resetsTarget: boolean;
+}
+
+function ShortcutKeycap({ label }: { label: string }) {
+    return (
+        <kbd
+            style={{
+                minWidth: 72,
+                padding: "3px 7px",
+                border: "1px solid var(--border)",
+                borderRadius: 5,
+                backgroundColor: "var(--bg-tertiary)",
+                color: "var(--text-secondary)",
+                fontFamily: "inherit",
+                fontSize: 11,
+                textAlign: "center",
+                whiteSpace: "nowrap",
+            }}
+        >
+            {label}
+        </kbd>
+    );
+}
+
+function ShortcutSectionHeader({
+    title,
+    id,
+    action,
+}: {
+    title: string;
+    id: string;
+    action?: ReactNode;
+}) {
+    return (
+        <div
+            style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+            }}
+        >
+            <SectionLabel id={id}>{title}</SectionLabel>
+            {action}
+        </div>
+    );
+}
+
+function filterShortcutEntries<ActionId extends ShortcutActionId>(
+    entries: ShortcutSettingsEntry<ActionId>[],
+    searchQuery: SettingsSearchQuery,
+    section: string,
+    extraTerms: string,
+) {
+    return entries.filter((shortcut) =>
+        matchesSettingsSearch(
+            searchQuery,
+            "Keyboard shortcuts",
+            section,
+            shortcut.category,
+            shortcut.label,
+            shortcut.shortcut,
+            extraTerms,
+        ),
+    );
+}
+
 function ShortcutsSettings({
     searchQuery,
 }: {
     searchQuery: SettingsSearchQuery;
 }) {
     const platform = getDesktopPlatform();
-    const shortcuts = getShortcutSettingsEntries(platform);
-    const filteredShortcuts = shortcuts.filter((shortcut) =>
-        matchesSettingsSearch(
-            searchQuery,
-            "Keyboard shortcuts",
-            shortcut.category,
-            shortcut.label,
-            shortcut.shortcut,
-        ),
+    const configurableShortcuts =
+        getConfigurableShortcutSettingsEntries(platform);
+    const fixedShortcuts = getFixedShortcutSettingsEntries(platform);
+    const filteredConfigurable = filterShortcutEntries(
+        configurableShortcuts,
+        searchQuery,
+        "Customizable shortcuts",
+        "Record shortcut Reset Reset all global editable",
+    );
+    const filteredFixed = filterShortcutEntries(
+        fixedShortcuts,
+        searchQuery,
+        "Fixed shortcuts",
+        "read only reference",
+    );
+    const configurableGroups = filteredConfigurable.reduce<
+        Record<string, typeof configurableShortcuts>
+    >((groups, shortcut) => {
+        (groups[shortcut.category] ??= []).push(shortcut);
+        return groups;
+    }, {});
+    const fixedGroups = filteredFixed.reduce<
+        Record<string, typeof fixedShortcuts>
+    >((groups, shortcut) => {
+        (groups[shortcut.category] ??= []).push(shortcut);
+        return groups;
+    }, {});
+    const [pendingConflict, setPendingConflict] =
+        useState<PendingShortcutConflict | null>(null);
+    const [confirmResetAll, setConfirmResetAll] = useState(false);
+    const [status, setStatus] = useState<string | null>(null);
+    const hasOverrides = configurableShortcuts.some(
+        (shortcut) => getShortcutOverride(shortcut.id, platform) !== null,
     );
 
-    const grouped = filteredShortcuts.reduce<Record<string, typeof shortcuts>>(
-        (acc, s) => {
-            (acc[s.category] ??= []).push(s);
-            return acc;
-        },
-        {},
-    );
+    const findConflict = (
+        targetActionId: ConfigurableShortcutActionId,
+        binding: ShortcutBinding,
+        excludedActionIds: readonly ConfigurableShortcutActionId[] = [],
+    ) =>
+        configurableShortcuts.find(
+            (shortcut) =>
+                shortcut.id !== targetActionId &&
+                !excludedActionIds.includes(shortcut.id) &&
+                getShortcutBindingsWithAliases(shortcut.id, platform).some(
+                    (candidate) => shortcutBindingsEqual(candidate, binding),
+                ),
+        ) ?? null;
 
-    if (shortcuts.length === 0) {
+    const findFixedConflict = (binding: ShortcutBinding) =>
+        fixedShortcuts.find((shortcut) =>
+            getShortcutBindingsWithAliases(shortcut.id, platform).some(
+                (candidate) => shortcutBindingsEqual(candidate, binding),
+            ),
+        ) ?? null;
+
+    const findConflictsForBindings = (
+        targetActionId: ConfigurableShortcutActionId,
+        bindings: readonly ShortcutBinding[],
+    ) =>
+        bindings.flatMap((binding) => {
+            const conflict = findConflict(targetActionId, binding);
+            return conflict ? [{ binding, conflict }] : [];
+        });
+
+    const saveBinding = (
+        actionId: ConfigurableShortcutActionId,
+        binding: ShortcutBinding,
+    ) => {
+        const fixedConflict = findFixedConflict(binding);
+        if (fixedConflict) {
+            setStatus(
+                `${formatShortcutBinding(binding, platform)} is reserved for ${fixedConflict.label} and cannot be reassigned.`,
+            );
+            return;
+        }
+
+        const conflict = findConflict(actionId, binding);
+        if (conflict) {
+            const previousTargetBinding = getShortcutBindings(
+                actionId,
+                platform,
+            )[0];
+            if (!previousTargetBinding) return;
+            setPendingConflict({
+                targetActionId: actionId,
+                targetLabel: getShortcutDefinition(actionId).label,
+                conflictingActionId: conflict.id,
+                conflictingLabel: conflict.label,
+                requestedBinding: binding,
+                previousTargetBinding,
+                resetsTarget: false,
+            });
+            return;
+        }
+
+        const saved = setShortcutOverride(actionId, platform, binding);
+        setStatus(
+            saved
+                ? `${getShortcutDefinition(actionId).label} shortcut updated.`
+                : "The shortcut could not be saved.",
+        );
+    };
+
+    const resetBinding = (actionId: ConfigurableShortcutActionId) => {
+        const definition = getShortcutDefinition(actionId);
+        const defaultBindings = getDefaultShortcutBindingsWithAliases(
+            actionId,
+            platform,
+        );
+        const defaultBinding = defaultBindings[0];
+        const previousTargetBinding = getShortcutBindings(
+            actionId,
+            platform,
+        )[0];
+        if (!defaultBinding || !previousTargetBinding) return;
+
+        const restoredBindingConflicts = findConflictsForBindings(
+            actionId,
+            defaultBindings,
+        );
+        const aliasConflict = restoredBindingConflicts.find(
+            ({ binding }) => !shortcutBindingsEqual(binding, defaultBinding),
+        );
+        if (aliasConflict) {
+            setStatus(
+                `${definition.label} cannot be restored because ${formatShortcutBinding(aliasConflict.binding, platform)} is assigned to ${aliasConflict.conflict.label}. Reassign ${aliasConflict.conflict.label} first.`,
+            );
+            return;
+        }
+
+        const conflict = restoredBindingConflicts[0]?.conflict ?? null;
+        if (conflict) {
+            setPendingConflict({
+                targetActionId: actionId,
+                targetLabel: definition.label,
+                conflictingActionId: conflict.id,
+                conflictingLabel: conflict.label,
+                requestedBinding: defaultBinding,
+                previousTargetBinding,
+                resetsTarget: true,
+            });
+            return;
+        }
+
+        const reset = resetShortcutOverride(actionId, platform);
+        setStatus(
+            reset
+                ? `${definition.label} restored to its default shortcut.`
+                : "The shortcut could not be reset.",
+        );
+    };
+
+    const replaceConflict = () => {
+        if (!pendingConflict) return;
+
+        const requestedBindingConflict = findConflict(
+            pendingConflict.targetActionId,
+            pendingConflict.requestedBinding,
+            [pendingConflict.conflictingActionId],
+        );
+        const movedBindingConflict = findConflict(
+            pendingConflict.conflictingActionId,
+            pendingConflict.previousTargetBinding,
+            [pendingConflict.targetActionId],
+        );
+        const blockingConflict =
+            requestedBindingConflict ?? movedBindingConflict;
+        if (blockingConflict) {
+            setStatus(
+                `The shortcut swap was not applied because ${blockingConflict.label} already uses one of the resulting bindings. Resolve that shortcut first.`,
+            );
+            setPendingConflict(null);
+            return;
+        }
+
+        const saved = applyShortcutOverrideChanges(platform, [
+            {
+                actionId: pendingConflict.conflictingActionId,
+                binding: pendingConflict.previousTargetBinding,
+            },
+            {
+                actionId: pendingConflict.targetActionId,
+                binding: pendingConflict.resetsTarget
+                    ? null
+                    : pendingConflict.requestedBinding,
+            },
+        ]);
+        setStatus(
+            saved
+                ? `${pendingConflict.targetLabel} and ${pendingConflict.conflictingLabel} shortcuts updated.`
+                : "The shortcuts could not be updated.",
+        );
+        setPendingConflict(null);
+    };
+
+    if (
+        configurableShortcuts.length === 0 &&
+        fixedShortcuts.length === 0
+    ) {
         return (
             <div>
                 <SectionLabel>Shortcuts</SectionLabel>
                 <p
                     style={{
-                        fontSize: 12,
-                        color: "var(--text-secondary)",
                         padding: "12px 0",
+                        color: "var(--text-secondary)",
+                        fontSize: 12,
                     }}
                 >
                     No shortcuts registered yet.
@@ -3897,51 +4347,264 @@ function ShortcutsSettings({
         );
     }
 
-    if (filteredShortcuts.length === 0) {
+    if (filteredConfigurable.length === 0 && filteredFixed.length === 0) {
         return <EmptyPanelSearchResult />;
     }
 
     return (
         <div>
-            {Object.entries(grouped).map(([cat, items]) => (
-                <div key={cat}>
-                    <SectionLabel>{cat}</SectionLabel>
-                    {items.map((item) => (
-                        <div
-                            key={item.label}
-                            style={{
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                padding: "9px 0",
-                                borderBottom: "1px solid var(--border)",
-                            }}
-                        >
-                            <span
+            <div
+                role="status"
+                style={{
+                    marginBottom: status ? 8 : 0,
+                    color: "var(--text-secondary)",
+                    fontSize: 11,
+                }}
+            >
+                {status}
+            </div>
+
+            {filteredConfigurable.length > 0 && (
+                <section
+                    aria-labelledby="customizable-shortcuts-heading"
+                    aria-describedby="customizable-shortcuts-description"
+                >
+                    <ShortcutSectionHeader
+                        title="Customizable shortcuts"
+                        id="customizable-shortcuts-heading"
+                        action={
+                            <button
+                                type="button"
+                                disabled={!hasOverrides}
+                                onClick={() => setConfirmResetAll(true)}
                                 style={{
-                                    fontSize: 13,
-                                    color: "var(--text-primary)",
-                                }}
-                            >
-                                {item.label}
-                            </span>
-                            <kbd
-                                style={{
-                                    fontSize: 11,
-                                    fontFamily: "inherit",
-                                    color: "var(--text-secondary)",
-                                    backgroundColor: "var(--bg-tertiary)",
+                                    marginTop: 18,
+                                    padding: "4px 8px",
                                     border: "1px solid var(--border)",
                                     borderRadius: 5,
-                                    padding: "2px 7px",
+                                    backgroundColor: "var(--bg-tertiary)",
+                                    color: "var(--text-primary)",
+                                    fontFamily: "inherit",
+                                    fontSize: 11,
+                                    cursor: hasOverrides
+                                        ? "pointer"
+                                        : "not-allowed",
+                                    opacity: hasOverrides ? 1 : 0.45,
                                 }}
                             >
-                                {item.shortcut}
-                            </kbd>
-                        </div>
-                    ))}
-                </div>
-            ))}
+                                Reset all
+                            </button>
+                        }
+                    />
+                    <p
+                        id="customizable-shortcuts-description"
+                        style={{
+                            margin: "-2px 0 4px",
+                            color: "var(--text-secondary)",
+                            fontSize: 11,
+                            lineHeight: 1.45,
+                        }}
+                    >
+                        Global for this installation. Changes apply immediately
+                        across every vault.
+                    </p>
+                    {Object.entries(configurableGroups).map(
+                        ([category, shortcuts]) => (
+                            <div key={category}>
+                                <SectionLabel>{category}</SectionLabel>
+                                {shortcuts.map((shortcut) => {
+                                    const customized =
+                                        getShortcutOverride(
+                                            shortcut.id,
+                                            platform,
+                                        ) !== null;
+                                    return (
+                                        <div
+                                            key={shortcut.id}
+                                            data-shortcut-action={shortcut.id}
+                                            style={{
+                                                display: "flex",
+                                                alignItems: "center",
+                                                gap: 8,
+                                                minHeight: 42,
+                                                padding: "7px 0",
+                                                borderBottom:
+                                                    "1px solid var(--border)",
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    flex: 1,
+                                                    minWidth: 120,
+                                                }}
+                                            >
+                                                <div
+                                                    style={{
+                                                        color: "var(--text-primary)",
+                                                        fontSize: 13,
+                                                    }}
+                                                >
+                                                    {shortcut.label}
+                                                </div>
+                                                {customized && (
+                                                    <div
+                                                        style={{
+                                                            marginTop: 1,
+                                                            color: "var(--accent)",
+                                                            fontSize: 10,
+                                                        }}
+                                                    >
+                                                        Customized
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <ShortcutKeycap
+                                                label={shortcut.shortcut}
+                                            />
+                                            <ShortcutRecorder
+                                                actionLabel={shortcut.label}
+                                                platform={platform}
+                                                onRecord={(binding) =>
+                                                    saveBinding(
+                                                        shortcut.id,
+                                                        binding,
+                                                    )
+                                                }
+                                            />
+                                            <button
+                                                type="button"
+                                                aria-label={`Reset shortcut for ${shortcut.label}`}
+                                                disabled={!customized}
+                                                onClick={() =>
+                                                    resetBinding(shortcut.id)
+                                                }
+                                                style={{
+                                                    width: 50,
+                                                    padding: "4px 7px",
+                                                    border: "1px solid var(--border)",
+                                                    borderRadius: 5,
+                                                    backgroundColor:
+                                                        "transparent",
+                                                    color: "var(--text-secondary)",
+                                                    fontFamily: "inherit",
+                                                    fontSize: 11,
+                                                    cursor: customized
+                                                        ? "pointer"
+                                                        : "not-allowed",
+                                                    opacity: customized
+                                                        ? 1
+                                                        : 0.4,
+                                                }}
+                                            >
+                                                Reset
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ),
+                    )}
+                </section>
+            )}
+
+            {filteredFixed.length > 0 && (
+                <section
+                    aria-labelledby="fixed-shortcuts-heading"
+                    aria-describedby="fixed-shortcuts-description"
+                >
+                    <ShortcutSectionHeader
+                        title="Fixed shortcuts"
+                        id="fixed-shortcuts-heading"
+                    />
+                    <p
+                        id="fixed-shortcuts-description"
+                        style={{
+                            margin: "-2px 0 4px",
+                            color: "var(--text-secondary)",
+                            fontSize: 11,
+                            lineHeight: 1.45,
+                        }}
+                    >
+                        Contextual editor and interaction shortcuts remain fixed
+                        to preserve predictable local behavior.
+                    </p>
+                    {Object.entries(fixedGroups).map(
+                        ([category, shortcuts]) => (
+                            <div key={category}>
+                                <SectionLabel>{category}</SectionLabel>
+                                {shortcuts.map((shortcut) => (
+                                    <div
+                                        key={shortcut.id}
+                                        data-shortcut-action={shortcut.id}
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                            gap: 10,
+                                            minHeight: 38,
+                                            padding: "7px 0",
+                                            borderBottom:
+                                                "1px solid var(--border)",
+                                        }}
+                                    >
+                                        <span
+                                            style={{
+                                                color: "var(--text-primary)",
+                                                fontSize: 13,
+                                            }}
+                                        >
+                                            {shortcut.label}
+                                        </span>
+                                        <ShortcutKeycap
+                                            label={shortcut.shortcut}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        ),
+                    )}
+                </section>
+            )}
+
+            {pendingConflict && (
+                <ShortcutConfirmationDialog
+                    title="Shortcut already in use"
+                    description={`${formatShortcutBinding(
+                        pendingConflict.requestedBinding,
+                        platform,
+                    )} is currently assigned to ${
+                        pendingConflict.conflictingLabel
+                    }. ${pendingConflict.conflictingLabel} will move to ${formatShortcutBinding(
+                        pendingConflict.previousTargetBinding,
+                        platform,
+                    )}.`}
+                    confirmLabel={
+                        pendingConflict.resetsTarget
+                            ? "Reset and move"
+                            : "Replace shortcut"
+                    }
+                    onConfirm={replaceConflict}
+                    onCancel={() => setPendingConflict(null)}
+                />
+            )}
+
+            {confirmResetAll && (
+                <ShortcutConfirmationDialog
+                    title="Reset all shortcuts?"
+                    description="All customizable shortcuts for the current platform will return to their defaults. Shortcuts saved for other platforms are preserved."
+                    confirmLabel="Reset all"
+                    onConfirm={() => {
+                        const reset = resetAllShortcutOverrides(platform);
+                        setStatus(
+                            reset
+                                ? "All shortcuts restored to their defaults."
+                                : "The shortcuts could not be reset.",
+                        );
+                        setConfirmResetAll(false);
+                    }}
+                    onCancel={() => setConfirmResetAll(false)}
+                />
+            )}
         </div>
     );
 }
@@ -4575,7 +5238,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     terminal: "Font, size, and shell environment settings",
     developers: "Control which vault files appear in the file tree and pickers",
     vault: "Current vault and recent history",
-    shortcuts: "Keyboard shortcuts reference",
+    shortcuts: "Customize global shortcuts and review fixed bindings",
     ai_providers: "AI runtimes, authentication, and API keys",
     ai: "AI assistant chat preferences",
     feedback: "GitHub issues, discussions, and feedback links",
@@ -4718,6 +5381,11 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
     ],
     shortcuts: [
         "Keyboard shortcuts",
+        "Customizable shortcuts",
+        "Fixed shortcuts",
+        "Record shortcut",
+        "Reset all",
+        "global",
         "Shortcuts",
         "hotkeys",
         "commands",
@@ -4883,6 +5551,8 @@ export function SettingsPanel({
     standalone?: boolean;
     initialCategory?: Category;
 }) {
+    useShortcutOverrides();
+
     const initializeUpdates = useAppUpdateStore((state) => state.initialize);
     const updateAvailable = useAppUpdateStore(
         (state) => !!state.status?.update,

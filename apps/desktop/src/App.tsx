@@ -25,6 +25,7 @@ import { EditorPaneContent } from "./features/editor/EditorPaneContent";
 import { MultiPaneWorkspace } from "./features/editor/MultiPaneWorkspace";
 import { EditorChromeBar } from "./features/editor/EditorChromeBar";
 import { openUntitledMarkdownNote } from "./features/editor/markdownNoteCreation";
+import { openSearchInWorkspace } from "./features/editor/newTabMenuActions";
 import { useBookmarkStore } from "./app/store/bookmarkStore";
 import { CommandPalette } from "./features/command-palette/CommandPalette";
 import { QuickSwitcher } from "./features/quick-switcher/QuickSwitcher";
@@ -79,6 +80,13 @@ import {
     matchesShortcutAction,
     getShortcutDefinition,
 } from "./app/shortcuts/registry";
+import type { ShortcutOverrides } from "./app/shortcuts/preferences";
+import {
+    getNativeMenuShortcutAccelerators,
+    SYNC_NATIVE_MENU_SHORTCUTS_COMMAND,
+} from "./app/shortcuts/nativeMenu";
+import { AltGraphTracker } from "./app/shortcuts/altGraph";
+import { useShortcutOverrides } from "./app/shortcuts/useShortcutOverrides";
 import { getDesktopPlatform } from "./app/utils/platform";
 import {
     decreaseAppZoom,
@@ -542,6 +550,7 @@ function OutlineRightPanel() {
 function useRegisterCommands(
     openSettings: () => void,
     developerCommandsEnabled: boolean,
+    shortcutOverrides: ShortcutOverrides,
 ) {
     const register = useCommandStore((s) => s.register);
     const openCommandPalette = useCommandStore((s) => s.openCommandPalette);
@@ -551,6 +560,8 @@ function useRegisterCommands(
         const platform = getDesktopPlatform();
         const commandPaletteShortcut = getShortcutDefinition("command_palette");
         const quickSwitcherShortcut = getShortcutDefinition("quick_switcher");
+        const searchInVaultShortcut =
+            getShortcutDefinition("search_in_vault");
         const openVaultShortcut = getShortcutDefinition("open_vault");
         const newNoteShortcut = getShortcutDefinition("new_note");
         const newAgentShortcut = getShortcutDefinition("new_agent");
@@ -615,6 +626,15 @@ function useRegisterCommands(
             category: quickSwitcherShortcut.category,
             when: hasVault,
             execute: openQuickSwitcher,
+        });
+
+        register({
+            id: "vault:search",
+            label: searchInVaultShortcut.label,
+            shortcut: formatShortcutAction(searchInVaultShortcut.id, platform),
+            category: searchInVaultShortcut.category,
+            when: hasVault,
+            execute: () => openSearchInWorkspace(),
         });
 
         register({
@@ -938,19 +958,29 @@ function useRegisterCommands(
         openQuickSwitcher,
         openSettings,
         developerCommandsEnabled,
+        shortcutOverrides,
     ]);
 }
 
 // Global keyboard shortcuts that dispatch to the command store
-function useGlobalShortcuts(openSettings: () => void) {
+function useGlobalShortcuts(
+    openSettings: () => void,
+    shortcutOverrides: ShortcutOverrides,
+    enabled: boolean,
+) {
     const openCommandPalette = useCommandStore((s) => s.openCommandPalette);
     const closeModal = useCommandStore((s) => s.closeModal);
     const activeModal = useCommandStore((s) => s.activeModal);
 
     useEffect(() => {
+        if (!enabled) {
+            return;
+        }
         const platform = getDesktopPlatform();
+        const altGraphTracker = new AltGraphTracker();
         const handler = (e: KeyboardEvent) => {
-            if (e.defaultPrevented) return;
+            const isAltGraph = altGraphTracker.shouldIgnoreKeyDown(e, platform);
+            if (e.defaultPrevented || isAltGraph) return;
 
             // Escape closes any modal
             if (e.key === "Escape" && activeModal) {
@@ -982,6 +1012,12 @@ function useGlobalShortcuts(openSettings: () => void) {
                 } else {
                     useCommandStore.getState().execute("nav:quick-switcher");
                 }
+                return;
+            }
+
+            if (matchesShortcutAction(e, "search_in_vault", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("vault:search");
                 return;
             }
 
@@ -1063,6 +1099,18 @@ function useGlobalShortcuts(openSettings: () => void) {
                 return;
             }
 
+            if (matchesShortcutAction(e, "go_back", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("nav:back");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "go_forward", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("nav:forward");
+                return;
+            }
+
             if (matchesShortcutAction(e, "new_tab", platform)) {
                 e.preventDefault();
                 useCommandStore.getState().execute("editor:new-tab");
@@ -1078,9 +1126,48 @@ function useGlobalShortcuts(openSettings: () => void) {
             }
         };
 
+        const handleKeyUp = (event: KeyboardEvent) => {
+            altGraphTracker.handleKeyUp(event, platform);
+        };
+        const resetAltGraph = () => altGraphTracker.reset();
+
         window.addEventListener("keydown", handler, true);
-        return () => window.removeEventListener("keydown", handler, true);
-    }, [activeModal, closeModal, openCommandPalette, openSettings]);
+        window.addEventListener("keyup", handleKeyUp, true);
+        window.addEventListener("blur", resetAltGraph);
+        return () => {
+            window.removeEventListener("keydown", handler, true);
+            window.removeEventListener("keyup", handleKeyUp, true);
+            window.removeEventListener("blur", resetAltGraph);
+        };
+    }, [
+        activeModal,
+        closeModal,
+        enabled,
+        openCommandPalette,
+        openSettings,
+        shortcutOverrides,
+    ]);
+}
+
+function useNativeMenuShortcutSync(
+    shortcutOverrides: ShortcutOverrides,
+    enabled: boolean,
+) {
+    useEffect(() => {
+        const platform = getDesktopPlatform();
+        if (!enabled || platform !== "macos") {
+            return;
+        }
+
+        void Promise.resolve(
+            invoke(SYNC_NATIVE_MENU_SHORTCUTS_COMMAND, {
+                accelerators: getNativeMenuShortcutAccelerators(platform),
+            }),
+        ).catch(() => {
+            // Renderer-only development and older desktop builds may not
+            // expose native menu synchronization.
+        });
+    }, [enabled, shortcutOverrides]);
 }
 
 function useAppWebviewZoom() {
@@ -1280,6 +1367,7 @@ export default function App() {
     const hydrateChatWorkspace = useChatTabsStore((s) => s.hydrateForVault);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
     const windowMode = getWindowMode();
+    const shortcutOverrides = useShortcutOverrides();
     const vaultParam = readSearchParam("vault");
     const [windowSessionReady, setWindowSessionReady] = useState(
         !(
@@ -1417,8 +1505,17 @@ export default function App() {
         [],
     );
 
-    useRegisterCommands(openSettings, windowMode === "main");
-    useGlobalShortcuts(openSettings);
+    useRegisterCommands(
+        openSettings,
+        windowMode === "main",
+        shortcutOverrides,
+    );
+    useGlobalShortcuts(
+        openSettings,
+        shortcutOverrides,
+        windowMode !== "settings" && windowMode !== "ghost",
+    );
+    useNativeMenuShortcutSync(shortcutOverrides, windowMode === "main");
     useAppWebviewZoom();
     useNativeMenuActions(windowMode);
     useDynamicScrollbars();

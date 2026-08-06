@@ -29,6 +29,10 @@ import { getSystemUsername } from "./systemUser";
 import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
 import { installDeepLinkRuntime } from "./deepLink";
+import {
+    setNativeMenuShortcutCaptureActive,
+    syncNativeMenuShortcutAccelerators,
+} from "./menu";
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object"
@@ -237,7 +241,7 @@ function createBackend(options: IpcRegistrationOptions) {
 }
 
 function registerInvokeHandler(backend: ElectronVaultBackend) {
-    ipcMain.handle(ELECTRON_IPC.invoke, async (_event, rawEnvelope) => {
+    ipcMain.handle(ELECTRON_IPC.invoke, async (event, rawEnvelope) => {
         const envelope = asRecord(rawEnvelope) as Partial<IpcInvokeEnvelope>;
         if (typeof envelope.command !== "string" || !envelope.command) {
             throw new Error("Invalid invoke envelope.");
@@ -247,6 +251,17 @@ function registerInvokeHandler(backend: ElectronVaultBackend) {
         // pure TS backend.
         if (envelope.command === "get_system_username") {
             return getSystemUsername();
+        }
+        if (envelope.command === "sync_native_menu_shortcuts") {
+            return syncNativeMenuShortcutAccelerators(
+                asRecord(envelope.args).accelerators,
+            );
+        }
+        if (envelope.command === "set_native_menu_shortcut_capture") {
+            return setNativeMenuShortcutCaptureActive(
+                getSenderWindow(event),
+                asRecord(envelope.args).active,
+            );
         }
         if (envelope.command === "ai_resolve_managed_attachment_path") {
             throw new Error("Private backend command.");
