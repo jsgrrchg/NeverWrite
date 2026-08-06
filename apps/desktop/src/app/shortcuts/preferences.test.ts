@@ -300,6 +300,40 @@ describe("shortcut preferences persistence", () => {
         expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
     });
 
+    it("keeps the active shortcut unchanged when persistence fails", () => {
+        expect(
+            setShortcutOverride("new_note", "macos", {
+                key: "D",
+                modifiers: ["meta"],
+            }),
+        ).toBe(true);
+
+        vi.spyOn(window.localStorage, "setItem").mockImplementationOnce(() => {
+            throw new Error("storage unavailable");
+        });
+
+        expect(
+            setShortcutOverride("new_note", "macos", {
+                key: "N",
+                modifiers: ["meta", "shift"],
+            }),
+        ).toBe(false);
+
+        expect(getShortcutOverride("new_note", "macos")).toEqual({
+            key: "D",
+            modifiers: ["meta"],
+        });
+        expect(
+            JSON.parse(
+                localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
+            ),
+        ).toMatchObject({
+            macos: {
+                new_note: { key: "D", modifiers: ["meta"] },
+            },
+        });
+    });
+
     it("falls back to defaults for malformed or unsupported payloads", () => {
         localStorage.setItem(SHORTCUT_OVERRIDES_STORAGE_KEY, "not json");
         expect(formatShortcutAction("command_palette", "macos")).toBe("⌘K");

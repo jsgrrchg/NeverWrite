@@ -161,6 +161,14 @@ function hasAnyShortcutOverrides(overrides: ShortcutOverrides): boolean {
     );
 }
 
+function cloneShortcutOverrides(overrides: ShortcutOverrides): ShortcutOverrides {
+    return {
+        version: 1,
+        macos: { ...overrides.macos },
+        windows: { ...overrides.windows },
+    };
+}
+
 let cachedRawShortcutOverrides: string | null | undefined;
 let cachedShortcutOverrides: ShortcutOverrides | null = null;
 
@@ -181,10 +189,16 @@ export function readShortcutOverrides(): ShortcutOverrides {
 
 export function writeShortcutOverrides(value: unknown): boolean {
     const overrides = normalizeShortcutOverrides(value);
-    return safeStorageSetItem(
+    const raw = JSON.stringify(overrides);
+    const saved = safeStorageSetItem(
         SHORTCUT_OVERRIDES_STORAGE_KEY,
-        JSON.stringify(overrides),
+        raw,
     );
+    if (saved) {
+        cachedRawShortcutOverrides = raw;
+        cachedShortcutOverrides = overrides;
+    }
+    return saved;
 }
 
 export function getShortcutOverride(
@@ -223,7 +237,7 @@ export function applyShortcutOverrideChanges(
         normalizedChanges.push({ actionId: change.actionId, binding });
     }
 
-    const overrides = readShortcutOverrides();
+    const overrides = cloneShortcutOverrides(readStoredShortcutOverrides());
     const platformOverrides =
         overrides[resolveShortcutOverridePlatform(platform)];
     for (const change of normalizedChanges) {
@@ -235,7 +249,12 @@ export function applyShortcutOverrideChanges(
     }
 
     if (!hasAnyShortcutOverrides(overrides)) {
-        return safeStorageRemoveItem(SHORTCUT_OVERRIDES_STORAGE_KEY);
+        const removed = safeStorageRemoveItem(SHORTCUT_OVERRIDES_STORAGE_KEY);
+        if (removed) {
+            cachedRawShortcutOverrides = null;
+            cachedShortcutOverrides = createEmptyShortcutOverrides();
+        }
+        return removed;
     }
     return writeShortcutOverrides(overrides);
 }
@@ -252,10 +271,15 @@ export function resetShortcutOverride(
 export function resetAllShortcutOverrides(
     platform: DesktopPlatform = getDesktopPlatform(),
 ): boolean {
-    const overrides = readShortcutOverrides();
+    const overrides = cloneShortcutOverrides(readStoredShortcutOverrides());
     overrides[resolveShortcutOverridePlatform(platform)] = {};
     if (!hasAnyShortcutOverrides(overrides)) {
-        return safeStorageRemoveItem(SHORTCUT_OVERRIDES_STORAGE_KEY);
+        const removed = safeStorageRemoveItem(SHORTCUT_OVERRIDES_STORAGE_KEY);
+        if (removed) {
+            cachedRawShortcutOverrides = null;
+            cachedShortcutOverrides = createEmptyShortcutOverrides();
+        }
+        return removed;
     }
     return writeShortcutOverrides(overrides);
 }
