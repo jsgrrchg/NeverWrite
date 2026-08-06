@@ -14,7 +14,10 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
-import type { EditorFontFamily } from "../../../app/store/settingsStore";
+import {
+    useSettingsStore,
+    type EditorFontFamily,
+} from "../../../app/store/settingsStore";
 import type {
     AIChatMessage,
     AIChatSessionStatus,
@@ -39,7 +42,7 @@ import {
 import { useChatStore } from "../store/chatStore";
 import type { ActivityDisplayMode } from "../activityDisplayMode";
 import { isTurnStartedStatusMessage } from "../transcriptModel";
-import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { getAiChatContentColumnStyle } from "./chatContentLayout";
 import { ChatFindBar } from "./find/ChatFindBar";
 import { useChatFind } from "./find/useChatFind";
 import {
@@ -389,6 +392,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     onUrlElicitationOpen,
     onUrlElicitationResponse,
 }: AIChatMessageListProps) {
+    const aiChatContentWidth = useSettingsStore((s) => s.aiChatContentWidth);
     const containerRef = useRef<HTMLDivElement>(null);
     const findHighlightOwnerId = useId();
     const [findQuery, setFindQuery] = useState("");
@@ -842,7 +846,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                     <div
                         className="min-w-0"
                         data-testid="chat-pinned-plan-column"
-                        style={AI_CHAT_CONTENT_COLUMN_STYLE}
+                        style={getAiChatContentColumnStyle(aiChatContentWidth)}
                     >
                         <PlanMessage
                             sessionId={sessionId}
@@ -872,7 +876,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                     className="min-w-0"
                     data-selectable="true"
                     style={{
-                        ...AI_CHAT_CONTENT_COLUMN_STYLE,
+                        ...getAiChatContentColumnStyle(aiChatContentWidth),
                         fontSize: chatFontSize,
                         fontFamily: getEditorFontFamily(chatFontFamily),
                     }}

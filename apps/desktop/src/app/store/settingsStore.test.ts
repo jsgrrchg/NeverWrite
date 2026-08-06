@@ -43,6 +43,7 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().pdfFilter).toBe("none");
         expect(useSettingsStore.getState().pdfDefaultZoom).toBe("fit-width");
         expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
+        expect(useSettingsStore.getState().aiChatContentWidth).toBe(600);
         expect(useSettingsStore.getState().fileTreeScale).toBe(114);
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(100);
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(true);
@@ -64,6 +65,12 @@ describe("settingsStore", () => {
 
         useSettingsStore.getState().setSetting("pdfDefaultZoom", "fit-width");
         expect(resolvePdfInitialZoom()).toEqual({ zoom: 1, fitWidth: true });
+    });
+
+    it("normalizes the AI chat content width", () => {
+        useSettingsStore.getState().setSetting("aiChatContentWidth", 1_600);
+
+        expect(useSettingsStore.getState().aiChatContentWidth).toBe(1_200);
     });
 
     it("persists vim settings globally across vaults", () => {

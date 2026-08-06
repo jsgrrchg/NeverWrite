@@ -57,7 +57,7 @@ import { formatShortcutAction } from "../../../app/shortcuts/format";
 import { getDesktopPlatform } from "../../../app/utils/platform";
 import { AIDiscardedRootsBanner } from "./AIDiscardedRootsBanner";
 import { useInlineRename } from "./useInlineRename";
-import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { getAiChatContentColumnStyle } from "./chatContentLayout";
 import { useChatFindShortcut } from "./find/useChatFindShortcut";
 import {
     appendFileAttachmentPart,
@@ -190,11 +190,13 @@ function ChatContentColumn({
 }: {
     children: ReactNode;
 }) {
+    const aiChatContentWidth = useSettingsStore((s) => s.aiChatContentWidth);
+
     return (
         <div
             className="min-w-0"
             data-testid="chat-content-column"
-            style={AI_CHAT_CONTENT_COLUMN_STYLE}
+            style={getAiChatContentColumnStyle(aiChatContentWidth)}
         >
             {children}
         </div>

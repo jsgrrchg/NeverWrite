@@ -949,6 +949,7 @@ function AppearanceSettings({
         fileTreeScale,
         agentsSidebarScale,
         fileTreeStickyFolders,
+        aiChatContentWidth,
         setSetting,
     } = useSettingsStore();
     const [appZoomPercent, setAppZoomPercent] = useAppZoomPercent();
@@ -999,8 +1000,14 @@ function AppearanceSettings({
             appZoomShortcut,
         ],
     ]);
+    const showChat = sectionHasSettingsSearchMatches(searchQuery, "Chat", [
+        [
+            "Chat content width",
+            "Maximum width of AI chat messages, composer, and related panels, in pixels.",
+        ],
+    ]);
 
-    if (!showMode && !showTheme && !showNavigation && !showZoom) {
+    if (!showMode && !showTheme && !showNavigation && !showZoom && !showChat) {
         return <EmptyPanelSearchResult />;
     }
 
@@ -1073,6 +1080,24 @@ function AppearanceSettings({
                         onChange={(v) =>
                             setSetting("fileTreeStickyFolders", v)
                         }
+                    />
+                }
+            />
+
+            {showChat ? <SectionLabel>Chat</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
+                label="Chat content width"
+                description="Maximum width of AI chat messages, composer, and related panels, in pixels."
+                control={
+                    <SliderField
+                        value={aiChatContentWidth}
+                        min={480}
+                        max={1200}
+                        step={20}
+                        onChange={(v) => setSetting("aiChatContentWidth", v)}
+                        formatValue={(value) => `${value}px`}
                     />
                 }
             />

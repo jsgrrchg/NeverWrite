@@ -64,7 +64,7 @@ import {
     shouldIncludeVaultEntryInFileScope,
     isTextLikeVaultEntry,
 } from "../../../app/utils/vaultEntries";
-import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { getAiChatContentColumnStyle } from "./chatContentLayout";
 import { getComposerPrimaryAction } from "./chatComposerPrimaryAction";
 import {
     type ImageAttachmentValidationFailure,
@@ -984,6 +984,7 @@ export function AIChatComposer({
     onSubmit,
     onStop,
 }: AIChatComposerProps) {
+    const aiChatContentWidth = useSettingsStore((s) => s.aiChatContentWidth);
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
@@ -1698,7 +1699,7 @@ export function AIChatComposer({
                 <div className={expanded ? "px-2 pb-1.5" : "px-3 pb-1.5"}>
                     <div
                         className="min-w-0"
-                        style={AI_CHAT_CONTENT_COLUMN_STYLE}
+                        style={getAiChatContentColumnStyle(aiChatContentWidth)}
                     >
                         {contextBar}
                     </div>
@@ -1729,7 +1730,7 @@ export function AIChatComposer({
                     ref={bindContentColumnRef}
                     className={contentColumnClassName}
                     data-testid="chat-composer-content-column"
-                    style={AI_CHAT_CONTENT_COLUMN_STYLE}
+                    style={getAiChatContentColumnStyle(aiChatContentWidth)}
                 >
                     {!expanded && (
                         <div

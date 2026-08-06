@@ -306,6 +306,22 @@ describe("SettingsPanel", () => {
         expect(screen.getByDisplayValue("125")).toBeInTheDocument();
     });
 
+    it("sets the AI chat content width from Appearance", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+        const label = screen.getByText("Chat content width");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        fireEvent.change(within(row as HTMLElement).getByDisplayValue("600"), {
+            target: { value: "800" },
+        });
+
+        expect(useSettingsStore.getState().aiChatContentWidth).toBe(800);
+    });
+
     it("filters recent vaults in a scrollable list", () => {
         localStorage.setItem(
             "neverwrite:recentVaults",
