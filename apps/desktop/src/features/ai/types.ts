@@ -56,6 +56,7 @@ export interface AIRuntimeConnectionState {
 
 export interface AIRuntimeConnectionPayload extends AIRuntimeConnectionState {
     runtime_id: string;
+    session_id?: string | null;
 }
 
 export interface AITokenUsageCost {

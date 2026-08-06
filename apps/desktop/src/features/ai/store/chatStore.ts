@@ -692,6 +692,23 @@ function isClosedSubagentSession(session: AIChatSession) {
     return Boolean(session.parentSessionId && session.closedAt);
 }
 
+function getRuntimeConnectionRootSessionId(
+    sessionsById: Record<string, AIChatSession>,
+    sessionId: string,
+) {
+    let currentSessionId = sessionId;
+    const visitedSessionIds = new Set<string>();
+    while (!visitedSessionIds.has(currentSessionId)) {
+        visitedSessionIds.add(currentSessionId);
+        const parentSessionId = sessionsById[currentSessionId]?.parentSessionId;
+        if (!parentSessionId || !sessionsById[parentSessionId]) {
+            return currentSessionId;
+        }
+        currentSessionId = parentSessionId;
+    }
+    return sessionId;
+}
+
 function isRemovedGeminiAcpSession(session: Pick<AIChatSession, "runtimeId">) {
     return session.runtimeId === "gemini-acp";
 }
@@ -1911,6 +1928,10 @@ function isProviderQuotaErrorMessage(message: string) {
 function isRuntimeSessionDisconnectedErrorMessage(message: string) {
     const normalized = message.trim().toLowerCase();
     return (
+        normalized.includes("runtime disconnected while sending") ||
+        normalized.includes("sending on a closed channel") ||
+        normalized.includes("receiving on a closed channel") ||
+        normalized.includes("channel closed") ||
         normalized.includes("runtime session is not connected") ||
         normalized.includes("resource_not_found") ||
         normalized.includes("ai session not found")
@@ -7875,6 +7896,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         let activeSessionId = sessionId;
         let currentItem = queuedItem;
         let optimisticMessageInserted = false;
+        let shouldRecoverPromptForRetry = false;
         let preflightOwnership = options?.preflightOwnership ?? null;
         let session = get().sessionsById[activeSessionId];
         try {
@@ -8138,6 +8160,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 "Failed to send the message.",
                 session.runtimeId,
             );
+            shouldRecoverPromptForRetry =
+                source === "immediate" &&
+                isRuntimeSessionDisconnectedErrorMessage(message);
             if (source === "queue") {
                 restoreActiveQueuedMessage(activeSessionId, (item) => ({
                     ...item,
@@ -8159,11 +8184,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                       preflightOwnership.token,
                   )
                 : null;
-            const preflightFailureRecovery = !optimisticMessageInserted
+            const preflightFailureRecovery =
+                (!optimisticMessageInserted || shouldRecoverPromptForRetry)
                 ? (options?.preflightFailureRecovery ??
                   (releasedPreflightOwnership
                       ? ({ kind: "composer" } as const)
-                      : undefined))
+                      : shouldRecoverPromptForRetry
+                        ? ({ kind: "composer" } as const)
+                        : undefined))
                 : undefined;
             if (source === "immediate" && preflightFailureRecovery) {
                 set((state) => {
@@ -9458,7 +9486,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
         },
 
-        applyRuntimeConnection: ({ runtime_id, status, message }) => {
+        applyRuntimeConnection: ({ runtime_id, session_id, status, message }) => {
             const affectedSessionIds: string[] = [];
             set((state) => {
                 const runtimeConnectionByRuntimeId = setRuntimeConnectionState(
@@ -9476,6 +9504,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                 const nextSessionsById = { ...state.sessionsById };
                 const failedAt = Date.now();
+                const affectedConnectionRootSessionId =
+                    session_id != null
+                        ? getRuntimeConnectionRootSessionId(
+                              state.sessionsById,
+                              session_id,
+                          )
+                        : null;
                 let changed = false;
 
                 for (const [sessionId, session] of Object.entries(
@@ -9483,6 +9518,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 )) {
                     if (
                         session.runtimeId !== runtime_id ||
+                        (affectedConnectionRootSessionId != null &&
+                            getRuntimeConnectionRootSessionId(
+                                state.sessionsById,
+                                sessionId,
+                            ) !== affectedConnectionRootSessionId) ||
                         !isLiveRuntimeSession(session)
                     ) {
                         continue;
