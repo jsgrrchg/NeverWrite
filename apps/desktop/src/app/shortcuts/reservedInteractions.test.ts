@@ -21,6 +21,19 @@ const reservedCases: readonly [
     ["macos", "z", ["meta", "shift"], "Redo"],
     ["macos", "v", ["meta", "shift"], "Paste without formatting"],
     ["macos", "v", ["meta", "alt", "shift"], "Paste and Match Style"],
+    ["macos", "f", ["meta"], "Find in Note"],
+    ["macos", "e", ["meta"], "Toggle Live Preview"],
+    ["macos", "1", ["meta"], "Heading 1"],
+    ["macos", "2", ["meta"], "Heading 2"],
+    ["macos", "3", ["meta"], "Heading 3"],
+    ["macos", "4", ["meta"], "Heading 4"],
+    ["macos", "5", ["meta"], "Heading 5"],
+    ["macos", "6", ["meta"], "Heading 6"],
+    ["macos", "0", ["meta", "shift"], "Remove Heading"],
+    ["macos", "b", ["meta"], "Bold Selection"],
+    ["macos", "h", ["meta", "shift"], "Highlight Selection"],
+    ["macos", "p", ["meta", "alt"], "Preview Link at Caret"],
+    ["macos", "s", ["meta", "shift"], "Save Note"],
     ["windows", "c", ["ctrl"], "Copy"],
     ["windows", "v", ["ctrl"], "Paste"],
     ["windows", "x", ["ctrl"], "Cut"],
@@ -38,12 +51,25 @@ const reservedCases: readonly [
     ["windows", "Insert", ["ctrl"], "Copy"],
     ["windows", "Insert", ["shift"], "Paste"],
     ["windows", "Delete", ["shift"], "Cut"],
+    ["windows", "f", ["ctrl"], "Find in Note"],
+    ["windows", "e", ["ctrl"], "Toggle Live Preview"],
+    ["windows", "1", ["ctrl"], "Heading 1"],
+    ["windows", "2", ["ctrl"], "Heading 2"],
+    ["windows", "3", ["ctrl"], "Heading 3"],
+    ["windows", "4", ["ctrl"], "Heading 4"],
+    ["windows", "5", ["ctrl"], "Heading 5"],
+    ["windows", "6", ["ctrl"], "Heading 6"],
+    ["windows", "0", ["ctrl", "shift"], "Remove Heading"],
+    ["windows", "b", ["ctrl"], "Bold Selection"],
+    ["windows", "h", ["ctrl", "shift"], "Highlight Selection"],
+    ["windows", "p", ["ctrl", "alt"], "Preview Link at Caret"],
+    ["windows", "s", ["ctrl", "shift"], "Save Note"],
 ];
 
 describe("reserved interaction shortcuts", () => {
     it("keeps the agreed platform inventories complete", () => {
-        expect(RESERVED_INTERACTION_SHORTCUTS.macos).toHaveLength(9);
-        expect(RESERVED_INTERACTION_SHORTCUTS.windows).toHaveLength(12);
+        expect(RESERVED_INTERACTION_SHORTCUTS.macos).toHaveLength(22);
+        expect(RESERVED_INTERACTION_SHORTCUTS.windows).toHaveLength(25);
     });
 
     it.each(reservedCases)(

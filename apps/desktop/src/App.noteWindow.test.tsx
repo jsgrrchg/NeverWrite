@@ -14,7 +14,10 @@ import { isTerminalTab, useEditorStore } from "./app/store/editorStore";
 import { useSettingsStore } from "./app/store/settingsStore";
 import { useVaultStore } from "./app/store/vaultStore";
 import { getDesktopPlatform } from "./app/utils/platform";
-import { setShortcutOverride } from "./app/shortcuts/preferences";
+import {
+    setShortcutOverride,
+    SHORTCUT_OVERRIDES_STORAGE_KEY,
+} from "./app/shortcuts/preferences";
 import {
     resetTerminalRuntimeStoreForTests,
     useTerminalRuntimeStore,
@@ -465,6 +468,77 @@ describe("App note window", () => {
         expect(execute).not.toHaveBeenCalled();
     });
 
+    it("keeps stored configurable overrides from winning capture-phase precedence over fixed editor bindings", async () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        detachedWindowMock.label = "main";
+        detachedWindowMock.mode = "main";
+        window.history.replaceState({}, "", "/");
+        localStorage.setItem(
+            SHORTCUT_OVERRIDES_STORAGE_KEY,
+            JSON.stringify({
+                version: 1,
+                macos: {},
+                windows: {
+                    quick_switcher: { key: "e", modifiers: ["ctrl"] },
+                    new_note: { key: "f", modifiers: ["ctrl"] },
+                    new_agent: {
+                        key: "s",
+                        modifiers: ["ctrl", "shift"],
+                    },
+                    new_terminal: { key: "1", modifiers: ["ctrl"] },
+                    command_palette: { key: "b", modifiers: ["ctrl"] },
+                },
+            }),
+        );
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        const execute = vi.fn();
+        useCommandStore.setState({ execute });
+
+        const togglePreview = new KeyboardEvent("keydown", {
+            key: "e",
+            ctrlKey: true,
+            cancelable: true,
+        });
+        window.dispatchEvent(togglePreview);
+        expect(execute).toHaveBeenCalledWith("editor:toggle-live-preview");
+        expect(execute).toHaveBeenCalledTimes(1);
+        expect(togglePreview.defaultPrevented).toBe(true);
+
+        for (const event of [
+            new KeyboardEvent("keydown", {
+                key: "f",
+                ctrlKey: true,
+                cancelable: true,
+            }),
+            new KeyboardEvent("keydown", {
+                key: "s",
+                ctrlKey: true,
+                shiftKey: true,
+                cancelable: true,
+            }),
+            new KeyboardEvent("keydown", {
+                key: "1",
+                ctrlKey: true,
+                cancelable: true,
+            }),
+            new KeyboardEvent("keydown", {
+                key: "b",
+                ctrlKey: true,
+                cancelable: true,
+            }),
+        ]) {
+            execute.mockClear();
+            window.dispatchEvent(event);
+            expect(execute).not.toHaveBeenCalled();
+            expect(event.defaultPrevented).toBe(false);
+        }
+    });
 
     it("starts workspace terminal runtimes inside detached note windows", async () => {
         mockInvoke().mockResolvedValue({

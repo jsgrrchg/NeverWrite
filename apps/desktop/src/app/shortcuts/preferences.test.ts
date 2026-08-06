@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    applyShortcutOverrideChanges,
     getShortcutOverride,
     readShortcutOverrides,
     resetAllShortcutOverrides,
@@ -269,6 +270,34 @@ describe("shortcut preferences persistence", () => {
                 },
             },
         });
+    });
+
+    it("rejects fixed editor bindings from batched override writes", () => {
+        const cases = [
+            ["macos", "f", ["meta"]],
+            ["macos", "s", ["meta", "shift"]],
+            ["macos", "1", ["meta"]],
+            ["macos", "b", ["meta"]],
+            ["macos", "h", ["meta", "shift"]],
+            ["windows", "f", ["ctrl"]],
+            ["windows", "s", ["ctrl", "shift"]],
+            ["windows", "1", ["ctrl"]],
+            ["windows", "b", ["ctrl"]],
+            ["windows", "h", ["ctrl", "shift"]],
+        ] as const;
+
+        for (const [platform, key, modifiers] of cases) {
+            expect(
+                applyShortcutOverrideChanges(platform, [
+                    {
+                        actionId: "new_note",
+                        binding: { key, modifiers: [...modifiers] },
+                    },
+                ]),
+            ).toBe(false);
+        }
+
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
     });
 
     it("falls back to defaults for malformed or unsupported payloads", () => {

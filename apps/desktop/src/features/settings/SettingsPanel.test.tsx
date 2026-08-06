@@ -778,7 +778,7 @@ describe("SettingsPanel", () => {
         });
     });
 
-    it("rejects bindings reserved by fixed shortcuts", () => {
+    it("rejects fixed editor bindings while recording", () => {
         setNavigatorIdentity(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Win32",
@@ -793,14 +793,24 @@ describe("SettingsPanel", () => {
             name: "Record shortcut for New Note",
         });
 
-        fireEvent.click(record);
-        fireEvent.keyDown(record, { key: "b", ctrlKey: true });
+        const cases = [
+            ["f", { ctrlKey: true }, "Find in Note"],
+            ["s", { ctrlKey: true, shiftKey: true }, "Save Note"],
+            ["1", { ctrlKey: true }, "Heading 1"],
+            ["b", { ctrlKey: true }, "Bold Selection"],
+            ["h", { ctrlKey: true, shiftKey: true }, "Highlight Selection"],
+        ] as const;
 
-        expect(
-            screen.getByText(
-                "Ctrl+B is reserved for Bold Selection and cannot be reassigned.",
-            ),
-        ).toBeInTheDocument();
+        fireEvent.click(record);
+        for (const [key, modifiers, label] of cases) {
+            fireEvent.keyDown(record, { key, ...modifiers });
+            expect(
+                screen.getByText(
+                    `This shortcut is reserved for ${label} and cannot be reassigned.`,
+                ),
+            ).toBeInTheDocument();
+        }
+
         expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
         expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
     });
