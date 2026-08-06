@@ -241,7 +241,7 @@ function createBackend(options: IpcRegistrationOptions) {
 }
 
 function registerInvokeHandler(backend: ElectronVaultBackend) {
-    ipcMain.handle(ELECTRON_IPC.invoke, async (_event, rawEnvelope) => {
+    ipcMain.handle(ELECTRON_IPC.invoke, async (event, rawEnvelope) => {
         const envelope = asRecord(rawEnvelope) as Partial<IpcInvokeEnvelope>;
         if (typeof envelope.command !== "string" || !envelope.command) {
             throw new Error("Invalid invoke envelope.");
@@ -259,6 +259,7 @@ function registerInvokeHandler(backend: ElectronVaultBackend) {
         }
         if (envelope.command === "set_native_menu_shortcut_capture") {
             return setNativeMenuShortcutCaptureActive(
+                getSenderWindow(event),
                 asRecord(envelope.args).active,
             );
         }

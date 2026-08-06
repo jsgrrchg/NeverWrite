@@ -79,7 +79,10 @@ const configurableNativeMenuCommands = new Set([
 
 let nativeMenuShortcutAccelerators: Record<string, string | null> | null =
     null;
-let nativeMenuShortcutCaptureActive = false;
+const nativeMenuShortcutCaptureWindows = new Map<
+    number,
+    { window: BrowserWindow; release: () => void }
+>();
 
 function sendRuntimeEvent(
     window: BrowserWindow | null,
@@ -210,6 +213,12 @@ function suspendMenuAccelerators(items: MenuItemConstructorOptions[]) {
         if (Array.isArray(item.submenu)) {
             suspendMenuAccelerators(item.submenu);
         }
+    }
+}
+
+function refreshNativeApplicationMenu() {
+    if (process.platform === "darwin") {
+        Menu.setApplicationMenu(buildApplicationMenu());
     }
 }
 
@@ -349,7 +358,7 @@ function buildApplicationMenu() {
         windowMenu,
         helpMenu,
     ];
-    if (nativeMenuShortcutCaptureActive) {
+    if (nativeMenuShortcutCaptureWindows.size > 0) {
         suspendMenuAccelerators(template);
     }
     return Menu.buildFromTemplate(template);
@@ -403,22 +412,51 @@ export function syncNativeMenuShortcutAccelerators(rawValue: unknown) {
     }
 
     nativeMenuShortcutAccelerators = nextAccelerators;
-    if (process.platform === "darwin") {
-        Menu.setApplicationMenu(buildApplicationMenu());
-    }
+    refreshNativeApplicationMenu();
     return true;
 }
 
-export function setNativeMenuShortcutCaptureActive(rawValue: unknown) {
-    const nextActive = rawValue === true;
-    if (nativeMenuShortcutCaptureActive === nextActive) {
+function clearNativeMenuShortcutCapture(windowId: number) {
+    const capture = nativeMenuShortcutCaptureWindows.get(windowId);
+    if (!capture) return;
+
+    nativeMenuShortcutCaptureWindows.delete(windowId);
+    capture.window.removeListener("closed", capture.release);
+    capture.window.webContents.removeListener(
+        "render-process-gone",
+        capture.release,
+    );
+    capture.window.webContents.removeListener("destroyed", capture.release);
+    refreshNativeApplicationMenu();
+}
+
+export function setNativeMenuShortcutCaptureActive(
+    sourceWindow: BrowserWindow | null,
+    rawValue: unknown,
+) {
+    if (!sourceWindow || sourceWindow.isDestroyed()) {
+        return false;
+    }
+
+    const windowId = sourceWindow.webContents.id;
+    if (rawValue !== true) {
+        clearNativeMenuShortcutCapture(windowId);
         return true;
     }
 
-    nativeMenuShortcutCaptureActive = nextActive;
-    if (process.platform === "darwin") {
-        Menu.setApplicationMenu(buildApplicationMenu());
+    if (nativeMenuShortcutCaptureWindows.has(windowId)) {
+        return true;
     }
+
+    const release = () => clearNativeMenuShortcutCapture(windowId);
+    nativeMenuShortcutCaptureWindows.set(windowId, {
+        window: sourceWindow,
+        release,
+    });
+    sourceWindow.once("closed", release);
+    sourceWindow.webContents.once("render-process-gone", release);
+    sourceWindow.webContents.once("destroyed", release);
+    refreshNativeApplicationMenu();
     return true;
 }
 
