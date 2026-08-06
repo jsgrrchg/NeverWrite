@@ -213,6 +213,21 @@ describe("shortcut preferences persistence", () => {
         );
     });
 
+    it.each(["CapsLock", "NumLock", "ScrollLock"])(
+        "rejects the lock key %s as a shortcut key",
+        (key) => {
+            expect(
+                setShortcutOverride("new_note", "windows", {
+                    key,
+                    modifiers: ["ctrl"],
+                }),
+            ).toBe(false);
+            expect(
+                localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY),
+            ).toBeNull();
+        },
+    );
+
     it("falls back to defaults for malformed or unsupported payloads", () => {
         localStorage.setItem(SHORTCUT_OVERRIDES_STORAGE_KEY, "not json");
         expect(formatShortcutAction("command_palette", "macos")).toBe("⌘K");

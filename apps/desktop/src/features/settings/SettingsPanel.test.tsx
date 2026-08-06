@@ -521,15 +521,25 @@ describe("SettingsPanel", () => {
 
         expect(screen.getByText("Customizable shortcuts")).toBeInTheDocument();
         expect(screen.getByText("Fixed shortcuts")).toBeInTheDocument();
+        const customizableSection = document.querySelector(
+            "section[aria-labelledby='customizable-shortcuts-heading']",
+        );
+        const fixedSection = document.querySelector(
+            "section[aria-labelledby='fixed-shortcuts-heading']",
+        );
+        expect(customizableSection).toHaveAttribute(
+            "aria-describedby",
+            "customizable-shortcuts-description",
+        );
+        expect(fixedSection).toHaveAttribute(
+            "aria-describedby",
+            "fixed-shortcuts-description",
+        );
         expect(
-            document.querySelectorAll(
-                "section[aria-labelledby='customizable-shortcuts-heading'] [data-shortcut-action]",
-            ),
+            customizableSection?.querySelectorAll("[data-shortcut-action]"),
         ).toHaveLength(22);
         expect(
-            document.querySelectorAll(
-                "section[aria-labelledby='fixed-shortcuts-heading'] [data-shortcut-action]",
-            ),
+            fixedSection?.querySelectorAll("[data-shortcut-action]"),
         ).toHaveLength(15);
 
         const fixedRow = document.querySelector(
@@ -539,6 +549,9 @@ describe("SettingsPanel", () => {
         expect(
             within(fixedRow as HTMLElement).queryByRole("button"),
         ).not.toBeInTheDocument();
+        expect(fixedRow?.querySelector("kbd")).not.toHaveAttribute(
+            "aria-label",
+        );
     });
 
     it("records and persists a modified shortcut from the keyboard", () => {
@@ -555,6 +568,8 @@ describe("SettingsPanel", () => {
         const record = within(row).getByRole("button", {
             name: "Record shortcut for Quick Switcher",
         });
+        const status = screen.getByRole("status");
+        expect(status).toBeEmptyDOMElement();
 
         fireEvent.click(record);
         expect(record).toHaveAttribute("aria-pressed", "true");
@@ -565,10 +580,9 @@ describe("SettingsPanel", () => {
         });
 
         expect(
-            within(row).getByLabelText(
-                "Current shortcut for Quick Switcher: Ctrl+Alt+Q",
-            ),
+            within(row).getByText("Ctrl+Alt+Q", { selector: "kbd" }),
         ).toBeInTheDocument();
+        expect(status).toHaveTextContent("Quick Switcher shortcut updated.");
         expect(
             JSON.parse(
                 localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
@@ -630,6 +644,13 @@ describe("SettingsPanel", () => {
             ),
         ).toBeInTheDocument();
 
+        fireEvent.keyDown(record, { key: "CapsLock", ctrlKey: true });
+        expect(
+            screen.getByText(
+                "Press a non-modifier key to complete the shortcut.",
+            ),
+        ).toBeInTheDocument();
+
         fireEvent.keyDown(record, { key: "F4", altKey: true });
         expect(
             screen.getByText(
@@ -660,7 +681,9 @@ describe("SettingsPanel", () => {
         let dialog = screen.getByRole("alertdialog");
         expect(dialog).toHaveTextContent("Shortcut already in use");
         expect(dialog).toHaveTextContent("Quick Switcher will move to Ctrl+N");
-        fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+        expect(cancel).toHaveFocus();
+        fireEvent.click(cancel);
         expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
 
         fireEvent.click(record);
@@ -676,14 +699,12 @@ describe("SettingsPanel", () => {
             "[data-shortcut-action='quick_switcher']",
         ) as HTMLElement;
         expect(
-            within(newNoteRow).getByLabelText(
-                "Current shortcut for New Note: Ctrl+O",
-            ),
+            within(newNoteRow).getByText("Ctrl+O", { selector: "kbd" }),
         ).toBeInTheDocument();
         expect(
-            within(quickSwitcherRow).getByLabelText(
-                "Current shortcut for Quick Switcher: Ctrl+N",
-            ),
+            within(quickSwitcherRow).getByText("Ctrl+N", {
+                selector: "kbd",
+            }),
         ).toBeInTheDocument();
 
         const stored = JSON.parse(
@@ -692,6 +713,48 @@ describe("SettingsPanel", () => {
         expect(stored.windows).toMatchObject({
             new_note: { key: "o", modifiers: ["ctrl"] },
             quick_switcher: { key: "n", modifiers: ["ctrl"] },
+        });
+    });
+
+    it("blocks a conflict swap when a third action owns the moved binding", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const newNoteRow = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(newNoteRow).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+        fireEvent.click(record);
+        fireEvent.keyDown(record, { key: "o", ctrlKey: true });
+
+        act(() => {
+            setShortcutOverride("new_tab", "windows", {
+                key: "n",
+                modifiers: ["ctrl"],
+            });
+        });
+        const dialog = screen.getByRole("alertdialog");
+        fireEvent.click(
+            within(dialog).getByRole("button", {
+                name: "Replace shortcut",
+            }),
+        );
+
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "The shortcut swap was not applied because New Tab already uses one of the resulting bindings.",
+        );
+        const stored = JSON.parse(
+            localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
+        );
+        expect(stored.windows).toEqual({
+            new_tab: { key: "n", modifiers: ["ctrl"] },
         });
     });
 
@@ -721,9 +784,9 @@ describe("SettingsPanel", () => {
             }),
         );
         expect(
-            within(quickSwitcherRow).getByLabelText(
-                "Current shortcut for Quick Switcher: Ctrl+O",
-            ),
+            within(quickSwitcherRow).getByText("Ctrl+O", {
+                selector: "kbd",
+            }),
         ).toBeInTheDocument();
 
         fireEvent.click(screen.getByRole("button", { name: "Reset all" }));

@@ -39,9 +39,12 @@ const SHORTCUT_MODIFIERS: readonly ShortcutModifier[] = [
 const MODIFIER_KEYS = new Set([
     "alt",
     "altgraph",
+    "capslock",
     "control",
     "meta",
+    "numlock",
     "os",
+    "scrolllock",
     "shift",
 ]);
 

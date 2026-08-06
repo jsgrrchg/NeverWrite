@@ -8,9 +8,12 @@ import type { DesktopPlatform } from "../../app/utils/platform";
 const MODIFIER_KEYS = new Set([
     "alt",
     "altgraph",
+    "capslock",
     "control",
     "meta",
+    "numlock",
     "os",
+    "scrolllock",
     "shift",
 ]);
 
@@ -155,8 +158,8 @@ export function ShortcutRecorder({
         }
 
         stopRecording();
+        buttonRef.current?.focus();
         onRecord(result.binding);
-        queueMicrotask(() => buttonRef.current?.focus());
     };
 
     return (

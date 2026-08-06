@@ -39,6 +39,7 @@ import {
     getShortcutDefinition,
     getShortcutSettingsEntries,
     type ConfigurableShortcutActionId,
+    type ShortcutActionId,
     type ShortcutBinding,
     type ShortcutSettingsEntry,
 } from "../../app/shortcuts/registry";
@@ -4059,16 +4060,9 @@ interface PendingShortcutConflict {
     resetsTarget: boolean;
 }
 
-function ShortcutKeycap({
-    label,
-    actionLabel,
-}: {
-    label: string;
-    actionLabel: string;
-}) {
+function ShortcutKeycap({ label }: { label: string }) {
     return (
         <kbd
-            aria-label={`Current shortcut for ${actionLabel}: ${label}`}
             style={{
                 minWidth: 72,
                 padding: "3px 7px",
@@ -4111,10 +4105,11 @@ function ShortcutSectionHeader({
     );
 }
 
-function filterShortcutEntries<ActionId extends ConfigurableShortcutActionId>(
+function filterShortcutEntries<ActionId extends ShortcutActionId>(
     entries: ShortcutSettingsEntry<ActionId>[],
     searchQuery: SettingsSearchQuery,
     section: string,
+    extraTerms: string,
 ) {
     return entries.filter((shortcut) =>
         matchesSettingsSearch(
@@ -4124,9 +4119,7 @@ function filterShortcutEntries<ActionId extends ConfigurableShortcutActionId>(
             shortcut.category,
             shortcut.label,
             shortcut.shortcut,
-            section === "Customizable shortcuts"
-                ? "Record shortcut Reset Reset all global editable"
-                : "read only reference",
+            extraTerms,
         ),
     );
 }
@@ -4144,17 +4137,13 @@ function ShortcutsSettings({
         configurableShortcuts,
         searchQuery,
         "Customizable shortcuts",
+        "Record shortcut Reset Reset all global editable",
     );
-    const filteredFixed = fixedShortcuts.filter((shortcut) =>
-        matchesSettingsSearch(
-            searchQuery,
-            "Keyboard shortcuts",
-            "Fixed shortcuts",
-            shortcut.category,
-            shortcut.label,
-            shortcut.shortcut,
-            "read only reference",
-        ),
+    const filteredFixed = filterShortcutEntries(
+        fixedShortcuts,
+        searchQuery,
+        "Fixed shortcuts",
+        "read only reference",
     );
     const configurableGroups = filteredConfigurable.reduce<
         Record<string, typeof configurableShortcuts>
@@ -4179,10 +4168,12 @@ function ShortcutsSettings({
     const findConflict = (
         targetActionId: ConfigurableShortcutActionId,
         binding: ShortcutBinding,
+        excludedActionIds: readonly ConfigurableShortcutActionId[] = [],
     ) =>
         configurableShortcuts.find(
             (shortcut) =>
                 shortcut.id !== targetActionId &&
+                !excludedActionIds.includes(shortcut.id) &&
                 getShortcutBindingsWithAliases(shortcut.id, platform).some(
                     (candidate) => shortcutBindingsEqual(candidate, binding),
                 ),
@@ -4253,6 +4244,27 @@ function ShortcutsSettings({
 
     const replaceConflict = () => {
         if (!pendingConflict) return;
+
+        const requestedBindingConflict = findConflict(
+            pendingConflict.targetActionId,
+            pendingConflict.requestedBinding,
+            [pendingConflict.conflictingActionId],
+        );
+        const movedBindingConflict = findConflict(
+            pendingConflict.conflictingActionId,
+            pendingConflict.previousTargetBinding,
+            [pendingConflict.targetActionId],
+        );
+        const blockingConflict =
+            requestedBindingConflict ?? movedBindingConflict;
+        if (blockingConflict) {
+            setStatus(
+                `The shortcut swap was not applied because ${blockingConflict.label} already uses one of the resulting bindings. Resolve that shortcut first.`,
+            );
+            setPendingConflict(null);
+            return;
+        }
+
         const saved = applyShortcutOverrideChanges(platform, [
             {
                 actionId: pendingConflict.conflictingActionId,
@@ -4299,21 +4311,22 @@ function ShortcutsSettings({
 
     return (
         <div>
-            {status && (
-                <div
-                    role="status"
-                    style={{
-                        marginBottom: 8,
-                        color: "var(--text-secondary)",
-                        fontSize: 11,
-                    }}
-                >
-                    {status}
-                </div>
-            )}
+            <div
+                role="status"
+                style={{
+                    marginBottom: status ? 8 : 0,
+                    color: "var(--text-secondary)",
+                    fontSize: 11,
+                }}
+            >
+                {status}
+            </div>
 
             {filteredConfigurable.length > 0 && (
-                <section aria-labelledby="customizable-shortcuts-heading">
+                <section
+                    aria-labelledby="customizable-shortcuts-heading"
+                    aria-describedby="customizable-shortcuts-description"
+                >
                     <ShortcutSectionHeader
                         title="Customizable shortcuts"
                         id="customizable-shortcuts-heading"
@@ -4405,7 +4418,6 @@ function ShortcutsSettings({
                                             </div>
                                             <ShortcutKeycap
                                                 label={shortcut.shortcut}
-                                                actionLabel={shortcut.label}
                                             />
                                             <ShortcutRecorder
                                                 actionLabel={shortcut.label}
@@ -4454,7 +4466,10 @@ function ShortcutsSettings({
             )}
 
             {filteredFixed.length > 0 && (
-                <section aria-labelledby="fixed-shortcuts-heading">
+                <section
+                    aria-labelledby="fixed-shortcuts-heading"
+                    aria-describedby="fixed-shortcuts-description"
+                >
                     <ShortcutSectionHeader
                         title="Fixed shortcuts"
                         id="fixed-shortcuts-heading"
@@ -4500,7 +4515,6 @@ function ShortcutsSettings({
                                         </span>
                                         <ShortcutKeycap
                                             label={shortcut.shortcut}
-                                            actionLabel={shortcut.label}
                                         />
                                     </div>
                                 ))}
