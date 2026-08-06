@@ -7896,6 +7896,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         let activeSessionId = sessionId;
         let currentItem = queuedItem;
         let optimisticMessageInserted = false;
+        let optimisticMessageId: string | null = null;
         let shouldRecoverPromptForRetry = false;
         let preflightOwnership = options?.preflightOwnership ?? null;
         let session = get().sessionsById[activeSessionId];
@@ -8030,6 +8031,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             const userMessageId =
                 currentItem.optimisticMessageId ?? crypto.randomUUID();
+            optimisticMessageId = userMessageId;
             if (
                 source === "queue" &&
                 currentItem.optimisticMessageId !== userMessageId
@@ -8163,6 +8165,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
             shouldRecoverPromptForRetry =
                 source === "immediate" &&
                 isRuntimeSessionDisconnectedErrorMessage(message);
+            const failedOptimisticMessageId = shouldRecoverPromptForRetry
+                ? optimisticMessageId
+                : null;
+            if (failedOptimisticMessageId) {
+                set((state) => {
+                    const targetSession = state.sessionsById[activeSessionId];
+                    if (!targetSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [activeSessionId]: removeSessionMessage(
+                                targetSession,
+                                failedOptimisticMessageId,
+                            ),
+                        },
+                    };
+                });
+            }
             if (source === "queue") {
                 restoreActiveQueuedMessage(activeSessionId, (item) => ({
                     ...item,
@@ -8173,6 +8193,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 session_id: activeSessionId,
                 message,
             });
+            if (shouldRecoverPromptForRetry) {
+                persistCurrentSession(activeSessionId);
+            }
             if (isAuthenticationErrorMessage(message, session.runtimeId)) {
                 await get().refreshSetupStatus(session.runtimeId);
             }

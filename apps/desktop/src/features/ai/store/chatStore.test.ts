@@ -7714,18 +7714,58 @@ describe("chatStore", () => {
         expect(sendAttempts).toBe(2);
     });
 
-    it("preserves a failed idle ACP send for reconnection and explicit retry", async () => {
+    it("retries a failed idle ACP send without reinjecting the unsent prompt", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         let sendAttempts = 0;
-        invokeMock.mockImplementation(async (command) => {
+        let persistedMessages: Array<{ content: string }> = [];
+        const sentPrompts: string[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_save_session_history") {
+                const history = (args as { history?: { messages?: unknown } })
+                    .history;
+                persistedMessages = Array.isArray(history?.messages)
+                    ? history.messages.map((message) => ({
+                          content:
+                              typeof message === "object" &&
+                              message !== null &&
+                              "content" in message &&
+                              typeof message.content === "string"
+                                  ? message.content
+                                  : "",
+                      }))
+                    : [];
+                return;
+            }
+            if (command === "ai_load_session_history_page") {
+                const requestedSessionId = (args as { sessionId?: string })
+                    .sessionId;
+                return {
+                    session_id: requestedSessionId ?? "codex-session-1",
+                    total_messages: persistedMessages.length,
+                    start_index: 0,
+                    end_index: persistedMessages.length,
+                    messages: persistedMessages.map((message, index) => ({
+                        id: `persisted-${index}`,
+                        role: "assistant",
+                        kind: "error",
+                        content: message.content,
+                        timestamp: index,
+                    })),
+                };
+            }
             if (command === "ai_send_message") {
                 sendAttempts += 1;
+                sentPrompts.push(
+                    (args as { content?: string }).content ?? "",
+                );
                 if (sendAttempts === 1) {
-                    throw new Error("sending on a closed channel");
+                    throw new Error(
+                        "The AI runtime disconnected while sending. Reconnect the chat and retry the message.",
+                    );
                 }
                 return { ...sessionPayload, status: "streaming" };
             }
-            return defaultInvokeImplementation(command);
+            return defaultInvokeImplementation(command, args);
         });
 
         await useChatStore.getState().initialize();
@@ -7740,17 +7780,36 @@ describe("chatStore", () => {
         expect(useChatStore.getState().sessionsById[activeSessionId]).toMatchObject({
             runtimeState: "detached",
             status: "error",
-            resumeContextPending: true,
+            resumeContextPending: false,
         });
         expect(
             serializeComposerParts(
                 useChatStore.getState().composerPartsBySessionId[activeSessionId] ?? [],
             ),
         ).toContain("Continue this chat");
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.some(
+                    (message) =>
+                        message.role === "user" &&
+                        message.content === "Continue this chat",
+                ),
+        ).toBe(false);
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(
+            persistedMessages.some(
+                (message) => message.content === "Continue this chat",
+            ),
+        ).toBe(false);
 
         await useChatStore.getState().sendMessage(activeSessionId);
 
         expect(sendAttempts).toBe(2);
+        expect(
+            sentPrompts[1]?.match(/Continue this chat/g),
+        ).toHaveLength(1);
     });
 
     it("interrupts the current turn and sends the queued message immediately when sending it now", async () => {
