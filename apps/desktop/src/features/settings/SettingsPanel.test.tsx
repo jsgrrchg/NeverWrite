@@ -716,6 +716,33 @@ describe("SettingsPanel", () => {
         });
     });
 
+    it("rejects bindings reserved by fixed shortcuts", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const newNoteRow = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(newNoteRow).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+
+        fireEvent.click(record);
+        fireEvent.keyDown(record, { key: "b", ctrlKey: true });
+
+        expect(
+            screen.getByText(
+                "Ctrl+B is reserved for Bold Selection and cannot be reassigned.",
+            ),
+        ).toBeInTheDocument();
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+    });
+
     it("blocks a conflict swap when a third action owns the moved binding", () => {
         setNavigatorIdentity(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

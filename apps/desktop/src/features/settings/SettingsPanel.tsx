@@ -4179,10 +4179,25 @@ function ShortcutsSettings({
                 ),
         ) ?? null;
 
+    const findFixedConflict = (binding: ShortcutBinding) =>
+        fixedShortcuts.find((shortcut) =>
+            getShortcutBindingsWithAliases(shortcut.id, platform).some(
+                (candidate) => shortcutBindingsEqual(candidate, binding),
+            ),
+        ) ?? null;
+
     const saveBinding = (
         actionId: ConfigurableShortcutActionId,
         binding: ShortcutBinding,
     ) => {
+        const fixedConflict = findFixedConflict(binding);
+        if (fixedConflict) {
+            setStatus(
+                `${formatShortcutBinding(binding, platform)} is reserved for ${fixedConflict.label} and cannot be reassigned.`,
+            );
+            return;
+        }
+
         const conflict = findConflict(actionId, binding);
         if (conflict) {
             const previousTargetBinding = getShortcutBindings(
