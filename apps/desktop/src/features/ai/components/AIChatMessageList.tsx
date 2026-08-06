@@ -102,9 +102,18 @@ const NEAR_BOTTOM_THRESHOLD = 80;
 const LOAD_OLDER_THRESHOLD = 120;
 const DETACHED_TIMELINE_SCOPE = "__detached_timeline__";
 
+function getRemainingScrollDistance(el: HTMLElement) {
+    return Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+}
+
 function isNearBottom(el: HTMLElement) {
+    return getRemainingScrollDistance(el) < NEAR_BOTTOM_THRESHOLD;
+}
+
+function shouldShowScrollToBottomButton(el: HTMLElement) {
     return (
-        el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD
+        el.scrollHeight > el.clientHeight &&
+        getRemainingScrollDistance(el) >= NEAR_BOTTOM_THRESHOLD
     );
 }
 
@@ -394,6 +403,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 }: AIChatMessageListProps) {
     const aiChatContentWidth = useSettingsStore((s) => s.aiChatContentWidth);
     const containerRef = useRef<HTMLDivElement>(null);
+    const contentRef = useRef<HTMLDivElement>(null);
     const findHighlightOwnerId = useId();
     const [findQuery, setFindQuery] = useState("");
     const [findCaseSensitive, setFindCaseSensitive] = useState(false);
@@ -447,17 +457,23 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         setShowScrollButton(false);
     }, []);
 
+    const syncScrollButton = useCallback(() => {
+        const container = containerRef.current;
+        if (!container) {
+            setShowScrollButton(false);
+            return;
+        }
+
+        setShowScrollButton(shouldShowScrollToBottomButton(container));
+    }, []);
+
     const handleScroll = useCallback(() => {
         const container = containerRef.current;
         if (!container) return;
 
         const nearBottom = isNearBottom(container);
         wasNearBottomRef.current = nearBottom;
-        if (nearBottom) {
-            setShowScrollButton(false);
-        } else {
-            setShowScrollButton(true);
-        }
+        setShowScrollButton(shouldShowScrollToBottomButton(container));
 
         persistChatMessageListViewState(
             viewStateScope,
@@ -638,6 +654,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         previousMessagesRef.current = messages;
         previousStatusRef.current = status;
         pendingPrependAdjustmentRef.current = null;
+        setShowScrollButton(false);
     }, [messages, status, viewStateScope]);
 
     useLayoutEffect(() => {
@@ -661,8 +678,8 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
         pendingRestoreRef.current = null;
         wasNearBottomRef.current = pendingState.nearBottom;
-        setShowScrollButton(!pendingState.nearBottom);
-    }, [timelineRows, viewStateScope]);
+        syncScrollButton();
+    }, [syncScrollButton, timelineRows, viewStateScope]);
 
     useLayoutEffect(() => {
         const container = containerRef.current;
@@ -694,13 +711,13 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 container.scrollHeight -
                 previousScrollHeight +
                 previousScrollTop;
-            queueMicrotask(() => setShowScrollButton(true));
+            queueMicrotask(syncScrollButton);
         } else if (wasNearBottomRef.current) {
             container.scrollTop = container.scrollHeight;
-            queueMicrotask(() => setShowScrollButton(false));
+            queueMicrotask(syncScrollButton);
         } else {
             const frameId = window.requestAnimationFrame(() => {
-                setShowScrollButton(true);
+                syncScrollButton();
             });
 
             previousMessagesRef.current = messages;
@@ -713,7 +730,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
         previousMessagesRef.current = messages;
         previousStatusRef.current = status;
-    }, [messages, status]);
+    }, [messages, status, syncScrollButton]);
 
     useEffect(() => {
         if (isLoadingOlderMessages || !pendingPrependAdjustmentRef.current) {
@@ -762,32 +779,40 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
         const ro = new ResizeObserver(() => {
             const newWidth = scrollContainer.clientWidth;
-            if (newWidth === prevWidth) return;
-            prevWidth = newWidth;
+            if (newWidth !== prevWidth) {
+                prevWidth = newWidth;
 
-            if (anchorSnapshot.nearBottom) {
-                scrollContainer.scrollTop = scrollContainer.scrollHeight;
-            } else if (anchorSnapshot.rowKey) {
-                const anchorNode = findChatRowByKey(
-                    scrollContainer,
-                    anchorSnapshot.rowKey,
-                );
-                if (!anchorNode) {
-                    return;
+                if (anchorSnapshot.nearBottom) {
+                    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+                } else if (anchorSnapshot.rowKey) {
+                    const anchorNode = findChatRowByKey(
+                        scrollContainer,
+                        anchorSnapshot.rowKey,
+                    );
+                    if (!anchorNode) {
+                        syncScrollButton();
+                        return;
+                    }
+                    const containerRect =
+                        scrollContainer.getBoundingClientRect();
+                    const rect = anchorNode.getBoundingClientRect();
+                    scrollContainer.scrollTop +=
+                        rect.top - containerRect.top - anchorSnapshot.offset;
                 }
-                const containerRect = scrollContainer.getBoundingClientRect();
-                const rect = anchorNode.getBoundingClientRect();
-                scrollContainer.scrollTop +=
-                    rect.top - containerRect.top - anchorSnapshot.offset;
             }
+
+            syncScrollButton();
         });
 
         ro.observe(scrollContainer);
+        if (contentRef.current) {
+            ro.observe(contentRef.current);
+        }
         return () => {
             scrollContainer.removeEventListener("scroll", captureAnchor);
             ro.disconnect();
         };
-    }, []);
+    }, [syncScrollButton]);
 
     useLayoutEffect(() => {
         if (!scrollToMessageId) return;
@@ -873,6 +898,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 data-scrollbar-active="true"
             >
                 <div
+                    ref={contentRef}
                     className="min-w-0"
                     data-selectable="true"
                     style={{

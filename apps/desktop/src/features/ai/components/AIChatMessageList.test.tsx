@@ -597,6 +597,70 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(secondScrollContainer.scrollTop).toBe(4_320);
     });
 
+    it("does not carry the scroll-to-bottom control into a new short chat", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-scrolled"
+                messages={createLongTranscript(140)}
+                status="idle"
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer);
+
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Scroll to bottom" }),
+        ).toBeInTheDocument();
+
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-new"
+                messages={createMessages()}
+                status="idle"
+            />,
+        );
+
+        expect(
+            screen.queryByRole("button", { name: "Scroll to bottom" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("hides the restored scroll-to-bottom control when the transcript no longer overflows", () => {
+        const messages = createLongTranscript(140);
+        const firstMount = renderComponent(
+            <AIChatMessageList
+                sessionId="session-restored-short"
+                messages={messages}
+                status="idle"
+            />,
+        );
+        const firstScrollContainer = getScrollContainer(firstMount.container);
+        configureScrollableViewport(firstScrollContainer);
+
+        act(() => {
+            firstScrollContainer.scrollTop = 0;
+            firstScrollContainer.dispatchEvent(new Event("scroll"));
+        });
+        firstMount.unmount();
+
+        renderComponent(
+            <AIChatMessageList
+                sessionId="session-restored-short"
+                messages={createMessages()}
+                status="idle"
+            />,
+        );
+
+        expect(
+            screen.queryByRole("button", { name: "Scroll to bottom" }),
+        ).not.toBeInTheDocument();
+    });
+
     it("keeps non-visible diff work cycles as rich cards", () => {
         const messages: AIChatMessage[] = [
             {
