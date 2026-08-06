@@ -598,6 +598,7 @@ describe("AIChatMessageList streaming run indicator", () => {
     });
 
     it("does not carry the scroll-to-bottom control into a new short chat", () => {
+        let isShortTranscript = false;
         const view = renderComponent(
             <AIChatMessageList
                 sessionId="session-scrolled"
@@ -606,7 +607,9 @@ describe("AIChatMessageList streaming run indicator", () => {
             />,
         );
         const scrollContainer = getScrollContainer(view.container);
-        configureScrollableViewport(scrollContainer);
+        configureScrollableViewport(scrollContainer, 320, {
+            getScrollHeight: () => (isShortTranscript ? 320 : 12_000),
+        });
 
         act(() => {
             scrollContainer.scrollTop = 1_000;
@@ -617,6 +620,8 @@ describe("AIChatMessageList streaming run indicator", () => {
             screen.getByRole("button", { name: "Scroll to bottom" }),
         ).toBeInTheDocument();
 
+        isShortTranscript = true;
+        scrollContainer.scrollTop = 0;
         view.rerender(
             <AIChatMessageList
                 sessionId="session-new"
