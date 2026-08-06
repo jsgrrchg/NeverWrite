@@ -635,6 +635,36 @@ describe("AIChatMessageList streaming run indicator", () => {
         ).not.toBeInTheDocument();
     });
 
+    it("starts an unvisited long chat at the bottom after switching sessions", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-scrolled"
+                messages={createLongTranscript(140)}
+                status="idle"
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer);
+
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-unvisited-long"
+                messages={createLongTranscript(140)}
+                status="idle"
+            />,
+        );
+
+        expect(scrollContainer.scrollTop).toBe(12_000);
+        expect(
+            screen.queryByRole("button", { name: "Scroll to bottom" }),
+        ).not.toBeInTheDocument();
+    });
+
     it("hides the restored scroll-to-bottom control when the transcript no longer overflows", () => {
         const messages = createLongTranscript(140);
         const firstMount = renderComponent(

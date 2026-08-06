@@ -655,7 +655,15 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         previousStatusRef.current = status;
         pendingPrependAdjustmentRef.current = null;
         setShowScrollButton(false);
-    }, [messages, status, viewStateScope]);
+
+        if (!pendingRestoreRef.current) {
+            const container = containerRef.current;
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+                queueMicrotask(syncScrollButton);
+            }
+        }
+    }, [messages, status, syncScrollButton, viewStateScope]);
 
     useLayoutEffect(() => {
         const container = containerRef.current;
