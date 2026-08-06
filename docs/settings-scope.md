@@ -67,7 +67,7 @@ the same Settings stores.
 | Appearance / Navigation | `fileTreeScale` | Per-vault | `114` | `neverwrite:settings:<vault-path>` | Clamped to `90..140`. |
 | Appearance / Navigation | `agentsSidebarScale` | Per-vault | `100` | `neverwrite:settings:<vault-path>` | Clamped to `90..140`. |
 | Appearance / Navigation | `fileTreeStickyFolders` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Controls sticky parent folders in the file tree. |
-| Appearance / Chat | `aiChatContentWidth` | Per-vault | `600` | `neverwrite:settings:<vault-path>` | Maximum width of AI chat messages, composer, and related panels; clamped to `480..1200`. |
+| Appearance / Chat | `aiChatContentWidth` | Per-vault | `600` | `neverwrite:settings:<vault-path>` | Maximum width of AI chat messages, composer, and related panels; clamped to `480..1200` in 20 px increments. |
 | Appearance / Zoom | `appZoom` | Global | `1` | `neverwrite:appZoom` | Stored outside `settingsStore`; normalized by `appZoom.ts`. |
 | Editor / Typography | `editorFontSize` | Per-vault | `14` | `neverwrite:settings:<vault-path>` | Clamped to `10..24`. |
 | Editor / Typography | `editorFontFamily` | Per-vault | `system` | `neverwrite:settings:<vault-path>` | Validated against `EDITOR_FONT_FAMILY_OPTIONS`. |
