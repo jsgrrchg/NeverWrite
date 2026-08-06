@@ -2011,7 +2011,13 @@ impl NativeAi {
             (prompt, handle)
         };
 
-        handle.prompt(&session_id, prompt)?;
+        if let Err(error) = handle.prompt(&session_id, prompt) {
+            if is_acp_transport_disconnect_error(&error) {
+                self.disconnect_runtime_session_after_send_failure(&session_id, handle.process_id)?;
+                return Err("The AI runtime disconnected while sending. Reconnect the chat and retry the message.".to_string());
+            }
+            return Err(error);
+        }
         self.load_session(&json!({ "sessionId": session_id }))
     }
 
@@ -2615,6 +2621,58 @@ impl NativeAi {
             .get(session_id)
             .map(|managed| managed.runtime_handle.clone())
             .ok_or_else(|| format!("AI session not found: {session_id}"))
+    }
+
+    fn disconnect_runtime_session_after_send_failure(
+        &self,
+        session_id: &str,
+        process_id: u64,
+    ) -> Result<(), String> {
+        let runtime_id = {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            let managed = state
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("AI session not found: {session_id}"))?;
+            if managed
+                .runtime_handle
+                .as_ref()
+                .map(|handle| handle.process_id != process_id)
+                .unwrap_or(true)
+            {
+                return Ok(());
+            }
+            let runtime_id = managed.session.runtime_id.clone();
+            for managed in state.sessions.values_mut() {
+                if managed
+                    .runtime_handle
+                    .as_ref()
+                    .is_some_and(|handle| handle.process_id == process_id)
+                {
+                    managed.runtime_handle = None;
+                    managed.session.status = AiSessionStatus::Idle;
+                }
+            }
+            runtime_id
+        };
+
+        eprintln!(
+            "ACP runtime transport disconnected phase=send runtime_id={runtime_id} session_id={session_id} process_id={process_id}"
+        );
+        emit_event(
+            &self.event_tx,
+            AI_RUNTIME_CONNECTION_EVENT,
+            json!(AiRuntimeConnectionPayload {
+                runtime_id,
+                session_id: Some(session_id.to_string()),
+                status: "error".to_string(),
+                message: Some("The AI runtime disconnected while sending. Reconnect the chat and retry the message.".to_string()),
+            }),
+        );
+        Ok(())
     }
 
     fn cancel_user_input_waiters_for_session(&self, session_id: &str) {
@@ -4143,6 +4201,13 @@ fn remember_prompt_capabilities(
     }
 }
 
+fn is_acp_transport_disconnect_error(error: &str) -> bool {
+    let normalized = error.trim().to_lowercase();
+    normalized.contains("sending on a closed channel")
+        || normalized.contains("receiving on a closed channel")
+        || normalized.contains("channel closed")
+}
+
 fn neverwrite_acp12_client_capabilities(_runtime_id: &str) -> acp12::schema::ClientCapabilities {
     // ACP 0.12 does not expose the newer elicitation capability flags through the
     // umbrella `unstable` feature. Grok stays on the legacy surface.
@@ -4664,6 +4729,8 @@ async fn run_acp12_actor_inner(
     let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
     let session_created = Arc::new(AtomicBool::new(false));
     let session_created_for_connection = Arc::clone(&session_created);
+    let connected_session_id = Arc::new(Mutex::new(None::<String>));
+    let connected_session_id_for_connection = Arc::clone(&connected_session_id);
     let disconnect_runtime_id = spec.runtime_id.clone();
     let event_tx_for_connection = event_tx.clone();
     let prompt_capabilities = Arc::clone(&context.prompt_capabilities);
@@ -4734,6 +4801,7 @@ async fn run_acp12_actor_inner(
                         AI_RUNTIME_CONNECTION_EVENT,
                         json!(AiRuntimeConnectionPayload {
                             runtime_id: spec.runtime_id.clone(),
+                            session_id: None,
                             status: "ready".to_string(),
                             message: None,
                         }),
@@ -4767,6 +4835,9 @@ async fn run_acp12_actor_inner(
             client
                 .tool_diffs
                 .register_session_cwd(&session.session_id, spec.cwd.clone());
+            if let Ok(mut session_id) = connected_session_id_for_connection.lock() {
+                *session_id = Some(session.session_id.clone());
+            }
             session_created_for_connection.store(true, Ordering::Relaxed);
             let _ = created_tx.send(Ok(session));
             loop {
@@ -4806,6 +4877,10 @@ async fn run_acp12_actor_inner(
                 AI_RUNTIME_CONNECTION_EVENT,
                 json!(AiRuntimeConnectionPayload {
                     runtime_id: disconnect_runtime_id,
+                    session_id: connected_session_id
+                        .lock()
+                        .ok()
+                        .and_then(|session_id| session_id.clone()),
                     status: "error".to_string(),
                     message: Some(format!(
                         "The AI runtime process disconnected unexpectedly: {error}"
@@ -4871,6 +4946,8 @@ async fn run_acp_actor_inner(
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
     let session_created = Arc::new(AtomicBool::new(false));
     let session_created_for_connection = Arc::clone(&session_created);
+    let connected_session_id = Arc::new(Mutex::new(None::<String>));
+    let connected_session_id_for_connection = Arc::clone(&connected_session_id);
     let disconnect_runtime_id = spec.runtime_id.clone();
     let event_tx_for_connection = event_tx.clone();
     let prompt_capabilities = Arc::clone(&context.prompt_capabilities);
@@ -4978,6 +5055,7 @@ async fn run_acp_actor_inner(
                         AI_RUNTIME_CONNECTION_EVENT,
                         json!(AiRuntimeConnectionPayload {
                             runtime_id: spec.runtime_id.clone(),
+                            session_id: None,
                             status: "ready".to_string(),
                             message: None,
                         }),
@@ -5016,6 +5094,9 @@ async fn run_acp_actor_inner(
             client
                 .tool_diffs
                 .register_session_cwd(&session.session_id, spec.cwd.clone());
+            if let Ok(mut session_id) = connected_session_id_for_connection.lock() {
+                *session_id = Some(session.session_id.clone());
+            }
             session_created_for_connection.store(true, Ordering::Relaxed);
             let _ = created_tx.send(Ok(session));
             loop {
@@ -5055,6 +5136,10 @@ async fn run_acp_actor_inner(
                 AI_RUNTIME_CONNECTION_EVENT,
                 json!(AiRuntimeConnectionPayload {
                     runtime_id: disconnect_runtime_id,
+                    session_id: connected_session_id
+                        .lock()
+                        .ok()
+                        .and_then(|session_id| session_id.clone()),
                     status: "error".to_string(),
                     message: Some(format!(
                         "The AI runtime process disconnected unexpectedly: {error}"
@@ -11350,6 +11435,66 @@ mod tests {
 
         first_shutdown.join().unwrap();
         assert!(native_ai.inner.lock().unwrap().sessions.is_empty());
+    }
+
+    #[test]
+    fn send_transport_disconnect_invalidates_the_affected_session_family() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let native_ai =
+            NativeAi::with_setup_store(event_tx, RuntimeSetupStore::in_memory_for_tests());
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(command_rx);
+        let handle = AcpSessionHandle {
+            process_id: 73,
+            command_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let session_id = "disconnected-session";
+        let child_session_id = "disconnected-subagent";
+        let mut state = native_ai.inner.lock().unwrap();
+        for (id, session_handle) in [(session_id, handle.clone()), (child_session_id, handle)] {
+            state.sessions.insert(
+                id.to_string(),
+                ManagedAiSession {
+                    session: new_session_with_id(CODEX_RUNTIME_ID, id.to_string()).unwrap(),
+                    vault_root: None,
+                    additional_roots: vec![],
+                    runtime_handle: Some(session_handle),
+                    active_turn_id: None,
+                },
+            );
+        }
+        drop(state);
+
+        native_ai
+            .disconnect_runtime_session_after_send_failure(session_id, 73)
+            .unwrap();
+
+        let state = native_ai.inner.lock().unwrap();
+        assert!(state.sessions[session_id].runtime_handle.is_none());
+        assert!(state.sessions[child_session_id].runtime_handle.is_none());
+        assert_eq!(
+            state.sessions[session_id].session.status,
+            AiSessionStatus::Idle
+        );
+        drop(state);
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx.recv().unwrap()
+        else {
+            panic!("expected runtime connection event");
+        };
+        assert_eq!(event_name, AI_RUNTIME_CONNECTION_EVENT);
+        assert_eq!(
+            payload.get("runtime_id").and_then(Value::as_str),
+            Some(CODEX_RUNTIME_ID)
+        );
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(session_id)
+        );
     }
 
     #[cfg(unix)]

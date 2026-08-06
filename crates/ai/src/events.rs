@@ -34,6 +34,7 @@ pub struct AiSessionErrorPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AiRuntimeConnectionPayload {
     pub runtime_id: String,
+    pub session_id: Option<String>,
     pub status: String,
     pub message: Option<String>,
 }
