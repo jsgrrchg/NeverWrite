@@ -138,7 +138,7 @@ const AUTH_TERMINAL_MONITOR_INTERVAL: Duration = Duration::from_millis(120);
 const AUTH_TERMINAL_OUTPUT_CHUNK_SIZE: usize = 4096;
 const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
 const ACP_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
-const MAX_ACP_STDERR_BYTES: usize = 16 * 1024;
+const ACP_RUNTIME_CONFIGURATION_ERROR_MARKER: &[u8] = b"error loading config:";
 const ACP_RUNTIME_CONFIGURATION_INVALID_DIAGNOSTIC: &str =
     "The AI runtime configuration is invalid.";
 const RUNTIME_SETUP_STORE_VERSION: u32 = 2;
@@ -4711,8 +4711,34 @@ async fn shutdown_acp_child(child: &mut tokio::process::Child) -> Result<(), Str
     Ok(())
 }
 
-async fn capture_acp_stderr(mut stderr: tokio::process::ChildStderr) -> String {
-    let mut captured = Vec::with_capacity(MAX_ACP_STDERR_BYTES);
+fn observe_acp_stderr_chunk(
+    config_invalid: &AtomicBool,
+    matched_marker_bytes: &mut usize,
+    chunk: &[u8],
+) {
+    if config_invalid.load(Ordering::Relaxed) {
+        return;
+    }
+
+    for byte in chunk {
+        let byte = byte.to_ascii_lowercase();
+        if byte == ACP_RUNTIME_CONFIGURATION_ERROR_MARKER[*matched_marker_bytes] {
+            *matched_marker_bytes += 1;
+            if *matched_marker_bytes == ACP_RUNTIME_CONFIGURATION_ERROR_MARKER.len() {
+                config_invalid.store(true, Ordering::Relaxed);
+                return;
+            }
+        } else {
+            *matched_marker_bytes = usize::from(byte == ACP_RUNTIME_CONFIGURATION_ERROR_MARKER[0]);
+        }
+    }
+}
+
+async fn capture_acp_stderr(
+    mut stderr: tokio::process::ChildStderr,
+    config_invalid: Arc<AtomicBool>,
+) {
+    let mut matched_marker_bytes = 0;
     let mut chunk = [0_u8; 4096];
     loop {
         let read = match stderr.read(&mut chunk).await {
@@ -4720,30 +4746,14 @@ async fn capture_acp_stderr(mut stderr: tokio::process::ChildStderr) -> String {
             Ok(read) => read,
             Err(_) => break,
         };
-        if read >= MAX_ACP_STDERR_BYTES {
-            captured.clear();
-            captured.extend_from_slice(&chunk[read - MAX_ACP_STDERR_BYTES..read]);
-            continue;
-        }
-        let overflow = captured
-            .len()
-            .saturating_add(read)
-            .saturating_sub(MAX_ACP_STDERR_BYTES);
-        if overflow > 0 {
-            captured.drain(..overflow);
-        }
-        captured.extend_from_slice(&chunk[..read]);
+        observe_acp_stderr_chunk(&config_invalid, &mut matched_marker_bytes, &chunk[..read]);
     }
-    String::from_utf8_lossy(&captured).into_owned()
 }
 
-fn append_acp_stderr_diagnostic(message: String, stderr: &str) -> String {
+fn append_acp_stderr_diagnostic(message: String, config_invalid: bool) -> String {
     // ACP stderr can contain arbitrary runtime output, including credentials. Only expose a
     // fixed diagnostic that NeverWrite recognizes; never propagate the original text.
-    if stderr
-        .to_ascii_lowercase()
-        .contains("error loading config:")
-    {
+    if config_invalid {
         format!("{message} {ACP_RUNTIME_CONFIGURATION_INVALID_DIAGNOSTIC}")
     } else {
         message
@@ -4752,36 +4762,38 @@ fn append_acp_stderr_diagnostic(message: String, stderr: &str) -> String {
 
 async fn acp_child_exit_message_with_stderr(
     status: std::process::ExitStatus,
-    stderr_task: &mut Option<tokio::task::JoinHandle<String>>,
+    stderr_task: &mut Option<tokio::task::JoinHandle<()>>,
+    config_invalid: &AtomicBool,
 ) -> String {
     let message = acp_child_exit_message(status);
-    let stderr = match stderr_task.take() {
+    match stderr_task.take() {
         Some(mut task) => match tokio::time::timeout(ACP_STDERR_DRAIN_TIMEOUT, &mut task).await {
-            Ok(result) => result.unwrap_or_default(),
+            Ok(_) => {}
             Err(_) => {
                 task.abort();
                 let _ = task.await;
-                String::new()
             }
         },
-        None => String::new(),
-    };
-    append_acp_stderr_diagnostic(message, &stderr)
+        None => {}
+    }
+    append_acp_stderr_diagnostic(message, config_invalid.load(Ordering::Relaxed))
 }
 
 async fn acp_child_wait_message(
     wait_result: std::io::Result<std::process::ExitStatus>,
-    stderr_task: &mut Option<tokio::task::JoinHandle<String>>,
+    stderr_task: &mut Option<tokio::task::JoinHandle<()>>,
+    config_invalid: &AtomicBool,
 ) -> String {
     match wait_result {
-        Ok(status) => acp_child_exit_message_with_stderr(status, stderr_task).await,
+        Ok(status) => acp_child_exit_message_with_stderr(status, stderr_task, config_invalid).await,
         Err(error) => format!("Failed to wait for AI runtime process: {error}"),
     }
 }
 
 async fn acp_startup_exit_message(
     child: &mut tokio::process::Child,
-    stderr_task: &mut Option<tokio::task::JoinHandle<String>>,
+    stderr_task: &mut Option<tokio::task::JoinHandle<()>>,
+    config_invalid: &AtomicBool,
 ) -> Option<String> {
     let wait_result = match child.try_wait() {
         Ok(Some(status)) => Ok(status),
@@ -4791,7 +4803,7 @@ async fn acp_startup_exit_message(
         },
         Err(_) => return None,
     };
-    Some(acp_child_wait_message(wait_result, stderr_task).await)
+    Some(acp_child_wait_message(wait_result, stderr_task, config_invalid).await)
 }
 
 async fn run_acp12_actor_inner(
@@ -4817,7 +4829,11 @@ async fn run_acp12_actor_inner(
         .stderr
         .take()
         .ok_or_else(|| "Failed to acquire ACP stderr".to_string())?;
-    let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(stderr)));
+    let config_invalid = Arc::new(AtomicBool::new(false));
+    let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(
+        stderr,
+        Arc::clone(&config_invalid),
+    )));
     let stdin = child
         .stdin
         .take()
@@ -4936,14 +4952,25 @@ async fn run_acp12_actor_inner(
                 } => match response {
                     Ok(response) => response,
                     Err(error) => {
-                        if let Some(message) = acp_startup_exit_message(&mut child, &mut stderr_task).await {
+                        if let Some(message) = acp_startup_exit_message(
+                            &mut child,
+                            &mut stderr_task,
+                            &config_invalid,
+                        )
+                        .await
+                        {
                             return Err(acp12::Error::internal_error().data(message));
                         }
                         return Err(error);
                     }
                 },
                 wait_result = child.wait() => {
-                    let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
+                    let message = acp_child_wait_message(
+                        wait_result,
+                        &mut stderr_task,
+                        &config_invalid,
+                    )
+                    .await;
                     return Err(acp12::Error::internal_error().data(message));
                 }
             };
@@ -4978,7 +5005,12 @@ async fn run_acp12_actor_inner(
                         handle_acp12_command(command, &connection, &client, &permission_waiters).await;
                     }
                     wait_result = child.wait() => {
-                        let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
+                        let message = acp_child_wait_message(
+                            wait_result,
+                            &mut stderr_task,
+                            &config_invalid,
+                        )
+                        .await;
                         return Err(acp12::Error::internal_error().data(message));
                     }
                 }
@@ -5035,7 +5067,11 @@ async fn run_acp_actor_inner(
         .stderr
         .take()
         .ok_or_else(|| "Failed to acquire ACP stderr".to_string())?;
-    let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(stderr)));
+    let config_invalid = Arc::new(AtomicBool::new(false));
+    let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(
+        stderr,
+        Arc::clone(&config_invalid),
+    )));
     let stdin = child
         .stdin
         .take()
@@ -5196,14 +5232,25 @@ async fn run_acp_actor_inner(
                 } => match response {
                     Ok(response) => response,
                     Err(error) => {
-                        if let Some(message) = acp_startup_exit_message(&mut child, &mut stderr_task).await {
+                        if let Some(message) = acp_startup_exit_message(
+                            &mut child,
+                            &mut stderr_task,
+                            &config_invalid,
+                        )
+                        .await
+                        {
                             return Err(agent_client_protocol::Error::internal_error().data(message));
                         }
                         return Err(error);
                     }
                 },
                 wait_result = child.wait() => {
-                    let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
+                    let message = acp_child_wait_message(
+                        wait_result,
+                        &mut stderr_task,
+                        &config_invalid,
+                    )
+                    .await;
                     return Err(agent_client_protocol::Error::internal_error().data(message));
                 }
             };
@@ -5242,7 +5289,12 @@ async fn run_acp_actor_inner(
                         handle_acp_command(command, &connection, &client, &permission_waiters).await;
                     }
                     wait_result = child.wait() => {
-                        let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
+                        let message = acp_child_wait_message(
+                            wait_result,
+                            &mut stderr_task,
+                            &config_invalid,
+                        )
+                        .await;
                         return Err(agent_client_protocol::Error::internal_error().data(message));
                     }
                 }
@@ -11661,7 +11713,7 @@ mod tests {
     fn acp_exit_errors_expose_only_a_safe_configuration_diagnostic() {
         let message = append_acp_stderr_diagnostic(
             "The AI runtime process exited with status exit status: 1.".to_string(),
-            "\nError: error loading config: /vault/.codex/config.toml\nAWS_SECRET_ACCESS_KEY=private-value\0\n",
+            true,
         );
 
         assert_eq!(
@@ -11675,24 +11727,24 @@ mod tests {
     #[test]
     fn acp_exit_errors_omit_unrecognized_runtime_stderr() {
         assert_eq!(
-            append_acp_stderr_diagnostic(
-                "The AI runtime process exited.".to_string(),
-                "AWS_SECRET_ACCESS_KEY=private-value",
-            ),
+            append_acp_stderr_diagnostic("The AI runtime process exited.".to_string(), false,),
             "The AI runtime process exited."
         );
     }
 
     #[test]
-    fn acp_exit_errors_never_expose_runtime_stderr() {
-        let message = append_acp_stderr_diagnostic(
-            "The AI runtime process exited.".to_string(),
-            "Configuration failed\nAuthorization: Bearer private-value\nPASSWORD=database-value\nTry again",
-        );
+    fn acp_stderr_detection_is_case_insensitive_across_chunks() {
+        let config_invalid = AtomicBool::new(false);
+        let mut matched_marker_bytes = 0;
 
-        assert_eq!(message, "The AI runtime process exited.");
-        assert!(!message.contains("private-value"));
-        assert!(!message.contains("database-value"));
+        observe_acp_stderr_chunk(
+            &config_invalid,
+            &mut matched_marker_bytes,
+            b"Error: ERROR LOAD",
+        );
+        observe_acp_stderr_chunk(&config_invalid, &mut matched_marker_bytes, b"ING CONFIG: ");
+
+        assert!(config_invalid.load(Ordering::Relaxed));
     }
 
     #[cfg(unix)]
@@ -11707,9 +11759,13 @@ mod tests {
             .spawn()
             .unwrap();
         let stderr = child.stderr.take().unwrap();
-        let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(stderr)));
+        let config_invalid = Arc::new(AtomicBool::new(false));
+        let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(
+            stderr,
+            Arc::clone(&config_invalid),
+        )));
 
-        let message = acp_startup_exit_message(&mut child, &mut stderr_task)
+        let message = acp_startup_exit_message(&mut child, &mut stderr_task, &config_invalid)
             .await
             .unwrap();
 
@@ -11719,6 +11775,34 @@ mod tests {
         );
         assert!(!message.contains("/vault/.codex/config.toml"));
         assert!(!message.contains("private-value"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn acp_startup_errors_keep_configuration_diagnostic_when_stderr_stays_open() {
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'Error: error loading config: /vault/.codex/config.toml\\n' >&2; sleep 1 >&2 & exit 1",
+            ])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let config_invalid = Arc::new(AtomicBool::new(false));
+        let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(
+            stderr,
+            Arc::clone(&config_invalid),
+        )));
+
+        let message = acp_startup_exit_message(&mut child, &mut stderr_task, &config_invalid)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            message,
+            "The AI runtime process exited with status exit status: 1. The AI runtime configuration is invalid."
+        );
     }
 
     #[cfg(unix)]
@@ -11741,13 +11825,14 @@ mod tests {
         let mut stderr_task = Some(tokio::spawn(async move {
             let _drop_signal = DropSignal(capture_dropped_for_task);
             let _ = started_tx.send(());
-            std::future::pending::<String>().await
+            std::future::pending::<()>().await
         }));
         started_rx.await.unwrap();
 
         let message = acp_child_exit_message_with_stderr(
             std::process::ExitStatus::from_raw(1 << 8),
             &mut stderr_task,
+            &AtomicBool::new(false),
         )
         .await;
 
