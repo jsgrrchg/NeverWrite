@@ -4770,6 +4770,7 @@ fn normalize_acp_stderr(stderr: &str) -> Option<String> {
     (!normalized.is_empty()).then(|| normalized.to_string())
 }
 
+// Keep the "Runtime stderr:" marker synchronized with RUNTIME_STDERR_MARKER in chatStore.ts.
 fn append_acp_stderr(message: String, stderr: &str) -> String {
     match normalize_acp_stderr(stderr) {
         Some(stderr) => format!("{message} Runtime stderr: {stderr}"),

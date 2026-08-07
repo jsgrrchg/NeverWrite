@@ -216,6 +216,7 @@ const SAVED_CHAT_RECONNECT_FAILED_MESSAGE =
     "Could not reconnect this chat. Start a new session with saved transcript context?";
 const SAVED_CHAT_RECONNECT_FAILURE_PREFIX =
     "Could not reconnect this chat because the AI runtime ";
+// Keep this marker synchronized with append_acp_stderr in native-backend/src/ai.rs.
 const RUNTIME_STDERR_MARKER = "Runtime stderr:";
 const CUSTOM_RUNTIME_CONTINUATION_STATUS_EVENT_ID =
     "neverwrite:recovery:custom-runtime-continuation";
