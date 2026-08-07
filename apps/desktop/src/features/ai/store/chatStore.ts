@@ -214,6 +214,8 @@ const CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_TITLE =
     "Queued messages were cancelled because this subagent was closed by its parent thread.";
 const SAVED_CHAT_RECONNECT_FAILED_MESSAGE =
     "Could not reconnect this chat. Start a new session with saved transcript context?";
+const SAVED_CHAT_RECONNECT_FAILURE_PREFIX =
+    "Could not reconnect this chat because the AI runtime ";
 const RUNTIME_STDERR_MARKER = "Runtime stderr:";
 const CUSTOM_RUNTIME_CONTINUATION_STATUS_EVENT_ID =
     "neverwrite:recovery:custom-runtime-continuation";
@@ -729,18 +731,16 @@ function getSavedChatReconnectFailureMessage(runtimeError: string) {
     }
 
     if (runtimeDetail.toLowerCase().includes("error loading config:")) {
-        return `Could not reconnect this chat because the AI runtime configuration is invalid. ${runtimeDetail}`;
+        return `${SAVED_CHAT_RECONNECT_FAILURE_PREFIX}configuration is invalid. ${runtimeDetail}`;
     }
 
-    return `Could not reconnect this chat because the AI runtime failed to start. ${runtimeDetail}`;
+    return `${SAVED_CHAT_RECONNECT_FAILURE_PREFIX}failed to start. ${runtimeDetail}`;
 }
 
 function isSavedChatReconnectFailureMessage(message: string) {
     return (
         message === SAVED_CHAT_RECONNECT_FAILED_MESSAGE ||
-        message.startsWith(
-            "Could not reconnect this chat because the AI runtime ",
-        )
+        message.startsWith(SAVED_CHAT_RECONNECT_FAILURE_PREFIX)
     );
 }
 
