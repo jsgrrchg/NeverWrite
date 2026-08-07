@@ -4782,11 +4782,14 @@ async fn acp_child_exit_message_with_stderr(
 ) -> String {
     let message = acp_child_exit_message(status);
     let stderr = match stderr_task.take() {
-        Some(task) => tokio::time::timeout(ACP_STDERR_DRAIN_TIMEOUT, task)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default(),
+        Some(mut task) => match tokio::time::timeout(ACP_STDERR_DRAIN_TIMEOUT, &mut task).await {
+            Ok(result) => result.unwrap_or_default(),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                String::new()
+            }
+        },
         None => String::new(),
     };
     append_acp_stderr(message, &stderr)
@@ -11682,6 +11685,40 @@ mod tests {
             "The AI runtime process exited. Runtime stderr: Configuration failed\n[redacted sensitive runtime stderr line]\nTry again"
         );
         assert!(!message.contains("private-value"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn acp_exit_errors_abort_stderr_capture_after_drain_timeout() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropSignal(Arc<AtomicBool>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let capture_dropped = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let capture_dropped_for_task = Arc::clone(&capture_dropped);
+        let mut stderr_task = Some(tokio::spawn(async move {
+            let _drop_signal = DropSignal(capture_dropped_for_task);
+            let _ = started_tx.send(());
+            std::future::pending::<String>().await
+        }));
+        started_rx.await.unwrap();
+
+        let message = acp_child_exit_message_with_stderr(
+            std::process::ExitStatus::from_raw(1 << 8),
+            &mut stderr_task,
+        )
+        .await;
+
+        assert!(capture_dropped.load(Ordering::SeqCst));
+        assert!(!message.contains("Runtime stderr:"));
     }
 
     #[cfg(unix)]
