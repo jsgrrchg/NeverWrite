@@ -4807,6 +4807,21 @@ async fn acp_child_wait_message(
     }
 }
 
+async fn acp_startup_exit_message(
+    child: &mut tokio::process::Child,
+    stderr_task: &mut Option<tokio::task::JoinHandle<String>>,
+) -> Option<String> {
+    let wait_result = match child.try_wait() {
+        Ok(Some(status)) => Ok(status),
+        Ok(None) => match tokio::time::timeout(ACP_STDERR_DRAIN_TIMEOUT, child.wait()).await {
+            Ok(wait_result) => wait_result,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+    Some(acp_child_wait_message(wait_result, stderr_task).await)
+}
+
 async fn run_acp12_actor_inner(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
@@ -4946,7 +4961,15 @@ async fn run_acp12_actor_inner(
                         initialize_model_state,
                     )
                     .await
-                } => response?,
+                } => match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        if let Some(message) = acp_startup_exit_message(&mut child, &mut stderr_task).await {
+                            return Err(acp12::Error::internal_error().data(message));
+                        }
+                        return Err(error);
+                    }
+                },
                 wait_result = child.wait() => {
                     let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
                     return Err(acp12::Error::internal_error().data(message));
@@ -5198,7 +5221,15 @@ async fn run_acp_actor_inner(
                         &suppress_replayed_session_events,
                     )
                     .await
-                } => response?,
+                } => match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        if let Some(message) = acp_startup_exit_message(&mut child, &mut stderr_task).await {
+                            return Err(agent_client_protocol::Error::internal_error().data(message));
+                        }
+                        return Err(error);
+                    }
+                },
                 wait_result = child.wait() => {
                     let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
                     return Err(agent_client_protocol::Error::internal_error().data(message));
@@ -11688,6 +11719,30 @@ mod tests {
         );
         assert!(!message.contains("private-value"));
         assert!(!message.contains("database-value"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn acp_startup_errors_capture_stderr_after_a_protocol_failure() {
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'Error: invalid runtime config\\n' >&2; exit 1",
+            ])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(stderr)));
+
+        let message = acp_startup_exit_message(&mut child, &mut stderr_task)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            message,
+            "The AI runtime process exited with status exit status: 1. Runtime stderr: Error: invalid runtime config"
+        );
     }
 
     #[cfg(unix)]
