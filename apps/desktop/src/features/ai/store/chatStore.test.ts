@@ -14631,6 +14631,89 @@ describe("chatStore", () => {
         ).toBe(true);
     });
 
+    it("surfaces runtime configuration errors when a saved chat cannot reconnect", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                "persisted:history-1": {
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 2,
+                    loadedPersistedMessageStart: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["persisted:history-1"],
+            activeSessionId: "persisted:history-1",
+            selectedRuntimeId: "codex-acp",
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                throw new Error(
+                    'Internal error: "The AI runtime process exited with status exit status: 1. Runtime stderr: Error: error loading config: /vault/.codex/config.toml:1:1: invalid type: integer `3`, expected struct AgentRoleToml"',
+                );
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const nextSessionId = await useChatStore
+            .getState()
+            .resumeSession("persisted:history-1");
+
+        expect(nextSessionId).toBeNull();
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["persisted:history-1"]?.messages.at(-1),
+        ).toMatchObject({
+            kind: "error",
+            content:
+                "Could not reconnect this chat because the AI runtime configuration is invalid. Error: error loading config: /vault/.codex/config.toml:1:1: invalid type: integer `3`, expected struct AgentRoleToml",
+        });
+        expect(
+            useChatStore.getState().sessionsById["persisted:history-1"]
+                ?.resumeReconnectFailed,
+        ).toBe(true);
+
+        await useChatStore.getState().resumeSession("persisted:history-1");
+        const configurationErrors =
+            useChatStore
+                .getState()
+                .sessionsById["persisted:history-1"]?.messages.filter(
+                    (message) =>
+                        message.kind === "error" &&
+                        message.content.startsWith(
+                            "Could not reconnect this chat because the AI runtime configuration is invalid.",
+                        ),
+                ) ?? [];
+        expect(configurationErrors).toHaveLength(1);
+    });
+
     it("blocks removed Gemini ACP saved chats instead of reconnecting them", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",

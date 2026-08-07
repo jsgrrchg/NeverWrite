@@ -214,6 +214,7 @@ const CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_TITLE =
     "Queued messages were cancelled because this subagent was closed by its parent thread.";
 const SAVED_CHAT_RECONNECT_FAILED_MESSAGE =
     "Could not reconnect this chat. Start a new session with saved transcript context?";
+const RUNTIME_STDERR_MARKER = "Runtime stderr:";
 const CUSTOM_RUNTIME_CONTINUATION_STATUS_EVENT_ID =
     "neverwrite:recovery:custom-runtime-continuation";
 const CUSTOM_RUNTIME_UNAVAILABLE_MESSAGE =
@@ -711,6 +712,36 @@ function getRuntimeConnectionRootSessionId(
 
 function isRemovedGeminiAcpSession(session: Pick<AIChatSession, "runtimeId">) {
     return session.runtimeId === "gemini-acp";
+}
+
+function getSavedChatReconnectFailureMessage(runtimeError: string) {
+    const markerIndex = runtimeError.lastIndexOf(RUNTIME_STDERR_MARKER);
+    if (markerIndex < 0) {
+        return SAVED_CHAT_RECONNECT_FAILED_MESSAGE;
+    }
+
+    const runtimeDetail = runtimeError
+        .slice(markerIndex + RUNTIME_STDERR_MARKER.length)
+        .trim()
+        .replace(/\\?"$/, "");
+    if (!runtimeDetail) {
+        return SAVED_CHAT_RECONNECT_FAILED_MESSAGE;
+    }
+
+    if (runtimeDetail.toLowerCase().includes("error loading config:")) {
+        return `Could not reconnect this chat because the AI runtime configuration is invalid. ${runtimeDetail}`;
+    }
+
+    return `Could not reconnect this chat because the AI runtime failed to start. ${runtimeDetail}`;
+}
+
+function isSavedChatReconnectFailureMessage(message: string) {
+    return (
+        message === SAVED_CHAT_RECONNECT_FAILED_MESSAGE ||
+        message.startsWith(
+            "Could not reconnect this chat because the AI runtime ",
+        )
+    );
 }
 
 function getWorkspaceHistorySessionIdForSession(sessionId: string) {
@@ -9472,7 +9503,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...removeSessionMessage(session, messageId),
                     resumeReconnectFailed:
                         message.kind === "error" &&
-                        message.content === SAVED_CHAT_RECONNECT_FAILED_MESSAGE
+                        isSavedChatReconnectFailureMessage(message.content)
                             ? false
                             : session.resumeReconnectFailed,
                 };
@@ -11192,7 +11223,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 });
                 get().applySessionError({
                     session_id: sessionId,
-                    message: SAVED_CHAT_RECONNECT_FAILED_MESSAGE,
+                    message: getSavedChatReconnectFailureMessage(message),
                 });
                 if (
                     isAuthenticationErrorMessage(

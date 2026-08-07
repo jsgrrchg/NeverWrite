@@ -57,6 +57,7 @@ use portable_pty::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::AsyncReadExt as TokioAsyncReadExt;
 use tokio::{process::Command, runtime::Builder, sync::oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -136,6 +137,8 @@ const AUTH_TERMINAL_DEFAULT_ROWS: u16 = 28;
 const AUTH_TERMINAL_MONITOR_INTERVAL: Duration = Duration::from_millis(120);
 const AUTH_TERMINAL_OUTPUT_CHUNK_SIZE: usize = 4096;
 const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
+const ACP_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
+const MAX_ACP_STDERR_BYTES: usize = 16 * 1024;
 const RUNTIME_SETUP_STORE_VERSION: u32 = 2;
 const RUNTIME_SECRET_SERVICE: &str = "NeverWrite AI Provider Secrets";
 const RUNTIME_SECRET_SERVICE_ENV: &str = "NEVERWRITE_AI_SECRET_SERVICE";
@@ -4706,6 +4709,99 @@ async fn shutdown_acp_child(child: &mut tokio::process::Child) -> Result<(), Str
     Ok(())
 }
 
+async fn capture_acp_stderr(mut stderr: tokio::process::ChildStderr) -> String {
+    let mut captured = Vec::with_capacity(MAX_ACP_STDERR_BYTES);
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let read = match stderr.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => break,
+        };
+        if read >= MAX_ACP_STDERR_BYTES {
+            captured.clear();
+            captured.extend_from_slice(&chunk[read - MAX_ACP_STDERR_BYTES..read]);
+            continue;
+        }
+        let overflow = captured
+            .len()
+            .saturating_add(read)
+            .saturating_sub(MAX_ACP_STDERR_BYTES);
+        if overflow > 0 {
+            captured.drain(..overflow);
+        }
+        captured.extend_from_slice(&chunk[..read]);
+    }
+    String::from_utf8_lossy(&captured).into_owned()
+}
+
+fn normalize_acp_stderr(stderr: &str) -> Option<String> {
+    let normalized = stderr
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+        .collect::<String>();
+    let normalized = normalized
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            if [
+                "api_key",
+                "api-key",
+                "apikey",
+                "authorization:",
+                "bearer ",
+                "token=",
+                "token:",
+                "secret=",
+                "secret:",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker))
+            {
+                "[redacted sensitive runtime stderr line]"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let normalized = normalized.trim();
+    (!normalized.is_empty()).then(|| normalized.to_string())
+}
+
+fn append_acp_stderr(message: String, stderr: &str) -> String {
+    match normalize_acp_stderr(stderr) {
+        Some(stderr) => format!("{message} Runtime stderr: {stderr}"),
+        None => message,
+    }
+}
+
+async fn acp_child_exit_message_with_stderr(
+    status: std::process::ExitStatus,
+    stderr_task: &mut Option<tokio::task::JoinHandle<String>>,
+) -> String {
+    let message = acp_child_exit_message(status);
+    let stderr = match stderr_task.take() {
+        Some(task) => tokio::time::timeout(ACP_STDERR_DRAIN_TIMEOUT, task)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+    append_acp_stderr(message, &stderr)
+}
+
+async fn acp_child_wait_message(
+    wait_result: std::io::Result<std::process::ExitStatus>,
+    stderr_task: &mut Option<tokio::task::JoinHandle<String>>,
+) -> String {
+    match wait_result {
+        Ok(status) => acp_child_exit_message_with_stderr(status, stderr_task).await,
+        Err(error) => format!("Failed to wait for AI runtime process: {error}"),
+    }
+}
+
 async fn run_acp12_actor_inner(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
@@ -4725,6 +4821,11 @@ async fn run_acp12_actor_inner(
         command.process_group(0);
     }
     let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stderr".to_string())?;
+    let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(stderr)));
     let stdin = child
         .stdin
         .take()
@@ -4842,11 +4943,7 @@ async fn run_acp12_actor_inner(
                     .await
                 } => response?,
                 wait_result = child.wait() => {
-                    let message = wait_result
-                        .map(acp_child_exit_message)
-                        .unwrap_or_else(|error| {
-                            format!("Failed to wait for AI runtime process: {error}")
-                        });
+                    let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
                     return Err(acp12::Error::internal_error().data(message));
                 }
             };
@@ -4881,11 +4978,7 @@ async fn run_acp12_actor_inner(
                         handle_acp12_command(command, &connection, &client, &permission_waiters).await;
                     }
                     wait_result = child.wait() => {
-                        let message = wait_result
-                            .map(acp_child_exit_message)
-                            .unwrap_or_else(|error| {
-                                format!("Failed to wait for AI runtime process: {error}")
-                            });
+                        let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
                         return Err(acp12::Error::internal_error().data(message));
                     }
                 }
@@ -4938,6 +5031,11 @@ async fn run_acp_actor_inner(
         command.process_group(0);
     }
     let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stderr".to_string())?;
+    let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(stderr)));
     let stdin = child
         .stdin
         .take()
@@ -5097,11 +5195,7 @@ async fn run_acp_actor_inner(
                     .await
                 } => response?,
                 wait_result = child.wait() => {
-                    let message = wait_result
-                        .map(acp_child_exit_message)
-                        .unwrap_or_else(|error| {
-                            format!("Failed to wait for AI runtime process: {error}")
-                        });
+                    let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
                     return Err(agent_client_protocol::Error::internal_error().data(message));
                 }
             };
@@ -5140,11 +5234,7 @@ async fn run_acp_actor_inner(
                         handle_acp_command(command, &connection, &client, &permission_waiters).await;
                     }
                     wait_result = child.wait() => {
-                        let message = wait_result
-                            .map(acp_child_exit_message)
-                            .unwrap_or_else(|error| {
-                                format!("Failed to wait for AI runtime process: {error}")
-                            });
+                        let message = acp_child_wait_message(wait_result, &mut stderr_task).await;
                         return Err(agent_client_protocol::Error::internal_error().data(message));
                     }
                 }
@@ -11557,6 +11647,41 @@ mod tests {
             Err(AcpRequestError::ResponseChannelClosed)
         ));
         responder.join().unwrap();
+    }
+
+    #[test]
+    fn acp_exit_errors_include_clean_runtime_stderr() {
+        let message = append_acp_stderr(
+            "The AI runtime process exited with status exit status: 1.".to_string(),
+            "\nError: error loading config: /vault/.codex/config.toml\0\n",
+        );
+
+        assert_eq!(
+            message,
+            "The AI runtime process exited with status exit status: 1. Runtime stderr: Error: error loading config: /vault/.codex/config.toml"
+        );
+    }
+
+    #[test]
+    fn acp_exit_errors_omit_empty_runtime_stderr() {
+        assert_eq!(
+            append_acp_stderr("The AI runtime process exited.".to_string(), " \n\t"),
+            "The AI runtime process exited."
+        );
+    }
+
+    #[test]
+    fn acp_exit_errors_redact_sensitive_runtime_stderr_lines() {
+        let message = append_acp_stderr(
+            "The AI runtime process exited.".to_string(),
+            "Configuration failed\nAuthorization: Bearer private-value\nTry again",
+        );
+
+        assert_eq!(
+            message,
+            "The AI runtime process exited. Runtime stderr: Configuration failed\n[redacted sensitive runtime stderr line]\nTry again"
+        );
+        assert!(!message.contains("private-value"));
     }
 
     #[cfg(unix)]
