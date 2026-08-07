@@ -4754,6 +4754,7 @@ fn normalize_acp_stderr(stderr: &str) -> Option<String> {
                 "token:",
                 "secret=",
                 "secret:",
+                "password",
             ]
             .iter()
             .any(|marker| lower.contains(marker))
@@ -11677,14 +11678,15 @@ mod tests {
     fn acp_exit_errors_redact_sensitive_runtime_stderr_lines() {
         let message = append_acp_stderr(
             "The AI runtime process exited.".to_string(),
-            "Configuration failed\nAuthorization: Bearer private-value\nTry again",
+            "Configuration failed\nAuthorization: Bearer private-value\nPASSWORD=database-value\nTry again",
         );
 
         assert_eq!(
             message,
-            "The AI runtime process exited. Runtime stderr: Configuration failed\n[redacted sensitive runtime stderr line]\nTry again"
+            "The AI runtime process exited. Runtime stderr: Configuration failed\n[redacted sensitive runtime stderr line]\n[redacted sensitive runtime stderr line]\nTry again"
         );
         assert!(!message.contains("private-value"));
+        assert!(!message.contains("database-value"));
     }
 
     #[cfg(unix)]
