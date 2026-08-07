@@ -139,6 +139,8 @@ const AUTH_TERMINAL_OUTPUT_CHUNK_SIZE: usize = 4096;
 const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
 const ACP_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_ACP_STDERR_BYTES: usize = 16 * 1024;
+const ACP_RUNTIME_CONFIGURATION_INVALID_DIAGNOSTIC: &str =
+    "The AI runtime configuration is invalid.";
 const RUNTIME_SETUP_STORE_VERSION: u32 = 2;
 const RUNTIME_SECRET_SERVICE: &str = "NeverWrite AI Provider Secrets";
 const RUNTIME_SECRET_SERVICE_ENV: &str = "NEVERWRITE_AI_SECRET_SERVICE";
@@ -4735,46 +4737,16 @@ async fn capture_acp_stderr(mut stderr: tokio::process::ChildStderr) -> String {
     String::from_utf8_lossy(&captured).into_owned()
 }
 
-fn normalize_acp_stderr(stderr: &str) -> Option<String> {
-    let normalized = stderr
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
-        .collect::<String>();
-    let normalized = normalized
-        .lines()
-        .map(|line| {
-            let lower = line.to_ascii_lowercase();
-            if [
-                "api_key",
-                "api-key",
-                "apikey",
-                "authorization:",
-                "bearer ",
-                "token=",
-                "token:",
-                "secret=",
-                "secret:",
-                "password",
-            ]
-            .iter()
-            .any(|marker| lower.contains(marker))
-            {
-                "[redacted sensitive runtime stderr line]"
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let normalized = normalized.trim();
-    (!normalized.is_empty()).then(|| normalized.to_string())
-}
-
-// Keep the "Runtime stderr:" marker synchronized with RUNTIME_STDERR_MARKER in chatStore.ts.
-fn append_acp_stderr(message: String, stderr: &str) -> String {
-    match normalize_acp_stderr(stderr) {
-        Some(stderr) => format!("{message} Runtime stderr: {stderr}"),
-        None => message,
+fn append_acp_stderr_diagnostic(message: String, stderr: &str) -> String {
+    // ACP stderr can contain arbitrary runtime output, including credentials. Only expose a
+    // fixed diagnostic that NeverWrite recognizes; never propagate the original text.
+    if stderr
+        .to_ascii_lowercase()
+        .contains("error loading config:")
+    {
+        format!("{message} {ACP_RUNTIME_CONFIGURATION_INVALID_DIAGNOSTIC}")
+    } else {
+        message
     }
 }
 
@@ -4794,7 +4766,7 @@ async fn acp_child_exit_message_with_stderr(
         },
         None => String::new(),
     };
-    append_acp_stderr(message, &stderr)
+    append_acp_stderr_diagnostic(message, &stderr)
 }
 
 async fn acp_child_wait_message(
@@ -11686,48 +11658,50 @@ mod tests {
     }
 
     #[test]
-    fn acp_exit_errors_include_clean_runtime_stderr() {
-        let message = append_acp_stderr(
+    fn acp_exit_errors_expose_only_a_safe_configuration_diagnostic() {
+        let message = append_acp_stderr_diagnostic(
             "The AI runtime process exited with status exit status: 1.".to_string(),
-            "\nError: error loading config: /vault/.codex/config.toml\0\n",
+            "\nError: error loading config: /vault/.codex/config.toml\nAWS_SECRET_ACCESS_KEY=private-value\0\n",
         );
 
         assert_eq!(
             message,
-            "The AI runtime process exited with status exit status: 1. Runtime stderr: Error: error loading config: /vault/.codex/config.toml"
+            "The AI runtime process exited with status exit status: 1. The AI runtime configuration is invalid."
         );
+        assert!(!message.contains("/vault/.codex/config.toml"));
+        assert!(!message.contains("private-value"));
     }
 
     #[test]
-    fn acp_exit_errors_omit_empty_runtime_stderr() {
+    fn acp_exit_errors_omit_unrecognized_runtime_stderr() {
         assert_eq!(
-            append_acp_stderr("The AI runtime process exited.".to_string(), " \n\t"),
+            append_acp_stderr_diagnostic(
+                "The AI runtime process exited.".to_string(),
+                "AWS_SECRET_ACCESS_KEY=private-value",
+            ),
             "The AI runtime process exited."
         );
     }
 
     #[test]
-    fn acp_exit_errors_redact_sensitive_runtime_stderr_lines() {
-        let message = append_acp_stderr(
+    fn acp_exit_errors_never_expose_runtime_stderr() {
+        let message = append_acp_stderr_diagnostic(
             "The AI runtime process exited.".to_string(),
             "Configuration failed\nAuthorization: Bearer private-value\nPASSWORD=database-value\nTry again",
         );
 
-        assert_eq!(
-            message,
-            "The AI runtime process exited. Runtime stderr: Configuration failed\n[redacted sensitive runtime stderr line]\n[redacted sensitive runtime stderr line]\nTry again"
-        );
+        assert_eq!(message, "The AI runtime process exited.");
         assert!(!message.contains("private-value"));
         assert!(!message.contains("database-value"));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn acp_startup_errors_capture_stderr_after_a_protocol_failure() {
+    async fn acp_startup_errors_expose_only_safe_stderr_diagnostics() {
         let mut child = Command::new("sh")
             .args([
                 "-c",
-                "printf 'Error: invalid runtime config\\n' >&2; exit 1",
+                "printf 'Error: error loading config: /vault/.codex/config.toml\\nAWS_SECRET_ACCESS_KEY=private-value\\n' >&2; exit 1",
             ])
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -11741,8 +11715,10 @@ mod tests {
 
         assert_eq!(
             message,
-            "The AI runtime process exited with status exit status: 1. Runtime stderr: Error: invalid runtime config"
+            "The AI runtime process exited with status exit status: 1. The AI runtime configuration is invalid."
         );
+        assert!(!message.contains("/vault/.codex/config.toml"));
+        assert!(!message.contains("private-value"));
     }
 
     #[cfg(unix)]
@@ -11776,7 +11752,10 @@ mod tests {
         .await;
 
         assert!(capture_dropped.load(Ordering::SeqCst));
-        assert!(!message.contains("Runtime stderr:"));
+        assert_eq!(
+            message,
+            "The AI runtime process exited with status exit status: 1."
+        );
     }
 
     #[cfg(unix)]

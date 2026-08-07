@@ -14675,7 +14675,7 @@ describe("chatStore", () => {
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_create_session") {
                 throw new Error(
-                    'Internal error: "The AI runtime process exited with status exit status: 1. Runtime stderr: Error: error loading config: /vault/.codex/config.toml:1:1: invalid type: integer `3`, expected struct AgentRoleToml"',
+                    'Internal error: "The AI runtime process exited with status exit status: 1. The AI runtime configuration is invalid. AWS_SECRET_ACCESS_KEY=private-value"',
                 );
             }
             return defaultInvokeImplementation(command, args);
@@ -14693,7 +14693,7 @@ describe("chatStore", () => {
         ).toMatchObject({
             kind: "error",
             content:
-                "Could not reconnect this chat because the AI runtime configuration is invalid. Error: error loading config: /vault/.codex/config.toml:1:1: invalid type: integer `3`, expected struct AgentRoleToml",
+                "Could not reconnect this chat because the AI runtime configuration is invalid. Review its configuration and try again.",
         });
         expect(
             useChatStore.getState().sessionsById["persisted:history-1"]

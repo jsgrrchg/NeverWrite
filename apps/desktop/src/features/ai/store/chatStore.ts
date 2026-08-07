@@ -216,8 +216,8 @@ const SAVED_CHAT_RECONNECT_FAILED_MESSAGE =
     "Could not reconnect this chat. Start a new session with saved transcript context?";
 const SAVED_CHAT_RECONNECT_FAILURE_PREFIX =
     "Could not reconnect this chat because the AI runtime ";
-// Keep this marker synchronized with append_acp_stderr in native-backend/src/ai.rs.
-const RUNTIME_STDERR_MARKER = "Runtime stderr:";
+const RUNTIME_CONFIGURATION_INVALID_DIAGNOSTIC =
+    "The AI runtime configuration is invalid.";
 const CUSTOM_RUNTIME_CONTINUATION_STATUS_EVENT_ID =
     "neverwrite:recovery:custom-runtime-continuation";
 const CUSTOM_RUNTIME_UNAVAILABLE_MESSAGE =
@@ -718,24 +718,11 @@ function isRemovedGeminiAcpSession(session: Pick<AIChatSession, "runtimeId">) {
 }
 
 function getSavedChatReconnectFailureMessage(runtimeError: string) {
-    const markerIndex = runtimeError.lastIndexOf(RUNTIME_STDERR_MARKER);
-    if (markerIndex < 0) {
-        return SAVED_CHAT_RECONNECT_FAILED_MESSAGE;
+    if (runtimeError.includes(RUNTIME_CONFIGURATION_INVALID_DIAGNOSTIC)) {
+        return `${SAVED_CHAT_RECONNECT_FAILURE_PREFIX}configuration is invalid. Review its configuration and try again.`;
     }
 
-    const runtimeDetail = runtimeError
-        .slice(markerIndex + RUNTIME_STDERR_MARKER.length)
-        .trim()
-        .replace(/\\?"$/, "");
-    if (!runtimeDetail) {
-        return SAVED_CHAT_RECONNECT_FAILED_MESSAGE;
-    }
-
-    if (runtimeDetail.toLowerCase().includes("error loading config:")) {
-        return `${SAVED_CHAT_RECONNECT_FAILURE_PREFIX}configuration is invalid. ${runtimeDetail}`;
-    }
-
-    return `${SAVED_CHAT_RECONNECT_FAILURE_PREFIX}failed to start. ${runtimeDetail}`;
+    return SAVED_CHAT_RECONNECT_FAILED_MESSAGE;
 }
 
 function isSavedChatReconnectFailureMessage(message: string) {
