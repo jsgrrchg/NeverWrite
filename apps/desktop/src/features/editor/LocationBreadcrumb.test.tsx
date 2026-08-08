@@ -51,7 +51,7 @@ describe("LocationBreadcrumb", () => {
         });
     });
 
-    it("collapses intermediate folders when the available width is too small", () => {
+    it("collapses intermediate folders within the space left by sibling badges", () => {
         let resizeCallback: ResizeObserverCallback | null = null;
         const originalResizeObserver = globalThis.ResizeObserver;
 
@@ -81,16 +81,22 @@ describe("LocationBreadcrumb", () => {
                             "Semana 2026-08-03 a 2026-08-09",
                         ]}
                     />
+                    <span>Published</span>
                 </div>,
             );
 
             const parent = container.querySelector(
                 '[data-breadcrumb-container="true"]',
             )!;
+            const root = parent.firstElementChild!;
             const measurement = container.querySelector(
                 '[aria-hidden="true"]',
             )!;
             Object.defineProperty(parent, "clientWidth", {
+                configurable: true,
+                value: 800,
+            });
+            Object.defineProperty(root, "clientWidth", {
                 configurable: true,
                 value: 200,
             });

@@ -16,11 +16,10 @@ export function LocationBreadcrumb({ segments }: LocationBreadcrumbProps) {
     useLayoutEffect(() => {
         const root = rootRef.current;
         const measurement = measurementRef.current;
-        const parent = root?.parentElement;
-        if (!root || !measurement || !parent) return;
+        if (!root || !measurement) return;
 
         const updateLayout = () => {
-            const availableWidth = parent.clientWidth;
+            const availableWidth = root.clientWidth;
             // JSDOM has no layout. Leave the complete label visible there so
             // unit tests retain meaningful output while browsers measure it.
             if (availableWidth === 0) return;
@@ -31,7 +30,7 @@ export function LocationBreadcrumb({ segments }: LocationBreadcrumbProps) {
 
         if (typeof ResizeObserver === "undefined") return;
         const observer = new ResizeObserver(updateLayout);
-        observer.observe(parent);
+        observer.observe(root);
 
         return () => observer.disconnect();
     }, [fullPath]);
@@ -41,6 +40,7 @@ export function LocationBreadcrumb({ segments }: LocationBreadcrumbProps) {
             ref={rootRef}
             style={{
                 display: "inline-flex",
+                flex: "1 1 auto",
                 minWidth: 0,
                 maxWidth: "100%",
             }}
