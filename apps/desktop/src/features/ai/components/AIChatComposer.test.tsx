@@ -357,6 +357,9 @@ describe("AIChatComposer mention picker", () => {
     it("keeps the capped composer content flexible while expanded", () => {
         renderComposer({ expanded: true });
 
+        expect(
+            screen.getByTestId("chat-composer-shell").getAttribute("style"),
+        ).toContain("background-color: transparent");
         const contentColumn = screen.getByTestId(
             "chat-composer-content-column",
         );

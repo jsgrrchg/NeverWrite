@@ -699,8 +699,8 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         setScrollToMessageId(null);
     }, [sessionId]);
 
-    // The message list owns the finder UI and is unmounted while the composer is
-    // expanded, so keep local message-list overlays aligned with that boundary.
+    // Keep local message-list overlays closed while the expanded composer makes
+    // the transcript visual-only beneath its translucent surface.
     useEffect(() => {
         if (composerExpanded) {
             setFindOpen(false);
@@ -1026,7 +1026,12 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             ) : null}
 
             <div className="relative flex min-h-0 flex-1 flex-col">
-                {!composerExpanded && (
+                <div
+                    data-testid="chat-transcript-region"
+                    className="flex min-h-0 flex-1 flex-col"
+                    aria-hidden={composerExpanded || undefined}
+                    inert={composerExpanded || undefined}
+                >
                     <AIChatMessageList
                         sessionId={sessionId}
                         messages={session?.messages ?? []}
@@ -1082,7 +1087,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                             );
                         }}
                     />
-                )}
+                </div>
 
                 <div
                     ref={composerExpanded ? undefined : bottomDockRef}
@@ -1093,8 +1098,8 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                     }
                     className={
                         composerExpanded
-                            ? "flex min-h-0 flex-1 flex-col"
-                            : "nw-chat-bottom-dock absolute inset-x-0 bottom-0 z-20 flex max-h-full flex-col"
+                            ? "nw-chat-translucent-surface absolute inset-0 z-20 flex min-h-0 flex-col"
+                            : "nw-chat-translucent-surface nw-chat-bottom-dock absolute inset-x-0 bottom-0 z-20 flex max-h-full flex-col"
                     }
                 >
                     {/* Queue and Edits yield their height before Composer,
@@ -1149,7 +1154,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                         data-testid="chat-bottom-dock-composer-region"
                         className={
                             composerExpanded
-                                ? "flex min-h-0 flex-1 flex-col pt-1.5"
+                                ? "flex min-h-0 flex-1 flex-col"
                                 : "flex min-h-16 shrink flex-col"
                         }
                     >

@@ -1617,12 +1617,10 @@ body.dragging-tab * {
     color: var(--text-primary);
 }
 
-/* The transcript scrolls beneath one shared frosted dock. Keeping the blur on
-   this wrapper avoids allocating separate backdrop surfaces for Queue, Edits,
-   and Composer while their internal borders remain independently legible. The
-   tight negative-spread shadow separates the dock without painting a false
-   panel above it. */
-.nw-chat-bottom-dock {
+/* The transcript stays beneath one shared frosted surface in both compact and
+   expanded modes. Applying the blur only to this wrapper avoids allocating
+   separate backdrop surfaces for Queue, Edits, and Composer. */
+.nw-chat-translucent-surface {
     background-color: color-mix(
         in srgb,
         var(--bg-secondary) 82%,
@@ -1630,18 +1628,23 @@ body.dragging-tab * {
     );
     backdrop-filter: blur(12px) saturate(120%);
     -webkit-backdrop-filter: blur(12px) saturate(120%);
+}
+
+/* The tight negative-spread shadow separates the compact dock without painting
+   a false panel above it. The expanded surface already has pane edges. */
+.nw-chat-bottom-dock {
     box-shadow: 0 -4px 10px -8px
         color-mix(in srgb, black 36%, transparent);
 }
 
 @supports not (backdrop-filter: blur(1px)) {
-    .nw-chat-bottom-dock {
+    .nw-chat-translucent-surface {
         background-color: var(--bg-secondary);
     }
 }
 
 @media (prefers-reduced-transparency: reduce) {
-    .nw-chat-bottom-dock {
+    .nw-chat-translucent-surface {
         background-color: var(--bg-secondary);
         backdrop-filter: none;
         -webkit-backdrop-filter: none;

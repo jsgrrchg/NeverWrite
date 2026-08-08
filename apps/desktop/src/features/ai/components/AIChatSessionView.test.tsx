@@ -547,9 +547,25 @@ describe("AIChatSessionView", () => {
             "true",
         );
         expect(screen.queryByTestId("chat-bottom-dock")).toBeNull();
+        const expandedRegion = screen.getByTestId(
+            "chat-expanded-composer-region",
+        );
+        expect(expandedRegion).toHaveClass(
+            "nw-chat-translucent-surface",
+            "absolute",
+            "inset-0",
+        );
+        expect(screen.getByTestId("chat-message-list")).toBeInTheDocument();
+        expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(
+            "aria-hidden",
+            "true",
+        );
+        expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(
+            "inert",
+        );
         expect(
-            screen.getByTestId("chat-expanded-composer-region"),
-        ).toBeInTheDocument();
+            screen.getByTestId("chat-bottom-dock-composer-region"),
+        ).not.toHaveClass("pt-1.5");
     });
 
     it("closes and disables chat find while the composer is expanded", async () => {
@@ -569,9 +585,10 @@ describe("AIChatSessionView", () => {
             expect(findButton).toBeDisabled();
             expect(findButton).toHaveAttribute("aria-pressed", "false");
         });
-        expect(
-            screen.queryByTestId("chat-message-list"),
-        ).not.toBeInTheDocument();
+        expect(screen.getByTestId("chat-message-list")).toBeInTheDocument();
+        expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(
+            "inert",
+        );
 
         fireEvent.click(findButton);
         expect(findButton).toHaveAttribute("aria-pressed", "false");

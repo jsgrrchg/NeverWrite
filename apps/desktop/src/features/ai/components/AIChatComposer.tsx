@@ -1698,7 +1698,9 @@ export function AIChatComposer({
             {contextBar ? (
                 <div
                     className={
-                        expanded ? "px-2 pb-1.5" : "px-3 pb-1.5 pt-2"
+                        expanded
+                            ? "px-2 pb-1.5 pt-1.5"
+                            : "px-3 pb-1.5 pt-2"
                     }
                 >
                     <div
@@ -1720,9 +1722,7 @@ export function AIChatComposer({
                     border: "none",
                     borderTop: "1px solid var(--border)",
                     borderRadius: 0,
-                    backgroundColor: expanded
-                        ? "var(--bg-tertiary)"
-                        : "transparent",
+                    backgroundColor: "transparent",
                     boxShadow: externalDragActive
                         ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
                         : "none",
