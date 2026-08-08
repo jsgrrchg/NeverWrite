@@ -647,8 +647,7 @@ html[data-desktop-platform="windows"].dark {
     --editor-code-fence-inline-size: min(100%, 88ch);
 }
 
-.chat-code-frame,
-.chat-plan-frame {
+.chat-code-frame {
     /* Keep fenced content at a readable measure without overflowing narrow chat panes. */
     inline-size: var(--code-fence-inline-size);
     margin-inline: auto;
@@ -658,7 +657,10 @@ html[data-desktop-platform="windows"].dark {
 }
 
 .chat-plan-frame {
-    font-family: var(--font-mono), ui-monospace, monospace;
+    inline-size: 100%;
+    border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+    border-radius: 0.75rem;
+    background: color-mix(in srgb, var(--bg-tertiary) 78%, transparent);
 }
 
 .chat-code-header,

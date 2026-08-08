@@ -1,5 +1,6 @@
 import { agent as acpAgent, methods, ndJsonStream, RequestError, } from "@agentclientprotocol/sdk";
 import { deleteSession, getSessionInfo, getSessionMessages, listSessions, query, } from "@anthropic-ai/claude-agent-sdk";
+import { GOAL_ACTIONS, GOAL_CONTROL_METHOD, GOAL_EXTENSION_VERSION, goalUpdateFromPrompt, parseGoalRequest, toGoalSnapshot, } from "./goal-extension.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
@@ -736,6 +737,11 @@ export class ClaudeAcpAgent {
                 steering: {
                     supported: true,
                 },
+                goal: {
+                    version: GOAL_EXTENSION_VERSION,
+                    controlMethod: GOAL_CONTROL_METHOD,
+                    actions: [...GOAL_ACTIONS],
+                },
             },
         };
     }
@@ -986,7 +992,63 @@ export class ClaudeAcpAgent {
         session.turnQueue.push(turn);
         session.input.push(userMessage);
         this.ensureConsumer(session, params.sessionId);
+        await this.publishGoalFromPrompt(params.sessionId, firstText, promptUuid);
         return response;
+    }
+    async goal(params) {
+        const command = params.action === "set" ? `/goal ${params.objective}` : "/goal clear";
+        const prompt = [{ type: "text", text: command }];
+        const steering = await this.steer({
+            sessionId: params.sessionId,
+            prompt,
+            _meta: { steering: { idleBehavior: "promptRequired" } },
+        });
+        if (steering.outcome === "promptRequired") {
+            await this.prompt({ sessionId: params.sessionId, prompt });
+        }
+        return {};
+    }
+    async publishGoal(sessionId, goal) {
+        const session = this.sessions[sessionId];
+        if (session) {
+            session.lastPublishedGoal = goal;
+        }
+        await this.client.sessionUpdate({
+            sessionId,
+            update: {
+                sessionUpdate: "session_info_update",
+                _meta: { goal },
+            },
+        });
+    }
+    async publishGoalFromPrompt(sessionId, prompt, commandUuid) {
+        const goalUpdate = goalUpdateFromPrompt(prompt);
+        if (goalUpdate !== undefined) {
+            const session = this.sessions[sessionId];
+            if (session) {
+                session.pendingGoalUpdate = {
+                    commandUuid,
+                    expected: goalUpdate,
+                    previous: session.lastPublishedGoal,
+                    started: false,
+                };
+            }
+            await this.publishGoal(sessionId, goalUpdate);
+        }
+    }
+    async publishRuntimeGoal(sessionId, goal) {
+        const session = this.sessions[sessionId];
+        const pending = session?.pendingGoalUpdate;
+        if (pending) {
+            const matchesPending = pending.expected === null
+                ? goal === null
+                : goal !== null && goal.objective === pending.expected.objective;
+            if (!matchesPending) {
+                return;
+            }
+            session.pendingGoalUpdate = undefined;
+        }
+        await this.publishGoal(sessionId, goal);
     }
     /** Steer the session per the ACP steering wire protocol: inject a follow-up
      *  message into the turn that is currently running. If that turn already
@@ -1068,6 +1130,8 @@ export class ClaudeAcpAgent {
             turnInFlight.deferredSettle = undefined;
         }
         session.input.push(userMessage);
+        const firstText = params.prompt[0]?.type === "text" ? params.prompt[0].text : "";
+        await this.publishGoalFromPrompt(sessionId, firstText, steeredUuid);
         return { outcome: "injected" };
     }
     /** Lazily start the per-session consumer that drains the SDK query stream for
@@ -1698,6 +1762,14 @@ export class ClaudeAcpAgent {
                     }
                     continue;
                 }
+                // `active_goal` is emitted by the Claude runtime but is not currently
+                // included in the public SDKMessage union. Handle it before the
+                // exhaustive switch and publish only the provider-neutral ACP shape.
+                if (message.type === "active_goal") {
+                    const activeGoal = message;
+                    await this.publishRuntimeGoal(params.sessionId, toGoalSnapshot(activeGoal));
+                    continue;
+                }
                 switch (message.type) {
                     case "system":
                         switch (message.subtype) {
@@ -2268,6 +2340,20 @@ export class ClaudeAcpAgent {
                             if (!isAutonomousResult) {
                                 recordResultForOrphanCommands();
                                 ensureActiveTurn();
+                                // Once the submitted goal command has produced its own result,
+                                // no older runtime update can still precede it in the ordered
+                                // SDK stream. Stop suppressing updates even when this runtime
+                                // omitted the matching active_goal notification entirely.
+                                if (session.pendingGoalUpdate?.started) {
+                                    const pendingGoalUpdate = session.pendingGoalUpdate;
+                                    session.pendingGoalUpdate = undefined;
+                                    const goalCommandFailed = message.is_error ||
+                                        message.stop_reason === "refusal" ||
+                                        ("result" in message && message.result.includes("Please run /login"));
+                                    if (goalCommandFailed) {
+                                        await this.publishGoal(params.sessionId, pendingGoalUpdate.previous ?? null);
+                                    }
+                                }
                             }
                             // A result closes the stretch of output it terminates: snapshot
                             // the delivery record — AFTER ensureActiveTurn, whose held-turn
@@ -2445,6 +2531,17 @@ export class ClaudeAcpAgent {
                                 // and permission requests out-of-turn (issue #866's deadlock,
                                 // through the refusal lane).
                                 settleOrDefer({ stopReason: "refusal", usage: sessionUsage(session) });
+                                break;
+                            }
+                            // A priority:'now' steer can make the SDK terminate the
+                            // interrupted cycle with an error-shaped diagnostic result
+                            // before it replays the injected message's echo. That result is
+                            // not the steered command's outcome: keep it on the steer lane
+                            // and let the cycle after the pending echo decide the turn.
+                            if (message.is_error &&
+                                isSteering(session.activeTurn) &&
+                                session.activeTurn.steeredEchoes.size > 0) {
+                                settleOrDefer({ stopReason: "end_turn", usage: sessionUsage(session) });
                                 break;
                             }
                             switch (message.subtype) {
@@ -2683,6 +2780,9 @@ export class ClaudeAcpAgent {
                         // is still promoted — activateTurn() clears the flag. The turn's own
                         // echo is then dropped from the feed (the client already shows it).
                         if (message.type === "user" && "uuid" in message && message.uuid) {
+                            if (session.pendingGoalUpdate?.commandUuid === message.uuid) {
+                                session.pendingGoalUpdate.started = true;
+                            }
                             const queued = findUnsettledTurn(message.uuid);
                             if (queued) {
                                 // Only (re)activate if this isn't already the active turn — a
@@ -3078,6 +3178,14 @@ export class ClaudeAcpAgent {
             return;
         }
         session.cancelled = true;
+        // A priority steer may still be queued in the SDK when cancellation
+        // settles its owning turn. Its later echo matches no live turn, and its
+        // result must be skipped rather than promoted onto the next prompt.
+        if (isSteering(session.activeTurn)) {
+            for (const uuid of session.activeTurn.steeredEchoes) {
+                this.trackOrphanCommand(session, uuid, "pending");
+            }
+        }
         // Capture the orphan-accounting lane before anything can await: the
         // consumer latches msgLifecycleV1 when it drains the first system/init,
         // which can happen DURING the awaited interrupt() below — the receipt
@@ -6235,6 +6343,7 @@ export function runAcp() {
         .onRequest(methods.agent.session.prompt, (ctx) => runPromptWithCancellation(agent, ctx.params, ctx.signal))
         .onNotification(methods.agent.session.cancel, (ctx) => agent.cancel(ctx.params))
         .onRequest(STEER_METHOD, { parse: parseSteerRequest }, (ctx) => agent.steer(ctx.params))
+        .onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params))
         .connect(stream);
     agent = new ClaudeAcpAgent(new ClientConnection(connection.client));
     return { connection, agent };

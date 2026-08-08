@@ -15,6 +15,7 @@ import type {
     AIChatAttachment,
     AIChatMessage,
     AIFileDiff,
+    AIPlanEntry,
     AIPermissionOption,
     AIUrlElicitationAction,
     AIUserInputAction,
@@ -842,6 +843,14 @@ function ToolMessage({
     return <ToolActivityItem message={message} sessionId={sessionId} />;
 }
 
+const PLAN_DONE_COLOR = "#84cc16";
+
+function getPlanEntryColor(status: AIPlanEntry["status"]) {
+    if (status === "completed") return PLAN_DONE_COLOR;
+    if (status === "in_progress") return "var(--accent)";
+    return "var(--text-secondary)";
+}
+
 export function PlanMessage({
     message,
     sessionId,
@@ -865,15 +874,13 @@ export function PlanMessage({
     const completedCount = entries.filter(
         (entry) => entry.status === "completed",
     ).length;
-    const inProgress = entries.some((entry) => entry.status === "in_progress");
-    const allDone = entries.length > 0 && completedCount === entries.length;
-    const statusLabel = allDone
-        ? "All Done"
-        : inProgress
-          ? "In Progress"
-          : entries.length > 0
-            ? "Planned"
-            : "Draft";
+    const title = message.title ?? "Plan";
+    const currentEntry =
+        entries.find((entry) => entry.status === "in_progress") ??
+        entries.find((entry) => entry.status === "pending");
+    const collapsedTitle = currentEntry
+        ? `${title} - ${currentEntry.content}`
+        : title;
     const canExpand = entries.length > 0 || !!detail;
 
     return (
@@ -881,66 +888,105 @@ export function PlanMessage({
             className="chat-plan-frame min-w-0 max-w-full overflow-hidden"
             data-plan-surface="true"
         >
-            <div className="flex items-center gap-1 px-2.5 py-2">
+            <div className="flex items-center gap-1.5 px-2.5 py-2">
                 <button
+                    aria-expanded={expanded}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    data-plan-toggle="true"
                     type="button"
                     onClick={() => {
                         if (canExpand) setExpanded((value) => !value);
                     }}
-                    className="flex min-w-0 flex-1 items-baseline gap-2 rounded-sm text-left"
-                    aria-expanded={expanded}
                     style={{
-                        backgroundColor: "transparent",
+                        background: "none",
                         border: "none",
                         cursor: canExpand ? "pointer" : "default",
+                        padding: 0,
                     }}
                 >
                     <span
-                        className="inline-block w-3 shrink-0 text-center"
-                        style={{
-                            color: "var(--text-secondary)",
-                            fontSize: "0.78em",
-                            fontWeight: 500,
-                            lineHeight: 1.5,
-                        }}
+                        className="inline-grid shrink-0 place-items-center"
+                        style={{ height: 16, width: 16 }}
                     >
-                        {canExpand ? (expanded ? "⌄" : ">") : "·"}
+                        {canExpand ? (
+                            <svg
+                                aria-hidden="true"
+                                fill="none"
+                                height="10"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                    opacity: 0.75,
+                                    transform: expanded
+                                        ? "rotate(0deg)"
+                                        : "rotate(-90deg)",
+                                    transition: "transform 160ms ease",
+                                }}
+                                viewBox="0 0 16 16"
+                                width="10"
+                            >
+                                <path
+                                    d="M4.5 6.5 8 10l3.5-3.5"
+                                    stroke="currentColor"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth="1.6"
+                                />
+                            </svg>
+                        ) : (
+                            <span
+                                style={{
+                                    background: "var(--text-secondary)",
+                                    borderRadius: "50%",
+                                    display: "block",
+                                    height: 4,
+                                    opacity: 0.6,
+                                    width: 4,
+                                }}
+                            />
+                        )}
                     </span>
                     <span
-                        className="min-w-0 flex-1 font-medium"
+                        className="min-w-0 flex-1 truncate"
                         style={{
-                            color: "var(--text-secondary)",
-                            fontSize: "0.78em",
-                            lineHeight: 1.5,
+                            color: "var(--text-primary)",
+                            fontSize: "0.8125rem",
+                            fontWeight: 600,
                         }}
                     >
-                        {message.title ?? "Plan"}
-                    </span>
-                    <span
-                        style={{
-                            color: "var(--text-secondary)",
-                            fontSize: "0.72em",
-                        }}
-                    >
-                        {statusLabel}
+                        {expanded ? title : collapsedTitle}
                     </span>
                 </button>
+                {entries.length > 0 ? (
+                    <span
+                        className="shrink-0"
+                        data-plan-progress="true"
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.7em",
+                            fontVariantNumeric: "tabular-nums",
+                            lineHeight: 1,
+                            opacity: 0.6,
+                        }}
+                    >
+                        {completedCount}/{entries.length}
+                    </span>
+                ) : null}
                 {onDismiss ? (
                     <button
                         type="button"
                         aria-label="Dismiss plan banner"
                         title="Dismiss plan banner"
                         onClick={onDismiss}
-                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
+                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md"
                         style={{
                             border: "none",
                             background: "transparent",
                             color: "var(--text-secondary)",
                             cursor: "pointer",
-                            opacity: 0.72,
+                            opacity: 0.6,
                             transition:
                                 "opacity 140ms ease, background-color 140ms ease",
-                            fontSize: 14,
+                            fontSize: 13,
                             lineHeight: 1,
                         }}
                     >
@@ -950,13 +996,11 @@ export function PlanMessage({
             </div>
 
             {expanded && detail ? (
-                <div
-                    className="px-7 pb-2"
-                >
+                <div className="pb-2 pr-2.5" style={{ paddingLeft: 36 }}>
                     <div
                         style={{
                             color: "var(--text-secondary)",
-                            fontSize: "0.78em",
+                            fontSize: "12px",
                             lineHeight: 1.45,
                         }}
                     >
@@ -972,61 +1016,51 @@ export function PlanMessage({
 
             {expanded && entries.length > 0 ? (
                 <div
-                    className="activity-tree flex min-w-0 flex-col gap-1.5 px-2.5 pb-2.5"
+                    className="flex min-w-0 flex-col gap-1 px-2.5 pb-2"
                     data-plan-tree="true"
                     role="list"
                 >
                     {entries.map((entry, index) => {
                         const isCompleted = entry.status === "completed";
-                        const isActive = entry.status === "in_progress";
                         return (
                             <div
                                 key={`${entry.content}:${index}`}
-                                className="activity-tree-branch min-w-0 pl-10"
-                                data-activity-rail-decoration="branch"
+                                className="flex min-w-0 items-start gap-2.5 py-0.5"
                                 data-plan-entry-status={entry.status}
                                 role="listitem"
-                                style={{
-                                    color: isCompleted
-                                        ? "var(--text-secondary)"
-                                        : "var(--text-primary)",
-                                    opacity: isCompleted ? 0.74 : 1,
-                                }}
                             >
-                                <div className="flex min-w-0 items-start gap-2 py-0.5">
-                                    <span
-                                        aria-hidden="true"
-                                        className="mt-1 inline-flex h-2 w-2 shrink-0 rounded-full"
-                                        style={{
-                                            backgroundColor: isCompleted
-                                                ? "#84cc16"
-                                                : isActive
-                                                  ? "var(--accent)"
-                                                  : "transparent",
-                                            border: isCompleted || isActive
-                                                ? "none"
-                                                : "1px solid color-mix(in srgb, var(--text-secondary) 58%, transparent)",
-                                            opacity: isCompleted ? 0.9 : 0.8,
-                                        }}
-                                    />
-                                    <div
-                                        className="min-w-0 flex-1"
-                                        style={{
-                                            fontSize: "0.76em",
-                                            lineHeight: 1.5,
-                                            overflowWrap: "anywhere",
-                                            wordBreak: "break-word",
-                                            textDecoration: isCompleted
-                                                ? "line-through"
-                                                : "none",
-                                        }}
-                                    >
-                                        {entry.content}
-                                    </div>
-                                </div>
+                                <span
+                                    aria-hidden="true"
+                                    className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                                    style={{
+                                        backgroundColor: getPlanEntryColor(
+                                            entry.status,
+                                        ),
+                                        opacity: isCompleted ? 0.85 : 0.8,
+                                    }}
+                                />
+                                <span
+                                    className="min-w-0 flex-1"
+                                    style={{
+                                        color: isCompleted
+                                            ? "var(--text-secondary)"
+                                            : "var(--text-primary)",
+                                        fontSize: "12px",
+                                        lineHeight: 1.45,
+                                        opacity: isCompleted ? 0.7 : 1,
+                                        overflowWrap: "anywhere",
+                                        textDecoration: isCompleted
+                                            ? "line-through"
+                                            : undefined,
+                                        wordBreak: "break-word",
+                                    }}
+                                >
+                                    {entry.content}
+                                </span>
                             </div>
                         );
                     })}
+
                 </div>
             ) : expanded && !detail ? (
                 <div
@@ -1040,18 +1074,6 @@ export function PlanMessage({
                 </div>
             ) : null}
 
-            {expanded && entries.length > 0 ? (
-                <div
-                    className="px-2.5 pb-1.5 pt-0.5"
-                    style={{
-                        color: "var(--text-secondary)",
-                        fontSize: "0.74em",
-                        opacity: 0.68,
-                    }}
-                >
-                    {completedCount}/{entries.length}
-                </div>
-            ) : null}
         </div>
     );
 }

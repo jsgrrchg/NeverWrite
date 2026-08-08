@@ -596,7 +596,7 @@ describe("AIChatMessageItem user image attachments", () => {
 });
 
 describe("AIChatMessageItem plan message", () => {
-    it("renders the plan as a collapsible panel with done status", () => {
+    it("renders completed plan entries without a status badge", () => {
         renderMessage({
             id: "plan:1",
             role: "assistant",
@@ -620,7 +620,7 @@ describe("AIChatMessageItem plan message", () => {
 
         const button = screen.getByRole("button", { name: /plan/i });
         expect(button).toHaveAttribute("aria-expanded", "true");
-        expect(screen.getByText("All Done")).toBeInTheDocument();
+        expect(screen.queryByText("All Done")).not.toBeInTheDocument();
         expect(screen.getByText("Review state")).toHaveStyle(
             "text-decoration: line-through",
         );
@@ -628,7 +628,7 @@ describe("AIChatMessageItem plan message", () => {
             "chat-plan-frame",
         );
         expect(
-            document.querySelectorAll('[data-activity-rail-decoration="branch"]'),
+            document.querySelectorAll("[data-plan-entry-status]"),
         ).toHaveLength(2);
     });
 
@@ -658,12 +658,22 @@ describe("AIChatMessageItem plan message", () => {
         const button = screen.getByRole("button", { name: /plan/i });
         expect(screen.getByText("Inspect")).toBeInTheDocument();
         expect(screen.getByText("Summary")).toBeInTheDocument();
+        expect(screen.getByText("1/2")).toHaveAttribute(
+            "data-plan-progress",
+            "true",
+        );
 
         fireEvent.click(button);
 
         expect(button).toHaveAttribute("aria-expanded", "false");
+        expect(button).toHaveAccessibleName("Plan - Implement");
         expect(screen.queryByText("Inspect")).not.toBeInTheDocument();
         expect(screen.queryByText("Summary")).not.toBeInTheDocument();
+        expect(screen.queryByText("In Progress")).not.toBeInTheDocument();
+        expect(screen.getByText("1/2")).toHaveAttribute(
+            "data-plan-progress",
+            "true",
+        );
 
         fireEvent.click(button);
 
