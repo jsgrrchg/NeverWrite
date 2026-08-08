@@ -658,6 +658,10 @@ describe("AIChatMessageItem plan message", () => {
         const button = screen.getByRole("button", { name: /plan/i });
         expect(screen.getByText("Inspect")).toBeInTheDocument();
         expect(screen.getByText("Summary")).toBeInTheDocument();
+        expect(screen.getByText("1/2")).toHaveAttribute(
+            "data-plan-progress",
+            "true",
+        );
 
         fireEvent.click(button);
 
@@ -667,7 +671,7 @@ describe("AIChatMessageItem plan message", () => {
         expect(screen.queryByText("Summary")).not.toBeInTheDocument();
         expect(screen.queryByText("In Progress")).not.toBeInTheDocument();
         expect(screen.getByText("1/2")).toHaveAttribute(
-            "data-plan-collapsed-progress",
+            "data-plan-progress",
             "true",
         );
 

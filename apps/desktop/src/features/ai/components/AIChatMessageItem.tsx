@@ -956,10 +956,10 @@ export function PlanMessage({
                         {expanded ? title : collapsedTitle}
                     </span>
                 </button>
-                {!expanded && entries.length > 0 ? (
+                {entries.length > 0 ? (
                     <span
                         className="shrink-0"
-                        data-plan-collapsed-progress="true"
+                        data-plan-progress="true"
                         style={{
                             color: "var(--text-secondary)",
                             fontSize: "0.7em",
@@ -1061,18 +1061,6 @@ export function PlanMessage({
                         );
                     })}
 
-                    <div className="mt-1 flex justify-end">
-                        <span
-                            style={{
-                                color: "var(--text-secondary)",
-                                fontSize: "0.7em",
-                                fontVariantNumeric: "tabular-nums",
-                                opacity: 0.6,
-                            }}
-                        >
-                            {completedCount}/{entries.length}
-                        </span>
-                    </div>
                 </div>
             ) : expanded && !detail ? (
                 <div
