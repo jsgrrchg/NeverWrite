@@ -34,6 +34,28 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.7.0] - 2026-08-08
+
+### Added
+
+- Added customizable global keyboard shortcuts under Settings > Shortcuts, with shortcut recording, conflict-aware reassignment, per-action reset, and platform-specific preferences shared across vaults.
+- Added a configurable AI chat content width under Settings > Appearance, covering messages, the composer, and related panels.
+
+### Changed
+
+- Refined AI chat presentation with translucent composer surfaces, clearer plan progress in expanded and collapsed states, and formatted code fences while responses are still streaming.
+- Updated the embedded Claude ACP runtime to `0.66.0`, including visibility into active Claude permission scopes.
+
+### Fixed
+
+- Fixed ACP chats failing after idle runtime disconnects by automatically recovering the session, excluding unsent prompts from recovery context, and surfacing sanitized startup diagnostics when reconnection fails.
+- Fixed chat scroll behavior so the jump-to-bottom control appears reliably and newly opened or previously unvisited chats start at the end of the transcript.
+- Fixed long Markdown location breadcrumbs overflowing the editor header by compacting them while preserving the full path on hover.
+
+### Security
+
+- Patched dependency vulnerabilities affecting HTTP handling, URI parsing, HTML sanitization, YAML parsing, and Nano ID generation.
+
 ## [0.6.0] - 2026-07-29
 
 ### Added
