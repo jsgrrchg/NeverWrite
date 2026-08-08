@@ -1617,6 +1617,37 @@ body.dragging-tab * {
     color: var(--text-primary);
 }
 
+/* The transcript scrolls beneath one shared frosted dock. Keeping the blur on
+   this wrapper avoids allocating separate backdrop surfaces for Queue, Edits,
+   and Composer while their internal borders remain independently legible. The
+   tight negative-spread shadow separates the dock without painting a false
+   panel above it. */
+.nw-chat-bottom-dock {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-secondary) 82%,
+        transparent
+    );
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    box-shadow: 0 -4px 10px -8px
+        color-mix(in srgb, black 36%, transparent);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+    .nw-chat-bottom-dock {
+        background-color: var(--bg-secondary);
+    }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+    .nw-chat-bottom-dock {
+        background-color: var(--bg-secondary);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+}
+
 /* Composer send/stop pill buttons. The press should feel like a physical
    button depressing: shrink slightly, dim, and gain an inset shadow that
    replaces the lifted drop shadow. */

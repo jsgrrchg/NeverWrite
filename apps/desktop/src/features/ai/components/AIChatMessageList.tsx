@@ -55,6 +55,7 @@ interface AIChatMessageListProps {
     sessionId?: string | null;
     messages: AIChatMessage[];
     status: AIChatSessionStatus;
+    bottomInset?: number;
     readOnly?: boolean;
     hasOlderMessages?: boolean;
     isLoadingOlderMessages?: boolean;
@@ -100,6 +101,9 @@ type TimelineRow =
 
 const NEAR_BOTTOM_THRESHOLD = 80;
 const LOAD_OLDER_THRESHOLD = 120;
+// Keep a small visual gap without raising the button above the dock's stacking
+// context, where it could cover non-portaled composer dropdowns.
+const SCROLL_TO_BOTTOM_DOCK_GAP_PX = 12;
 const DETACHED_TIMELINE_SCOPE = "__detached_timeline__";
 
 function getRemainingScrollDistance(el: HTMLElement) {
@@ -385,6 +389,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     sessionId = null,
     messages,
     status,
+    bottomInset = 0,
     readOnly = false,
     hasOlderMessages = false,
     isLoadingOlderMessages = false,
@@ -420,6 +425,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         enabled: findOpen,
     });
     const wasNearBottomRef = useRef(true);
+    // Do not shrink the spacer while someone is reading above the bottom.
+    // Chromium would clamp scrollTop immediately and move the visible rows.
+    const [reservedBottomInset, setReservedBottomInset] =
+        useState(bottomInset);
+    const previousReservedBottomInsetRef = useRef(reservedBottomInset);
     const pendingPrependAdjustmentRef = useRef<{
         previousScrollHeight: number;
         previousScrollTop: number;
@@ -453,9 +463,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     const scrollToBottom = useCallback(() => {
         const container = containerRef.current;
         if (!container) return;
+        wasNearBottomRef.current = true;
+        setReservedBottomInset(bottomInset);
         container.scrollTop = container.scrollHeight;
         setShowScrollButton(false);
-    }, []);
+    }, [bottomInset]);
 
     const syncScrollButton = useCallback(() => {
         const container = containerRef.current;
@@ -473,6 +485,9 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
         const nearBottom = isNearBottom(container);
         wasNearBottomRef.current = nearBottom;
+        if (nearBottom && reservedBottomInset !== bottomInset) {
+            setReservedBottomInset(bottomInset);
+        }
         setShowScrollButton(shouldShowScrollToBottomButton(container));
 
         persistChatMessageListViewState(
@@ -498,6 +513,8 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         hasOlderMessages,
         isLoadingOlderMessages,
         onLoadOlderMessages,
+        bottomInset,
+        reservedBottomInset,
         viewStateScope,
     ]);
 
@@ -647,6 +664,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         }
 
         restoredScopeRef.current = viewStateScope;
+        setReservedBottomInset(bottomInset);
         pendingRestoreRef.current =
             readPersistedChatMessageListViewState(viewStateScope);
         wasNearBottomRef.current =
@@ -663,7 +681,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 queueMicrotask(syncScrollButton);
             }
         }
-    }, [messages, status, syncScrollButton, viewStateScope]);
+    }, [bottomInset, messages, status, syncScrollButton, viewStateScope]);
 
     useLayoutEffect(() => {
         const container = containerRef.current;
@@ -758,6 +776,32 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             pendingPrependAdjustmentRef.current = null;
         }
     }, [isLoadingOlderMessages, messages.length]);
+
+    useLayoutEffect(() => {
+        if (
+            bottomInset > reservedBottomInset ||
+            (wasNearBottomRef.current && bottomInset !== reservedBottomInset)
+        ) {
+            setReservedBottomInset(bottomInset);
+        }
+    }, [bottomInset, reservedBottomInset]);
+
+    useLayoutEffect(() => {
+        if (
+            previousReservedBottomInsetRef.current === reservedBottomInset
+        ) {
+            return;
+        }
+
+        previousReservedBottomInsetRef.current = reservedBottomInset;
+        const container = containerRef.current;
+        if (!container) return;
+
+        if (wasNearBottomRef.current) {
+            container.scrollTop = container.scrollHeight;
+        }
+        queueMicrotask(syncScrollButton);
+    }, [reservedBottomInset, syncScrollButton]);
 
     // Anchor scroll position when container width changes (e.g. sidebar resize).
     // Tracks the topmost visible chat row and its viewport offset on every scroll,
@@ -904,6 +948,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 onContextMenu={handleContextMenu}
                 className="min-h-0 min-w-0 flex-1 flex flex-col overflow-y-auto px-3 py-3"
                 data-scrollbar-active="true"
+                style={{
+                    paddingBottom: Math.max(0, reservedBottomInset) + 12,
+                    scrollPaddingBottom:
+                        Math.max(0, reservedBottomInset) + 12,
+                }}
             >
                 <div
                     ref={contentRef}
@@ -972,8 +1021,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 <button
                     type="button"
                     onClick={scrollToBottom}
-                    className="absolute bottom-3 left-1/2 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full"
+                    className="absolute left-1/2 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full"
                     style={{
+                        bottom:
+                            Math.max(0, bottomInset) +
+                            SCROLL_TO_BOTTOM_DOCK_GAP_PX,
                         backgroundColor: "var(--bg-tertiary)",
                         border: "1px solid var(--border)",
                         color: "var(--text-secondary)",

@@ -23,6 +23,8 @@ const composerMockState = vi.hoisted(() => ({
 }));
 const messageListMockState = vi.hoisted(() => ({
     props: [] as Array<{
+        bottomInset?: number;
+        sessionId?: string | null;
         scrollToMessageId?: string | null;
         onScrollToMessageComplete?: () => void;
     }>,
@@ -32,6 +34,8 @@ const invokeMock = vi.mocked(invoke);
 
 vi.mock("./AIChatMessageList", () => ({
     AIChatMessageList: (props: {
+        bottomInset?: number;
+        sessionId?: string | null;
         scrollToMessageId?: string | null;
         onScrollToMessageComplete?: () => void;
     }) => {
@@ -49,6 +53,7 @@ vi.mock("./AIChatComposer", () => ({
     AIChatComposer: ({
         disabled,
         expanded,
+        contextBar,
         footer,
         onToggleExpanded,
         onPasteImage,
@@ -56,6 +61,7 @@ vi.mock("./AIChatComposer", () => ({
     }: {
         disabled?: boolean;
         expanded?: boolean;
+        contextBar?: ReactNode;
         footer?: ReactNode;
         onToggleExpanded?: () => void;
         onPasteImage?: (file: File) => void;
@@ -71,6 +77,7 @@ vi.mock("./AIChatComposer", () => ({
             >
                 {placeholderText}
             </button>
+            {contextBar}
             <div data-testid="chat-composer-footer">{footer}</div>
             <button
                 type="button"
@@ -350,6 +357,173 @@ describe("AIChatSessionView", () => {
         ).toBeNull();
     });
 
+    it("overlays one shared bottom dock above the transcript", () => {
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        const dock = screen.getByTestId("chat-bottom-dock");
+        expect(dock).toHaveClass(
+            "nw-chat-bottom-dock",
+            "absolute",
+            "bottom-0",
+        );
+        expect(dock).toContainElement(
+            screen.getByTestId("queued-messages-panel"),
+        );
+        expect(dock).toContainElement(
+            screen.getByTestId("edited-files-panel"),
+        );
+        expect(dock).toContainElement(screen.getByTestId("chat-composer"));
+        expect(dock).not.toContainElement(
+            screen.getByTestId("chat-message-list"),
+        );
+
+        const auxiliaryRegion = screen.getByTestId(
+            "chat-bottom-dock-auxiliary-region",
+        );
+        expect(auxiliaryRegion).toHaveClass(
+            "min-h-0",
+            "overflow-y-auto",
+        );
+        expect(auxiliaryRegion).toHaveStyle({ flexShrink: "999" });
+        const composerRegion = screen.getByTestId(
+            "chat-bottom-dock-composer-region",
+        );
+        expect(composerRegion).toHaveClass(
+            "flex",
+            "min-h-16",
+            "shrink",
+            "flex-col",
+        );
+        expect(composerRegion).not.toHaveClass("pt-2");
+    });
+
+    it("does not reserve an empty context strip above the composer", () => {
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(screen.queryByTestId("chat-context-bar")).toBeNull();
+    });
+
+    it("renders the context strip when the session has attachments", () => {
+        setupWorkspaceSession();
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                ...state.sessionsById,
+                "session-a": {
+                    ...state.sessionsById["session-a"]!,
+                    attachments: [
+                        {
+                            id: "attachment-1",
+                            type: "note",
+                            noteId: "notes/context.md",
+                            label: "Context",
+                            path: "/vault/notes/context.md",
+                            status: "ready",
+                        },
+                    ],
+                },
+            },
+        }));
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(screen.getByTestId("chat-context-bar")).toBeInTheDocument();
+    });
+
+    it("passes the measured bottom dock height to the transcript", async () => {
+        const rectSpy = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function (this: HTMLElement) {
+                const height =
+                    this.dataset.testid === "chat-bottom-dock"
+                        ? 184
+                        : 0;
+                return {
+                    bottom: height,
+                    height,
+                    left: 0,
+                    right: 600,
+                    top: 0,
+                    width: 600,
+                    x: 0,
+                    y: 0,
+                    toJSON: () => ({}),
+                };
+            });
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        await waitFor(() => {
+            expect(messageListMockState.props.at(-1)?.bottomInset).toBe(184);
+        });
+        rectSpy.mockRestore();
+    });
+
+    it("does not pass a previous session dock measurement into a new chat", async () => {
+        let measuredHeight = 180;
+        const rectSpy = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function (this: HTMLElement) {
+                const height =
+                    this.dataset.testid === "chat-bottom-dock"
+                        ? measuredHeight
+                        : 0;
+                return {
+                    bottom: height,
+                    height,
+                    left: 0,
+                    right: 600,
+                    top: 0,
+                    width: 600,
+                    x: 0,
+                    y: 0,
+                    toJSON: () => ({}),
+                };
+            });
+        setupWorkspaceSession("session-a");
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        await waitFor(() => {
+            expect(messageListMockState.props.at(-1)?.bottomInset).toBe(180);
+        });
+
+        act(() => {
+            useChatStore.setState((state) => ({
+                ...state,
+                sessionsById: {
+                    ...state.sessionsById,
+                    "session-b": createSession("session-b", "Second chat"),
+                },
+            }));
+        });
+        const propsBeforeSwitch = messageListMockState.props.length;
+        measuredHeight = 48;
+
+        act(() => {
+            useEditorStore.getState().openChat("session-b", {
+                title: "Second chat",
+                paneId: "primary",
+            });
+        });
+
+        await waitFor(() => {
+            expect(messageListMockState.props.at(-1)?.sessionId).toBe(
+                "session-b",
+            );
+            expect(messageListMockState.props.at(-1)?.bottomInset).toBe(48);
+        });
+        const newSessionProps = messageListMockState.props
+            .slice(propsBeforeSwitch)
+            .filter((props) => props.sessionId === "session-b");
+        expect(newSessionProps[0]?.bottomInset).toBe(0);
+        rectSpy.mockRestore();
+    });
+
     it("hides the Edited files panel when AI change review is disabled", () => {
         useSettingsStore.getState().setSetting("aiReviewEnabled", false);
         setupWorkspaceSession();
@@ -372,6 +546,10 @@ describe("AIChatSessionView", () => {
             "data-expanded",
             "true",
         );
+        expect(screen.queryByTestId("chat-bottom-dock")).toBeNull();
+        expect(
+            screen.getByTestId("chat-expanded-composer-region"),
+        ).toBeInTheDocument();
     });
 
     it("closes and disables chat find while the composer is expanded", async () => {

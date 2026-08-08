@@ -69,11 +69,13 @@ function StripIconButton({
 }
 
 const STRIP_PANEL_STYLE: React.CSSProperties = {
-    backgroundColor: "color-mix(in srgb, var(--bg-secondary) 60%, transparent)",
+    backgroundColor: "transparent",
     borderTop: "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
     borderBottom:
         "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
 };
+
+const QUEUE_MAX_LIST_HEIGHT_PX = 224;
 
 const STRIP_HEADER_LABEL_STYLE: React.CSSProperties = {
     fontSize: "0.68em",
@@ -206,7 +208,11 @@ export function QueuedMessagesPanel({
             )}
 
             {!effectiveCollapsed && (
-                <div className="flex flex-col">
+                <div
+                    className="flex flex-col overflow-y-auto"
+                    data-scrollbar-active="true"
+                    style={{ maxHeight: QUEUE_MAX_LIST_HEIGHT_PX }}
+                >
                     {items.map((item) => {
                         const sending = item.status === "sending";
                         const summary = summarizeContent(item.content);

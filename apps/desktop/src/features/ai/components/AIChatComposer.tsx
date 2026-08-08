@@ -1682,7 +1682,7 @@ export function AIChatComposer({
     const contentColumnClassName =
         expanded || customHeight != null
             ? "relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
-            : "relative flex min-w-0 flex-col";
+            : "relative flex min-h-0 max-h-full min-w-0 flex-col";
 
     return (
         <div
@@ -1692,11 +1692,15 @@ export function AIChatComposer({
             className={
                 expanded
                     ? "flex h-full min-h-0 flex-1 flex-col"
-                    : "flex flex-col"
+                    : "flex min-h-0 max-h-full flex-col"
             }
         >
             {contextBar ? (
-                <div className={expanded ? "px-2 pb-1.5" : "px-3 pb-1.5"}>
+                <div
+                    className={
+                        expanded ? "px-2 pb-1.5" : "px-3 pb-1.5 pt-2"
+                    }
+                >
                     <div
                         className="min-w-0"
                         style={getAiChatContentColumnStyle(aiChatContentWidth)}
@@ -1710,17 +1714,20 @@ export function AIChatComposer({
                 className={
                     expanded
                         ? "relative flex h-full min-h-0 flex-1 flex-col"
-                        : "relative flex flex-col"
+                        : "relative flex min-h-0 max-h-full flex-col"
                 }
                 style={{
                     border: "none",
                     borderTop: "1px solid var(--border)",
                     borderRadius: 0,
-                    backgroundColor: "var(--bg-tertiary)",
+                    backgroundColor: expanded
+                        ? "var(--bg-tertiary)"
+                        : "transparent",
                     boxShadow: externalDragActive
                         ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
                         : "none",
                     transition: "box-shadow 0.15s ease",
+                    maxHeight: "100%",
                     ...(expanded || customHeight == null
                         ? {}
                         : { height: customHeight }),

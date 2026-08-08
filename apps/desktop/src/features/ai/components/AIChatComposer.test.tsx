@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { getCurrentWebview, invoke } from "@neverwrite/runtime";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
@@ -51,6 +52,7 @@ function renderComposer({
     isStopping = false,
     hasPendingSubmitAfterStop = false,
     expanded = false,
+    contextBar,
     onMentionAttach = vi.fn(),
     onFolderAttach = vi.fn(),
     onToggleExpanded = vi.fn(),
@@ -69,6 +71,7 @@ function renderComposer({
     isStopping?: boolean;
     hasPendingSubmitAfterStop?: boolean;
     expanded?: boolean;
+    contextBar?: ReactNode;
     onMentionAttach?: (note: {
         id: string;
         title: string;
@@ -103,6 +106,7 @@ function renderComposer({
             isStopping={isStopping}
             hasPendingSubmitAfterStop={hasPendingSubmitAfterStop}
             expanded={expanded}
+            contextBar={contextBar}
             onToggleExpanded={onToggleExpanded}
             onChange={onChange}
             onMentionAttach={onMentionAttach}
@@ -328,6 +332,8 @@ describe("AIChatComposer mention picker", () => {
         );
 
         expect(shell).toContainElement(contentColumn);
+        expect(shell).toHaveClass("min-h-0", "max-h-full");
+        expect(shell).toHaveStyle({ maxHeight: "100%" });
         expect(shell).not.toHaveStyle({
             maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
         });
@@ -336,6 +342,16 @@ describe("AIChatComposer mention picker", () => {
             maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
             marginInline: "auto",
         });
+    });
+
+    it("reserves top spacing only when the context bar is present", () => {
+        renderComposer({
+            contextBar: <div data-testid="test-context-bar">Context</div>,
+        });
+
+        expect(
+            screen.getByTestId("test-context-bar").closest(".pt-2"),
+        ).not.toBeNull();
     });
 
     it("keeps the capped composer content flexible while expanded", () => {

@@ -319,6 +319,180 @@ describe("AIChatMessageList streaming run indicator", () => {
         expectSharedChatContentColumn(messageColumn);
     });
 
+    it("reserves the translucent dock inset inside the transcript scroller", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-dock-inset"
+                messages={createMessages()}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+
+        expect(getScrollContainer(view.container)).toHaveStyle({
+            paddingBottom: "192px",
+            scrollPaddingBottom: "192px",
+        });
+    });
+
+    it("keeps a bottom-anchored transcript pinned when the dock height changes", () => {
+        let scrollHeight = 1_000;
+        const messages = createMessages();
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-dock-bottom-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer, 320, {
+            getScrollHeight: () => scrollHeight,
+        });
+
+        act(() => {
+            scrollContainer.scrollTop = 680;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        scrollHeight = 1_180;
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-dock-bottom-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+
+        expect(scrollContainer.scrollTop).toBe(scrollHeight);
+    });
+
+    it("does not move a transcript being read when the dock height changes", () => {
+        let scrollHeight = 1_000;
+        const messages = createMessages();
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-dock-reading-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer, 320, {
+            getScrollHeight: () => scrollHeight,
+        });
+
+        act(() => {
+            scrollContainer.scrollTop = 200;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        scrollHeight = 1_180;
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-dock-reading-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+
+        expect(scrollContainer.scrollTop).toBe(200);
+    });
+
+    it("retains a shrinking dock inset until the reader returns to the bottom", () => {
+        let scrollHeight = 1_180;
+        const messages = createMessages();
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-dock-shrink-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer, 320, {
+            getScrollHeight: () => scrollHeight,
+        });
+
+        act(() => {
+            scrollContainer.scrollTop = 760;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-dock-shrink-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+
+        expect(scrollContainer).toHaveStyle({ paddingBottom: "192px" });
+        expect(scrollContainer.scrollTop).toBe(760);
+        expect(
+            screen.getByRole("button", { name: "Scroll to bottom" }),
+        ).toHaveStyle({ bottom: "12px" });
+
+        scrollHeight = 1_000;
+        act(() => {
+            scrollContainer.scrollTop = 680;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        expect(scrollContainer).toHaveStyle({ paddingBottom: "12px" });
+        expect(scrollContainer.scrollTop).toBe(scrollHeight);
+    });
+
+    it("resets a retained dock inset when switching session scopes", () => {
+        const messages = createMessages();
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-scope-low"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer);
+
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-scope-high"
+                messages={messages}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+        expect(scrollContainer).toHaveStyle({ paddingBottom: "192px" });
+
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-scope-low"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+
+        expect(scrollContainer).toHaveStyle({ paddingBottom: "12px" });
+    });
+
     it.each([
         ["narrow", 320],
         ["wide", 1200],
@@ -633,6 +807,30 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(
             screen.queryByRole("button", { name: "Scroll to bottom" }),
         ).not.toBeInTheDocument();
+    });
+
+    it("keeps the scroll-to-bottom control clear of the dock stacking context", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-scroll-control-dock"
+                messages={createLongTranscript(140)}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer);
+
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        const button = screen.getByRole("button", {
+            name: "Scroll to bottom",
+        });
+        expect(button).not.toHaveClass("z-30");
+        expect(button).toHaveStyle({ bottom: "192px" });
     });
 
     it("starts an unvisited long chat at the bottom after switching sessions", () => {
