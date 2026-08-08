@@ -114,10 +114,10 @@
             "lodash-es": "4.18.1"
         },
         "@excalidraw/excalidraw": {
-            "nanoid": "3.3.11"
+            "nanoid": "3.3.17"
         },
         "@excalidraw/mermaid-to-excalidraw": {
-            "nanoid": "5.1.9"
+            "nanoid": "5.1.16"
         },
         "chevrotain": {
             "lodash-es": "4.18.1"
