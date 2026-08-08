@@ -1,5 +1,6 @@
 import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, DisableProviderRequest, DisableProviderResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListProvidersRequest, ListProvidersResponse, LlmProtocol, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, SetProviderRequest, SetProviderResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
 import { AgentInfo, CanUseTool, FastModeDisabledReason, FastModeState, ModelInfo, Options, PermissionMode, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { GoalRequest, GoalControlResponse, GoalSnapshot } from "./goal-extension.js";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
@@ -179,6 +180,20 @@ type Session = {
     /** The turn whose messages the consumer is currently attributing output to
      *  (the head of `turnQueue` once its user message has been echoed). */
     activeTurn?: Turn | null;
+    /** Optimistic goal state published for a submitted `/goal` command whose
+     *  matching runtime update has not arrived yet. Runtime updates for the old
+     *  goal are suppressed until this command is echoed or completes, otherwise
+     *  a late old-goal update can overwrite a replacement that the runtime never
+     *  announces (the compatibility case the optimistic update exists for). */
+    pendingGoalUpdate?: {
+        commandUuid: string;
+        expected: GoalSnapshot | null;
+        previous: GoalSnapshot | null | undefined;
+        started: boolean;
+    };
+    /** Last goal snapshot sent to the ACP client, used to roll back an
+     *  optimistic `/goal` update when the command itself fails. */
+    lastPublishedGoal?: GoalSnapshot | null;
     /** Count of result messages the consumer should treat as orphans and skip
      *  (not promote/attribute to the current head). When cancel() settles+removes
      *  a queued turn, that turn's user message was already pushed to the SDK, so
@@ -689,6 +704,10 @@ export declare class ClaudeAcpAgent {
     resolveProviderConfig(): ProviderConfig | null;
     logout(_params: LogoutRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
+    goal(params: GoalRequest): Promise<GoalControlResponse>;
+    private publishGoal;
+    private publishGoalFromPrompt;
+    private publishRuntimeGoal;
     /** Steer the session per the ACP steering wire protocol: inject a follow-up
      *  message into the turn that is currently running. If that turn already
      *  settled, the established default starts a new detached turn; Hosts may opt
