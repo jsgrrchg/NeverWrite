@@ -628,7 +628,7 @@ describe("AIChatMessageItem plan message", () => {
             "chat-plan-frame",
         );
         expect(
-            document.querySelectorAll('[data-activity-rail-decoration="branch"]'),
+            document.querySelectorAll("[data-plan-entry-status]"),
         ).toHaveLength(2);
     });
 
@@ -662,8 +662,10 @@ describe("AIChatMessageItem plan message", () => {
         fireEvent.click(button);
 
         expect(button).toHaveAttribute("aria-expanded", "false");
+        expect(button).toHaveAccessibleName("Plan - Implement");
         expect(screen.queryByText("Inspect")).not.toBeInTheDocument();
         expect(screen.queryByText("Summary")).not.toBeInTheDocument();
+        expect(screen.queryByText("In Progress")).not.toBeInTheDocument();
 
         fireEvent.click(button);
 
