@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, type RefObject } from "react";
 import { MetaBadge, EditableNoteTitle } from "./EditorHeader";
+import { LocationBreadcrumb } from "./LocationBreadcrumb";
 import {
     FrontmatterBody,
     parseFrontmatterRaw,
@@ -40,8 +41,8 @@ export interface MarkdownNoteHeaderProps {
     titleInputRef?: RefObject<HTMLTextAreaElement | null>;
     /** Context menu handler for the title textarea (spellcheck) */
     onTitleContextMenu?: (event: React.MouseEvent<HTMLTextAreaElement>) => void;
-    /** Location breadcrumb (e.g. "daily / notes") — empty string hides it */
-    locationParent: string;
+    /** Parent folders for the active note; empty for vault-root notes. */
+    locationSegments: string[];
     /** Raw frontmatter string (null if the note has no frontmatter) */
     frontmatterRaw: string | null;
     /** Callback when frontmatter is edited via Properties panel */
@@ -60,7 +61,7 @@ export function MarkdownNoteHeader({
     onTitleChange,
     titleInputRef,
     onTitleContextMenu,
-    locationParent,
+    locationSegments,
     frontmatterRaw,
     onFrontmatterChange,
     propertiesExpanded,
@@ -211,7 +212,9 @@ export function MarkdownNoteHeader({
                         marginBottom: 14,
                     }}
                 >
-                    {locationParent && <MetaBadge label={locationParent} />}
+                    {locationSegments.length > 0 && (
+                        <LocationBreadcrumb segments={locationSegments} />
+                    )}
                     {status ? (
                         <MetaBadge
                             label={statusLabel(status)}

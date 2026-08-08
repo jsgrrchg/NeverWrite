@@ -12,6 +12,7 @@ export function MetaBadge({
     leading,
     onClick,
     title,
+    truncate = false,
 }: {
     label: string;
     tone?: "muted" | "accent" | "success" | "warning";
@@ -20,6 +21,8 @@ export function MetaBadge({
     /** When provided, the badge renders as a button. */
     onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
     title?: string;
+    /** Keeps a long label on one line and truncates it with an ellipsis. */
+    truncate?: boolean;
 }) {
     const palette =
         tone === "accent"
@@ -53,7 +56,20 @@ export function MetaBadge({
     const content = (
         <>
             {leading}
-            {label}
+            {truncate ? (
+                <span
+                    style={{
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                    }}
+                >
+                    {label}
+                </span>
+            ) : (
+                label
+            )}
         </>
     );
 
@@ -68,6 +84,8 @@ export function MetaBadge({
                     alignItems: "center",
                     gap: 6,
                     maxWidth: "100%",
+                    minWidth: 0,
+                    overflow: truncate ? "hidden" : undefined,
                     height: 24,
                     padding: "0 8px",
                     borderRadius: 2,
@@ -93,6 +111,8 @@ export function MetaBadge({
                 alignItems: "center",
                 gap: 6,
                 maxWidth: "100%",
+                minWidth: 0,
+                overflow: truncate ? "hidden" : undefined,
                 height: 24,
                 padding: "0 8px",
                 borderRadius: 2,

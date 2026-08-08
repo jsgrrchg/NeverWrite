@@ -3999,7 +3999,7 @@ export function Editor({
 
     const activeLocation = activeTabInfo
         ? getNoteLocation(activeTabInfo.noteId)
-        : { parent: "" };
+        : { parentSegments: [] };
     const addWordToSpellcheckDictionary = async (word: string) => {
         await useSpellcheckStore
             .getState()
@@ -4257,7 +4257,7 @@ export function Editor({
                         onTitleChange={applyTitleChange}
                         titleInputRef={titleInputRef}
                         onTitleContextMenu={handleTitleContextMenu}
-                        locationParent={activeLocation.parent}
+                        locationSegments={activeLocation.parentSegments}
                         frontmatterRaw={activeFrontmatter}
                         onFrontmatterChange={applyFrontmatterChange}
                         propertiesExpanded={propertiesExpanded}
