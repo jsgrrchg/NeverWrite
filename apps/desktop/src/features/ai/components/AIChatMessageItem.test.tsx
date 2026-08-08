@@ -596,7 +596,7 @@ describe("AIChatMessageItem user image attachments", () => {
 });
 
 describe("AIChatMessageItem plan message", () => {
-    it("renders the plan as a collapsible panel with done status", () => {
+    it("renders completed plan entries without a status badge", () => {
         renderMessage({
             id: "plan:1",
             role: "assistant",
@@ -620,7 +620,7 @@ describe("AIChatMessageItem plan message", () => {
 
         const button = screen.getByRole("button", { name: /plan/i });
         expect(button).toHaveAttribute("aria-expanded", "true");
-        expect(screen.getByText("All Done")).toBeInTheDocument();
+        expect(screen.queryByText("All Done")).not.toBeInTheDocument();
         expect(screen.getByText("Review state")).toHaveStyle(
             "text-decoration: line-through",
         );

@@ -845,33 +845,6 @@ function ToolMessage({
 
 const PLAN_DONE_COLOR = "#84cc16";
 
-type PlanTone = "done" | "active" | "planned" | "draft";
-
-function getPlanTone(entries: readonly AIPlanEntry[]): PlanTone {
-    const completedCount = entries.filter(
-        (entry) => entry.status === "completed",
-    ).length;
-    if (entries.length === 0) return "draft";
-    if (completedCount === entries.length) return "done";
-    if (
-        completedCount > 0 ||
-        entries.some((entry) => entry.status === "in_progress")
-    ) {
-        return "active";
-    }
-    return "planned";
-}
-
-const PLAN_TONE_PRESENTATION: Record<
-    PlanTone,
-    { color: string; label: string }
-> = {
-    done: { color: PLAN_DONE_COLOR, label: "All Done" },
-    active: { color: "var(--accent)", label: "In Progress" },
-    planned: { color: "var(--text-secondary)", label: "Planned" },
-    draft: { color: "var(--text-secondary)", label: "Draft" },
-};
-
 function getPlanEntryColor(status: AIPlanEntry["status"]) {
     if (status === "completed") return PLAN_DONE_COLOR;
     if (status === "in_progress") return "var(--accent)";
@@ -901,8 +874,6 @@ export function PlanMessage({
     const completedCount = entries.filter(
         (entry) => entry.status === "completed",
     ).length;
-    const tone = getPlanTone(entries);
-    const tonePresentation = PLAN_TONE_PRESENTATION[tone];
     const title = message.title ?? "Plan";
     const currentEntry =
         entries.find((entry) => entry.status === "in_progress") ??
@@ -984,21 +955,6 @@ export function PlanMessage({
                     >
                         {expanded ? title : collapsedTitle}
                     </span>
-                    {expanded ? (
-                        <span
-                            className="shrink-0 rounded-full"
-                            data-plan-tone={tone}
-                            style={{
-                                background: `color-mix(in srgb, ${tonePresentation.color} 16%, transparent)`,
-                                color: tonePresentation.color,
-                                fontSize: "0.7em",
-                                fontWeight: 500,
-                                padding: "2px 8px",
-                            }}
-                        >
-                            {tonePresentation.label}
-                        </span>
-                    ) : null}
                 </button>
                 {onDismiss ? (
                     <button
