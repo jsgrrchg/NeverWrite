@@ -956,6 +956,21 @@ export function PlanMessage({
                         {expanded ? title : collapsedTitle}
                     </span>
                 </button>
+                {!expanded && entries.length > 0 ? (
+                    <span
+                        className="shrink-0"
+                        data-plan-collapsed-progress="true"
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.7em",
+                            fontVariantNumeric: "tabular-nums",
+                            lineHeight: 1,
+                            opacity: 0.6,
+                        }}
+                    >
+                        {completedCount}/{entries.length}
+                    </span>
+                ) : null}
                 {onDismiss ? (
                     <button
                         type="button"

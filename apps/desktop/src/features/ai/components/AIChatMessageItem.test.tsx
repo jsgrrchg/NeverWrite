@@ -666,6 +666,10 @@ describe("AIChatMessageItem plan message", () => {
         expect(screen.queryByText("Inspect")).not.toBeInTheDocument();
         expect(screen.queryByText("Summary")).not.toBeInTheDocument();
         expect(screen.queryByText("In Progress")).not.toBeInTheDocument();
+        expect(screen.getByText("1/2")).toHaveAttribute(
+            "data-plan-collapsed-progress",
+            "true",
+        );
 
         fireEvent.click(button);
 
