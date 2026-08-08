@@ -4766,15 +4766,14 @@ async fn acp_child_exit_message_with_stderr(
     config_invalid: &AtomicBool,
 ) -> String {
     let message = acp_child_exit_message(status);
-    match stderr_task.take() {
-        Some(mut task) => match tokio::time::timeout(ACP_STDERR_DRAIN_TIMEOUT, &mut task).await {
+    if let Some(mut task) = stderr_task.take() {
+        match tokio::time::timeout(ACP_STDERR_DRAIN_TIMEOUT, &mut task).await {
             Ok(_) => {}
             Err(_) => {
                 task.abort();
                 let _ = task.await;
             }
-        },
-        None => {}
+        }
     }
     append_acp_stderr_diagnostic(message, config_invalid.load(Ordering::Relaxed))
 }
