@@ -10,6 +10,7 @@ import {
     createCodexRuntimeBundlePlan,
     envSuffixForTarget,
     executableNameForTarget,
+    universalMacLipoVerifyArgs,
     validateCodexRuntimeBundleArchitectures,
     validateCodexRuntimeBundleInputs,
 } from "./stage-electron-sidecar-helpers.mjs";
@@ -522,7 +523,7 @@ async function verifyUniversalBinary(filePath, description) {
     try {
         await run(
             "lipo",
-            ["-verify_arch", "arm64", "x86_64", filePath],
+            universalMacLipoVerifyArgs(filePath),
             appRoot,
         );
     } catch (error) {

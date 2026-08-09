@@ -6,6 +6,7 @@ import {
     createCodexRuntimeBundlePlan,
     detectExecutableArchitecture,
     executableNameForTarget,
+    universalMacLipoVerifyArgs,
     validateCodexRuntimeBundleArchitectures,
     validateCodexRuntimeBundleInputs,
 } from "./stage-electron-sidecar-helpers.mjs";
@@ -52,6 +53,15 @@ test("derives runtime binary names from the target platform", () => {
         ),
         "codex-code-mode-host.exe",
     );
+});
+
+test("places the universal input before the lipo verification command", () => {
+    assert.deepEqual(universalMacLipoVerifyArgs("/build/runtime"), [
+        "/build/runtime",
+        "-verify_arch",
+        "arm64",
+        "x86_64",
+    ]);
 });
 
 test("detects the supported executable architectures", () => {

@@ -47,6 +47,10 @@ export function executableNameForTarget(baseName, targetTriple) {
     return targetTriple.includes("windows") ? `${baseName}.exe` : baseName;
 }
 
+export function universalMacLipoVerifyArgs(filePath) {
+    return [filePath, "-verify_arch", "arm64", "x86_64"];
+}
+
 export function detectExecutableArchitecture(header) {
     if (!Buffer.isBuffer(header) || header.length < 20) {
         return null;
