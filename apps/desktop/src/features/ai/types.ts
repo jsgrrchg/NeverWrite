@@ -641,6 +641,7 @@ export interface AIToolActivityPayload {
     title: string;
     kind: string;
     status: string;
+    started_at_ms?: number | null;
     action?: AIToolActivityAction | null;
     target?: string | null;
     summary?: string | null;
@@ -659,6 +660,7 @@ export interface AIStatusEventPayload {
     kind: string;
     status: string;
     title: string;
+    started_at_ms?: number | null;
     detail?: string | null;
     emphasis: string;
     tool_action?: AIToolActivityAction | null;

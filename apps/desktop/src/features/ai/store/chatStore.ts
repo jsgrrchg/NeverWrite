@@ -2472,7 +2472,7 @@ function createStatusMessage(payload: AIStatusEventPayload): AIChatMessage {
         kind: "status",
         title: payload.title,
         content: payload.detail ?? payload.title,
-        timestamp: Date.now(),
+        timestamp: activityStartedAt(payload.started_at_ms),
         meta: {
             status_event: payload.kind,
             status: payload.status,
@@ -2572,6 +2572,7 @@ function upsertSessionStatusMessage(
     };
 
     return upsertSessionMessage(nextSession, nextMessage, {
+        preserveTimestamp: true,
         preserveWorkCycleId: true,
     });
 }
@@ -2610,6 +2611,14 @@ function createImageGenerationMessage(
             error: payload.error ?? null,
         },
     };
+}
+
+function activityStartedAt(startedAtMs: number | null | undefined): number {
+    return typeof startedAtMs === "number" &&
+        Number.isFinite(startedAtMs) &&
+        startedAtMs > 0
+        ? startedAtMs
+        : Date.now();
 }
 
 function createPlanMessage(payload: AIPlanUpdatePayload): AIChatMessage {
@@ -10070,7 +10079,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
             flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
-            const eventTimestamp = Date.now();
+            const eventTimestamp = activityStartedAt(payload.started_at_ms);
             let workCycleId: string | null | undefined = null;
             let didConsolidate = false;
 

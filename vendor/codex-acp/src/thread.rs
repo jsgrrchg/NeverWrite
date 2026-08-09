@@ -127,6 +127,7 @@ const NEVERWRITE_PLAN_TITLE_KEY: &str = "neverwritePlanTitle";
 const NEVERWRITE_PLAN_DETAIL_KEY: &str = "neverwritePlanDetail";
 const NEVERWRITE_DIFF_PREVIOUS_PATH_KEY: &str = "neverwritePreviousPath";
 const NEVERWRITE_DIFF_HUNKS_KEY: &str = "neverwriteHunks";
+const NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY: &str = "neverwriteActivityStartedAtMs";
 const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
 const NEVERWRITE_IMAGE_EVENT_ID_PREFIX: &str = "neverwrite:image:";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
@@ -935,6 +936,15 @@ fn neverwrite_status_meta(kind: &str, emphasis: &str) -> Meta {
     meta.insert(NEVERWRITE_STATUS_KIND_KEY.to_string(), json!(kind));
     meta.insert(NEVERWRITE_STATUS_EMPHASIS_KEY.to_string(), json!(emphasis));
     meta
+}
+
+fn neverwrite_activity_started_at_meta(started_at_ms: Option<i64>) -> Option<Meta> {
+    started_at_ms.filter(|value| *value > 0).map(|value| {
+        Meta::from_iter([(
+            NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY.to_string(),
+            json!(value),
+        )])
+    })
 }
 
 fn neverwrite_image_generation_meta() -> Meta {
@@ -2008,7 +2018,12 @@ impl PromptState {
         client.send_tool_call(tool_call).await;
     }
 
-    async fn complete_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+    async fn complete_turn_item(
+        &mut self,
+        client: &SessionClient,
+        item: &TurnItem,
+        started_at_ms: Option<i64>,
+    ) {
         if is_self_referential_subagent_activity(item, client.thread_id) {
             return;
         }
@@ -2056,9 +2071,11 @@ impl PromptState {
                     fields = fields.content(vec![ToolCallContent::Content(Content::new(detail))]);
                 }
             }
-            client
-                .send_tool_call_update(ToolCallUpdate::new(call_id, fields))
-                .await;
+            let mut update = ToolCallUpdate::new(call_id, fields);
+            if let Some(meta) = neverwrite_activity_started_at_meta(started_at_ms) {
+                update = update.meta(meta);
+            }
+            client.send_tool_call_update(update).await;
         } else {
             let mut tool_call = ToolCall::new(call_id, title)
                 .kind(if projection == TurnItemProjection::Status {
@@ -2074,6 +2091,10 @@ impl PromptState {
             if projection == TurnItemProjection::Status {
                 tool_call = tool_call.meta(neverwrite_status_meta("item_activity", "neutral"));
             }
+            merge_tool_call_meta(
+                &mut tool_call.meta,
+                neverwrite_activity_started_at_meta(started_at_ms),
+            );
             client.send_tool_call(tool_call).await;
         }
     }
@@ -2662,6 +2683,7 @@ impl PromptState {
                 thread_id,
                 turn_id,
                 item,
+                started_at_ms,
                 ..
             }) => {
                 info!("Item completed: thread_id={}, turn_id={}, item={:?}", thread_id, turn_id, item);
@@ -2704,7 +2726,8 @@ impl PromptState {
                         .await;
                     }
                     other_item => {
-                        self.complete_turn_item(client, &other_item).await;
+                        self.complete_turn_item(client, &other_item, started_at_ms)
+                            .await;
                         // Notify the client when context compaction completes so users see
                         // a status message rather than silence during /compact.
                         if matches!(other_item, TurnItem::ContextCompaction(..)) {
@@ -2716,18 +2739,52 @@ impl PromptState {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 last_agent_message,
                 turn_id,
+                error,
                 ..
             }) => {
-                info!(
-                    "Task {turn_id} completed successfully after {} events. Last agent message: {last_agent_message:?}",
-                    self.event_count
-                );
-                client
-                    .send_turn_lifecycle(CODEX_ACP_TURN_COMPLETE_EVENT_TYPE, Some(&turn_id))
-                    .await;
                 self.detach_pending_interactions();
-                if let Some(response_tx) = self.response_tx.take() {
-                    response_tx.send(Ok(StopReason::EndTurn)).ok();
+                if let Some(turn_error) = error {
+                    error!(
+                        "Task {turn_id} failed after {} events: {} {:?}",
+                        self.event_count, turn_error.message, turn_error.codex_error_info
+                    );
+                    self.send_status_tool_call(
+                        client,
+                        StatusToolCall {
+                            call_id: format!(
+                                "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}turn_error:{turn_id}"
+                            )
+                            .into(),
+                            kind: "turn_error",
+                            title: "Turn failed".to_string(),
+                            detail: Some(turn_error.message.clone()),
+                            emphasis: "error",
+                            status: ToolCallStatus::Failed,
+                        },
+                    )
+                    .await;
+                    client
+                        .send_turn_lifecycle(CODEX_ACP_TURN_COMPLETE_EVENT_TYPE, Some(&turn_id))
+                        .await;
+                    if let Some(response_tx) = self.response_tx.take() {
+                        response_tx
+                            .send(Err(Error::internal_error().data(json!({
+                                "message": turn_error.message,
+                                "codex_error_info": turn_error.codex_error_info,
+                            }))))
+                            .ok();
+                    }
+                } else {
+                    info!(
+                        "Task {turn_id} completed successfully after {} events. Last agent message: {last_agent_message:?}",
+                        self.event_count
+                    );
+                    client
+                        .send_turn_lifecycle(CODEX_ACP_TURN_COMPLETE_EVENT_TYPE, Some(&turn_id))
+                        .await;
+                    if let Some(response_tx) = self.response_tx.take() {
+                        response_tx.send(Ok(StopReason::EndTurn)).ok();
+                    }
                 }
             }
             EventMsg::StreamError(StreamErrorEvent {
@@ -2921,6 +2978,37 @@ impl PromptState {
                 client.send_agent_text("Context compacted".to_string()).await;
             }
 
+            EventMsg::RawResponseCompleted(event) => {
+                // This event reports exact usage for one Responses API completion, while ACP v1
+                // exposes only accumulated context usage. TokenCount remains the authoritative
+                // projection so per-response usage cannot overwrite or duplicate that total.
+                info!(
+                    "Raw response completed without ACP projection: response_id={}",
+                    event.response_id
+                );
+            }
+            EventMsg::EnvironmentConnected(event) => {
+                // NeverWrite does not expose remote runtime environments yet. Treat connection
+                // state as transport-only so it cannot create fictitious transcript activity.
+                info!(
+                    "Runtime environment connected without ACP projection: environment_id={}",
+                    event.environment_id
+                );
+            }
+            EventMsg::EnvironmentDisconnected(event) => {
+                // See EnvironmentConnected: environment transport state is intentionally outside
+                // the current ACP v1 product contract.
+                info!(
+                    "Runtime environment disconnected without ACP projection: environment_id={}",
+                    event.environment_id
+                );
+            }
+            EventMsg::RawResponseItem(..) => {
+                // Canonical ItemStarted/ItemCompleted and dedicated tool events own activity
+                // projection. Re-projecting raw provider items would create a second activity for
+                // the same protocol call ID.
+            }
+
             // Projected before the main match so parent sessions get compact breadcrumbs.
             EventMsg::CollabAgentSpawnBegin(..)
             | EventMsg::CollabAgentSpawnEnd(..)
@@ -2941,10 +3029,6 @@ impl PromptState {
             | EventMsg::ThreadRolledBack(..)
             // we already have a way to diff the turn, so ignore
             | EventMsg::TurnDiff(..)
-            | EventMsg::RawResponseItem(..)
-            | EventMsg::RawResponseCompleted(..)
-            | EventMsg::EnvironmentConnected(..)
-            | EventMsg::EnvironmentDisconnected(..)
             | EventMsg::ThreadSettingsApplied(..)
             | EventMsg::SessionConfigured(..)
             | EventMsg::RealtimeConversationStarted(..)
@@ -6578,6 +6662,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_permission_response_cannot_resolve_a_reused_call_id() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = oneshot::channel();
+        let mut state = PromptState::new(
+            "submission-1".to_string(),
+            thread.clone(),
+            resolution_tx,
+            response_tx,
+        );
+        let request_key = exec_request_key("shared-call");
+        state.pending_permission_interactions.insert(
+            request_key.clone(),
+            PendingPermissionInteraction {
+                id: 2,
+                request: PendingPermissionRequest::Exec {
+                    approval_id: "new-approval".to_string(),
+                    turn_id: "new-turn".to_string(),
+                    option_map: HashMap::from([(
+                        "denied".to_string(),
+                        ReviewDecision::Denied {
+                            rejection: ACP_COMMAND_REJECTION_REASON.to_string(),
+                        },
+                    )]),
+                },
+            },
+        );
+
+        state
+            .handle_permission_request_resolved(
+                &session_client,
+                1,
+                request_key.clone(),
+                Ok(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("denied")),
+                )),
+            )
+            .await?;
+        assert!(thread.ops.lock().unwrap().is_empty());
+        assert!(
+            state
+                .pending_permission_interactions
+                .contains_key(&request_key)
+        );
+
+        state
+            .handle_permission_request_resolved(
+                &session_client,
+                2,
+                request_key,
+                Ok(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("denied")),
+                )),
+            )
+            .await?;
+
+        {
+            let ops = thread.ops.lock().unwrap();
+            assert!(matches!(
+                ops.as_slice(),
+                [Op::ExecApproval {
+                    id,
+                    turn_id: Some(turn_id),
+                    decision: ReviewDecision::Denied { rejection },
+                }] if id == "new-approval"
+                    && turn_id == "new-turn"
+                    && rejection == ACP_COMMAND_REJECTION_REASON
+            ));
+        }
+
+        let cwd = std::env::current_dir()?;
+        state
+            .exec_command_end(
+                &session_client,
+                ExecCommandEndEvent {
+                    call_id: "shared-call".to_string(),
+                    plugin_id: None,
+                    script_path: None,
+                    process_id: None,
+                    turn_id: "new-turn".to_string(),
+                    completed_at_ms: 1,
+                    command: vec!["blocked-command".to_string()],
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)?,
+                    parsed_cmd: vec![],
+                    source: Default::default(),
+                    interaction_input: None,
+                    stdout: String::new(),
+                    stderr: ACP_COMMAND_REJECTION_REASON.to_string(),
+                    aggregated_output: ACP_COMMAND_REJECTION_REASON.to_string(),
+                    exit_code: -1,
+                    duration: Duration::ZERO,
+                    formatted_output: ACP_COMMAND_REJECTION_REASON.to_string(),
+                    status: ExecCommandStatus::Declined,
+                },
+            )
+            .await;
+        let notifications = client.notifications.lock().unwrap();
+        let rejected_call = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(call) if call.tool_call_id.0.as_ref() == "shared-call" => {
+                    Some(call)
+                }
+                _ => None,
+            })
+            .expect("runtime rejection should remain visible on the denied tool call");
+        assert_eq!(rejected_call.status, ToolCallStatus::Failed);
+        assert!(matches!(
+            rejected_call.content.first(),
+            Some(ToolCallContent::Content(Content {
+                content: ContentBlock::Text(TextContent { text, .. }),
+                ..
+            })) if text == ACP_COMMAND_REJECTION_REASON
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_prompt() -> anyhow::Result<()> {
         let (session_id, client, thread, message_tx, local_set) = setup(vec![]).await?;
         let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
@@ -7665,7 +7870,7 @@ mod tests {
                     .content(vec![ToolCallContent::Content(Content::new("Rust ACP"))]),
             )
             .await;
-        state.complete_turn_item(&session_client, &item).await;
+        state.complete_turn_item(&session_client, &item, None).await;
 
         let notifications = client.notifications.lock().unwrap();
         let call_count = notifications
@@ -7689,6 +7894,215 @@ mod tests {
         assert_eq!(updates[0].fields.content.as_ref().map(Vec::len), Some(1));
         assert_eq!(updates[1].fields.status, Some(ToolCallStatus::Completed));
         assert!(updates[1].fields.content.is_none());
+    }
+
+    #[tokio::test]
+    async fn sleep_extension_uses_one_stable_activity_and_restored_start_time() {
+        let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
+        let thread_id = ThreadId::new();
+        let live_item = TurnItem::Extension(ExtensionItem::Sleep(
+            codex_extension_items::sleep::SleepItem {
+                id: "sleep-live".to_string(),
+                duration_ms: 250,
+            },
+        ));
+
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: live_item.clone(),
+                    started_at_ms: 1_000,
+                }),
+            )
+            .await;
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: live_item,
+                    started_at_ms: Some(1_000),
+                    completed_at_ms: 1_250,
+                }),
+            )
+            .await;
+
+        let restored_item = TurnItem::Extension(ExtensionItem::Sleep(
+            codex_extension_items::sleep::SleepItem {
+                id: "sleep-restored".to_string(),
+                duration_ms: 500,
+            },
+        ));
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-2".to_string(),
+                    item: restored_item,
+                    started_at_ms: Some(2_000),
+                    completed_at_ms: 2_500,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let live_calls = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(call)
+                    if call.tool_call_id.0.as_ref() == "neverwrite:status:item:sleep-live" =>
+                {
+                    Some(call)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(live_calls.len(), 1, "notifications={notifications:?}");
+        assert_eq!(live_calls[0].title, "Waiting");
+        assert_eq!(live_calls[0].status, ToolCallStatus::InProgress);
+        assert!(notifications.iter().any(|notification| {
+            matches!(
+                &notification.update,
+                SessionUpdate::ToolCallUpdate(update)
+                    if update.tool_call_id.0.as_ref()
+                        == "neverwrite:status:item:sleep-live"
+                        && update.fields.status == Some(ToolCallStatus::Completed)
+            )
+        }));
+
+        let restored = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(call)
+                    if call.tool_call_id.0.as_ref() == "neverwrite:status:item:sleep-restored" =>
+                {
+                    Some(call)
+                }
+                _ => None,
+            })
+            .expect("completed-only sleep should materialize one activity");
+        assert_eq!(restored.status, ToolCallStatus::Completed);
+        assert_eq!(
+            restored
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get(NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY)),
+            Some(&json!(2_000))
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_metadata_keeps_the_protocol_call_identity_without_duplicates() {
+        use codex_protocol::items::{McpToolCallItem, McpToolCallStatus};
+
+        let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
+        let invocation = McpInvocation {
+            server: "calendar".to_string(),
+            tool: "create_event".to_string(),
+            arguments: Some(json!({"title": "Runtime review"})),
+        };
+        let item = TurnItem::McpToolCall(McpToolCallItem {
+            id: "mcp-call-1".to_string(),
+            server: invocation.server.clone(),
+            tool: invocation.tool.clone(),
+            arguments: invocation.arguments.clone().unwrap_or_default(),
+            connector_id: Some("calendar-connector".to_string()),
+            mcp_app_resource_uri: Some("app://calendar".to_string()),
+            link_id: Some("link-1".to_string()),
+            app_name: Some("Calendar".to_string()),
+            action_name: Some("Create event".to_string()),
+            plugin_id: Some("calendar@openai".to_string()),
+            read_only_hint: Some(false),
+            status: McpToolCallStatus::InProgress,
+            result: None,
+            error: None,
+            duration: None,
+        });
+        let thread_id = ThreadId::new();
+
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item,
+                    started_at_ms: 1,
+                }),
+            )
+            .await;
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
+                    call_id: "mcp-call-1".to_string(),
+                    invocation: invocation.clone(),
+                    connector_id: Some("calendar-connector".to_string()),
+                    mcp_app_resource_uri: Some("app://calendar".to_string()),
+                    link_id: Some("link-1".to_string()),
+                    app_name: Some("Calendar".to_string()),
+                    action_name: Some("Create event".to_string()),
+                    plugin_id: Some("calendar@openai".to_string()),
+                    read_only_hint: Some(false),
+                }),
+            )
+            .await;
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::McpToolCallEnd(McpToolCallEndEvent {
+                    call_id: "mcp-call-1".to_string(),
+                    invocation,
+                    connector_id: Some("calendar-connector".to_string()),
+                    mcp_app_resource_uri: Some("app://calendar".to_string()),
+                    link_id: Some("link-1".to_string()),
+                    app_name: Some("Calendar".to_string()),
+                    action_name: Some("Create event".to_string()),
+                    plugin_id: Some("calendar@openai".to_string()),
+                    read_only_hint: Some(false),
+                    duration: Duration::from_millis(5),
+                    result: Err("calendar policy denied the request".to_string()),
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let calls = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(call) if call.tool_call_id.0.as_ref() == "mcp-call-1" => {
+                    Some(call)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 1, "notifications={notifications:?}");
+        assert_eq!(calls[0].title, "Calling MCP tool");
+        assert_eq!(calls[0].kind, ToolKind::Other);
+        assert!(calls[0].locations.is_empty());
+        assert!(notifications.iter().any(|notification| {
+            matches!(
+                &notification.update,
+                SessionUpdate::ToolCallUpdate(update)
+                    if update.tool_call_id.0.as_ref() == "mcp-call-1"
+                        && update.fields.title.as_deref()
+                            == Some("Tool: calendar/create_event")
+                        && update.fields.kind == Some(ToolKind::Other)
+            )
+        }));
+        assert!(notifications.iter().any(|notification| {
+            matches!(
+                &notification.update,
+                SessionUpdate::ToolCallUpdate(update)
+                    if update.tool_call_id.0.as_ref() == "mcp-call-1"
+                        && update.fields.status == Some(ToolCallStatus::Failed)
+            )
+        }));
     }
 
     #[tokio::test]
@@ -7859,6 +8273,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turn_complete_error_fails_the_prompt_and_keeps_the_reason_visible() {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, response_rx) = oneshot::channel();
+        let mut state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "turn-failed".to_string(),
+                    last_agent_message: None,
+                    error: Some(ErrorEvent {
+                        message: "The upstream response was rejected".to_string(),
+                        codex_error_info: None,
+                    }),
+                    started_at: Some(10),
+                    completed_at: Some(11),
+                    duration_ms: Some(1_000),
+                    time_to_first_token_ms: None,
+                }),
+            )
+            .await;
+
+        let prompt_error = response_rx
+            .await
+            .expect("turn completion should resolve the prompt")
+            .expect_err("terminal turn errors must not become EndTurn");
+        assert_eq!(
+            prompt_error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("message"))
+                .and_then(serde_json::Value::as_str),
+            Some("The upstream response was rejected")
+        );
+
+        let notifications = client.notifications.lock().unwrap();
+        let failed_status = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(call)
+                    if call.tool_call_id.0.as_ref()
+                        == "neverwrite:status:turn_error:turn-failed" =>
+                {
+                    Some(call)
+                }
+                _ => None,
+            })
+            .expect("turn failure should remain visible in the activity timeline");
+        assert_eq!(failed_status.status, ToolCallStatus::Failed);
+        assert!(matches!(
+            failed_status.content.first(),
+            Some(ToolCallContent::Content(Content {
+                content: ContentBlock::Text(TextContent { text, .. }),
+                ..
+            })) if text == "The upstream response was rejected"
+        ));
+    }
+
+    #[tokio::test]
+    async fn turn_abort_remains_cancellation_instead_of_failure() -> anyhow::Result<()> {
+        let session_id = SessionId::new("test");
+        let client = Arc::new(StubClient::new());
+        let session_client = SessionClient::with_client(session_id, client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        let (response_tx, response_rx) = oneshot::channel();
+        let mut state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
+
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::TurnAborted(TurnAbortedEvent {
+                    turn_id: Some("turn-cancelled".to_string()),
+                    reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                    started_at: Some(10),
+                    completed_at: Some(11),
+                    duration_ms: Some(1_000),
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            response_rx
+                .await
+                .expect("turn abort should resolve the prompt")?,
+            StopReason::Cancelled
+        );
+        assert!(
+            !client
+                .notifications
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|notification| {
+                    matches!(
+                        &notification.update,
+                        SessionUpdate::ToolCall(call) if call.status == ToolCallStatus::Failed
+                    )
+                })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn token_count_projects_dynamic_context_window_usage() -> anyhow::Result<()> {
         let session_id = SessionId::new("test");
         let client = Arc::new(StubClient::new());
@@ -7907,6 +8440,55 @@ mod tests {
         assert_eq!(usage.size, 272_000);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn raw_completion_and_environment_events_do_not_mutate_prompt_projection() {
+        let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::TokenCount(TokenCountEvent {
+                    info: Some(TokenUsageInfo {
+                        total_token_usage: TokenUsage::default(),
+                        last_token_usage: TokenUsage::default(),
+                        model_context_window: Some(128_000),
+                    }),
+                    rate_limits: None,
+                }),
+            )
+            .await;
+        let notification_count = client.notifications.lock().unwrap().len();
+
+        for event in [
+            EventMsg::RawResponseCompleted(codex_protocol::protocol::RawResponseCompletedEvent {
+                response_id: "response-1".to_string(),
+                token_usage: Some(TokenUsage::default()),
+            }),
+            EventMsg::EnvironmentConnected(codex_protocol::protocol::EnvironmentConnectionEvent {
+                environment_id: "environment-1".to_string(),
+            }),
+            EventMsg::EnvironmentDisconnected(
+                codex_protocol::protocol::EnvironmentConnectionEvent {
+                    environment_id: "environment-1".to_string(),
+                },
+            ),
+        ] {
+            state.handle_event(&session_client, event).await;
+        }
+
+        let notifications = client.notifications.lock().unwrap();
+        assert_eq!(notifications.len(), notification_count);
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| {
+                    matches!(notification.update, SessionUpdate::UsageUpdate(_))
+                })
+                .count(),
+            1
+        );
+        assert!(state.response_tx.is_some());
     }
 
     #[tokio::test]
@@ -9969,7 +10551,7 @@ mod tests {
                             })
                             .unwrap();
                     }
-                    Op::ThreadSettings { .. } => {}
+                    Op::ThreadSettings { .. } | Op::ExecApproval { .. } => {}
                     _ => {
                         unimplemented!()
                     }

@@ -92,6 +92,7 @@ const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
 const ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
+const NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY: &str = "neverwriteActivityStartedAtMs";
 const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
 const NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX: &str = "neverwrite:status:turn:";
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
@@ -6538,6 +6539,7 @@ fn map_tool_call(
         title: tool_call.title.clone(),
         kind: tool_kind_label(&tool_call.kind),
         status: tool_status_label(&tool_call.status),
+        started_at_ms: activity_started_at_ms(tool_call.meta.as_ref()),
         action,
         target: tool_call
             .locations
@@ -7259,6 +7261,7 @@ fn map_status_event(
             .to_string(),
         status: tool_status_label(&tool_call.status),
         title: tool_call.title.clone(),
+        started_at_ms: activity_started_at_ms(Some(meta)),
         detail: summarize_tool_content(tool_call),
         emphasis: meta
             .get(ACP_STATUS_EMPHASIS_KEY)
@@ -7267,6 +7270,12 @@ fn map_status_event(
             .to_string(),
         tool_action,
     })
+}
+
+fn activity_started_at_ms(meta: Option<&Meta>) -> Option<i64> {
+    meta.and_then(|meta| meta.get(NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY))
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
 }
 
 fn is_suppressed_status_title(title: &str) -> bool {
@@ -16749,6 +16758,45 @@ mod tests {
 
         assert_eq!(payload.summary.as_deref(), Some("README.md"));
         assert!(payload.diffs.is_none());
+    }
+
+    #[test]
+    fn activity_payloads_preserve_restored_runtime_start_times() {
+        let tool_call = ToolCall::new(ToolCallId::from("tool-restored"), "Read README.md")
+            .kind(ToolKind::Read)
+            .status(ToolCallStatus::Completed)
+            .meta(Meta::from_iter([(
+                NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY.to_string(),
+                json!(1_234_567_i64),
+            )]));
+        let tool_payload = map_tool_call("session-1", &tool_call, None, None, vec![]);
+        assert_eq!(tool_payload.started_at_ms, Some(1_234_567));
+
+        let status_call = ToolCall::new(
+            ToolCallId::from("neverwrite:status:item:sleep-restored"),
+            "Waiting",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::Completed)
+        .meta(Meta::from_iter([
+            (ACP_STATUS_EVENT_TYPE_KEY.to_string(), json!("status")),
+            (ACP_STATUS_KIND_KEY.to_string(), json!("item_activity")),
+            (
+                NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY.to_string(),
+                json!(2_345_678_i64),
+            ),
+        ]));
+        let status_payload = map_status_event("session-1", &status_call, None)
+            .expect("status metadata should produce a status payload");
+        assert_eq!(status_payload.started_at_ms, Some(2_345_678));
+
+        assert_eq!(
+            activity_started_at_ms(Some(&Meta::from_iter([(
+                NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY.to_string(),
+                json!(0),
+            )]))),
+            None
+        );
     }
 
     #[test]

@@ -6312,6 +6312,56 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("uses restored activity start times without changing them on updates", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "restored-tool",
+            title: "Read README.md",
+            kind: "read",
+            status: "completed",
+            summary: "README.md",
+            started_at_ms: 1_234_567,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "neverwrite:status:item:sleep-restored",
+            kind: "item_activity",
+            status: "in_progress",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 2_345_678,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "neverwrite:status:item:sleep-restored",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 9_999_999,
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(
+            messages.find((message) => message.id === "tool:restored-tool")
+                ?.timestamp,
+        ).toBe(1_234_567);
+        const sleepMessages = messages.filter(
+            (message) =>
+                message.id ===
+                "status:neverwrite:status:item:sleep-restored",
+        );
+        expect(sleepMessages).toHaveLength(1);
+        expect(sleepMessages[0]?.timestamp).toBe(2_345_678);
+        expect(sleepMessages[0]?.meta?.status).toBe("completed");
+    });
+
     it("keeps assistant text segments around tool activity in runtime order", async () => {
         await useChatStore.getState().initialize();
 

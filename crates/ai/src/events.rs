@@ -93,6 +93,8 @@ pub struct AiToolActivityPayload {
     pub kind: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<AiToolActivityActionPayload>,
     pub target: Option<String>,
     pub summary: Option<String>,
@@ -107,6 +109,8 @@ pub struct AiStatusEventPayload {
     pub kind: String,
     pub status: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
     pub detail: Option<String>,
     pub emphasis: String,
     #[serde(skip_serializing_if = "Option::is_none")]
