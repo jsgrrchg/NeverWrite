@@ -2466,17 +2466,19 @@ function markAllMessagesComplete(session: AIChatSession) {
 }
 
 function createStatusMessage(payload: AIStatusEventPayload): AIChatMessage {
+    const activityTimestamp = activityStartedAt(payload.started_at_ms);
     return {
         id: `status:${payload.event_id}`,
         role: "system",
         kind: "status",
         title: payload.title,
         content: payload.detail ?? payload.title,
-        timestamp: activityStartedAt(payload.started_at_ms),
+        timestamp: activityTimestamp.timestamp,
         meta: {
             status_event: payload.kind,
             status: payload.status,
             emphasis: payload.emphasis,
+            activity_timestamp_source: activityTimestamp.source,
         },
         toolAction: payload.tool_action ?? null,
     };
@@ -2571,10 +2573,7 @@ function upsertSessionStatusMessage(
         workCycleId: nextSession.activeWorkCycleId,
     };
 
-    return upsertSessionMessage(nextSession, nextMessage, {
-        preserveTimestamp: true,
-        preserveWorkCycleId: true,
-    });
+    return upsertSessionActivityMessage(nextSession, nextMessage);
 }
 
 function isFailedImageGenerationStatus(status: string) {
@@ -2613,12 +2612,69 @@ function createImageGenerationMessage(
     };
 }
 
-function activityStartedAt(startedAtMs: number | null | undefined): number {
-    return typeof startedAtMs === "number" &&
+type ActivityTimestampSource = "backend" | "fallback";
+
+const ACTIVITY_TIMESTAMP_SOURCE_META_KEY = "activity_timestamp_source";
+
+function activityStartedAt(
+    startedAtMs: number | null | undefined,
+): { timestamp: number; source: ActivityTimestampSource } {
+    if (
+        typeof startedAtMs === "number" &&
         Number.isFinite(startedAtMs) &&
         startedAtMs > 0
-        ? startedAtMs
-        : Date.now();
+    ) {
+        return { timestamp: startedAtMs, source: "backend" };
+    }
+
+    return {
+        timestamp: Date.now(),
+        source: "fallback",
+    };
+}
+
+function messageActivityTimestampSource(
+    message: AIChatMessage,
+): ActivityTimestampSource | null {
+    const source = message.meta?.[ACTIVITY_TIMESTAMP_SOURCE_META_KEY];
+    return source === "backend" || source === "fallback" ? source : null;
+}
+
+function upsertSessionActivityMessage(
+    session: AIChatSession,
+    message: AIChatMessage,
+) {
+    const normalized = normalizeSessionTranscript(session);
+    const index = normalized.messageIndexById![message.id];
+
+    if (index == null) {
+        return appendSessionMessage(normalized, message);
+    }
+
+    return replaceSessionMessage(normalized, message.id, (currentMessage) => {
+        const currentSource = messageActivityTimestampSource(currentMessage);
+        const incomingSource = messageActivityTimestampSource(message);
+        const useIncomingTimestamp =
+            currentSource === "fallback" && incomingSource === "backend";
+        const selectedSource = useIncomingTimestamp
+            ? incomingSource
+            : currentSource;
+        const meta = { ...message.meta };
+        if (selectedSource) {
+            meta[ACTIVITY_TIMESTAMP_SOURCE_META_KEY] = selectedSource;
+        } else {
+            delete meta[ACTIVITY_TIMESTAMP_SOURCE_META_KEY];
+        }
+
+        return {
+            ...message,
+            timestamp: useIncomingTimestamp
+                ? message.timestamp
+                : currentMessage.timestamp,
+            workCycleId: currentMessage.workCycleId ?? message.workCycleId,
+            meta,
+        };
+    });
 }
 
 function createPlanMessage(payload: AIPlanUpdatePayload): AIChatMessage {
@@ -10079,7 +10135,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
             flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
-            const eventTimestamp = activityStartedAt(payload.started_at_ms);
+            const activityTimestamp = activityStartedAt(payload.started_at_ms);
+            const eventTimestamp = activityTimestamp.timestamp;
             let workCycleId: string | null | undefined = null;
             let didConsolidate = false;
 
@@ -10155,19 +10212,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         tool: payload.kind,
                         status: payload.status,
                         target: payload.target ?? null,
+                        activity_timestamp_source: activityTimestamp.source,
                     },
                 };
 
                 return {
                     sessionsById: {
                         ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
+                        [payload.session_id]: upsertSessionActivityMessage(
                             consolidated,
                             nextMessage,
-                            {
-                                preserveTimestamp: true,
-                                preserveWorkCycleId: true,
-                            },
                         ),
                     },
                     sessionOrder: touchSessionOrder(
