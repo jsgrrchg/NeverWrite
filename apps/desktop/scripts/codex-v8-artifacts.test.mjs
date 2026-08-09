@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+    CODEX_V8_ARTIFACT_PROFILE,
     createV8ArtifactPlan,
     fetchCodexV8Artifacts,
     parseV8ChecksumManifest,
@@ -14,8 +15,8 @@ import {
     resolveV8VersionFromLockfile,
 } from "./codex-v8-artifacts.mjs";
 
-const version = "149.2.0";
-const profile = "release";
+const version = "150.4.0";
+const profile = "ptrcomp_sandbox_release";
 const targetTriple = "aarch64-apple-darwin";
 const wrapperPath = path.join(
     process.cwd(),
@@ -88,7 +89,7 @@ version = "1.0.0"
 
 [[package]]
 name = "v8"
-version = "149.2.0"
+version = "150.4.0"
 source = "registry"
 `),
         ).toBe(version);
@@ -112,23 +113,23 @@ version = "150.4.0"
     });
 
     it.each([
-        ["aarch64-apple-darwin", "librusty_v8_release_aarch64-apple-darwin.a.gz"],
-        ["x86_64-apple-darwin", "librusty_v8_release_x86_64-apple-darwin.a.gz"],
+        ["aarch64-apple-darwin", "librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"],
+        ["x86_64-apple-darwin", "librusty_v8_ptrcomp_sandbox_release_x86_64-apple-darwin.a.gz"],
         [
             "aarch64-unknown-linux-gnu",
-            "librusty_v8_release_aarch64-unknown-linux-gnu.a.gz",
+            "librusty_v8_ptrcomp_sandbox_release_aarch64-unknown-linux-gnu.a.gz",
         ],
         [
             "x86_64-unknown-linux-gnu",
-            "librusty_v8_release_x86_64-unknown-linux-gnu.a.gz",
+            "librusty_v8_ptrcomp_sandbox_release_x86_64-unknown-linux-gnu.a.gz",
         ],
         [
             "aarch64-pc-windows-msvc",
-            "rusty_v8_release_aarch64-pc-windows-msvc.lib.gz",
+            "rusty_v8_ptrcomp_sandbox_release_aarch64-pc-windows-msvc.lib.gz",
         ],
         [
             "x86_64-pc-windows-msvc",
-            "rusty_v8_release_x86_64-pc-windows-msvc.lib.gz",
+            "rusty_v8_ptrcomp_sandbox_release_x86_64-pc-windows-msvc.lib.gz",
         ],
     ])("resolves artifact names for %s", (target, archiveName) => {
         const plan = createV8ArtifactPlan({
@@ -140,12 +141,25 @@ version = "150.4.0"
 
         expect(plan.archiveName).toBe(archiveName);
         expect(plan.bindingName).toBe(
-            `src_binding_release_${target}.rs`,
+            `src_binding_ptrcomp_sandbox_release_${target}.rs`,
         );
-        expect(plan.manifestName).toBe(`rusty_v8_release_${target}.sha256`);
+        expect(plan.manifestName).toBe(
+            `rusty_v8_ptrcomp_sandbox_release_${target}.sha256`,
+        );
         expect(plan.archiveUrl).toContain(
             `/rusty-v8-v${version}/${archiveName}`,
         );
+    });
+
+    it("uses the upstream pointer-compression sandbox profile by default", () => {
+        expect(CODEX_V8_ARTIFACT_PROFILE).toBe(profile);
+        expect(
+            createV8ArtifactPlan({
+                version,
+                targetTriple,
+                cacheRoot: testRoot,
+            }).profile,
+        ).toBe(profile);
     });
 });
 

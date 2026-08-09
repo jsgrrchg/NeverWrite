@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
-export const CODEX_V8_ARTIFACT_PROFILE = "release";
+export const CODEX_V8_ARTIFACT_PROFILE = "ptrcomp_sandbox_release";
 
 const appRoot = import.meta.url.startsWith("file:")
     ? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")

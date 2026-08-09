@@ -52,7 +52,7 @@ use codex_protocol::protocol::{
 };
 use codex_protocol::review_format::format_review_findings_block;
 use codex_protocol::{
-    ThreadId,
+    ResponseItemId, ThreadId,
     approvals::{ElicitationRequest, ElicitationRequestEvent},
     config_types::{ServiceTier, TrustLevel},
     dynamic_tools::{DynamicToolCallOutputContentItem, DynamicToolCallRequest},
@@ -667,6 +667,16 @@ const MCP_TOOL_APPROVAL_ALLOW_OPTION_ID: &str = "approved";
 const MCP_TOOL_APPROVAL_ALLOW_SESSION_OPTION_ID: &str = "approved-for-session";
 const MCP_TOOL_APPROVAL_ALLOW_ALWAYS_OPTION_ID: &str = "approved-always";
 const MCP_TOOL_APPROVAL_CANCEL_OPTION_ID: &str = "cancel";
+const ACP_COMMAND_REJECTION_REASON: &str =
+    "The user chose to continue without running this command.";
+
+fn elicitation_request_message(request: &ElicitationRequest) -> &str {
+    match request {
+        ElicitationRequest::Form { message, .. }
+        | ElicitationRequest::OpenAiForm { message, .. }
+        | ElicitationRequest::Url { message, .. } => message,
+    }
+}
 
 struct SupportedMcpElicitationPermissionRequest {
     request_key: String,
@@ -1087,7 +1097,6 @@ fn turn_item_id(item: &TurnItem) -> &str {
         TurnItem::SubAgentActivity(item) => &item.id,
         TurnItem::WebSearch(item) => &item.id,
         TurnItem::ImageView(item) => &item.id,
-        TurnItem::Sleep(item) => &item.id,
         TurnItem::Extension(item) => item.id(),
         TurnItem::ImageGeneration(item) => &item.id,
         TurnItem::EnteredReviewMode(item) => &item.id,
@@ -1127,9 +1136,9 @@ fn turn_item_projection(item: &TurnItem) -> TurnItemProjection {
         | TurnItem::Extension(ExtensionItem::ImageGeneration(..))
         | TurnItem::EnteredReviewMode(..)
         | TurnItem::ExitedReviewMode(..) => TurnItemProjection::Dedicated,
-        TurnItem::HookPrompt(..) | TurnItem::Sleep(..) | TurnItem::ContextCompaction(..) => {
-            TurnItemProjection::Status
-        }
+        TurnItem::HookPrompt(..)
+        | TurnItem::Extension(ExtensionItem::Sleep(..))
+        | TurnItem::ContextCompaction(..) => TurnItemProjection::Status,
         TurnItem::CommandExecution(..)
         | TurnItem::DynamicToolCall(..)
         | TurnItem::CollabAgentToolCall(..)
@@ -1150,12 +1159,12 @@ fn turn_item_tool_kind(item: &TurnItem) -> ToolKind {
         TurnItem::FileChange(..) => ToolKind::Edit,
         TurnItem::Extension(ExtensionItem::WebSearch(..)) => ToolKind::Fetch,
         TurnItem::Extension(ExtensionItem::ImageGeneration(..))
+        | TurnItem::Extension(ExtensionItem::Sleep(..))
         | TurnItem::DynamicToolCall(..)
         | TurnItem::CollabAgentToolCall(..)
         | TurnItem::SubAgentActivity(..)
         | TurnItem::McpToolCall(..)
         | TurnItem::HookPrompt(..)
-        | TurnItem::Sleep(..)
         | TurnItem::ContextCompaction(..)
         | TurnItem::UserMessage(..)
         | TurnItem::AgentMessage(..)
@@ -1326,7 +1335,9 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
             ("Coordinating agents", Some(format!("{:?}", item.tool)))
         }
         TurnItem::SubAgentActivity(item) => ("Subagent activity", Some(format!("{:?}", item.kind))),
-        TurnItem::Sleep(item) => ("Waiting", Some(format!("{}ms", item.duration_ms))),
+        TurnItem::Extension(ExtensionItem::Sleep(item)) => {
+            ("Waiting", Some(format!("{}ms", item.duration_ms)))
+        }
         TurnItem::EnteredReviewMode(..) => ("Review mode active", None),
         TurnItem::ExitedReviewMode(..) => ("Review mode complete", None),
         TurnItem::FileChange(..) => ("Editing files", None),
@@ -1418,11 +1429,9 @@ fn format_file_system_special(value: &FileSystemSpecialPath) -> String {
     }
 }
 
-fn format_file_system_subpath(base: &str, subpath: Option<&Path>) -> String {
+fn format_file_system_subpath(base: &str, subpath: Option<&str>) -> String {
     match subpath {
-        Some(subpath) if !subpath.as_os_str().is_empty() => {
-            format!("{base}/{}", subpath.display())
-        }
+        Some(subpath) if !subpath.is_empty() => format!("{base}/{subpath}"),
         _ => base.to_string(),
     }
 }
@@ -2251,6 +2260,7 @@ impl PromptState {
             revised_prompt,
             result,
             saved_path,
+            ..
         } = event;
         let saved_path = saved_path.map(|path| path.display().to_string());
         client
@@ -2503,6 +2513,7 @@ impl PromptState {
                 call_id,
                 query,
                 action,
+                ..
             }) => {
                 info!("Web search query received: call_id={call_id}, query={query}");
                 // Send update that the search is in progress with the query
@@ -2669,6 +2680,7 @@ impl PromptState {
                                 revised_prompt: image_item.revised_prompt,
                                 result: image_item.result,
                                 saved_path: image_item.saved_path,
+                                transparent_background: None,
                             },
                         )
                         .await;
@@ -2682,6 +2694,7 @@ impl PromptState {
                                 revised_prompt: image_item.revised_prompt,
                                 result: image_item.result,
                                 saved_path: image_item.saved_path,
+                                transparent_background: None,
                             },
                         )
                         .await;
@@ -2829,7 +2842,7 @@ impl PromptState {
                     "Elicitation request: server={}, id={:?}, message={}",
                     event.server_name,
                     event.id,
-                    event.request.message()
+                    elicitation_request_message(&event.request)
                 );
                 if let Err(err) = self.mcp_elicitation(client, event).await
                     && let Some(response_tx) = self.response_tx.take()
@@ -2925,6 +2938,9 @@ impl PromptState {
             // we already have a way to diff the turn, so ignore
             | EventMsg::TurnDiff(..)
             | EventMsg::RawResponseItem(..)
+            | EventMsg::RawResponseCompleted(..)
+            | EventMsg::EnvironmentConnected(..)
+            | EventMsg::EnvironmentDisconnected(..)
             | EventMsg::ThreadSettingsApplied(..)
             | EventMsg::SessionConfigured(..)
             | EventMsg::RealtimeConversationStarted(..)
@@ -3381,14 +3397,15 @@ impl PromptState {
                                 DynamicToolCallOutputContentItem::InputText { text } => {
                                     ToolCallContent::Content(Content::new(text))
                                 }
-                                DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                                    ToolCallContent::Content(Content::new(
-                                        ContentBlock::ResourceLink(ResourceLink::new(
-                                            image_url.clone(),
-                                            image_url,
-                                        )),
-                                    ))
-                                }
+                                DynamicToolCallOutputContentItem::InputImage { image_url }
+                                | DynamicToolCallOutputContentItem::InputAudio {
+                                    audio_url: image_url,
+                                } => ToolCallContent::Content(Content::new(
+                                    ContentBlock::ResourceLink(ResourceLink::new(
+                                        image_url.clone(),
+                                        image_url,
+                                    )),
+                                )),
                             })
                             .chain(error.map(|e| ToolCallContent::Content(Content::new(e))))
                             .collect::<Vec<_>>(),
@@ -4085,14 +4102,16 @@ fn build_exec_permission_options(
                     },
                 }
             }
-            ReviewDecision::Denied => ExecPermissionOption {
+            ReviewDecision::Denied { .. } => ExecPermissionOption {
                 option_id: "denied",
                 permission_option: PermissionOption::new(
                     "denied",
                     "No, continue without running it",
                     PermissionOptionKind::RejectOnce,
                 ),
-                decision: ReviewDecision::Denied,
+                decision: ReviewDecision::Denied {
+                    rejection: ACP_COMMAND_REJECTION_REASON.to_string(),
+                },
             },
             ReviewDecision::Abort => ExecPermissionOption {
                 option_id: "abort",
@@ -5358,6 +5377,7 @@ impl<A: Auth> ThreadActor<A> {
                 revised_prompt,
                 result,
                 saved_path,
+                ..
             }) => {
                 self.client
                     .send_tool_call(completed_image_generation_tool_call(
@@ -5710,7 +5730,8 @@ impl<A: Auth> ThreadActor<A> {
             } => {
                 self.client
                     .send_tool_call(completed_image_generation_tool_call(
-                        id.clone()
+                        id.as_ref()
+                            .map(ToString::to_string)
                             .unwrap_or_else(|| generate_fallback_id("image_generation")),
                         status.clone(),
                         revised_prompt.clone(),
@@ -6450,7 +6471,7 @@ fn guardian_action_summary(
 
 /// Extract title and call_id from a WebSearchAction (used for replay)
 fn web_search_action_to_title_and_id(
-    id: &Option<String>,
+    id: &Option<ResponseItemId>,
     action: &codex_protocol::models::WebSearchAction,
 ) -> (String, String) {
     match action {
@@ -6461,14 +6482,16 @@ fn web_search_action_to_title_and_id(
                 .or_else(|| query.clone())
                 .unwrap_or_else(|| "Web search".to_string());
             let call_id = id
-                .clone()
+                .as_ref()
+                .map(ToString::to_string)
                 .unwrap_or_else(|| generate_fallback_id("web_search"));
             (title, call_id)
         }
         codex_protocol::models::WebSearchAction::OpenPage { url } => {
             let title = url.clone().unwrap_or_else(|| "Open page".to_string());
             let call_id = id
-                .clone()
+                .as_ref()
+                .map(ToString::to_string)
                 .unwrap_or_else(|| generate_fallback_id("web_open"));
             (title, call_id)
         }
@@ -6477,7 +6500,8 @@ fn web_search_action_to_title_and_id(
                 .clone()
                 .unwrap_or_else(|| "Find in page".to_string());
             let call_id = id
-                .clone()
+                .as_ref()
+                .map(ToString::to_string)
                 .unwrap_or_else(|| generate_fallback_id("web_find"));
             (title, call_id)
         }
@@ -6523,6 +6547,26 @@ mod tests {
     use tokio::sync::{Mutex, mpsc::UnboundedSender};
 
     use super::*;
+
+    #[test]
+    fn denied_exec_permission_uses_acp_rejection_reason() {
+        let options = build_exec_permission_options(
+            &[ReviewDecision::Denied {
+                rejection: "upstream placeholder".to_string(),
+            }],
+            None,
+            None,
+        );
+        let denied = options
+            .iter()
+            .find(|option| option.option_id == "denied")
+            .expect("denied option should be available");
+
+        let ReviewDecision::Denied { rejection } = &denied.decision else {
+            panic!("denied option should preserve the denied decision");
+        };
+        assert_eq!(rejection, ACP_COMMAND_REJECTION_REASON);
+    }
 
     #[tokio::test]
     async fn test_prompt() -> anyhow::Result<()> {
@@ -7496,6 +7540,7 @@ mod tests {
                     id: "web-1".into(),
                     query: "Rust ACP".into(),
                     action: WebSearchAction::Other,
+                    results: None,
                 }),
             )
             .await;
@@ -7532,6 +7577,7 @@ mod tests {
             id: "web-1".into(),
             query: "Rust ACP".into(),
             action: WebSearchAction::Other,
+            results: None,
         });
 
         state.start_turn_item(&session_client, &item).await;
@@ -7608,6 +7654,7 @@ mod tests {
                         id: "plan-1".into(),
                         text: "# Final plan\nSummary paragraph\n- [x] Inspect current state\n- Implement live plan updates\n".into(),
                     }),
+                    started_at_ms: None,
                     completed_at_ms: 0,
                 }),
             )
@@ -7692,6 +7739,8 @@ mod tests {
                 EventMsg::TurnComplete(TurnCompleteEvent {
                     last_agent_message: None,
                     turn_id: "turn-1".to_string(),
+                    error: None,
+                    started_at: None,
                     completed_at: None,
                     duration_ms: None,
                     time_to_first_token_ms: None,
@@ -7758,9 +7807,11 @@ mod tests {
                         last_token_usage: TokenUsage {
                             input_tokens: 100_000,
                             cached_input_tokens: 20_000,
+                            cache_write_input_tokens: 0,
                             output_tokens: 16_000,
                             reasoning_output_tokens: 0,
                             total_tokens: 136_000,
+                            codex_rollout_budget_units: None,
                         },
                         model_context_window: Some(272_000),
                     }),
@@ -7929,6 +7980,7 @@ mod tests {
                         agent_thread_id: child_thread_id,
                         agent_path: agent_path.clone(),
                     }),
+                    started_at_ms: None,
                     completed_at_ms: 1,
                 }),
             )
@@ -8039,6 +8091,7 @@ mod tests {
                         agent_thread_id: child_thread_id,
                         agent_path,
                     }),
+                    started_at_ms: None,
                     completed_at_ms: 1,
                 }),
             )
@@ -8097,6 +8150,7 @@ mod tests {
                     thread_id: current_thread_id,
                     turn_id: "turn-1".to_string(),
                     item,
+                    started_at_ms: None,
                     completed_at_ms: 1,
                 }),
             )
@@ -8127,6 +8181,7 @@ mod tests {
                         agent_thread_id: child_thread_id,
                         agent_path: agent_path.clone(),
                     }),
+                    started_at_ms: None,
                     completed_at_ms: 1,
                 }),
             )
@@ -8292,6 +8347,8 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 last_agent_message: None,
                 turn_id: "turn-1".to_string(),
+                error: None,
+                started_at: None,
                 completed_at: None,
                 duration_ms: None,
                 time_to_first_token_ms: None,
@@ -8299,6 +8356,7 @@ mod tests {
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-2".to_string()),
                 reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                started_at: None,
                 completed_at: None,
                 duration_ms: None,
             }),
@@ -8379,6 +8437,8 @@ mod tests {
                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
                     last_agent_message: None,
                     turn_id: "turn-1".to_string(),
+                    error: None,
+                    started_at: None,
                     completed_at: None,
                     duration_ms: None,
                     time_to_first_token_ms: None,
@@ -8399,6 +8459,7 @@ mod tests {
                         id: "late-web-1".to_string(),
                         query: "late event".to_string(),
                         action: WebSearchAction::Other,
+                        results: None,
                     }),
                 }),
             })
@@ -8506,6 +8567,7 @@ mod tests {
                             .try_into()
                             .expect("image path should be absolute"),
                     ),
+                    transparent_background: None,
                 },
             )
             .await;
@@ -8571,7 +8633,7 @@ mod tests {
 
         actor
             .replay_response_item(&ResponseItem::ImageGenerationCall {
-                id: Some("img-replay-1".to_string()),
+                id: Some(ResponseItemId::from_server("img-replay-1".to_string())),
                 status: "completed".to_string(),
                 revised_prompt: Some("A replayed prompt".to_string()),
                 result: "replayed-base64".to_string(),
@@ -8638,6 +8700,7 @@ mod tests {
                 revised_prompt: None,
                 result: "image generation failed".to_string(),
                 saved_path: Some(saved_path),
+                transparent_background: None,
             }))
             .await;
 
@@ -8800,6 +8863,8 @@ mod tests {
                 &session_client,
                 ExecCommandBeginEvent {
                     call_id: "exec-1".to_string(),
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     turn_id: "turn-1".to_string(),
                     started_at_ms: 0,
@@ -8846,6 +8911,8 @@ mod tests {
                 &session_client,
                 ExecCommandEndEvent {
                     call_id: "exec-1".to_string(),
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     turn_id: "turn-1".to_string(),
                     completed_at_ms: 0,
@@ -8948,6 +9015,8 @@ mod tests {
                 &session_client,
                 ExecCommandBeginEvent {
                     call_id: "blocked-forced-rm".to_string(),
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     turn_id: "turn-1".to_string(),
                     started_at_ms: 0,
@@ -8966,6 +9035,8 @@ mod tests {
                 &session_client,
                 ExecCommandEndEvent {
                     call_id: "blocked-forced-rm".to_string(),
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     turn_id: "turn-1".to_string(),
                     completed_at_ms: 1,
@@ -9084,6 +9155,8 @@ mod tests {
                 &session_client,
                 ExecCommandBeginEvent {
                     call_id: "exec-1".to_string(),
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     turn_id: "turn-1".to_string(),
                     started_at_ms: 0,
@@ -9149,6 +9222,8 @@ mod tests {
                 &session_client,
                 ExecCommandEndEvent {
                     call_id: "exec-1".to_string(),
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     turn_id: "turn-1".to_string(),
                     completed_at_ms: 0,
@@ -9176,6 +9251,8 @@ mod tests {
                 &session_client,
                 ExecCommandBeginEvent {
                     call_id: "exec-1".to_string(),
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     turn_id: "turn-1".to_string(),
                     started_at_ms: 0,
@@ -9242,7 +9319,7 @@ mod tests {
         content: Vec<AgentMessageInputContent>,
     ) -> ResponseItem {
         ResponseItem::AgentMessage {
-            id: id.map(str::to_string),
+            id: id.map(|id| ResponseItemId::from_server(id.to_string())),
             author: author.to_string(),
             recipient: recipient.to_string(),
             content,
@@ -9512,6 +9589,8 @@ mod tests {
                             };
                             send(EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                                 call_id: "call-a".into(),
+                                plugin_id: None,
+                                script_path: None,
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "a".into()],
@@ -9526,6 +9605,8 @@ mod tests {
                             }));
                             send(EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                                 call_id: "call-b".into(),
+                                plugin_id: None,
+                                script_path: None,
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "b".into()],
@@ -9540,6 +9621,8 @@ mod tests {
                             }));
                             send(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                                 call_id: "call-a".into(),
+                                plugin_id: None,
+                                script_path: None,
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "a".into()],
@@ -9559,6 +9642,8 @@ mod tests {
                             }));
                             send(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                                 call_id: "call-b".into(),
+                                plugin_id: None,
+                                script_path: None,
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "b".into()],
@@ -9579,6 +9664,8 @@ mod tests {
                             send(EventMsg::TurnComplete(TurnCompleteEvent {
                                 last_agent_message: None,
                                 turn_id,
+                                error: None,
+                                started_at: None,
                                 completed_at: None,
                                 duration_ms: None,
                                 time_to_first_token_ms: None,
@@ -9614,6 +9701,8 @@ mod tests {
                                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
                                         last_agent_message: None,
                                         turn_id: id.to_string(),
+                                        error: None,
+                                        started_at: None,
                                         completed_at: None,
                                         duration_ms: None,
                                         time_to_first_token_ms: None,
@@ -9651,6 +9740,8 @@ mod tests {
                                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
                                     last_agent_message: None,
                                     turn_id: id.to_string(),
+                                    error: None,
+                                    started_at: None,
                                     completed_at: None,
                                     duration_ms: None,
                                     time_to_first_token_ms: None,
@@ -9696,6 +9787,8 @@ mod tests {
                                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
                                     last_agent_message: None,
                                     turn_id: id.to_string(),
+                                    error: None,
+                                    started_at: None,
                                     completed_at: None,
                                     duration_ms: None,
                                     time_to_first_token_ms: None,
