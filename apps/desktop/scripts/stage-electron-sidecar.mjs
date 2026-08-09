@@ -12,6 +12,7 @@ import {
     executableNameForTarget,
     validateCodexRuntimeBundleInputs,
 } from "./stage-electron-sidecar-helpers.mjs";
+import { resolveCodexV8CargoEnvironment } from "./codex-v8-artifacts.mjs";
 
 const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const workspaceRoot = path.resolve(appRoot, "..", "..");
@@ -59,10 +60,11 @@ function parseArgs(argv) {
     return args;
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, env = {}) {
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, {
             cwd,
+            env: { ...process.env, ...env },
             stdio: "inherit",
             shell: process.platform === "win32",
         });
@@ -618,6 +620,9 @@ async function buildNativeBackendForTarget(targetTriple) {
 }
 
 async function buildCodexForTarget(targetTriple) {
+    const v8Environment = await resolveCodexV8CargoEnvironment({
+        targetTriple,
+    });
     await run(
         "cargo",
         [
@@ -632,6 +637,7 @@ async function buildCodexForTarget(targetTriple) {
             "--quiet",
         ],
         workspaceRoot,
+        v8Environment,
     );
 }
 

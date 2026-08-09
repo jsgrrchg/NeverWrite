@@ -15,6 +15,7 @@
         "build": "tsc -b && vite build",
         "lint": "eslint .",
         "test": "vitest run",
+        "test:v8-artifacts": "vitest run scripts/codex-v8-artifacts.test.mjs",
         "test:watch": "vitest",
         "test:e2e": "playwright test --config e2e/playwright.config.ts",
         "test:e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
