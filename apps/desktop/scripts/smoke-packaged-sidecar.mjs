@@ -6,6 +6,8 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import { isolateExecutableForSmoke } from "./packaged-sidecar-isolation.mjs";
+
 const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const executableName =
     process.platform === "win32"
@@ -609,14 +611,7 @@ async function smokeMissingCodeModeHostFailsClosed(acpPath, packagedHostPath) {
     );
     const marker = "neverwrite_missing_code_mode_host_smoke";
     try {
-        try {
-            await fs.link(acpPath, isolatedAcpPath);
-        } catch {
-            await fs.copyFile(acpPath, isolatedAcpPath);
-        }
-        if (process.platform !== "win32") {
-            await fs.chmod(isolatedAcpPath, 0o755);
-        }
+        await isolateExecutableForSmoke(acpPath, isolatedAcpPath);
         await runCodeModeTurn({
             acpPath: isolatedAcpPath,
             hostPath: missingHostPath,
