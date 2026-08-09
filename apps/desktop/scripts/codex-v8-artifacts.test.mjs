@@ -362,9 +362,12 @@ describe("V8 artifact cache", () => {
             code: "ENOENT",
         });
         const cacheParentEntries = await fs.readdir(path.dirname(plan.cacheDir));
-        expect(cacheParentEntries).not.toContain(
-            expect.stringMatching(/\.tmp-/),
-        );
+        const temporaryCachePrefix = `${path.basename(plan.cacheDir)}.tmp-`;
+        expect(
+            cacheParentEntries.some((entry) =>
+                entry.startsWith(temporaryCachePrefix),
+            ),
+        ).toBe(false);
     });
 
     it("rejects an artifact set without a pinned manifest digest", async () => {
