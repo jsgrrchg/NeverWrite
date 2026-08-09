@@ -34,6 +34,12 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.7.1] - 2026-08-09
+
+### Fixed
+
+- Fixed the translucent AI chat composer backdrop blur being omitted from packaged desktop builds, so release builds now match the frosted appearance shown during development.
+
 ## [0.7.0] - 2026-08-08
 
 ### Added
