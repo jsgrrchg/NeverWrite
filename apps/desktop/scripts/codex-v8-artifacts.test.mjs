@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -37,9 +38,9 @@ import { resolvePinnedV8ManifestChecksum } from "./codex-v8-manifest-pins.mjs";
 const version = "150.4.0";
 const profile = "ptrcomp_sandbox_release";
 const targetTriple = "aarch64-apple-darwin";
+const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const wrapperPath = path.join(
-    process.cwd(),
-    "scripts",
+    testDirectory,
     "run-with-codex-v8.mjs",
 );
 
@@ -101,12 +102,14 @@ function fixtureFetch(files) {
     });
 }
 
-function wrapperEnvironment() {
-    return {
-        ...process.env,
+function wrapperEnvironment(ambientEnv = process.env) {
+    const env = {
+        ...ambientEnv,
         RUSTY_V8_ARCHIVE: path.join(testRoot, "custom-v8.a.gz"),
         RUSTY_V8_SRC_BINDING_PATH: path.join(testRoot, "custom-binding.rs"),
     };
+    delete env.V8_FROM_SOURCE;
+    return env;
 }
 
 describe("V8 artifact metadata", () => {
@@ -506,6 +509,15 @@ describe("V8 Cargo environment", () => {
 });
 
 describe("V8 command wrapper", () => {
+    it("removes an ambient V8_FROM_SOURCE override", () => {
+        expect(
+            wrapperEnvironment({
+                PATH: process.env.PATH,
+                V8_FROM_SOURCE: "1",
+            }),
+        ).not.toHaveProperty("V8_FROM_SOURCE");
+    });
+
     it("inherits stdio, injects both paths, and preserves the exit code", () => {
         const result = spawnSync(
             process.execPath,
