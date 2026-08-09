@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -126,7 +127,7 @@ export async function main(argv = process.argv.slice(2)) {
 
 if (
     process.argv[1] &&
-    import.meta.url === pathToFileURL(process.argv[1]).href
+    import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
 ) {
     main().catch((error) => {
         console.error(error instanceof Error ? error.message : error);

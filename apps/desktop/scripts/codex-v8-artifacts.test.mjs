@@ -571,6 +571,26 @@ describe("V8 command wrapper", () => {
     });
 
     if (process.platform !== "win32") {
+        it("runs the entry guard when invoked through a symlink", async () => {
+            const symlinkPath = path.join(testRoot, "v8-wrapper.mjs");
+            await fs.symlink(wrapperPath, symlinkPath);
+
+            const directResult = spawnSync(process.execPath, [wrapperPath], {
+                encoding: "utf8",
+                env: wrapperEnvironment(),
+            });
+            const symlinkResult = spawnSync(process.execPath, [symlinkPath], {
+                encoding: "utf8",
+                env: wrapperEnvironment(),
+            });
+
+            expect(directResult.status).toBe(1);
+            expect(symlinkResult.status).toBe(directResult.status);
+            expect(symlinkResult.stderr).toContain(
+                "--target <rust-target> is required",
+            );
+        });
+
         it("preserves a signal raised by the child command", () => {
             const result = spawnSync(
                 process.execPath,
