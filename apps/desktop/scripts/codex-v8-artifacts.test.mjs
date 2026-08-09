@@ -6,6 +6,24 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { manifestChecksumOverrides } = vi.hoisted(() => ({
+    manifestChecksumOverrides: new Map(),
+}));
+
+vi.mock("./codex-v8-manifest-pins.mjs", async (importOriginal) => {
+    const actual = await importOriginal();
+    return {
+        ...actual,
+        resolvePinnedV8ManifestChecksum(plan) {
+            const key = `${plan.version}/${plan.profile}/${plan.targetTriple}`;
+            return (
+                manifestChecksumOverrides.get(key) ??
+                actual.resolvePinnedV8ManifestChecksum(plan)
+            );
+        },
+    };
+});
+
 import {
     CODEX_V8_ARTIFACT_PROFILE,
     createV8ArtifactPlan,
@@ -14,6 +32,7 @@ import {
     resolveCodexV8CargoEnvironment,
     resolveV8VersionFromLockfile,
 } from "./codex-v8-artifacts.mjs";
+import { resolvePinnedV8ManifestChecksum } from "./codex-v8-manifest-pins.mjs";
 
 const version = "150.4.0";
 const profile = "ptrcomp_sandbox_release";
@@ -27,6 +46,7 @@ const wrapperPath = path.join(
 let testRoot;
 
 beforeEach(async () => {
+    manifestChecksumOverrides.clear();
     testRoot = await fs.mkdtemp(path.join(os.tmpdir(), "neverwrite-v8-test-"));
 });
 
@@ -36,6 +56,18 @@ afterEach(async () => {
 
 function sha256(content) {
     return createHash("sha256").update(content).digest("hex");
+}
+
+function manifestChecksumKey({ version, profile, targetTriple }) {
+    return `${version}/${profile}/${targetTriple}`;
+}
+
+function trustFixtureManifest(plan, files) {
+    manifestChecksumOverrides.set(
+        manifestChecksumKey(plan),
+        sha256(files.get(plan.manifestName)),
+    );
+    return files;
 }
 
 function artifactFixture(plan, { archive, binding, manifest } = {}) {
@@ -161,6 +193,41 @@ version = "150.4.0"
             }).profile,
         ).toBe(profile);
     });
+
+    it.each([
+        [
+            "aarch64-apple-darwin",
+            "4079b4b84a8b4fcf34a2a5ca7f080dffd0e1b53404b0032087b821e247febb43",
+        ],
+        [
+            "x86_64-apple-darwin",
+            "d85c7ae0cf437a4415376c4b5b7daba50b0dcbe30f52612d21df8ce52eb8ada0",
+        ],
+        [
+            "aarch64-pc-windows-msvc",
+            "9d153e6534d50961329132a64dd7f7cd18ba96501a4a43c1a6d8bfaeec454b2b",
+        ],
+        [
+            "x86_64-pc-windows-msvc",
+            "a4d6221dddb4b5724b23411eaac47caf6095489fbf9d126f65b33cef96a0a8ef",
+        ],
+        [
+            "aarch64-unknown-linux-gnu",
+            "4ee879a8bc7b0f482cac891415e22300dff4429a28897fddac88bb296ce07920",
+        ],
+        [
+            "x86_64-unknown-linux-gnu",
+            "6774b42c9424c098c72a805c08d4e94be17c591cf02b1dc2633060255a8a61be",
+        ],
+    ])("pins the 150.4.0 manifest digest for %s", (target, checksum) => {
+        expect(
+            resolvePinnedV8ManifestChecksum({
+                version,
+                profile,
+                targetTriple: target,
+            }),
+        ).toBe(checksum);
+    });
 });
 
 describe("V8 checksum manifests", () => {
@@ -202,7 +269,9 @@ describe("V8 artifact cache", () => {
             targetTriple,
             cacheRoot: testRoot,
         });
-        const fetchImpl = fixtureFetch(artifactFixture(plan));
+        const fetchImpl = fixtureFetch(
+            trustFixtureManifest(plan, artifactFixture(plan)),
+        );
 
         const first = await fetchCodexV8Artifacts({
             version,
@@ -232,7 +301,7 @@ describe("V8 artifact cache", () => {
             targetTriple,
             cacheRoot: testRoot,
         });
-        const files = artifactFixture(plan);
+        const files = trustFixtureManifest(plan, artifactFixture(plan));
         const initialFetch = fixtureFetch(files);
         const artifacts = await fetchCodexV8Artifacts({
             version,
@@ -265,14 +334,17 @@ describe("V8 artifact cache", () => {
             targetTriple,
             cacheRoot: testRoot,
         });
-        const files = artifactFixture(plan, {
-            archive: Buffer.from("invalid archive"),
-            manifest: [
-                `${sha256("expected archive")}  ${plan.archiveName}`,
-                `${sha256("binding")}  ${plan.bindingName}`,
-                "",
-            ].join("\n"),
-        });
+        const files = trustFixtureManifest(
+            plan,
+            artifactFixture(plan, {
+                archive: Buffer.from("invalid archive"),
+                manifest: [
+                    `${sha256("expected archive")}  ${plan.archiveName}`,
+                    `${sha256("binding")}  ${plan.bindingName}`,
+                    "",
+                ].join("\n"),
+            }),
+        );
 
         await expect(
             fetchCodexV8Artifacts({
@@ -289,6 +361,91 @@ describe("V8 artifact cache", () => {
         const cacheParentEntries = await fs.readdir(path.dirname(plan.cacheDir));
         expect(cacheParentEntries).not.toContain(
             expect.stringMatching(/\.tmp-/),
+        );
+    });
+
+    it("rejects an artifact set without a pinned manifest digest", async () => {
+        const fetchImpl = vi.fn();
+
+        await expect(
+            fetchCodexV8Artifacts({
+                version: "151.0.0",
+                profile,
+                targetTriple,
+                cacheRoot: testRoot,
+                fetchImpl,
+            }),
+        ).rejects.toThrow(/No pinned V8 manifest SHA-256/);
+        expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it("rejects an untrusted manifest before downloading artifacts", async () => {
+        const plan = createV8ArtifactPlan({
+            version,
+            profile,
+            targetTriple,
+            cacheRoot: testRoot,
+        });
+        const fetchImpl = fixtureFetch(artifactFixture(plan));
+
+        await expect(
+            fetchCodexV8Artifacts({
+                version,
+                profile,
+                targetTriple,
+                cacheRoot: testRoot,
+                fetchImpl,
+            }),
+        ).rejects.toThrow(/failed pinned SHA-256 validation/);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(fetchImpl).toHaveBeenCalledWith(plan.manifestUrl);
+    });
+
+    it("redownloads all artifacts when the cached manifest is manipulated", async () => {
+        const plan = createV8ArtifactPlan({
+            version,
+            profile,
+            targetTriple,
+            cacheRoot: testRoot,
+        });
+        const files = trustFixtureManifest(plan, artifactFixture(plan));
+        const artifacts = await fetchCodexV8Artifacts({
+            version,
+            profile,
+            targetTriple,
+            cacheRoot: testRoot,
+            fetchImpl: fixtureFetch(files),
+        });
+        const manipulatedArchive = "manipulated archive";
+        const manipulatedBinding = "manipulated binding";
+        await Promise.all([
+            fs.writeFile(plan.archivePath, manipulatedArchive),
+            fs.writeFile(plan.bindingPath, manipulatedBinding),
+            fs.writeFile(
+                plan.manifestPath,
+                [
+                    `${sha256(manipulatedArchive)}  ${plan.archiveName}`,
+                    `${sha256(manipulatedBinding)}  ${plan.bindingName}`,
+                    "",
+                ].join("\n"),
+            ),
+        ]);
+        const recoveryFetch = fixtureFetch(files);
+
+        await fetchCodexV8Artifacts({
+            version,
+            profile,
+            targetTriple,
+            cacheRoot: testRoot,
+            fetchImpl: recoveryFetch,
+        });
+
+        expect(recoveryFetch).toHaveBeenCalledTimes(3);
+        expect(await fs.readFile(plan.manifestPath, "utf8")).toBe(
+            files.get(plan.manifestName),
+        );
+        expect(await fs.readFile(artifacts.archivePath, "utf8")).toBe(
+            "archive",
         );
     });
 });

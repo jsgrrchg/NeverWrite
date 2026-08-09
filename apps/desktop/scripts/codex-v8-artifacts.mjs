@@ -6,6 +6,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
+import { resolvePinnedV8ManifestChecksum } from "./codex-v8-manifest-pins.mjs";
+
 export const CODEX_V8_ARTIFACT_PROFILE = "ptrcomp_sandbox_release";
 
 const appRoot = import.meta.url.startsWith("file:")
@@ -180,11 +182,26 @@ async function hasChecksum(filePath, expectedChecksum) {
     }
 }
 
-async function validateCachedArtifacts(plan) {
+async function readVerifiedChecksumManifest(plan, expectedChecksum) {
+    const manifest = await fs.readFile(plan.manifestPath);
+    const actualChecksum = createHash("sha256").update(manifest).digest("hex");
+    if (actualChecksum !== expectedChecksum) {
+        throw new Error(
+            `V8 checksum manifest ${plan.manifestName} failed pinned SHA-256 validation (expected ${expectedChecksum}, received ${actualChecksum})`,
+        );
+    }
+
+    return parseV8ChecksumManifest(manifest.toString("utf8"), [
+        plan.archiveName,
+        plan.bindingName,
+    ]);
+}
+
+async function validateCachedArtifacts(plan, expectedManifestChecksum) {
     try {
-        const checksums = parseV8ChecksumManifest(
-            await fs.readFile(plan.manifestPath, "utf8"),
-            [plan.archiveName, plan.bindingName],
+        const checksums = await readVerifiedChecksumManifest(
+            plan,
+            expectedManifestChecksum,
         );
         const [archiveValid, bindingValid] = await Promise.all([
             hasChecksum(
@@ -228,13 +245,17 @@ async function downloadFile(url, destinationPath, fetchImpl) {
     }
 }
 
-async function publishArtifactCache(stagingDir, plan) {
+async function publishArtifactCache(
+    stagingDir,
+    plan,
+    expectedManifestChecksum,
+) {
     await fs.rm(plan.cacheDir, { recursive: true, force: true });
     await fs.mkdir(path.dirname(plan.cacheDir), { recursive: true });
     try {
         await fs.rename(stagingDir, plan.cacheDir);
     } catch (error) {
-        if (await validateCachedArtifacts(plan)) {
+        if (await validateCachedArtifacts(plan, expectedManifestChecksum)) {
             await fs.rm(stagingDir, { recursive: true, force: true });
             return;
         }
@@ -257,8 +278,9 @@ export async function fetchCodexV8Artifacts({
         targetTriple,
         cacheRoot,
     });
+    const expectedManifestChecksum = resolvePinnedV8ManifestChecksum(plan);
 
-    if (await validateCachedArtifacts(plan)) {
+    if (await validateCachedArtifacts(plan, expectedManifestChecksum)) {
         return {
             archivePath: plan.archivePath,
             bindingPath: plan.bindingPath,
@@ -284,9 +306,9 @@ export async function fetchCodexV8Artifacts({
             stagingPlan.manifestPath,
             fetchImpl,
         );
-        const checksums = parseV8ChecksumManifest(
-            await fs.readFile(stagingPlan.manifestPath, "utf8"),
-            [plan.archiveName, plan.bindingName],
+        const checksums = await readVerifiedChecksumManifest(
+            stagingPlan,
+            expectedManifestChecksum,
         );
 
         await Promise.all([
@@ -310,7 +332,11 @@ export async function fetchCodexV8Artifacts({
             );
         }
 
-        await publishArtifactCache(stagingDir, plan);
+        await publishArtifactCache(
+            stagingDir,
+            plan,
+            expectedManifestChecksum,
+        );
     } catch (error) {
         await fs.rm(stagingDir, { recursive: true, force: true });
         throw error;
