@@ -189,10 +189,9 @@ protocol boundaries:
 | Linux x64 | Yes | — |
 | Linux ARM64 | No, because it is cross-compiled | Packaging, sidecar staging, and architecture checks run without executing the foreign binary |
 
-The smoke uses a temporary `CODEX_HOME`, a local deterministic Responses mock,
-and an explicit `CODEX_CODE_MODE_HOST_PATH`. It asserts a real ACP turn reaches
-both a code-mode tool completion and a final assistant response; it does not
-require credentials or a network service.
+The smoke uses a temporary `CODEX_HOME`, a local deterministic Responses mock, and the 0.147 install-context layout where the packaged host is a sibling of `codex-acp`. It asserts a real ACP turn reaches both a code-mode tool completion and a final assistant response, and it inspects the ACP process tree to prove the packaged standalone host was launched rather than an in-process fallback.
+
+The same smoke starts an isolated copy of `codex-acp` without its sibling host and requires the code-mode tool to fail closed with the missing host path in its diagnostic. It does not require credentials or a network service.
 
 ### Follow-up and rollback
 

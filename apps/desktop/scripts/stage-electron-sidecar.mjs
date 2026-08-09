@@ -10,6 +10,7 @@ import {
     createCodexRuntimeBundlePlan,
     envSuffixForTarget,
     executableNameForTarget,
+    validateCodexRuntimeBundleArchitectures,
     validateCodexRuntimeBundleInputs,
 } from "./stage-electron-sidecar-helpers.mjs";
 import { resolveCodexV8CargoEnvironment } from "./codex-v8-artifacts.mjs";
@@ -95,6 +96,17 @@ async function pathExists(filePath) {
         return true;
     } catch {
         return false;
+    }
+}
+
+async function readExecutableHeader(filePath) {
+    const file = await fs.open(filePath, "r");
+    try {
+        const buffer = Buffer.alloc(64 * 1024);
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+        return buffer.subarray(0, bytesRead);
+    } finally {
+        await file.close();
     }
 }
 
@@ -742,6 +754,11 @@ for (const buildTarget of codexRuntimePlan.buildTargets) {
 
 // Resolve and validate the complete pair before replacing the existing staging tree.
 await validateCodexRuntimeBundleInputs(codexRuntimePlan, pathExists);
+await validateCodexRuntimeBundleArchitectures(
+    codexRuntimePlan,
+    targetTriple,
+    readExecutableHeader,
+);
 if (isUniversalMac) {
     for (const binary of codexRuntimePlan.binaries) {
         if (binary.inputPaths.length === 1) {
@@ -781,6 +798,15 @@ for (const binary of stagingCodexRuntime) {
         await lipoCreate(binary.inputPaths, outputPath);
     } else {
         await fs.copyFile(binary.inputPaths[0], outputPath);
+    }
+}
+if (isUniversalMac) {
+    await verifyUniversalBinary(stagedPath, "Native backend");
+    for (const binary of stagingCodexRuntime) {
+        await verifyUniversalBinary(
+            path.join(binariesDir, binary.outputName),
+            binary.description,
+        );
     }
 }
 await fs.mkdir(embeddedDir, { recursive: true });

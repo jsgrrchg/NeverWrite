@@ -9,6 +9,7 @@ import {
 function parseArgs(argv) {
     let targetTriple = null;
     let profile = CODEX_V8_ARTIFACT_PROFILE;
+    let requireVerifiedArtifacts = false;
     let separatorIndex = -1;
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -30,8 +31,12 @@ function parseArgs(argv) {
             index += 1;
             continue;
         }
+        if (arg === "--require-verified-artifacts") {
+            requireVerifiedArtifacts = true;
+            continue;
+        }
         throw new Error(
-            `Unknown argument "${arg}". Usage: --target <rust-target> [--profile <profile>] -- <command> [args...]`,
+            `Unknown argument "${arg}". Usage: --target <rust-target> [--profile <profile>] [--require-verified-artifacts] -- <command> [args...]`,
         );
     }
 
@@ -47,6 +52,7 @@ function parseArgs(argv) {
     return {
         targetTriple,
         profile,
+        requireVerifiedArtifacts,
         command: commandArgs[0],
         commandArgs: commandArgs.slice(1),
     };
@@ -90,10 +96,17 @@ function run(command, args, env) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-    const { targetTriple, profile, command, commandArgs } = parseArgs(argv);
+    const {
+        targetTriple,
+        profile,
+        requireVerifiedArtifacts,
+        command,
+        commandArgs,
+    } = parseArgs(argv);
     const v8Environment = await resolveCodexV8CargoEnvironment({
         targetTriple,
         profile,
+        requireVerifiedArtifacts,
     });
     const result = await run(command, commandArgs, {
         ...process.env,

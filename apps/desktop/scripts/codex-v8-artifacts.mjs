@@ -334,6 +334,7 @@ export async function resolveCodexV8CargoEnvironment({
     cargoLockPath = defaultCargoLockPath,
     cacheRoot = defaultCacheRoot,
     fetchImpl = globalThis.fetch,
+    requireVerifiedArtifacts = false,
 } = {}) {
     const archiveOverride = configuredOverride(env, "RUSTY_V8_ARCHIVE");
     const bindingOverride = configuredOverride(
@@ -341,6 +342,11 @@ export async function resolveCodexV8CargoEnvironment({
         "RUSTY_V8_SRC_BINDING_PATH",
     );
     if (archiveOverride || bindingOverride) {
+        if (requireVerifiedArtifacts) {
+            throw new Error(
+                "Verified V8 artifacts are required; direct RUSTY_V8 overrides are not allowed",
+            );
+        }
         if (!archiveOverride || !bindingOverride) {
             throw new Error(
                 "RUSTY_V8_ARCHIVE and RUSTY_V8_SRC_BINDING_PATH must be set together",
@@ -353,6 +359,11 @@ export async function resolveCodexV8CargoEnvironment({
     }
 
     if (["1", "true", "yes"].includes(env.V8_FROM_SOURCE?.toLowerCase())) {
+        if (requireVerifiedArtifacts) {
+            throw new Error(
+                "Verified V8 artifacts are required; V8_FROM_SOURCE is not allowed",
+            );
+        }
         return {};
     }
 

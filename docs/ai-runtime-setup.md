@@ -250,6 +250,9 @@ These `NEVERWRITE_*` variables are relevant to AI runtime setup and packaging:
 | `NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR` | Internal packaged-resource directory used by Electron to expose bundled ACP resources to the backend. |
 | `NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN` | Packaging override for the native backend binary staged into Electron. |
 | `NEVERWRITE_CODEX_ACP_BUNDLE_BIN` | Packaging override for the Codex binary staged into Electron. |
+| `NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN` | Packaging override for the Codex standalone code-mode host staged into Electron. Must be provided with `NEVERWRITE_CODEX_ACP_BUNDLE_BIN`. |
+| `NEVERWRITE_CODEX_ACP_BUNDLE_BIN_ARM64` / `NEVERWRITE_CODEX_ACP_BUNDLE_BIN_X64` | Target-specific macOS universal packaging inputs for the Codex ACP binary. Each configured slice requires its matching host override. |
+| `NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN_ARM64` / `NEVERWRITE_CODEX_CODE_MODE_HOST_BUNDLE_BIN_X64` | Target-specific macOS universal packaging inputs for the standalone code-mode host. |
 | `NEVERWRITE_EMBEDDED_NODE_BIN` | Packaging override for the embedded Node binary used by bundled Claude. |
 | `NEVERWRITE_EMBEDDED_NODE_BIN_ARM64` / `NEVERWRITE_EMBEDDED_NODE_BIN_X64` | Packaging overrides for macOS universal embedded Node inputs. |
 | `NEVERWRITE_EMBEDDED_NODE_VERSION` | Embedded Node download version used by sidecar staging when no Node binary override is supplied. |
@@ -307,8 +310,8 @@ Runtime staging is handled by
 [`stage-electron-sidecar.mjs`](../apps/desktop/scripts/stage-electron-sidecar.mjs):
 
 - Builds or resolves the target-specific native backend.
-- Builds or resolves the target-specific Codex runtime pair: `codex-acp` and
-  `codex-code-mode-host`. Both are built with Cargo's committed lockfile.
+- Builds or resolves the target-specific Codex runtime pair: `codex-acp` and `codex-code-mode-host`. Both are built by one Cargo invocation with the committed lockfile and the same verified V8 archive/binding pair.
+- Inspects Mach-O, PE, or ELF headers before staging so host-architecture artifacts cannot be reused accidentally for a cross-compiled target. macOS slices are checked before `lipo`, and the produced universal binaries are checked again afterward.
 - Downloads or uses an overridden embedded Node runtime.
 - Resolves the Claude embedded runtime from `apps/desktop/embedded/claude-agent-acp`,
   `vendor/Claude-agent-acp-upstream`, or `NEVERWRITE_CLAUDE_EMBEDDED_DIR`.
@@ -326,11 +329,7 @@ release-critical resources:
 - `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
 - `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
 
-The release workflow
-[`release-desktop.yml`](../.github/workflows/release-desktop.yml) builds the
-lockfile-pinned, target-specific Codex runtime pair, downloads embedded Node for
-the target, exports the bundle override variables, and verifies macOS universal
-binaries for the native backend, both Codex binaries, and embedded Node.
+The release workflow [`release-desktop.yml`](../.github/workflows/release-desktop.yml) builds the lockfile-pinned, target-specific Codex runtime pair, requires checksum-verified V8 artifacts for both binaries, downloads embedded Node for the target, exports the bundle override variables, and verifies macOS universal binaries for the native backend, both Codex binaries, and embedded Node.
 
 Current packaging expectations:
 
@@ -341,10 +340,9 @@ Current packaging expectations:
 - Kilo is integrated but not bundled by default.
 - OpenCode is integrated but not bundled by default.
 
-The packaged sidecar smoke starts both Codex binaries. It sends an ACP
-`initialize` request to `codex-acp` using an isolated temporary `CODEX_HOME`,
-then checks that the native backend responds to its ping. This catches missing,
-non-executable, or non-starting Codex binaries before release assets are staged.
+The packaged sidecar smoke sends ACP `initialize`, `session/new`, and `session/prompt` requests to `codex-acp` using an isolated temporary `CODEX_HOME` and deterministic local Responses mock. It keeps the packaged host beside the ACP executable as required by the 0.147 install context, verifies the code-mode tool output and final assistant response, and inspects the ACP process tree to prove the standalone `codex-code-mode-host` process was launched.
+
+The smoke also runs a fail-closed case from an isolated ACP directory without a sibling host and requires an actionable missing-host diagnostic before checking that the native backend responds to ping. This catches missing, non-executable, wrong-architecture, or silently bypassed companion binaries before release assets are staged.
 
 ## Troubleshooting
 

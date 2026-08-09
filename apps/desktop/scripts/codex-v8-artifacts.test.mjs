@@ -326,6 +326,26 @@ describe("V8 Cargo environment", () => {
         ).resolves.toEqual(env);
         expect(fetchImpl).not.toHaveBeenCalled();
     });
+
+    it("rejects unverifiable inputs for release builds", async () => {
+        await expect(
+            resolveCodexV8CargoEnvironment({
+                targetTriple,
+                env: {
+                    RUSTY_V8_ARCHIVE: "/custom/archive.a.gz",
+                    RUSTY_V8_SRC_BINDING_PATH: "/custom/binding.rs",
+                },
+                requireVerifiedArtifacts: true,
+            }),
+        ).rejects.toThrow(/direct RUSTY_V8 overrides are not allowed/);
+        await expect(
+            resolveCodexV8CargoEnvironment({
+                targetTriple,
+                env: { V8_FROM_SOURCE: "1" },
+                requireVerifiedArtifacts: true,
+            }),
+        ).rejects.toThrow(/V8_FROM_SOURCE is not allowed/);
+    });
 });
 
 describe("V8 command wrapper", () => {
@@ -350,6 +370,31 @@ describe("V8 command wrapper", () => {
         expect(result.status).toBe(23);
         expect(result.stdout.trim()).toBe(
             `${path.join(testRoot, "custom-v8.a.gz")}|${path.join(testRoot, "custom-binding.rs")}`,
+        );
+    });
+
+    it("enforces verified artifacts when requested", () => {
+        const result = spawnSync(
+            process.execPath,
+            [
+                wrapperPath,
+                "--target",
+                targetTriple,
+                "--require-verified-artifacts",
+                "--",
+                process.execPath,
+                "-e",
+                "process.exit(0)",
+            ],
+            {
+                encoding: "utf8",
+                env: wrapperEnvironment(),
+            },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+            "direct RUSTY_V8 overrides are not allowed",
         );
     });
 
