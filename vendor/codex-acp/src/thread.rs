@@ -915,11 +915,20 @@ struct PromptState {
 struct ProjectedToolCallState {
     emitted: bool,
     subagent_activity: bool,
+    canonical_subagent_seen: bool,
+    canonical_subagent_terminal_seen: bool,
+    legacy_subagent_seen: bool,
     canonical_seen: bool,
     canonical_terminal_seen: bool,
     terminal: Option<ToolCallStatus>,
     pending_canonical_fields: Option<ToolCallUpdateFields>,
     pending_canonical_meta: Option<Meta>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubagentProjectionOrigin {
+    CanonicalItem,
+    LegacyEvent,
 }
 #[derive(Debug, serde::Deserialize)]
 struct NeverWriteUserInputAnswerPayload {
@@ -1191,8 +1200,14 @@ fn turn_item_tool_kind(item: &TurnItem) -> ToolKind {
 }
 
 fn turn_item_call_id(item: &TurnItem, projection: TurnItemProjection) -> String {
-    if let TurnItem::SubAgentActivity(item) = item {
-        return subagents::subagent_activity_tool_call_id(&item.id);
+    match item {
+        TurnItem::SubAgentActivity(item) => {
+            return subagents::subagent_activity_tool_call_id(&item.id);
+        }
+        TurnItem::CollabAgentToolCall(item) => {
+            return subagents::subagent_activity_tool_call_id(&item.id);
+        }
+        _ => {}
     }
 
     match projection {
@@ -1961,8 +1976,20 @@ impl PromptState {
         client.send_tool_call(tool_call).await;
     }
 
-    async fn start_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+    async fn start_turn_item(&mut self, client: &SessionClient, turn_id: &str, item: &TurnItem) {
         if is_self_referential_subagent_activity(item, client.thread_id) {
+            return;
+        }
+        if let TurnItem::CollabAgentToolCall(item) = item {
+            let mut projection = subagents::projection_for_collab_item(item);
+            self.subagent_projection_state
+                .coalesce_wait_item_projection(turn_id, item, &mut projection);
+            self.send_subagent_projection(
+                client,
+                projection,
+                SubagentProjectionOrigin::CanonicalItem,
+            )
+            .await;
             return;
         }
         if let TurnItem::SubAgentActivity(activity) = item {
@@ -1971,7 +1998,12 @@ impl PromptState {
                 client.thread_id,
                 &client.session_id,
             ) {
-                self.send_subagent_projection(client, projection).await;
+                self.send_subagent_projection(
+                    client,
+                    projection,
+                    SubagentProjectionOrigin::CanonicalItem,
+                )
+                .await;
             }
             return;
         }
@@ -2021,10 +2053,23 @@ impl PromptState {
     async fn complete_turn_item(
         &mut self,
         client: &SessionClient,
+        turn_id: &str,
         item: &TurnItem,
         started_at_ms: Option<i64>,
     ) {
         if is_self_referential_subagent_activity(item, client.thread_id) {
+            return;
+        }
+        if let TurnItem::CollabAgentToolCall(item) = item {
+            let mut projection = subagents::projection_for_collab_item(item);
+            self.subagent_projection_state
+                .coalesce_wait_item_projection(turn_id, item, &mut projection);
+            self.send_subagent_projection(
+                client,
+                projection,
+                SubagentProjectionOrigin::CanonicalItem,
+            )
+            .await;
             return;
         }
         if let TurnItem::SubAgentActivity(activity) = item {
@@ -2033,7 +2078,12 @@ impl PromptState {
                 client.thread_id,
                 &client.session_id,
             ) {
-                self.send_subagent_projection(client, projection).await;
+                self.send_subagent_projection(
+                    client,
+                    projection,
+                    SubagentProjectionOrigin::CanonicalItem,
+                )
+                .await;
             }
             return;
         }
@@ -2233,7 +2283,40 @@ impl PromptState {
         &mut self,
         client: &SessionClient,
         projection: SubagentProjection,
+        origin: SubagentProjectionOrigin,
     ) {
+        let call_id = match &projection {
+            SubagentProjection::ToolCall(tool_call) => tool_call.tool_call_id.to_string(),
+            SubagentProjection::ToolCallUpdate(update) => update.tool_call_id.to_string(),
+        };
+        let replace_legacy = {
+            let state = self
+                .projected_tool_calls
+                .entry(call_id.clone())
+                .or_default();
+            state.subagent_activity = true;
+            match origin {
+                SubagentProjectionOrigin::LegacyEvent if state.canonical_subagent_seen => {
+                    return;
+                }
+                SubagentProjectionOrigin::LegacyEvent => {
+                    state.legacy_subagent_seen = true;
+                    false
+                }
+                SubagentProjectionOrigin::CanonicalItem => {
+                    let replace_legacy = state.legacy_subagent_seen && state.emitted;
+                    state.canonical_subagent_seen = true;
+                    replace_legacy
+                }
+            }
+        };
+
+        if replace_legacy {
+            self.replace_legacy_subagent_projection(client, projection)
+                .await;
+            return;
+        }
+
         match projection {
             SubagentProjection::ToolCall(tool_call) => {
                 self.send_canonical_tool_call(client, tool_call).await;
@@ -2248,6 +2331,50 @@ impl PromptState {
                 .await;
             }
         }
+    }
+
+    async fn replace_legacy_subagent_projection(
+        &mut self,
+        client: &SessionClient,
+        projection: SubagentProjection,
+    ) {
+        let mut update = match projection {
+            SubagentProjection::ToolCall(tool_call) => {
+                let mut fields = ToolCallUpdateFields::new()
+                    .kind(tool_call.kind)
+                    .title(tool_call.title)
+                    .raw_input(tool_call.raw_input)
+                    .raw_output(tool_call.raw_output);
+                if !tool_call.content.is_empty() {
+                    fields = fields.content(tool_call.content);
+                }
+                if !tool_call.locations.is_empty() {
+                    fields = fields.locations(tool_call.locations);
+                }
+                fields = fields.status(tool_call.status);
+                ToolCallUpdate::new(tool_call.tool_call_id, fields).meta(tool_call.meta)
+            }
+            SubagentProjection::ToolCallUpdate(update) => update,
+        };
+        let call_id = update.tool_call_id.to_string();
+        let terminal = update
+            .fields
+            .status
+            .as_ref()
+            .is_some_and(is_terminal_tool_status);
+        let state = self.projected_tool_calls.entry(call_id).or_default();
+        if terminal && state.canonical_subagent_terminal_seen {
+            return;
+        }
+        if state.terminal.is_some() && !terminal {
+            update.fields.status = None;
+        } else if terminal {
+            state.terminal = update.fields.status;
+            state.canonical_terminal_seen = true;
+            state.canonical_subagent_terminal_seen = true;
+        }
+        state.canonical_seen = true;
+        client.send_tool_call_update(update).await;
     }
 
     async fn send_image_generation_started(
@@ -2337,7 +2464,12 @@ impl PromptState {
         {
             self.subagent_projection_state
                 .coalesce_wait_projection(&event, &mut projection);
-            self.send_subagent_projection(client, projection).await;
+            self.send_subagent_projection(
+                client,
+                projection,
+                SubagentProjectionOrigin::LegacyEvent,
+            )
+            .await;
             return;
         }
 
@@ -2429,7 +2561,7 @@ impl PromptState {
                         )
                         .await;
                     }
-                    other_item => self.start_turn_item(client, &other_item).await,
+                    other_item => self.start_turn_item(client, &turn_id, &other_item).await,
                 }
             }
             EventMsg::UserMessage(UserMessageEvent {
@@ -2726,7 +2858,7 @@ impl PromptState {
                         .await;
                     }
                     other_item => {
-                        self.complete_turn_item(client, &other_item, started_at_ms)
+                        self.complete_turn_item(client, &turn_id, &other_item, started_at_ms)
                             .await;
                         // Notify the client when context compaction completes so users see
                         // a status message rather than silence during /compact.
@@ -7816,6 +7948,7 @@ mod tests {
         state
             .start_turn_item(
                 &session_client,
+                "turn-1",
                 &TurnItem::WebSearch(codex_protocol::items::WebSearchItem {
                     id: "web-1".into(),
                     query: "Rust ACP".into(),
@@ -7860,7 +7993,9 @@ mod tests {
             results: None,
         });
 
-        state.start_turn_item(&session_client, &item).await;
+        state
+            .start_turn_item(&session_client, "turn-1", &item)
+            .await;
         state
             .send_canonical_tool_call(
                 &session_client,
@@ -7870,7 +8005,9 @@ mod tests {
                     .content(vec![ToolCallContent::Content(Content::new("Rust ACP"))]),
             )
             .await;
-        state.complete_turn_item(&session_client, &item, None).await;
+        state
+            .complete_turn_item(&session_client, "turn-1", &item, None)
+            .await;
 
         let notifications = client.notifications.lock().unwrap();
         let call_count = notifications
@@ -8615,6 +8752,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_collab_item_replaces_legacy_projection_by_protocol_id() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let (mut prompt_state, session_client, client) =
+            prompt_state_for_projection(parent_thread_id);
+        let canonical_started = codex_protocol::items::CollabAgentToolCallItem {
+            id: "spawn-shared-id".to_string(),
+            tool: codex_protocol::items::CollabAgentTool::SpawnAgent,
+            status: codex_protocol::items::CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: parent_thread_id,
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: Some("inspect the renderer".to_string()),
+            model: Some("gpt-5.5".to_string()),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            agents_states: HashMap::new(),
+        };
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::CollabAgentSpawnBegin(
+                    codex_protocol::protocol::CollabAgentSpawnBeginEvent {
+                        call_id: "spawn-shared-id".to_string(),
+                        sender_thread_id: parent_thread_id,
+                        prompt: "legacy prompt".to_string(),
+                        model: "legacy-model".to_string(),
+                        reasoning_effort: ReasoningEffort::Low,
+                        started_at_ms: 0,
+                    },
+                ),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id: parent_thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::CollabAgentToolCall(canonical_started.clone()),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                    call_id: "spawn-shared-id".to_string(),
+                    sender_thread_id: parent_thread_id,
+                    new_thread_id: Some(child_thread_id),
+                    new_agent_nickname: Some("Legacy".to_string()),
+                    new_agent_role: Some("legacy-role".to_string()),
+                    prompt: "legacy prompt".to_string(),
+                    model: "legacy-model".to_string(),
+                    reasoning_effort: ReasoningEffort::Low,
+                    status: codex_protocol::protocol::AgentStatus::Running,
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: parent_thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::CollabAgentToolCall(
+                        codex_protocol::items::CollabAgentToolCallItem {
+                            status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+                            receiver_thread_ids: vec![child_thread_id],
+                            receiver_agents: vec![codex_protocol::protocol::CollabAgentRef {
+                                thread_id: child_thread_id,
+                                agent_nickname: Some("Galileo".to_string()),
+                                agent_role: Some("explorer".to_string()),
+                            }],
+                            agents_states: HashMap::from([(
+                                child_thread_id,
+                                codex_protocol::protocol::AgentStatus::Running,
+                            )]),
+                            ..canonical_started
+                        },
+                    ),
+                    started_at_ms: Some(0),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let tool_call_id = "codex-acp:subagent:spawn-shared-id";
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCall(call)
+                        if call.tool_call_id.0.as_ref() == tool_call_id
+                ))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        let updates = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update)
+                    if update.tool_call_id.0.as_ref() == tool_call_id =>
+                {
+                    Some(update)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(updates.len(), 2, "notifications={notifications:?}");
+        let final_update = updates.last().expect("canonical completion update");
+        assert_eq!(
+            final_update.fields.title.as_deref(),
+            Some("Spawned Galileo")
+        );
+        assert_eq!(
+            final_update
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("codexAcpChildThreadId"))
+                .and_then(serde_json::Value::as_str),
+            Some(child_thread_id.to_string().as_str())
+        );
+    }
+
+    #[tokio::test]
     async fn completed_only_subagent_activity_is_navigable_without_specific_event()
     -> anyhow::Result<()> {
         let parent_thread_id = ThreadId::new();
@@ -8642,35 +8910,36 @@ mod tests {
                 }),
             )
             .await;
-        let notifications = client.notifications.lock().unwrap();
         let tool_call_id = "codex-acp:subagent:subagent-activity-1";
-        assert_eq!(
-            notifications
-                .iter()
-                .filter(|notification| matches!(
-                    &notification.update,
-                    SessionUpdate::ToolCall(tool_call)
-                        if tool_call.tool_call_id.0.as_ref() == tool_call_id
-                ))
-                .count(),
-            1,
-            "notifications={notifications:?}"
-        );
-        assert!(notifications.iter().any(|notification| matches!(
-            &notification.update,
-            SessionUpdate::ToolCall(tool_call)
-                if tool_call.tool_call_id.0.as_ref() == tool_call_id
-                    && tool_call.title == "Started explorer"
-                    && tool_call.meta.as_ref().is_some_and(|meta| {
-                        meta.get("codexAcpSubagentEventType")
-                            .and_then(|value| value.as_str())
-                            == Some("activity_started")
-                            && meta.get("codexAcpChildSessionId")
+        {
+            let notifications = client.notifications.lock().unwrap();
+            assert_eq!(
+                notifications
+                    .iter()
+                    .filter(|notification| matches!(
+                        &notification.update,
+                        SessionUpdate::ToolCall(tool_call)
+                            if tool_call.tool_call_id.0.as_ref() == tool_call_id
+                    ))
+                    .count(),
+                1,
+                "notifications={notifications:?}"
+            );
+            assert!(notifications.iter().any(|notification| matches!(
+                &notification.update,
+                SessionUpdate::ToolCall(tool_call)
+                    if tool_call.tool_call_id.0.as_ref() == tool_call_id
+                        && tool_call.title == "Started explorer"
+                        && tool_call.meta.as_ref().is_some_and(|meta| {
+                            meta.get("codexAcpSubagentEventType")
                                 .and_then(|value| value.as_str())
-                                == Some(child_thread_id.to_string().as_str())
-                    })
-        )));
-        drop(notifications);
+                                == Some("activity_started")
+                                && meta.get("codexAcpChildSessionId")
+                                    .and_then(|value| value.as_str())
+                                    == Some(child_thread_id.to_string().as_str())
+                        })
+            )));
+        }
 
         prompt_state
             .handle_event(
@@ -8771,7 +9040,7 @@ mod tests {
                     SessionUpdate::ToolCallUpdate(_)
                 ))
                 .count(),
-            0,
+            1,
             "notifications={notifications:?}"
         );
         Ok(())

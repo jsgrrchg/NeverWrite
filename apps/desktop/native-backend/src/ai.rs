@@ -97,7 +97,9 @@ const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
 const NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX: &str = "neverwrite:status:turn:";
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
+const CODEX_ACP_PARENT_THREAD_ID_KEY: &str = "codexAcpParentThreadId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
+const CODEX_ACP_CHILD_THREAD_ID_KEY: &str = "codexAcpChildThreadId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 const MAX_COMPLETED_URL_ELICITATION_IDS: usize = 256;
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
@@ -3091,7 +3093,11 @@ impl NativeAcpClient {
             return None;
         }
 
-        let runtime_child_session_id = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)?;
+        let runtime_child_session_id = meta_thread_identity(
+            meta,
+            CODEX_ACP_CHILD_THREAD_ID_KEY,
+            CODEX_ACP_CHILD_SESSION_ID_KEY,
+        )?;
         let child_session_id = self
             .find_app_session_id(&runtime_child_session_id)
             .or_else(|| {
@@ -3498,9 +3504,17 @@ impl NativeAcpClient {
             return None;
         }
 
-        let runtime_child_session_id = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)
-            .unwrap_or_else(|| runtime_session_id.to_string());
-        let runtime_parent_session_id = meta_string(meta, CODEX_ACP_PARENT_SESSION_ID_KEY)?;
+        let runtime_child_session_id = meta_thread_identity(
+            meta,
+            CODEX_ACP_CHILD_THREAD_ID_KEY,
+            CODEX_ACP_CHILD_SESSION_ID_KEY,
+        )
+        .unwrap_or_else(|| runtime_session_id.to_string());
+        let runtime_parent_session_id = meta_thread_identity(
+            meta,
+            CODEX_ACP_PARENT_THREAD_ID_KEY,
+            CODEX_ACP_PARENT_SESSION_ID_KEY,
+        )?;
         let cwd = meta_string(meta, CODEX_ACP_CWD_KEY).map(PathBuf::from);
         let model_id = meta_string(meta, CODEX_ACP_MODEL_KEY);
         let reasoning_effort = meta_string(meta, CODEX_ACP_REASONING_EFFORT_KEY);
@@ -3669,7 +3683,11 @@ impl NativeAcpClient {
             return vec![];
         }
 
-        if let Some(runtime_child_session_id) = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) {
+        if let Some(runtime_child_session_id) = meta_thread_identity(
+            meta,
+            CODEX_ACP_CHILD_THREAD_ID_KEY,
+            CODEX_ACP_CHILD_SESSION_ID_KEY,
+        ) {
             if codex_acp_agent_status_is_terminal(meta).unwrap_or(false) {
                 return self
                     .child_session_id_for_parent(parent_session_id, &runtime_child_session_id)
@@ -3687,7 +3705,12 @@ impl NativeAcpClient {
         parent_session_id: &str,
         meta: &Meta,
     ) -> Option<String> {
-        meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY).and_then(|runtime_child_session_id| {
+        meta_thread_identity(
+            meta,
+            CODEX_ACP_CHILD_THREAD_ID_KEY,
+            CODEX_ACP_CHILD_SESSION_ID_KEY,
+        )
+        .and_then(|runtime_child_session_id| {
             self.child_session_id_for_parent(parent_session_id, &runtime_child_session_id)
         })
     }
@@ -3725,7 +3748,8 @@ impl NativeAcpClient {
                     })
                     .filter_map(|status| {
                         status
-                            .get(CODEX_ACP_CHILD_SESSION_ID_KEY)
+                            .get(CODEX_ACP_CHILD_THREAD_ID_KEY)
+                            .or_else(|| status.get(CODEX_ACP_CHILD_SESSION_ID_KEY))
                             .and_then(Value::as_str)
                             .and_then(|runtime_child_session_id| {
                                 self.child_session_id_for_parent(
@@ -7128,6 +7152,10 @@ fn meta_string(meta: &Meta, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn meta_thread_identity(meta: &Meta, thread_key: &str, session_key: &str) -> Option<String> {
+    meta_string(meta, thread_key).or_else(|| meta_string(meta, session_key))
+}
+
 fn codex_acp_agent_status_is_terminal(meta: &Meta) -> Option<bool> {
     meta.get(CODEX_ACP_AGENT_STATUS_KEY)
         .and_then(codex_acp_agent_status_value_is_terminal)
@@ -7137,7 +7165,7 @@ fn codex_acp_agent_status_value_is_terminal(value: &Value) -> Option<bool> {
     if let Some(status) = value.as_str() {
         return Some(matches!(
             status,
-            "errored" | "interrupted" | "shutdown" | "not_found"
+            "completed" | "failed" | "errored" | "shutdown" | "cancelled" | "not_found"
         ));
     }
 
@@ -7145,15 +7173,17 @@ fn codex_acp_agent_status_value_is_terminal(value: &Value) -> Option<bool> {
     if object.keys().any(|key| {
         matches!(
             key.as_str(),
-            "errored" | "interrupted" | "shutdown" | "not_found"
+            "completed" | "failed" | "errored" | "shutdown" | "cancelled" | "not_found"
         )
     }) {
         return Some(true);
     }
-    if object
-        .keys()
-        .any(|key| matches!(key.as_str(), "running" | "pending_init"))
-    {
+    if object.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "starting" | "pending_init" | "running" | "waiting" | "interrupted"
+        )
+    }) {
         return Some(false);
     }
     None
@@ -11349,7 +11379,7 @@ mod tests {
             ),
             (
                 CODEX_ACP_PARENT_THREAD_ID_KEY.to_string(),
-                json!("parent-thread-id"),
+                json!(PARENT_RUNTIME_SESSION_ID),
             ),
             (
                 CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
@@ -11357,7 +11387,7 @@ mod tests {
             ),
             (
                 CODEX_ACP_CHILD_THREAD_ID_KEY.to_string(),
-                json!("child-thread-id"),
+                json!(CHILD_RUNTIME_SESSION_ID),
             ),
             (CODEX_ACP_AGENT_NICKNAME_KEY.to_string(), json!("Galileo")),
             (CODEX_ACP_AGENT_ROLE_KEY.to_string(), json!("worker")),
@@ -12417,6 +12447,90 @@ mod tests {
     }
 
     #[test]
+    fn repeated_subagent_registration_creates_exactly_one_child_session() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        for _ in 0..2 {
+            run_client_future(
+                client.session_notification(subagent_session_info_created_notification_fixture()),
+            )
+            .unwrap();
+        }
+
+        let events = event_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RpcOutput::Event { event_name, payload }
+                        if event_name == AI_SESSION_CREATED_EVENT
+                            && payload.get("session_id").and_then(Value::as_str)
+                                == Some(CHILD_RUNTIME_SESSION_ID)
+                ))
+                .count(),
+            1,
+            "events={events:?}"
+        );
+        let state = session_state.lock().unwrap();
+        assert_eq!(state.sessions.len(), 2);
+        assert!(state.sessions.contains_key(CHILD_RUNTIME_SESSION_ID));
+    }
+
+    #[test]
+    fn subagent_thread_id_is_authoritative_over_session_aliases() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        let mut meta = subagent_session_created_meta();
+        meta.insert(
+            CODEX_ACP_PARENT_SESSION_ID_KEY.to_string(),
+            json!("stale-parent-session-alias"),
+        );
+        meta.insert(
+            CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+            json!("stale-child-session-alias"),
+        );
+
+        run_client_future(
+            client.session_notification(
+                SessionNotification::new(
+                    "stale-child-session-alias",
+                    SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("Galileo")),
+                )
+                .meta(meta),
+            ),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("authoritative child registration event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_CREATED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("parent_session_id").and_then(Value::as_str),
+            Some(PARENT_RUNTIME_SESSION_ID)
+        );
+        let state = session_state.lock().unwrap();
+        assert!(state.sessions.contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(!state.sessions.contains_key("stale-child-session-alias"));
+    }
+
+    #[test]
     fn session_info_update_updates_title_without_timeline_activity() {
         let (event_tx, event_rx) = mpsc::channel();
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
@@ -13130,6 +13244,89 @@ mod tests {
         assert!(saw_closed_update);
         assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
         assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn unknown_subagent_close_does_not_invent_a_child_session() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        let unknown_child_thread_id = "unknown-child-thread";
+        let close_meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_CHILD_THREAD_ID_KEY.to_string(),
+                json!(unknown_child_thread_id),
+            ),
+            (
+                CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                json!("stale-child-session-alias"),
+            ),
+            (
+                CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_CLOSE_END_EVENT),
+            ),
+        ]);
+
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("unknown-close"), "Closed unknown child")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::Completed)
+                        .meta(close_meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("close breadcrumb activity")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert!(event_rx.try_recv().is_err());
+        let state = session_state.lock().unwrap();
+        assert_eq!(state.sessions.len(), 1);
+        assert!(!state.sessions.contains_key(unknown_child_thread_id));
+        assert!(!state.sessions.contains_key("stale-child-session-alias"));
+    }
+
+    #[test]
+    fn subagent_terminal_statuses_exclude_nonterminal_lifecycle_states() {
+        for value in [
+            json!({"completed": null}),
+            json!({"errored": "failed"}),
+            json!("shutdown"),
+            json!("cancelled"),
+            json!("not_found"),
+        ] {
+            assert_eq!(
+                codex_acp_agent_status_value_is_terminal(&value),
+                Some(true),
+                "value={value}"
+            );
+        }
+
+        for value in [
+            json!("pending_init"),
+            json!("running"),
+            json!("waiting"),
+            json!("interrupted"),
+        ] {
+            assert_eq!(
+                codex_acp_agent_status_value_is_terminal(&value),
+                Some(false),
+                "value={value}"
+            );
+        }
     }
 
     #[test]

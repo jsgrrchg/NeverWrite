@@ -425,6 +425,18 @@ impl CodexAgent {
 
         let task_cx = cx.clone();
         if let Err(error) = cx.spawn(async move {
+            reconcile_subagent_threads(
+                thread_manager.clone(),
+                sessions.clone(),
+                session_roots.clone(),
+                auth_manager.clone(),
+                models_manager.clone(),
+                client_capabilities.clone(),
+                base_config.clone(),
+                task_cx.clone(),
+            )
+            .await;
+
             loop {
                 match thread_created_rx.recv().await {
                     Ok(thread_id) => {
@@ -446,25 +458,17 @@ impl CodexAgent {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!("Skipped {skipped} child thread creation notifications");
-                        for thread_id in thread_manager.list_thread_ids().await {
-                            if let Err(error) = register_subagent_thread(
-                                thread_id,
-                                thread_manager.clone(),
-                                sessions.clone(),
-                                session_roots.clone(),
-                                auth_manager.clone(),
-                                models_manager.clone(),
-                                client_capabilities.clone(),
-                                base_config.clone(),
-                                task_cx.clone(),
-                            )
-                            .await
-                            {
-                                warn!(
-                                    "Failed to reconcile spawned child thread {thread_id}: {error:?}"
-                                );
-                            }
-                        }
+                        reconcile_subagent_threads(
+                            thread_manager.clone(),
+                            sessions.clone(),
+                            session_roots.clone(),
+                            auth_manager.clone(),
+                            models_manager.clone(),
+                            client_capabilities.clone(),
+                            base_config.clone(),
+                            task_cx.clone(),
+                        )
+                        .await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -643,6 +647,36 @@ impl CodexAgent {
             )
             .map_err(Error::into_internal_error)?;
         Ok(())
+    }
+}
+
+#[expect(clippy::too_many_arguments)]
+async fn reconcile_subagent_threads(
+    thread_manager: Arc<ThreadManager>,
+    sessions: Arc<Mutex<HashMap<SessionId, Arc<Thread>>>>,
+    session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>>,
+    auth_manager: Arc<AuthManager>,
+    models_manager: Arc<dyn crate::thread::ModelsManagerImpl>,
+    client_capabilities: Arc<Mutex<ClientCapabilities>>,
+    config: Config,
+    cx: ConnectionTo<Client>,
+) {
+    for thread_id in thread_manager.list_thread_ids().await {
+        if let Err(error) = register_subagent_thread(
+            thread_id,
+            thread_manager.clone(),
+            sessions.clone(),
+            session_roots.clone(),
+            auth_manager.clone(),
+            models_manager.clone(),
+            client_capabilities.clone(),
+            config.clone(),
+            cx.clone(),
+        )
+        .await
+        {
+            warn!("Failed to reconcile spawned child thread {thread_id}: {error:?}");
+        }
     }
 }
 
