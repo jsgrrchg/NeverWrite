@@ -26,6 +26,7 @@ use codex_extension_api::{
     LoadUserInstructionsFuture, LoadedUserInstructions, UserInstructionsProvider,
     empty_extension_registry,
 };
+use codex_features::Feature;
 use codex_login::{
     CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR,
     auth::{
@@ -93,12 +94,50 @@ pub struct CodexAgent {
 const SESSION_LIST_PAGE_SIZE: usize = 25;
 const SESSION_TITLE_MAX_GRAPHEMES: usize = 120;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionRestoreKind {
+    Load,
+    Resume,
+}
+
+impl SessionRestoreKind {
+    fn replays_history(self) -> bool {
+        matches!(self, Self::Load)
+    }
+}
+
+fn client_mcp_extensions() -> ClientMcpExtensions {
+    // ACP 0.14 has no trusted declaration boundary for Codex MCP extensions.
+    // Keeping this empty also leaves MCP 2026-07-28 negotiation disabled.
+    ClientMcpExtensions::default()
+}
+
+fn start_thread_options(config: Config) -> StartThreadOptions {
+    StartThreadOptions {
+        client_mcp_extensions: client_mcp_extensions(),
+        ..StartThreadOptions::new(config)
+    }
+}
+
+fn apply_runtime_feature_contracts(config: &mut Config) -> std::io::Result<()> {
+    config
+        .features
+        .disable(Feature::Mcp20260728)
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "MCP protocol 2026-07-28 must remain disabled for ACP 0.14: {error}"
+            ))
+        })
+}
+
 impl CodexAgent {
     /// Create a new `CodexAgent` with the given configuration
     pub async fn new(
-        config: Config,
+        mut config: Config,
         codex_linux_sandbox_exe: Option<PathBuf>,
     ) -> std::io::Result<Self> {
+        // The modern MCP protocol remains outside NeverWrite's ACP 0.14 contract.
+        apply_runtime_feature_contracts(&mut config)?;
         let auth_manager =
             AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await;
 
@@ -443,11 +482,11 @@ impl CodexAgent {
     /// Build a session config from base config, working directory, and MCP servers.
     /// This is shared between `new_session` and `load_session`.
     fn build_session_config(
-        &self,
+        base_config: &Config,
         cwd: &Path,
         mcp_servers: Vec<McpServer>,
     ) -> Result<Config, Error> {
-        let mut config = self.config.clone();
+        let mut config = base_config.clone();
         config.cwd = cwd.try_into().map_err(Error::into_internal_error)?;
         let cwd = config.cwd.clone();
 
@@ -455,12 +494,12 @@ impl CodexAgent {
         let mut new_mcp_servers = config.mcp_servers.get().clone();
         for mcp_server in mcp_servers {
             match mcp_server {
-                // Not supported in codex
+                // Not supported in Codex.
                 McpServer::Sse(..) => {}
                 McpServer::Http(McpServerHttp {
                     name, url, headers, ..
                 }) => {
-                    // Codex does not allow whitespace in MCP server names; replace with underscores.
+                    // Codex does not allow whitespace in MCP server names; replace it with underscores.
                     let name = name.replace(|c: char| c.is_whitespace(), "_");
                     new_mcp_servers.insert(
                         name,
@@ -501,7 +540,7 @@ impl CodexAgent {
                     env,
                     ..
                 }) => {
-                    // Codex does not allow whitespace in MCP server names; replace with underscores.
+                    // Codex does not allow whitespace in MCP server names; replace it with underscores.
                     let name = name.replace(|c: char| c.is_whitespace(), "_");
                     new_mcp_servers.insert(
                         name,
@@ -559,6 +598,7 @@ impl CodexAgent {
         config.model_provider_id = session_configured.model_provider_id.clone();
         config.model_reasoning_effort = session_configured.reasoning_effort.clone();
         config.service_tier = session_configured.service_tier.clone();
+        config.approvals_reviewer = session_configured.approvals_reviewer;
         config
             .permissions
             .approval_policy
@@ -584,7 +624,10 @@ impl CodexAgent {
         config.model = Some(snapshot.model.clone());
         config.model_provider_id = snapshot.model_provider_id.clone();
         config.model_reasoning_effort = snapshot.reasoning_effort.clone();
+        config.model_reasoning_summary = snapshot.reasoning_summary;
         config.service_tier = snapshot.service_tier.clone();
+        config.personality = snapshot.personality;
+        config.approvals_reviewer = snapshot.approvals_reviewer;
         config
             .permissions
             .approval_policy
@@ -734,15 +777,7 @@ impl CodexAgent {
             .list(SessionListCapabilities::new())
             .resume(SessionResumeCapabilities::new());
 
-        let mut auth_methods = vec![
-            CodexAuthMethod::ChatGpt.into(),
-            CodexAuthMethod::CodexApiKey.into(),
-            CodexAuthMethod::OpenAiApiKey.into(),
-        ];
-        // Until codex device code auth works, we can't use this in remote ssh projects
-        if std::env::var("NO_BROWSER").is_ok() {
-            auth_methods.remove(0);
-        }
+        let auth_methods = supported_auth_methods(std::env::var("NO_BROWSER").is_ok());
 
         Ok(InitializeResponse::new(protocol_version)
             .agent_capabilities(agent_capabilities)
@@ -842,7 +877,7 @@ impl CodexAgent {
         } = request;
         info!("Creating new session with cwd: {}", cwd.display());
 
-        let mut config = self.build_session_config(&cwd, mcp_servers)?;
+        let mut config = Self::build_session_config(&self.config, &cwd, mcp_servers)?;
         let num_mcp_servers = config.mcp_servers.len();
 
         let NewThread {
@@ -851,7 +886,7 @@ impl CodexAgent {
             session_configured,
         } = Box::pin(
             self.thread_manager
-                .start_thread(StartThreadOptions::new(config.clone())),
+                .start_thread(start_thread_options(config.clone())),
         )
         .await
         .map_err(|_e| Error::internal_error())?;
@@ -904,7 +939,7 @@ impl CodexAgent {
             ..
         } = request;
 
-        self.restore_session(session_id, cwd, mcp_servers, cx, true)
+        self.restore_session(session_id, cwd, mcp_servers, cx, SessionRestoreKind::Load)
             .await
     }
 
@@ -925,7 +960,7 @@ impl CodexAgent {
         } = request;
 
         let load = self
-            .restore_session(session_id, cwd, mcp_servers, cx, false)
+            .restore_session(session_id, cwd, mcp_servers, cx, SessionRestoreKind::Resume)
             .await?;
 
         Ok(ResumeSessionResponse::new()
@@ -939,7 +974,7 @@ impl CodexAgent {
         cwd: PathBuf,
         mcp_servers: Vec<McpServer>,
         cx: ConnectionTo<Client>,
-        replay_history: bool,
+        restore_kind: SessionRestoreKind,
     ) -> Result<LoadSessionResponse, Error> {
         let rollout_path = find_thread_path_by_id_str(
             &self.config.codex_home,
@@ -950,7 +985,7 @@ impl CodexAgent {
         .map_err(|e| Error::internal_error().data(e.to_string()))?
         .ok_or_else(|| Error::resource_not_found(None))?;
 
-        let rollout_items = if replay_history {
+        let rollout_items = if restore_kind.replays_history() {
             let history = RolloutRecorder::get_rollout_history(&rollout_path)
                 .await
                 .map_err(|e| Error::internal_error().data(e.to_string()))?;
@@ -964,7 +999,7 @@ impl CodexAgent {
             Vec::new()
         };
 
-        let mut config = self.build_session_config(&cwd, mcp_servers)?;
+        let mut config = Self::build_session_config(&self.config, &cwd, mcp_servers)?;
 
         let NewThread {
             thread_id,
@@ -975,7 +1010,7 @@ impl CodexAgent {
             rollout_path,
             self.auth_manager.clone(),
             None,
-            ClientMcpExtensions::default(),
+            client_mcp_extensions(),
         ))
         .await
         .map_err(|e| Error::internal_error().data(e.to_string()))?;
@@ -993,7 +1028,7 @@ impl CodexAgent {
             cx,
         ));
 
-        if replay_history {
+        if restore_kind.replays_history() {
             thread.replay_history(rollout_items).await?;
         }
 
@@ -1141,6 +1176,26 @@ enum CodexAuthMethod {
     OpenAiApiKey,
 }
 
+fn supported_auth_methods(no_browser: bool) -> Vec<AuthMethod> {
+    supported_codex_auth_methods(no_browser)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+fn supported_codex_auth_methods(no_browser: bool) -> Vec<CodexAuthMethod> {
+    let methods = [
+        CodexAuthMethod::ChatGpt,
+        CodexAuthMethod::CodexApiKey,
+        CodexAuthMethod::OpenAiApiKey,
+    ];
+
+    methods
+        .into_iter()
+        .filter(|method| !(no_browser && *method == CodexAuthMethod::ChatGpt))
+        .collect()
+}
+
 impl From<CodexAuthMethod> for AuthMethodId {
     fn from(method: CodexAuthMethod) -> Self {
         Self::new(match method {
@@ -1236,7 +1291,245 @@ fn stored_session_title(name: Option<&str>, preview: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use acp::schema::{EnvVariable, HttpHeader};
+    use codex_config::{AppToolApproval, McpServerAuth};
+    use codex_core::config::ConfigOverrides;
+    use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use serde_json::json;
+
     use super::*;
+
+    async fn test_config() -> anyhow::Result<Config> {
+        Ok(Config::load_with_cli_overrides_and_harness_overrides(
+            vec![],
+            ConfigOverrides::default(),
+        )
+        .await?)
+    }
+
+    #[test]
+    fn thread_id_is_the_runtime_identity_behind_the_acp_session_id() {
+        let thread_id = ThreadId::new();
+        let session_id = CodexAgent::session_id_from_thread_id(thread_id);
+
+        assert_eq!(
+            ThreadId::from_string(&session_id.0)
+                .expect("ACP session ID should contain a thread ID"),
+            thread_id
+        );
+    }
+
+    #[test]
+    fn load_and_resume_have_distinct_replay_contracts() {
+        assert!(SessionRestoreKind::Load.replays_history());
+        assert!(!SessionRestoreKind::Resume.replays_history());
+    }
+
+    #[test]
+    fn auth_methods_preserve_browser_and_api_key_precedence() {
+        assert_eq!(
+            supported_codex_auth_methods(false),
+            vec![
+                CodexAuthMethod::ChatGpt,
+                CodexAuthMethod::CodexApiKey,
+                CodexAuthMethod::OpenAiApiKey,
+            ]
+        );
+        assert_eq!(
+            supported_codex_auth_methods(true),
+            vec![CodexAuthMethod::CodexApiKey, CodexAuthMethod::OpenAiApiKey]
+        );
+    }
+
+    #[tokio::test]
+    async fn start_options_preserve_session_config_and_disable_unowned_extensions()
+    -> anyhow::Result<()> {
+        let mut config = test_config().await?;
+        config.model = Some("session-model".to_string());
+        config.model_reasoning_effort = Some(ReasoningEffort::High);
+        config.service_tier = Some("fast".to_string());
+        config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+        config.features.enable(Feature::Mcp20260728)?;
+        apply_runtime_feature_contracts(&mut config)?;
+
+        let options = start_thread_options(config.clone());
+
+        assert_eq!(options.config.cwd, config.cwd);
+        assert_eq!(options.config.model, config.model);
+        assert_eq!(options.config.model_provider_id, config.model_provider_id);
+        assert_eq!(
+            options.config.model_reasoning_effort,
+            config.model_reasoning_effort
+        );
+        assert_eq!(options.config.service_tier, config.service_tier);
+        assert_eq!(
+            options.config.permissions.permission_profile(),
+            config.permissions.permission_profile()
+        );
+        assert_eq!(
+            options.config.approvals_reviewer,
+            ApprovalsReviewer::AutoReview
+        );
+        assert_eq!(
+            options.client_mcp_extensions,
+            ClientMcpExtensions::default()
+        );
+        assert!(options.environments.is_none());
+        assert!(!options.config.features.enabled(Feature::Mcp20260728));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_session_snapshot_restores_runtime_configuration() -> anyhow::Result<()> {
+        let mut config = test_config().await?;
+        let thread_id = ThreadId::new();
+        let cwd = config.cwd.clone();
+        let snapshot: SessionConfiguredEvent = serde_json::from_value(json!({
+            "session_id": thread_id,
+            "model": "restored-model",
+            "model_provider_id": "restored-provider",
+            "service_tier": "fast",
+            "approval_policy": "never",
+            "approvals_reviewer": "auto_review",
+            "sandbox_policy": {
+                "type": "workspace-write",
+                "writable_roots": [],
+                "network_access": false,
+                "exclude_tmpdir_env_var": false,
+                "exclude_slash_tmp": false
+            },
+            "cwd": cwd,
+            "reasoning_effort": "high"
+        }))?;
+
+        CodexAgent::sync_config_with_session(&mut config, &snapshot)?;
+
+        assert_eq!(snapshot.thread_id, thread_id);
+        assert_eq!(config.cwd, cwd);
+        assert_eq!(config.model.as_deref(), Some("restored-model"));
+        assert_eq!(config.model_provider_id, "restored-provider");
+        assert_eq!(config.service_tier.as_deref(), Some("fast"));
+        assert_eq!(
+            config
+                .model_reasoning_effort
+                .as_ref()
+                .map(ToString::to_string),
+            Some("high".to_string())
+        );
+        assert_eq!(config.approvals_reviewer, ApprovalsReviewer::AutoReview);
+        assert!(
+            config
+                .permissions
+                .permission_profile()
+                .file_system_sandbox_policy()
+                .can_write_path_with_cwd(cwd.as_path(), cwd.as_path())
+        );
+
+        let cleared_snapshot: SessionConfiguredEvent = serde_json::from_value(json!({
+            "session_id": thread_id,
+            "model": "restored-model",
+            "model_provider_id": "restored-provider",
+            "approval_policy": "never",
+            "sandbox_policy": { "type": "read-only" },
+            "cwd": cwd
+        }))?;
+        CodexAgent::sync_config_with_session(&mut config, &cleared_snapshot)?;
+        assert_eq!(config.model_reasoning_effort, None);
+        assert_eq!(config.service_tier, None);
+        assert_eq!(config.approvals_reviewer, ApprovalsReviewer::User);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_config_preserves_mcp_transport_auth_env_and_cwd() -> anyhow::Result<()> {
+        let mut base_config = test_config().await?;
+        let base_server = McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://base.example/mcp".to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            auth: McpServerAuth::ChatGpt,
+            environment_id: "base-environment".to_string(),
+            enabled: true,
+            required: true,
+            supports_parallel_tool_calls: true,
+            omit_tools_from: None,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: Some(AppToolApproval::Prompt),
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: Default::default(),
+        };
+        base_config
+            .mcp_servers
+            .set(HashMap::from([("base".to_string(), base_server.clone())]))?;
+        let cwd = base_config.cwd.to_path_buf();
+        let client_servers = vec![
+            McpServer::Stdio(
+                McpServerStdio::new("local server", "example-mcp")
+                    .args(vec!["--stdio".to_string()])
+                    .env(vec![EnvVariable::new("SESSION_TOKEN", "secret")]),
+            ),
+            McpServer::Http(
+                McpServerHttp::new("remote server", "https://client.example/mcp")
+                    .headers(vec![HttpHeader::new("Authorization", "Bearer client")]),
+            ),
+        ];
+
+        let config = CodexAgent::build_session_config(&base_config, &cwd, client_servers)?;
+        let servers = config.mcp_servers.get();
+
+        assert_eq!(servers.get("base"), Some(&base_server));
+        let local = servers
+            .get("local_server")
+            .expect("stdio server should be preserved");
+        let McpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            cwd: server_cwd,
+            ..
+        } = &local.transport
+        else {
+            panic!("client stdio server should remain stdio");
+        };
+        assert_eq!(command, "example-mcp");
+        assert_eq!(args, &["--stdio"]);
+        assert_eq!(
+            env.as_ref()
+                .and_then(|env| env.get("SESSION_TOKEN"))
+                .map(String::as_str),
+            Some("secret")
+        );
+        assert_eq!(
+            server_cwd.as_ref().map(ToString::to_string),
+            Some(cwd.display().to_string())
+        );
+
+        let remote = servers
+            .get("remote_server")
+            .expect("HTTP server should be preserved");
+        let McpServerTransportConfig::StreamableHttp { http_headers, .. } = &remote.transport
+        else {
+            panic!("client HTTP server should remain HTTP");
+        };
+        assert_eq!(
+            http_headers
+                .as_ref()
+                .and_then(|headers| headers.get("Authorization"))
+                .map(String::as_str),
+            Some("Bearer client")
+        );
+        Ok(())
+    }
 
     #[test]
     fn stored_session_title_prefers_thread_name() {

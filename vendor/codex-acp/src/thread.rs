@@ -365,6 +365,10 @@ pub struct Thread {
 }
 
 impl Thread {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "thread construction keeps each runtime dependency explicit"
+    )]
     pub fn new(
         session_id: SessionId,
         thread_id: ThreadId,
@@ -5783,7 +5787,10 @@ impl<A: Auth> ThreadActor<A> {
         self.config.model = Some(settings.model.clone());
         self.config.model_provider_id = settings.model_provider_id.clone();
         self.config.model_reasoning_effort = settings.reasoning_effort.clone();
+        self.config.model_reasoning_summary = settings.reasoning_summary;
         self.config.service_tier = settings.service_tier.clone();
+        self.config.personality = settings.personality;
+        self.config.approvals_reviewer = settings.approvals_reviewer;
         self.config
             .permissions
             .approval_policy
@@ -6538,7 +6545,9 @@ mod tests {
     use codex_features::Feature;
     use codex_protocol::models::AgentMessageInputContent;
     use codex_protocol::{
-        config_types::{CollaborationMode, ModeKind, Settings},
+        config_types::{
+            ApprovalsReviewer, CollaborationMode, ModeKind, Personality, ReasoningSummary, Settings,
+        },
         protocol::{ThreadSettingsAppliedEvent, TokenUsage, TokenUsageInfo},
     };
     use codex_shell_command::is_dangerous_command::{
@@ -6669,7 +6678,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_uses_config_options_without_legacy_models() -> anyhow::Result<()> {
-        let (_session_id, _client, _thread, message_tx, local_set) = setup(vec![]).await?;
+        let (_session_id, client, _thread, message_tx, local_set) = setup(vec![]).await?;
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
 
         message_tx.send(ThreadMessage::Load { response_tx })?;
@@ -6677,6 +6686,26 @@ mod tests {
         let load_response = tokio::try_join!(
             async {
                 let load_response = response_rx.await??;
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    loop {
+                        if client
+                            .notifications
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|notification| {
+                                matches!(
+                                    notification.update,
+                                    SessionUpdate::AvailableCommandsUpdate(_)
+                                )
+                            })
+                        {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await?;
                 drop(message_tx);
                 anyhow::Ok(load_response)
             },
@@ -6703,7 +6732,50 @@ mod tests {
                 .any(|option| option.get("id").and_then(|id| id.as_str()) == Some("model")),
             "model selection should be exposed through config options: {load_json:?}"
         );
+        assert!(client.notifications.lock().unwrap().iter().any(|notification| {
+            matches!(
+                &notification.update,
+                SessionUpdate::AvailableCommandsUpdate(update)
+                    if update.available_commands.iter().any(|command| command.name == "review")
+            )
+        }));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replay_history_projects_each_rollout_item_once() -> anyhow::Result<()> {
+        let (_session_id, client, _thread, message_tx, actor_handle) = setup(vec![]).await?;
+        let (response_tx, response_rx) = oneshot::channel();
+        message_tx.send(ThreadMessage::ReplayHistory {
+            history: vec![RolloutItem::EventMsg(EventMsg::UserMessage(
+                UserMessageEvent {
+                    message: "legacy transcript entry".to_string(),
+                    ..Default::default()
+                },
+            ))],
+            response_tx,
+        })?;
+        response_rx.await??;
+        drop(message_tx);
+        actor_handle.await?;
+
+        let replayed_entries = client
+            .notifications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::UserMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        ..
+                    }) if text == "legacy transcript entry"
+                )
+            })
+            .count();
+        assert_eq!(replayed_entries, 1);
         Ok(())
     }
 
@@ -6752,7 +6824,10 @@ mod tests {
     async fn test_config_options_hide_fast_mode_when_feature_disabled() -> anyhow::Result<()> {
         let (_session_id, _client, _thread, message_tx, local_set) =
             setup_with_config(vec![], |config| {
-                config.features.disable(Feature::FastMode).unwrap();
+                config
+                    .features
+                    .disable(Feature::FastMode)
+                    .expect("test config should allow disabling Fast mode");
             })
             .await?;
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
@@ -8811,6 +8886,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_mode_survives_additional_writable_roots() -> anyhow::Result<()> {
+        let mut config = Config::load_with_cli_overrides_and_harness_overrides(
+            vec![],
+            ConfigOverrides::default(),
+        )
+        .await?;
+        let preset = APPROVAL_PRESETS
+            .iter()
+            .find(|preset| preset.id == "auto")
+            .expect("workspace preset should exist");
+        let expanded_profile = PermissionProfile::workspace_write_with(
+            std::slice::from_ref(&config.cwd),
+            preset.permission_profile.network_sandbox_policy(),
+            false,
+            false,
+        );
+        assert_ne!(expanded_profile, preset.permission_profile);
+        config.permissions.approval_policy.set(preset.approval)?;
+        config
+            .permissions
+            .set_permission_profile_from_session_snapshot(
+                PermissionProfileSnapshot::from_session_snapshot(expanded_profile, None),
+            )?;
+
+        assert_eq!(
+            current_session_mode_id(&config).map(|id| id.0.to_string()),
+            Some("auto".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn handle_set_mode_stores_matching_active_permission_profile() -> anyhow::Result<()> {
         let (mut actor, _client, conversation) = setup_actor(|_| {}).await?;
 
@@ -9427,14 +9534,14 @@ mod tests {
                 model: model.clone(),
                 model_provider_id: config.model_provider_id.clone(),
                 service_tier: config.service_tier.clone(),
-                approval_policy: config.permissions.approval_policy.get().clone(),
-                approvals_reviewer: config.approvals_reviewer.clone(),
+                approval_policy: *config.permissions.approval_policy.get(),
+                approvals_reviewer: config.approvals_reviewer,
                 permission_profile: config.permissions.permission_profile().clone(),
                 active_permission_profile: config.permissions.active_permission_profile().clone(),
                 cwd: config.cwd.clone(),
                 reasoning_effort: reasoning_effort.clone(),
-                reasoning_summary: None,
-                personality: config.personality.clone(),
+                reasoning_summary: config.model_reasoning_summary,
+                personality: config.personality,
                 collaboration_mode: CollaborationMode {
                     mode: ModeKind::Default,
                     settings: Settings {
@@ -9503,6 +9610,72 @@ mod tests {
             "a repeated snapshot must not re-emit options"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_settings_snapshot_preserves_fork_configuration() -> anyhow::Result<()> {
+        let presets = all_model_presets();
+        let preset = presets
+            .iter()
+            .find(|preset| preset.supported_reasoning_efforts.len() > 1)
+            .expect("a model with reasoning options should exist")
+            .clone();
+        let auto = APPROVAL_PRESETS
+            .iter()
+            .find(|preset| preset.id == "auto")
+            .expect("workspace preset should exist");
+        let (mut actor, _, _) = setup_actor(|config| {
+            config.model = Some("parent-model".to_string());
+        })
+        .await?;
+        let parent_config = actor.config.clone();
+        let mut fork_config = actor.config.clone();
+        fork_config.model = Some(preset.model.clone());
+        fork_config.model_provider_id = "fork-provider".to_string();
+        fork_config.model_reasoning_effort = Some(preset.default_reasoning_effort.clone());
+        fork_config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+        fork_config.service_tier = Some("fast".to_string());
+        fork_config.personality = Some(Personality::Pragmatic);
+        fork_config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+        fork_config.permissions.approval_policy.set(auto.approval)?;
+        fork_config
+            .permissions
+            .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
+                auto.permission_profile.clone(),
+                ActivePermissionProfile::new(CODEX_WORKSPACE_PROFILE_ID),
+            ))?;
+        let EventMsg::ThreadSettingsApplied(event) =
+            thread_settings_applied_event(&fork_config, fork_config.model_reasoning_effort.clone())
+        else {
+            unreachable!();
+        };
+
+        actor.sync_config_with_thread_settings(&event.thread_settings)?;
+
+        assert_eq!(actor.config.cwd, fork_config.cwd);
+        assert_eq!(actor.config.model, fork_config.model);
+        assert_eq!(actor.config.model_provider_id, "fork-provider");
+        assert_eq!(
+            actor.config.model_reasoning_effort,
+            fork_config.model_reasoning_effort
+        );
+        assert_eq!(
+            actor.config.model_reasoning_summary,
+            Some(ReasoningSummary::Detailed)
+        );
+        assert_eq!(actor.config.service_tier.as_deref(), Some("fast"));
+        assert_eq!(actor.config.personality, Some(Personality::Pragmatic));
+        assert_eq!(
+            actor.config.approvals_reviewer,
+            ApprovalsReviewer::AutoReview
+        );
+        assert_eq!(
+            actor.config.permissions.permission_profile(),
+            fork_config.permissions.permission_profile()
+        );
+        assert_eq!(parent_config.model.as_deref(), Some("parent-model"));
+        assert_ne!(parent_config.model, actor.config.model);
         Ok(())
     }
 
