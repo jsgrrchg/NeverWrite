@@ -2873,11 +2873,16 @@ function commitAcceptedConversationTurn(input: {
     const acceptedSelection = getConversationSelection(
         input.acceptedRuntimeSession,
     );
+    const completedEventCursor = findCompletedConversationTurnCursor(
+        input.sourceSession,
+        input.userMessageId,
+    );
     const contextCursor =
-        input.contextHandoff?.bindingId === input.targetBinding.bindingId
+        completedEventCursor ??
+        (input.contextHandoff?.bindingId === input.targetBinding.bindingId
             ? (input.contextHandoff.nextCursor ??
               input.targetBinding.contextCursor)
-            : input.targetBinding.contextCursor;
+            : input.targetBinding.contextCursor);
     const targetBinding: AcpConversationBinding = {
         ...input.targetBinding,
         runtimeDisplayName:
@@ -2925,22 +2930,15 @@ function commitAcceptedConversationTurn(input: {
         activeBindingId: targetBinding.bindingId,
         providerBindings,
     };
-    const provenance: ConversationTurnProvenance = {
-        bindingId: targetBinding.bindingId,
-        runtimeId: targetBinding.runtimeId,
-        runtimeSessionId: targetBinding.runtimeSessionId,
-        modelId: targetBinding.modelId,
-        modeId: targetBinding.modeId,
-        options: { ...targetBinding.options },
-        startReason: input.route.startReason,
-        handoffTruncated: input.contextHandoff?.truncated ?? false,
-        handoffOmittedTurnCount:
-            input.contextHandoff?.omittedTurnCount ?? 0,
-    };
-    const attributedSource = replaceSessionMessage(
+    const provenance = createConversationTurnProvenance(
+        targetBinding,
+        input.route,
+        input.contextHandoff,
+    );
+    const attributedSource = attributeConversationTurnMessages(
         input.sourceSession,
         input.userMessageId,
-        (message) => ({ ...message, turnProvenance: provenance }),
+        provenance,
     );
 
     return replaceSessionTranscript(
@@ -2968,11 +2966,84 @@ function commitAcceptedConversationTurn(input: {
             isResumingSession: false,
             resumeContextPending: false,
             runtimeState: "live",
+            status:
+                completedEventCursor != null
+                    ? "idle"
+                    : input.acceptedRuntimeSession.status,
             conversationBindings,
-            activeTurnProvenance: provenance,
+            activeTurnProvenance:
+                completedEventCursor != null ? null : provenance,
         },
         getSessionTranscriptMessages(attributedSource),
     );
+}
+
+function createConversationTurnProvenance(
+    binding: AcpConversationBinding,
+    route: ConversationTurnRoute,
+    contextHandoff?: AcpContextHandoffMetadata,
+): ConversationTurnProvenance {
+    return {
+        bindingId: binding.bindingId,
+        runtimeId: binding.runtimeId,
+        runtimeSessionId: binding.runtimeSessionId,
+        modelId: binding.modelId,
+        modeId: binding.modeId,
+        options: { ...binding.options },
+        startReason: route.startReason,
+        handoffTruncated: contextHandoff?.truncated ?? false,
+        handoffOmittedTurnCount: contextHandoff?.omittedTurnCount ?? 0,
+    };
+}
+
+function findCompletedConversationTurnCursor(
+    session: AIChatSession,
+    userMessageId: string,
+) {
+    const messages = getSessionTranscriptMessages(session);
+    const turnStartIndex = messages.findIndex(
+        (message) => message.id === userMessageId,
+    );
+    if (turnStartIndex < 0) return null;
+    return (
+        messages
+            .slice(turnStartIndex + 1)
+            .reverse()
+            .find(
+                (message) =>
+                    message.role === "assistant" &&
+                    message.kind === "text" &&
+                    message.inProgress === false,
+            )?.id ?? null
+    );
+}
+
+function attributeConversationTurnMessages(
+    session: AIChatSession,
+    userMessageId: string,
+    provenance: ConversationTurnProvenance,
+) {
+    let reachedTurn = false;
+    const messages = getSessionTranscriptMessages(session).map((message) => {
+        if (message.id === userMessageId) reachedTurn = true;
+        return reachedTurn && !message.turnProvenance
+            ? { ...message, turnProvenance: provenance }
+            : message;
+    });
+    return replaceSessionTranscript(session, messages);
+}
+
+function removeConversationTurnMessages(
+    session: AIChatSession,
+    userMessageId: string,
+) {
+    const messages = getSessionTranscriptMessages(session);
+    const turnStartIndex = messages.findIndex(
+        (message) => message.id === userMessageId,
+    );
+    return turnStartIndex < 0
+        ? session
+        : replaceSessionTranscript(session, messages.slice(0, turnStartIndex));
 }
 
 function completeActiveBindingTurn(
@@ -2980,7 +3051,8 @@ function completeActiveBindingTurn(
     messageId: string,
 ) {
     const bindings = updateConversationBindingsFromLegacySession(session);
-    const activeBindingId = bindings.activeBindingId;
+    const activeBindingId =
+        session.activeTurnProvenance?.bindingId ?? bindings.activeBindingId;
     if (!activeBindingId) {
         return { ...session, activeTurnProvenance: null };
     }
@@ -6754,17 +6826,93 @@ function logResumeRecovery(
     event: "started" | "succeeded" | "failed",
     payload: {
         resume_strategy: ResumeRecoveryStrategy;
-        history_session_id: string;
         runtime_id: string;
         persisted_message_count: number;
         loaded_persisted_message_start: number | null;
         resume_context_pending: boolean;
         runtime_state_before: string;
         runtime_state_after: string;
-        error_message?: string;
+        error_code?: CanonicalConversationErrorCode;
     },
 ) {
-    logDebug("chat-store", `saved chat recovery ${event}`, payload);
+    logCanonicalConversationDiagnostic(`saved chat recovery ${event}`, payload);
+}
+
+type CanonicalConversationErrorCode =
+    | "authentication_required"
+    | "provider_unavailable"
+    | "runtime_configuration_invalid"
+    | "runtime_disconnected"
+    | "transcript_unavailable"
+    | "turn_rejected"
+    | "unexpected";
+
+function getCanonicalConversationErrorCode(
+    message: string,
+    runtimeId?: string | null,
+): CanonicalConversationErrorCode {
+    if (isRuntimeSessionDisconnectedErrorMessage(message)) {
+        return "runtime_disconnected";
+    }
+    if (isAuthenticationErrorMessage(message, runtimeId)) {
+        return "authentication_required";
+    }
+    const normalized = message.toLowerCase();
+    if (normalized.includes("configuration is invalid")) {
+        return "runtime_configuration_invalid";
+    }
+    if (
+        normalized.includes("transcript") &&
+        (normalized.includes("failed to load") ||
+            normalized.includes("unavailable"))
+    ) {
+        return "transcript_unavailable";
+    }
+    if (
+        normalized.includes("provider is unavailable") ||
+        normalized.includes("runtime is no longer available")
+    ) {
+        return "provider_unavailable";
+    }
+    if (normalized.includes("rejected")) {
+        return "turn_rejected";
+    }
+    return "unexpected";
+}
+
+function logCanonicalConversationDiagnostic(
+    message: string,
+    detail: Record<string, unknown>,
+) {
+    _canonicalConversationLogSequence += 1;
+    logDebug("chat-store", message, detail, {
+        onceKey: `canonical-conversation:${_canonicalConversationLogSequence}`,
+    });
+}
+
+function registerPendingConversationTurnEventRoute(
+    sourceSessionId: string,
+    targetSessionId: string,
+) {
+    if (sourceSessionId === targetSessionId) return null;
+    const token = crypto.randomUUID();
+    _pendingConversationTurnEventRouteBySessionId.set(targetSessionId, {
+        sourceSessionId,
+        token,
+    });
+    return token;
+}
+
+function clearPendingConversationTurnEventRoute(
+    targetSessionId: string,
+    token: string,
+) {
+    if (
+        _pendingConversationTurnEventRouteBySessionId.get(targetSessionId)
+            ?.token === token
+    ) {
+        _pendingConversationTurnEventRouteBySessionId.delete(targetSessionId);
+    }
 }
 
 function getRuntimeReadyButDisabledMessage(
@@ -7011,6 +7159,15 @@ const _pendingTurnSelectionByConversationId = new Map<
     string,
     ConversationSelection
 >();
+type PendingConversationTurnEventRoute = {
+    sourceSessionId: string;
+    token: string;
+};
+const _pendingConversationTurnEventRouteBySessionId = new Map<
+    string,
+    PendingConversationTurnEventRoute
+>();
+let _canonicalConversationLogSequence = 0;
 let _sessionPersistenceFlushScheduled = false;
 let _sessionPersistenceEpoch = 0;
 
@@ -7841,9 +7998,20 @@ export function resolveChatSessionId(
         | "conversationIdBySessionRef"
         | "conversationsById"
         | "sessionIdByConversationId"
+        | "sessionsById"
     >,
     ref: string | null | undefined,
 ) {
+    if (ref) {
+        const pendingRoute =
+            _pendingConversationTurnEventRouteBySessionId.get(ref);
+        if (
+            pendingRoute &&
+            state.sessionsById[pendingRoute.sourceSessionId]
+        ) {
+            return pendingRoute.sourceSessionId;
+        }
+    }
     return resolveLegacySessionId(state, ref);
 }
 
@@ -8615,6 +8783,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                   created: boolean;
               }
             | null = null;
+        let plannedRoute: ConversationTurnRoute | null = null;
+        let pendingEventRoute:
+            | { targetSessionId: string; token: string }
+            | null = null;
         let turnAccepted = false;
         let preflightOwnership = options?.preflightOwnership ?? null;
         let session = get().sessionsById[activeSessionId];
@@ -8808,12 +8980,25 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             if (session.resumeContextPending && !route.providerChanged) {
                 route = { ...route, startReason: "transcript_handoff" };
             }
+            plannedRoute = route;
             const connected = await connectConversationTurn({
                 sourceSession: session,
                 route,
                 attachments: currentItem.attachments,
             });
             preparedTurn = { ...connected, route };
+            logCanonicalConversationDiagnostic(
+                "canonical conversation turn connected",
+                {
+                    strategy: route.strategy,
+                    start_reason: route.startReason,
+                    source_runtime_id: session.runtimeId,
+                    target_runtime_id: connected.runtimeSession.runtimeId,
+                    provider_changed: route.providerChanged,
+                    reused_binding: route.targetBinding != null,
+                    created_session: connected.created,
+                },
+            );
             const preparedPrompt = buildPromptWithContextHandoff(
                 session,
                 currentItem.prompt,
@@ -8841,6 +9026,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             const userMessageId =
                 currentItem.optimisticMessageId ?? crypto.randomUUID();
             optimisticMessageId = userMessageId;
+            const turnProvenance = createConversationTurnProvenance(
+                connected.targetBinding,
+                route,
+                currentItem.contextHandoff,
+            );
             if (
                 source === "queue" &&
                 currentItem.optimisticMessageId !== userMessageId
@@ -8866,7 +9056,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const targetSession = state.sessionsById[activeSessionId];
                 if (!targetSession) return state;
                     didInsertOptimisticMessage = true;
-                const nextSession = startNewWorkCycle(targetSession);
+                const nextSession = startNewWorkCycle({
+                    ...targetSession,
+                    activeTurnProvenance: turnProvenance,
+                });
                 const userMessage: AIChatMessage = {
                     ...createTextMessage("user", currentItem.content),
                     id: userMessageId,
@@ -8945,6 +9138,17 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 void persistSession(afterSend);
             }
 
+            const eventRouteToken = registerPendingConversationTurnEventRoute(
+                activeSessionId,
+                connected.runtimeSession.sessionId,
+            );
+            if (eventRouteToken) {
+                pendingEventRoute = {
+                    targetSessionId: connected.runtimeSession.sessionId,
+                    token: eventRouteToken,
+                };
+            }
+
             if (route.providerChanged) {
                 await aiStartConversationTurn({
                     conversationId: bindings.conversationId,
@@ -8962,6 +9166,9 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 currentItem.attachments,
             );
             turnAccepted = true;
+            // Runtime deltas can arrive before the send IPC resolves. Materialize
+            // them on the source projection before its local session id migrates.
+            flushDeltasSync();
             const sourceAfterSend =
                 get().sessionsById[activeSessionId] ?? session;
             const acceptedBinding = createTurnBinding(
@@ -9001,8 +9208,38 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 migrateSessionLocalState(activeSessionId, committedSession);
                 activeSessionId = committedSession.sessionId;
             }
+            if (pendingEventRoute) {
+                clearPendingConversationTurnEventRoute(
+                    pendingEventRoute.targetSessionId,
+                    pendingEventRoute.token,
+                );
+                pendingEventRoute = null;
+            }
+            logCanonicalConversationDiagnostic(
+                "canonical conversation turn accepted",
+                {
+                    strategy: route.strategy,
+                    start_reason: route.startReason,
+                    source_runtime_id: session.runtimeId,
+                    target_runtime_id: committedSession.runtimeId,
+                    provider_changed: route.providerChanged,
+                    reused_binding: route.targetBinding != null,
+                    created_session: connected.created,
+                    handoff_truncated:
+                        currentItem.contextHandoff?.truncated ?? false,
+                    handoff_omitted_turn_count:
+                        currentItem.contextHandoff?.omittedTurnCount ?? 0,
+                },
+            );
             persistCurrentSession(activeSessionId);
         } catch (error) {
+            if (pendingEventRoute) {
+                clearPendingConversationTurnEventRoute(
+                    pendingEventRoute.targetSessionId,
+                    pendingEventRoute.token,
+                );
+                pendingEventRoute = null;
+            }
             if (preparedTurn?.created && !turnAccepted) {
                 await aiDeleteRuntimeSession(
                     preparedTurn.runtimeSession.sessionId,
@@ -9016,6 +9253,26 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 "Failed to send the message.",
                 currentItem.runtimeId ?? session.runtimeId,
             );
+            if (plannedRoute) {
+                logCanonicalConversationDiagnostic(
+                    "canonical conversation turn failed",
+                    {
+                        strategy: plannedRoute.strategy,
+                        start_reason: plannedRoute.startReason,
+                        source_runtime_id: session.runtimeId,
+                        target_runtime_id:
+                            plannedRoute.selection.runtimeId,
+                        provider_changed: plannedRoute.providerChanged,
+                        reused_binding:
+                            plannedRoute.targetBinding != null,
+                        created_session: preparedTurn?.created ?? false,
+                        error_code: getCanonicalConversationErrorCode(
+                            message,
+                            plannedRoute.selection.runtimeId,
+                        ),
+                    },
+                );
+            }
             shouldRecoverPromptForRetry =
                 source === "immediate" &&
                 (providerSwitchRequested ||
@@ -9023,17 +9280,29 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             const failedOptimisticMessageId = shouldRecoverPromptForRetry
                 ? optimisticMessageId
                 : null;
-            if (failedOptimisticMessageId) {
+            if (failedOptimisticMessageId || preparedTurn) {
                 set((state) => {
                     const targetSession = state.sessionsById[activeSessionId];
                     if (!targetSession) return state;
+                    const recoveredSession = failedOptimisticMessageId
+                        ? removeConversationTurnMessages(
+                              targetSession,
+                              failedOptimisticMessageId,
+                          )
+                        : targetSession;
+                    const shouldClearProvenance =
+                        preparedTurn != null &&
+                        recoveredSession.activeTurnProvenance?.bindingId ===
+                            preparedTurn.targetBinding.bindingId;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: removeSessionMessage(
-                                targetSession,
-                                failedOptimisticMessageId,
-                            ),
+                            [activeSessionId]: shouldClearProvenance
+                                ? {
+                                      ...recoveredSession,
+                                      activeTurnProvenance: null,
+                                  }
+                                : recoveredSession,
                         },
                     };
                 });
@@ -11738,7 +12007,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 let latestCatalog = getRuntimeCatalogSnapshot(latestSession);
                 logResumeRecovery("started", {
                     resume_strategy: resumeStrategy,
-                    history_session_id: historySessionId,
                     runtime_id: latestSession.runtimeId,
                     persisted_message_count:
                         getSessionPersistedMessageCount(latestSession),
@@ -11892,7 +12160,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         );
                         logResumeRecovery("failed", {
                             resume_strategy: "native_load_session",
-                            history_session_id: historySessionId,
                             runtime_id: latestSession.runtimeId,
                             persisted_message_count:
                                 getSessionPersistedMessageCount(latestSession),
@@ -11904,7 +12171,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                             runtime_state_before: runtimeStateBefore,
                             runtime_state_after:
                                 getSessionRuntimeStateForLog(latestSession),
-                            error_message: nativeResumeMessage,
+                            error_code: getCanonicalConversationErrorCode(
+                                nativeResumeMessage,
+                                latestSession.runtimeId,
+                            ),
                         });
 
                         const fullTranscriptLoaded =
@@ -11922,7 +12192,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         resumeStrategy = "transcript_prompt_injection";
                         logResumeRecovery("started", {
                             resume_strategy: resumeStrategy,
-                            history_session_id: historySessionId,
                             runtime_id: latestSession.runtimeId,
                             persisted_message_count:
                                 getSessionPersistedMessageCount(latestSession),
@@ -11934,7 +12203,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                             runtime_state_before: runtimeStateBefore,
                             runtime_state_after:
                                 getSessionRuntimeStateForLog(latestSession),
-                            error_message: nativeResumeMessage,
+                            error_code: getCanonicalConversationErrorCode(
+                                nativeResumeMessage,
+                                latestSession.runtimeId,
+                            ),
                         });
                         const fallback = await createTranscriptResumeSession(
                                 latestSession,
@@ -12018,7 +12290,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 migrateSessionLocalState(sessionId, migratedSession);
                 logResumeRecovery("succeeded", {
                     resume_strategy: resumeStrategy,
-                    history_session_id: historySessionId,
                     runtime_id: migratedSession.runtimeId,
                     persisted_message_count:
                         getSessionPersistedMessageCount(migratedSession),
@@ -12041,9 +12312,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const failedSession = get().sessionsById[sessionId] ?? session;
                 logResumeRecovery("failed", {
                     resume_strategy: resumeStrategy,
-                    history_session_id: getRuntimeHistorySessionId(
-                        failedSession,
-                    ),
                     runtime_id: failedSession.runtimeId,
                     persisted_message_count:
                         getSessionPersistedMessageCount(failedSession),
@@ -12054,7 +12322,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     runtime_state_before: getSessionRuntimeStateForLog(session),
                     runtime_state_after:
                         getSessionRuntimeStateForLog(failedSession),
-                    error_message: message,
+                    error_code: getCanonicalConversationErrorCode(
+                        message,
+                        failedSession.runtimeId,
+                    ),
                 });
                 set((state) => {
                     const current = state.sessionsById[sessionId];
@@ -15434,6 +15705,7 @@ export function resetChatStore() {
     _queueDrainLocks.clear();
     _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
+    _pendingConversationTurnEventRouteBySessionId.clear();
     _pendingSessionPersistence.clear();
     _deltaBuffer.messageDelta.clear();
     _deltaBuffer.thinkingDelta.clear();
@@ -15506,5 +15778,6 @@ export function disposeChatStoreRuntime() {
     chatRuntimeInitialized = false;
     _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
+    _pendingConversationTurnEventRouteBySessionId.clear();
     clearTrackedPersistedReconciliationTimers();
 }

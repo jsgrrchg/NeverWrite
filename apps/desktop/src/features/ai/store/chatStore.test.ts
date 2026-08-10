@@ -42,6 +42,7 @@ import {
     initializeChatStoreRuntime,
     REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
     resetChatStore,
+    resolveChatSessionId,
     useChatStore,
 } from "./chatStore";
 import { resolveEditorTargetForOpenTab } from "../../editor/editorTargetResolver";
@@ -14506,6 +14507,29 @@ describe("chatStore", () => {
             if (command === "ai_send_message") {
                 const input = args as { sessionId: string; content: string };
                 sentPrompts.push(input);
+                if (input.sessionId === "local-b") {
+                    const routedSessionId = resolveChatSessionId(
+                        useChatStore.getState(),
+                        input.sessionId,
+                    );
+                    expect(routedSessionId).toBe(providerASessionId);
+                    useChatStore.getState().applyMessageStarted({
+                        session_id: routedSessionId!,
+                        message_id: "b-first-event",
+                    });
+                    useChatStore.getState().applyMessageDelta({
+                        session_id: routedSessionId!,
+                        message_id: "b-first-event",
+                        delta: "Provider B started before send resolved",
+                        role: "assistant",
+                    });
+                    useChatStore.getState().applyMessageCompleted({
+                        session_id: routedSessionId!,
+                        message_id: "b-first-event",
+                        role: "assistant",
+                        turn_complete: true,
+                    });
+                }
                 return input.sessionId === "local-b"
                     ? { ...providerBPayload, status: "streaming" }
                     : { ...resumedProviderAPayload, status: "streaming" };
@@ -14528,7 +14552,7 @@ describe("chatStore", () => {
         expect(sentPrompts[0]).toMatchObject({ sessionId: "local-b" });
         expect(sentPrompts[0].content).toContain("another ACP provider");
         expect(sentPrompts[0].content).toContain("Original provider context");
-        let switched = useChatStore.getState().sessionsById["local-b"]!;
+        const switched = useChatStore.getState().sessionsById["local-b"]!;
         expect(switched.historySessionId).toBe(conversationId);
         expect(switched.conversationBindings).toMatchObject({
             activeBindingId: expect.stringContaining("provider-b"),
@@ -14547,30 +14571,22 @@ describe("chatStore", () => {
                 message.content.includes("Use the saved transcript below"),
             ),
         ).toBe(false);
-
-        useChatStore.getState().applyMessageStarted({
-            session_id: "local-b",
-            message_id: "b-assistant",
-            role: "assistant",
-        });
-        useChatStore.getState().applyMessageDelta({
-            session_id: "local-b",
-            message_id: "b-assistant",
-            delta: "Provider B response",
-            role: "assistant",
-        });
-        flushDeltasSync();
-        useChatStore.getState().applyMessageCompleted({
-            session_id: "local-b",
-            message_id: "b-assistant",
-            role: "assistant",
-            turn_complete: true,
-        });
-        switched = useChatStore.getState().sessionsById["local-b"]!;
         expect(
-            switched.messages.find((message) => message.id === "b-assistant")
+            switched.messages.find(
+                (message) => message.id === "b-first-event",
+            )?.content,
+        ).toBe("Provider B started before send resolved");
+        expect(
+            switched.messages.find(
+                (message) => message.id === "b-first-event",
+            )
                 ?.turnProvenance,
         ).toMatchObject({ runtimeId: "provider-b" });
+        expect(
+            switched.conversationBindings?.providerBindings.find(
+                (binding) => binding.runtimeId === "provider-b",
+            )?.contextCursor,
+        ).toBe("b-first-event");
 
         useChatStore
             .getState()
@@ -14589,16 +14605,65 @@ describe("chatStore", () => {
             "Original provider context",
         );
         expect(sentPrompts[1].content).toContain("Question for B");
-        expect(sentPrompts[1].content).toContain("Provider B response");
+        expect(sentPrompts[1].content).toContain(
+            "Provider B started before send resolved",
+        );
         const returned =
             useChatStore.getState().sessionsById["local-a-resumed"]!;
         expect(returned.conversationBindings?.providerBindings).toHaveLength(2);
         expect(returned.conversationBindings?.preferredSelection.runtimeId).toBe(
             "codex-acp",
         );
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: "local-a-resumed",
+            message_id: "a-returned",
+            delta: "Provider A resumed",
+            role: "assistant",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageCompleted({
+            session_id: "local-a-resumed",
+            message_id: "a-returned",
+            role: "assistant",
+            turn_complete: true,
+        });
+        const afterReturn =
+            useChatStore.getState().sessionsById["local-a-resumed"]!;
+        const messageCount = afterReturn.messages.length;
+        const bindingRevision = afterReturn.conversationBindings?.revision;
+        useChatStore.getState().applyMessageDelta({
+            session_id: "local-b",
+            message_id: "delayed-b-event",
+            delta: "This must remain isolated",
+            role: "assistant",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageCompleted({
+            session_id: "local-a-resumed",
+            message_id: "a-returned",
+            role: "assistant",
+            turn_complete: true,
+        });
+        expect(
+            useChatStore.getState().sessionsById["local-a-resumed"]?.messages,
+        ).toHaveLength(messageCount);
+        expect(
+            useChatStore.getState().sessionsById["local-a-resumed"]
+                ?.conversationBindings?.revision,
+        ).toBe(bindingRevision);
+        expect(
+            resolveChatSessionId(useChatStore.getState(), "local-b"),
+        ).toBeNull();
     });
 
-    it("rolls back a new provider binding and restores the composer on send failure", async () => {
+    it.each(["ai_start_conversation_turn", "ai_send_message"] as const)(
+        "rolls back a new provider binding and restores the composer when %s fails",
+        async (failingCommand) => {
+        window.__neverwriteLogs?.enable("chat-store");
+        const debugSpy = vi
+            .spyOn(console, "debug")
+            .mockImplementation(() => {});
         await useChatStore.getState().initialize();
 
         const sourceSessionId = getActiveSessionId();
@@ -14664,8 +14729,10 @@ describe("chatStore", () => {
                     config_options: [],
                 };
             }
-            if (command === "ai_send_message") {
-                throw new Error("Provider B rejected the turn");
+            if (command === failingCommand) {
+                throw new Error(
+                    "Provider B rejected /private/vault SECRET_PROMPT",
+                );
             }
             return defaultInvokeImplementation(command, args);
         });
@@ -14694,7 +14761,36 @@ describe("chatStore", () => {
         expect(invokeMock).toHaveBeenCalledWith("ai_delete_runtime_session", {
             sessionId: "failed-provider-b",
         });
-    });
+        expect(
+            resolveChatSessionId(
+                useChatStore.getState(),
+                "failed-provider-b",
+            ),
+        ).toBeNull();
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toBe(failingCommand === "ai_send_message");
+        const failedDiagnostic = debugSpy.mock.calls.find(
+            ([message]) =>
+                message ===
+                "[chat-store] canonical conversation turn failed",
+        )?.[1];
+        debugSpy.mockRestore();
+        window.__neverwriteLogs?.disable("chat-store");
+        expect(failedDiagnostic).toMatchObject({
+            target_runtime_id: "provider-b",
+            error_code: "turn_rejected",
+        });
+        expect(JSON.stringify(failedDiagnostic)).not.toContain(
+            "/private/vault",
+        );
+        expect(JSON.stringify(failedDiagnostic)).not.toContain(
+            "SECRET_PROMPT",
+        );
+        },
+    );
 
     it("keeps the active provider and composer when a prior binding cannot resume", async () => {
         await useChatStore.getState().initialize();

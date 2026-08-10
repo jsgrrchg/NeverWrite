@@ -30,6 +30,7 @@ Each modern session directory contains:
 - `session-meta.json`: session metadata such as runtime, model, mode, title, timestamps, parent session, and message count.
 - `index.json`: transcript offsets, lengths, and message hashes used for windowed transcript loading.
 - `transcript.jsonl`: newline-delimited JSON transcript entries.
+- `conversation-bindings.json`: optional versioned canonical conversation metadata for ACP provider bindings, continuation strategies, next-turn selection, and transcript cursors.
 
 The `.neverwrite` directory is NeverWrite's internal hidden-state directory.
 It is hidden by dotfile convention on macOS and Linux, and may be filtered by
@@ -97,6 +98,18 @@ closing the terminal ends the process and removes the row. It has no chat-tab
 Back/Forward history, saved chat view, or `Open in New Tab` action. Terminal tabs
 can be restored as workspace tabs, but their current metadata does not relaunch
 Claude Code or recreate the agent-sidebar projection after an app restart.
+
+## Canonical Conversation Rollout And Rollback
+
+Canonical ACP conversations are a normal data-model upgrade, not a Beta setting or runtime feature flag. A conversation keeps one durable transcript while each ACP provider has an independent binding; switching A -> B -> A can resume or load the previous binding when the provider supports it, and otherwise starts an isolated runtime session with a bounded transcript handoff.
+
+The compatibility window targets the last public release immediately before canonical conversations and the first releases that write `conversation-bindings.json`. Opening legacy history is lazy and does not create the sidecar until the upgraded app writes the conversation. The legacy projection in `session-meta.json` and the transcript remain readable by the previous release.
+
+For a rollback, close NeverWrite, install the immediately preceding public release, and reopen the same vault. Do not delete or edit the canonical sidecar. The older release ignores it and can continue writing the legacy transcript; a later re-upgrade reconciles those writes, preserves provider bindings, and invalidates stale context cursors so the next turn uses a safe transcript handoff.
+
+Rollback cannot reconnect a provider or model that the older release does not contain. A missing provider remains transcript-only, a custom ACP launch fingerprint change requires confirmation before continuation, and a `new_session_only` binding cannot regain native resume semantics. Forks receive independent canonical identities and do not reuse custom runtime session handles.
+
+Canonical routing diagnostics record only strategies, provider IDs, boolean outcomes, counts, runtime states, and bounded error codes. They never include prompt or transcript content, vault paths, attachment names, runtime command lines, environment values, or raw error messages.
 
 ## Recovery Flow
 
