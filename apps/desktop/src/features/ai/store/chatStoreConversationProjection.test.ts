@@ -140,4 +140,35 @@ describe("canonical chat store projection", () => {
             runtimeSessionId: "native-session",
         });
     });
+
+    it("keeps an active provider model staged for the next turn", () => {
+        const session = createSession();
+        const bindingState = createConversationBindingsFromLegacySession(session);
+        const withStagedModel: AIChatSession = {
+            ...session,
+            conversationBindings: {
+                ...bindingState,
+                preferredSelection: {
+                    ...bindingState.preferredSelection,
+                    modelId: "opus",
+                },
+            },
+        };
+
+        const projection = projectChatStoreToCanonical({
+            sessionsById: { [session.sessionId]: withStagedModel },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+        });
+
+        expect(
+            projection.conversationsById["conversation-1"]?.preferredSelection,
+        ).toMatchObject({
+            runtimeId: "claude-acp",
+            modelId: "opus",
+        });
+        expect(
+            projection.bindingsById[bindingState.activeBindingId!]?.modelId,
+        ).toBe("sonnet");
+    });
 });

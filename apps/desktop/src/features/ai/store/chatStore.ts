@@ -3448,6 +3448,17 @@ function migrateSessionLocalState(
     return true;
 }
 
+function normalizeResumedSessionWorkCycle(
+    session: AIChatSession,
+    visibleWorkCycleId: string | null | undefined,
+): AIChatSession {
+    return {
+        ...session,
+        activeWorkCycleId: null,
+        visibleWorkCycleId: visibleWorkCycleId ?? null,
+    };
+}
+
 function registerOpenEditorBaselines(sessionId: string) {
     const session = useChatStore.getState().sessionsById[sessionId];
     if (!session || !isLiveRuntimeSession(session)) {
@@ -12235,7 +12246,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     );
                 }
 
-                const migratedSession = startNewWorkCycle(
+                const migratedSession = normalizeResumedSessionWorkCycle(
                     replaceSessionTranscript(
                         {
                             ...resumedSession,
@@ -12285,6 +12296,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 !isTransientRecoveryStatusMessage(message),
                         ),
                     ),
+                    latestSession.visibleWorkCycleId,
                 );
 
                 migrateSessionLocalState(sessionId, migratedSession);

@@ -22,7 +22,6 @@ export type ConversationInvariantViolation =
 
 export type ConversationSwitchBlocker =
     | "conversation_not_idle"
-    | "work_cycle_active"
     | "session_transition_pending"
     | "queued_messages_pending";
 
@@ -49,6 +48,27 @@ function applySelectionOptions(
         ...option,
         value: options[option.id] ?? option.value,
     }));
+}
+
+function selectionMatchesBinding(
+    selection: ConversationSelection,
+    binding: AcpConversationBinding,
+) {
+    if (
+        selection.runtimeId !== binding.runtimeId ||
+        selection.modelId !== binding.modelId ||
+        selection.modeId !== binding.modeId
+    ) {
+        return false;
+    }
+
+    const optionIds = new Set([
+        ...Object.keys(selection.options),
+        ...Object.keys(binding.options),
+    ]);
+    return [...optionIds].every(
+        (optionId) => selection.options[optionId] === binding.options[optionId],
+    );
 }
 
 /**
@@ -206,14 +226,20 @@ export function updateConversationBindingsFromLegacySession(
                   : binding,
           )
         : [...current.providerBindings, nextBinding];
+    const preferredSelectionTracksActiveBinding =
+        activeBinding != null &&
+        selectionMatchesBinding(current.preferredSelection, activeBinding);
 
     return {
         ...current,
         conversationId: projected.conversation.conversationId,
-        preferredSelection:
-            current.preferredSelection.runtimeId === activeBinding?.runtimeId
-                ? projected.conversation.preferredSelection
-                : current.preferredSelection,
+        // A different model/mode for the active provider is still a staged
+        // next-turn selection. Preserve it until that turn is accepted. Only
+        // follow the live legacy session when the preference still describes
+        // the binding we are replacing.
+        preferredSelection: preferredSelectionTracksActiveBinding
+            ? projected.conversation.preferredSelection
+            : current.preferredSelection,
         activeBindingId: nextBinding.bindingId,
         providerBindings,
     };
@@ -520,14 +546,12 @@ export function getConversationSwitchBlocker(
     conversation: Pick<
         AIConversation,
         | "status"
-        | "activeWorkCycleId"
         | "isPendingSessionCreation"
         | "isResumingSession"
     >,
     context: ConversationSwitchContext = {},
 ): ConversationSwitchBlocker | null {
     if (conversation.status !== "idle") return "conversation_not_idle";
-    if (conversation.activeWorkCycleId) return "work_cycle_active";
     if (
         conversation.isPendingSessionCreation ||
         conversation.isResumingSession

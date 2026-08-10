@@ -188,7 +188,7 @@ describe("canonical conversation model", () => {
         ]);
     });
 
-    it("allows provider switches only while fully idle", () => {
+    it("allows provider switches only between turns without pending work", () => {
         const { conversation } = projectLegacySessionToCanonical(
             createLegacySession(),
         );
@@ -200,12 +200,6 @@ describe("canonical conversation model", () => {
                 status: "streaming",
             }),
         ).toBe("conversation_not_idle");
-        expect(
-            getConversationSwitchBlocker({
-                ...conversation,
-                activeWorkCycleId: "cycle-1",
-            }),
-        ).toBe("work_cycle_active");
         expect(
             getConversationSwitchBlocker({
                 ...conversation,
@@ -274,6 +268,23 @@ describe("canonical conversation model", () => {
         });
 
         expect(updated.preferredSelection).toEqual(state.preferredSelection);
+    });
+
+    it("preserves a different model selected for the next turn on the active provider", () => {
+        const legacy = createLegacySession();
+        const state = createConversationBindingsFromLegacySession(legacy);
+        state.preferredSelection = {
+            ...state.preferredSelection,
+            modelId: "opus",
+        };
+
+        const updated = updateConversationBindingsFromLegacySession({
+            ...legacy,
+            conversationBindings: state,
+        });
+
+        expect(updated.preferredSelection).toEqual(state.preferredSelection);
+        expect(updated.providerBindings[0].modelId).toBe("sonnet");
     });
 
     it("resets each provider cursor when forking a canonical conversation", () => {

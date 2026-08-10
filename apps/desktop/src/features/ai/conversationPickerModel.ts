@@ -46,8 +46,6 @@ function switchBlockerLabel(
     switch (blocker) {
         case "conversation_not_idle":
             return "Finish the current turn before switching providers.";
-        case "work_cycle_active":
-            return "Finish or settle the current work cycle before switching providers.";
         case "session_transition_pending":
             return "Wait for the current session transition to finish.";
         case "queued_messages_pending":

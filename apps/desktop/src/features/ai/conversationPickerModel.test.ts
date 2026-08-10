@@ -109,7 +109,7 @@ describe("conversation provider picker model", () => {
         ]);
     });
 
-    it("explains why another provider is disabled during active work", () => {
+    it("blocks another provider during a running turn", () => {
         const current = session();
         const bindings = createConversationBindingsFromLegacySession(current);
         const conversation = {
@@ -118,6 +118,7 @@ describe("conversation provider picker model", () => {
             parentConversationId: null,
             vaultPath: null,
             closedAt: null,
+            status: "streaming" as const,
             activeWorkCycleId: "work-1",
             visibleWorkCycleId: null,
             preferredSelection: bindings.preferredSelection,
@@ -145,7 +146,46 @@ describe("conversation provider picker model", () => {
         });
 
         expect(options[0].disabledReason).toBeNull();
-        expect(options[1].disabledReason).toContain("work cycle");
+        expect(options[1].disabledReason).toContain("current turn");
+    });
+
+    it("allows another provider when an idle chat has a stale work cycle", () => {
+        const current = session();
+        const bindings = createConversationBindingsFromLegacySession(current);
+        const conversation = {
+            ...current,
+            conversationId: bindings.conversationId,
+            parentConversationId: null,
+            vaultPath: null,
+            closedAt: null,
+            activeWorkCycleId: "stale-work-1",
+            visibleWorkCycleId: null,
+            preferredSelection: bindings.preferredSelection,
+            activeBindingId: bindings.activeBindingId,
+            persistedCreatedAt: null,
+            persistedUpdatedAt: null,
+            persistedTitle: null,
+            customTitle: null,
+            persistedPreview: null,
+            isPersistedSession: false,
+            isPendingSessionCreation: false,
+            isResumingSession: false,
+        };
+
+        const options = buildConversationProviderOptions({
+            runtimes: [runtime("provider-a"), runtime("provider-b")],
+            setupStatusByRuntimeId: {
+                "provider-a": ready("provider-a"),
+                "provider-b": ready("provider-b"),
+            },
+            conversation,
+            bindings: bindings.providerBindings,
+            activeRuntimeId: "provider-a",
+            hasQueuedMessages: false,
+        });
+
+        expect(options[0].disabledReason).toBeNull();
+        expect(options[1].disabledReason).toBeNull();
     });
 
     it("projects the selected provider catalog and updates its model option", () => {

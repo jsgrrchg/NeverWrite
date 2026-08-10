@@ -15646,6 +15646,8 @@ describe("chatStore", () => {
                 isPersistedSession: false,
                 resumeContextPending: true,
                 resumeReconnectFailed: false,
+                status: "idle",
+                activeWorkCycleId: null,
             },
         );
         expect(useChatStore.getState().sessionsById[persistedSessionId]).toBe(
