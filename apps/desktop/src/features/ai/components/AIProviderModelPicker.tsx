@@ -403,13 +403,6 @@ export function AIProviderModelPicker({
                                 title="Favorites"
                                 type="button"
                             >
-                                {selectedProviderId === FAVORITES_PROVIDER_ID ? (
-                                    <span
-                                        aria-hidden="true"
-                                        className="absolute -right-1 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-l-full"
-                                        style={{ backgroundColor: "var(--accent)" }}
-                                    />
-                                ) : null}
                                 <StarIcon filled />
                             </button>
                             <div
@@ -448,15 +441,6 @@ export function AIProviderModelPicker({
                                         title={provider.label}
                                         type="button"
                                     >
-                                        {selected ? (
-                                            <span
-                                                aria-hidden="true"
-                                                className="absolute -right-1 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-l-full"
-                                                style={{
-                                                    backgroundColor: "var(--accent)",
-                                                }}
-                                            />
-                                        ) : null}
                                         <AIProviderIcon
                                             className="shrink-0 opacity-80"
                                             runtimeId={provider.runtimeId}
