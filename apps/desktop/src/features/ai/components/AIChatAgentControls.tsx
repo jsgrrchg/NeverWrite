@@ -1,6 +1,14 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+    useEffect,
+    useId,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
+} from "react";
 import type { ConversationProviderPickerOption } from "../conversationPickerModel";
 import type { AIConfigOption, AIModeOption, AIModelOption } from "../types";
+import { AIProviderModelPicker } from "./AIProviderModelPicker";
 
 interface AIChatAgentControlsProps {
     disabled?: boolean;
@@ -35,6 +43,7 @@ interface DropdownFieldProps {
     searchable?: boolean;
     searchPlaceholder?: string;
     emptySearchMessage?: string;
+    leadingIcon?: ReactNode;
     onChange: (value: string) => void;
 }
 
@@ -126,6 +135,7 @@ function DropdownField({
     searchable = false,
     searchPlaceholder = "Search…",
     emptySearchMessage = "No matches found.",
+    leadingIcon,
     onChange,
 }: DropdownFieldProps) {
     const [open, setOpen] = useState(false);
@@ -223,6 +233,7 @@ function DropdownField({
                 title={label}
                 disabled={isDisabled}
             >
+                {leadingIcon}
                 <span className="truncate">{displayValue}</span>
                 <svg
                     width="10"
@@ -390,6 +401,49 @@ function DropdownField({
                 </div>
             )}
         </div>
+    );
+}
+
+function PermissionModeIcon({ fullAccess }: { fullAccess: boolean }) {
+    return (
+        <svg
+            aria-hidden="true"
+            className="shrink-0 opacity-70"
+            fill="none"
+            height="13"
+            viewBox="0 0 16 16"
+            width="13"
+        >
+            <rect
+                height="8"
+                rx="1.5"
+                stroke="currentColor"
+                strokeWidth="1.35"
+                width="10"
+                x="3"
+                y="6.5"
+            />
+            <path
+                d={
+                    fullAccess
+                        ? "M5.25 6.5V5a2.75 2.75 0 0 1 5.05-1.51"
+                        : "M5.25 6.5V5a2.75 2.75 0 0 1 5.5 0v1.5"
+                }
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeWidth="1.35"
+            />
+        </svg>
+    );
+}
+
+function ControlSeparator() {
+    return (
+        <span
+            aria-hidden="true"
+            className="mx-0.5 h-4 w-px"
+            style={{ backgroundColor: "var(--border)" }}
+        />
     );
 }
 
@@ -571,50 +625,26 @@ export function AIChatAgentControls({
             selectedModelId,
         ],
     );
-    const providerModelOptions = useMemo(
+    const providerPickerOptions = useMemo(
         () =>
-            providers.flatMap((provider) => {
-                const models =
+            providers.map((provider) => ({
+                ...provider,
+                models:
                     provider.runtimeId === runtimeId &&
                     lockedModelOptions.length > 0
                         ? lockedModelOptions.map((model) => ({
                               modelId: model.value,
                               label: model.label,
                               description: model.description,
-                              disabled: model.disabled,
+                              disabledReason: model.disabled
+                                  ? (model.description ?? "This model is unavailable.")
+                                  : null,
                           }))
                         : provider.models.map((model) => ({
-                              modelId: model.modelId,
+                              ...model,
                               label: formatFallbackLabel(model.label),
-                              description:
-                                  model.disabledReason ?? model.description,
-                              disabled: model.disabledReason != null,
-                          }));
-                const availableModels =
-                    models.length > 0
-                        ? models
-                        : [
-                              {
-                                  modelId: provider.defaultModelId,
-                                  label: "Default model",
-                                  description: provider.description,
-                                  disabled: false,
-                              },
-                          ];
-                return availableModels.map((model) => ({
-                    value: `${provider.runtimeId}\u0000${model.modelId}`,
-                    label:
-                        model.modelId || providers.length > 1
-                            ? `${provider.label} · ${model.label}`
-                            : provider.label,
-                    description:
-                        provider.disabledReason ??
-                        model.description ??
-                        provider.description,
-                    disabled:
-                        provider.disabledReason != null || model.disabled,
-                }));
-            }),
+                          })),
+            })),
         [lockedModelOptions, providers, runtimeId],
     );
     const extraConfigs = useMemo(
@@ -653,43 +683,24 @@ export function AIChatAgentControls({
     );
     const showFullAccessPolicyHelp =
         runtimeId === CODEX_RUNTIME_ID && modeId === CODEX_FULL_ACCESS_MODE_ID;
+    const showProviderPicker =
+        providers.length > 0 && Boolean(runtimeId && onProviderModelChange);
+    const showLegacyModelPicker =
+        providers.length === 0 && lockedModelOptions.length > 0;
+    const hasControlBeforeExtras = showProviderPicker || showLegacyModelPicker;
 
     return (
         <div className="flex min-w-0 flex-wrap items-center gap-1">
-            {providers.length > 0 && runtimeId && onProviderModelChange ? (
-                <DropdownField
+            {showProviderPicker && runtimeId && onProviderModelChange ? (
+                <AIProviderModelPicker
                     disabled={disabled}
-                    label="Provider and model"
-                    value={`${runtimeId}\u0000${selectedModelId}`}
-                    options={providerModelOptions}
-                    searchable={providerModelOptions.length > 10}
-                    searchPlaceholder="Search providers and models..."
-                    emptySearchMessage="No providers or models match that search."
-                    onChange={(value) => {
-                        const separator = value.indexOf("\u0000");
-                        onProviderModelChange(
-                            value.slice(0, separator),
-                            value.slice(separator + 1),
-                        );
-                    }}
+                    runtimeId={runtimeId}
+                    modelId={selectedModelId}
+                    providers={providerPickerOptions}
+                    onChange={onProviderModelChange}
                 />
             ) : null}
-            {modes.length > 0 ? (
-                <DropdownField
-                    disabled={disabled}
-                    label="Approval Preset"
-                    value={modeId}
-                    options={modes.map((mode) => ({
-                        value: mode.id,
-                        label: formatFallbackLabel(mode.name),
-                        description: mode.description,
-                        disabled: mode.disabled,
-                    }))}
-                    onChange={onModeChange}
-                />
-            ) : null}
-            {showFullAccessPolicyHelp ? <FullAccessPolicyHelp /> : null}
-            {providers.length === 0 && lockedModelOptions.length > 0 ? (
+            {showLegacyModelPicker ? (
                 <DropdownField
                     disabled={disabled}
                     label="Model"
@@ -705,16 +716,47 @@ export function AIChatAgentControls({
                     }
                 />
             ) : null}
-            {visibleExtraConfigs.map(({ option, label, options }) => (
-                <DropdownField
-                    key={option.id}
-                    disabled={disabled}
-                    label={label}
-                    value={option.value}
-                    options={options}
-                    onChange={(value) => onConfigOptionChange(option.id, value)}
-                />
+            {visibleExtraConfigs.map(({ option, label, options }, index) => (
+                <div className="contents" key={option.id}>
+                    {hasControlBeforeExtras || index > 0 ? (
+                        <ControlSeparator />
+                    ) : null}
+                    <DropdownField
+                        disabled={disabled}
+                        label={label}
+                        value={option.value}
+                        options={options}
+                        onChange={(value) =>
+                            onConfigOptionChange(option.id, value)
+                        }
+                    />
+                </div>
             ))}
+            {modes.length > 0 ? (
+                <>
+                    {hasControlBeforeExtras || visibleExtraConfigs.length > 0 ? (
+                        <ControlSeparator />
+                    ) : null}
+                    <DropdownField
+                        disabled={disabled}
+                        label="Approval Preset"
+                        leadingIcon={
+                            <PermissionModeIcon
+                                fullAccess={modeId === CODEX_FULL_ACCESS_MODE_ID}
+                            />
+                        }
+                        value={modeId}
+                        options={modes.map((mode) => ({
+                            value: mode.id,
+                            label: formatFallbackLabel(mode.name),
+                            description: mode.description,
+                            disabled: mode.disabled,
+                        }))}
+                        onChange={onModeChange}
+                    />
+                </>
+            ) : null}
+            {showFullAccessPolicyHelp ? <FullAccessPolicyHelp /> : null}
         </div>
     );
 }

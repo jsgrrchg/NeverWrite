@@ -1,10 +1,16 @@
 import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import { AIChatAgentControls } from "./AIChatAgentControls";
 
 describe("AIChatAgentControls", () => {
+    beforeEach(() => {
+        localStorage.removeItem(
+            "neverwrite.ai.provider-model-picker-favorites",
+        );
+    });
+
     it("shows provider choices and exposes disabled reasons", async () => {
         const user = userEvent.setup();
         const onProviderChange = vi.fn();
@@ -55,6 +61,13 @@ describe("AIChatAgentControls", () => {
         );
 
         await user.click(screen.getByTitle("Provider and model"));
+        expect(
+            screen.getByLabelText("Provider and model search"),
+        ).toHaveFocus();
+        await user.type(
+            screen.getByLabelText("Provider and model search"),
+            "claude",
+        );
         const disabledClaude = screen.getByRole("button", {
             name: "Claude · Claude Sonnet",
         });
@@ -63,12 +76,78 @@ describe("AIChatAgentControls", () => {
             "title",
             "Finish the current turn before switching providers.",
         );
+        await user.clear(screen.getByLabelText("Provider and model search"));
         const codexOption = screen
             .getAllByRole("button", { name: "Codex · GPT 5" })
             .find((button) => button.getAttribute("title") === "Codex provider");
         expect(codexOption).toBeDefined();
         await user.click(codexOption!);
         expect(onProviderChange).toHaveBeenCalledWith("codex-acp", "gpt-5");
+    });
+
+    it("persists favorite models and opens the favorites rail first", async () => {
+        const user = userEvent.setup();
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="codex-acp"
+                modelId="gpt-5"
+                modeId="default"
+                models={[]}
+                modes={[]}
+                configOptions={[]}
+                providers={[
+                    {
+                        runtimeId: "codex-acp",
+                        label: "Codex",
+                        description: "Codex provider",
+                        disabledReason: null,
+                        defaultModelId: "gpt-5",
+                        models: [
+                            {
+                                modelId: "gpt-5",
+                                label: "GPT-5",
+                                disabledReason: null,
+                            },
+                            {
+                                modelId: "gpt-5-mini",
+                                label: "GPT-5 Mini",
+                                disabledReason: null,
+                            },
+                        ],
+                    },
+                ]}
+                onProviderModelChange={() => {}}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+
+        await user.click(screen.getByTitle("Provider and model"));
+        await user.click(
+            screen.getByRole("button", {
+                name: "Add GPT-5 Mini to favorites",
+            }),
+        );
+        await user.click(screen.getByTitle("Provider and model"));
+        await user.click(screen.getByTitle("Provider and model"));
+
+        expect(screen.getByRole("button", { name: "Favorites" })).toHaveStyle({
+            backgroundColor: "var(--bg-primary)",
+        });
+        expect(
+            screen.getByRole("button", { name: "Codex · GPT-5 Mini" }),
+        ).toBeInTheDocument();
+        expect(
+            JSON.parse(
+                localStorage.getItem(
+                    "neverwrite.ai.provider-model-picker-favorites",
+                ) ?? "[]",
+            ),
+        ).toContainEqual({
+            runtimeId: "codex-acp",
+            modelId: "gpt-5-mini",
+        });
     });
 
     it("shows contextual safety help only for Codex Full Access", () => {
