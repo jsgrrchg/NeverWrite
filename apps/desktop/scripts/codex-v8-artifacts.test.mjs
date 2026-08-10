@@ -475,6 +475,61 @@ describe("V8 artifact cache", () => {
         },
     );
 
+    it("cancels and awaits a stalled paired download before cleanup", async () => {
+        const plan = createV8ArtifactPlan({
+            version,
+            profile,
+            targetTriple,
+            cacheRoot: testRoot,
+        });
+        const files = trustFixtureManifest(plan, artifactFixture(plan));
+        let bindingAborted = false;
+        const fetchImpl = vi.fn(async (url, { signal } = {}) => {
+            const name = path.basename(new URL(url).pathname);
+            if (name === plan.manifestName) {
+                return new Response(files.get(name));
+            }
+            if (name === plan.archiveName) {
+                return new Response("archive failed", {
+                    status: 503,
+                    statusText: "Service Unavailable",
+                });
+            }
+
+            signal.addEventListener(
+                "abort",
+                () => {
+                    bindingAborted = true;
+                },
+                { once: true },
+            );
+            return new Response(new ReadableStream({ start() {} }));
+        });
+
+        await expect(
+            fetchCodexV8Artifacts({
+                version,
+                profile,
+                targetTriple,
+                cacheRoot: testRoot,
+                fetchImpl,
+                downloadTimeoutMs: 5_000,
+            }),
+        ).rejects.toThrow(/503 Service Unavailable/);
+
+        expect(bindingAborted).toBe(true);
+        await expect(fs.access(plan.cacheDir)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+        const cacheParentEntries = await fs.readdir(path.dirname(plan.cacheDir));
+        const temporaryCachePrefix = `${path.basename(plan.cacheDir)}.tmp-`;
+        expect(
+            cacheParentEntries.some((entry) =>
+                entry.startsWith(temporaryCachePrefix),
+            ),
+        ).toBe(false);
+    });
+
     it("redownloads all artifacts when the cached manifest is manipulated", async () => {
         const plan = createV8ArtifactPlan({
             version,

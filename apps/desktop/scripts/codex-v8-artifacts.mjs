@@ -228,11 +228,26 @@ async function downloadFile(
     destinationPath,
     fetchImpl,
     timeoutMs,
+    cancellationSignal,
 ) {
     const tempPath = `${destinationPath}.${randomUUID()}.tmp`;
     const controller = new AbortController();
     let stage = "response headers";
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const abortForTimeout = () => {
+        timedOut = true;
+        controller.abort();
+    };
+    const abortForCancellation = () =>
+        controller.abort(cancellationSignal.reason);
+    const timeout = setTimeout(abortForTimeout, timeoutMs);
+    if (cancellationSignal?.aborted) {
+        abortForCancellation();
+    } else {
+        cancellationSignal?.addEventListener("abort", abortForCancellation, {
+            once: true,
+        });
+    }
     try {
         const response = await fetchImpl(url, {
             signal: controller.signal,
@@ -255,16 +270,51 @@ async function downloadFile(
         clearTimeout(timeout);
         await fs.rename(tempPath, destinationPath);
     } catch (error) {
-        if (controller.signal.aborted) {
+        if (timedOut) {
             throw new Error(
                 `Timed out downloading ${url} while receiving ${stage} after ${timeoutMs} ms`,
+                { cause: error },
+            );
+        }
+        if (cancellationSignal?.aborted) {
+            throw new Error(
+                `Cancelled paired V8 artifact download for ${url}`,
                 { cause: error },
             );
         }
         throw error;
     } finally {
         clearTimeout(timeout);
+        cancellationSignal?.removeEventListener(
+            "abort",
+            abortForCancellation,
+        );
         await fs.rm(tempPath, { force: true });
+    }
+}
+
+async function downloadArtifactPair(requests, fetchImpl, timeoutMs) {
+    const cancellation = new AbortController();
+    let firstError;
+    const downloads = requests.map(({ url, destinationPath }) =>
+        downloadFile(
+            url,
+            destinationPath,
+            fetchImpl,
+            timeoutMs,
+            cancellation.signal,
+        ).catch((error) => {
+            if (!firstError) {
+                firstError = error;
+                cancellation.abort(error);
+            }
+            throw error;
+        }),
+    );
+
+    await Promise.allSettled(downloads);
+    if (firstError) {
+        throw firstError;
     }
 }
 
@@ -336,20 +386,20 @@ export async function fetchCodexV8Artifacts({
             expectedManifestChecksum,
         );
 
-        await Promise.all([
-            downloadFile(
-                plan.archiveUrl,
-                stagingPlan.archivePath,
-                fetchImpl,
-                downloadTimeoutMs,
-            ),
-            downloadFile(
-                plan.bindingUrl,
-                stagingPlan.bindingPath,
-                fetchImpl,
-                downloadTimeoutMs,
-            ),
-        ]);
+        await downloadArtifactPair(
+            [
+                {
+                    url: plan.archiveUrl,
+                    destinationPath: stagingPlan.archivePath,
+                },
+                {
+                    url: plan.bindingUrl,
+                    destinationPath: stagingPlan.bindingPath,
+                },
+            ],
+            fetchImpl,
+            downloadTimeoutMs,
+        );
 
         const [archiveValid, bindingValid] = await Promise.all([
             hasChecksum(

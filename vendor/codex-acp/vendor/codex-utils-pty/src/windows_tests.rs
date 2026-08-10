@@ -77,9 +77,11 @@ async fn assert_terminate_kills_descendant(
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     ));
+    let release_marker = marker.with_extension("release");
     let child_code = format!(
-        "import pathlib,time; print('{READY_MARKER}',flush=True); time.sleep(5); pathlib.Path(bytes.fromhex('{}').decode()).write_text('survived')",
-        utf8_hex(&marker.to_string_lossy())
+        "import pathlib,time; marker=pathlib.Path(bytes.fromhex('{}').decode()); release=pathlib.Path(bytes.fromhex('{}').decode()); print('{READY_MARKER}',flush=True); deadline=time.time()+10\nwhile not release.exists() and time.time()<deadline: time.sleep(.025)\nif release.exists(): marker.write_text('survived')",
+        utf8_hex(&marker.to_string_lossy()),
+        utf8_hex(&release_marker.to_string_lossy()),
     );
     let code = format!(
         "import subprocess,sys,time; code=bytes.fromhex('{}').decode(); subprocess.Popen([sys.executable,'-u','-c',code]); time.sleep(60)",
@@ -108,11 +110,10 @@ async fn assert_terminate_kills_descendant(
         exit_code, -1,
         "{backend} root did not exit after termination"
     );
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let survived = marker.exists();
-    if survived {
-        std::fs::remove_file(&marker)?;
-    }
+    std::fs::write(&release_marker, b"release")?;
+    let survived = wait_for_path(&marker, Duration::from_secs(2)).await;
+    let _ = std::fs::remove_file(&release_marker);
+    let _ = std::fs::remove_file(&marker);
     assert!(!survived, "{backend} descendant survived termination");
     Ok(())
 }
