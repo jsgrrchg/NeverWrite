@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
     canSwitchConversationProvider,
+    createConversationBindingsFromLegacySession,
     createLegacyBindingId,
+    deserializeConversationBindings,
     getConversationSwitchBlocker,
     getLegacyConversationId,
     projectCanonicalConversationToLegacy,
     projectLegacySessionToCanonical,
+    serializeConversationBindings,
+    updateConversationBindingsFromLegacySession,
     validateCanonicalConversation,
 } from "./conversationModel";
 import type { AIChatSession } from "./types";
@@ -212,5 +216,44 @@ describe("canonical conversation model", () => {
                 hasQueuedMessages: true,
             }),
         ).toBe("queued_messages_pending");
+    });
+
+    it("roundtrips the versioned provider bindings sidecar", () => {
+        const state = createConversationBindingsFromLegacySession(
+            createLegacySession(),
+        );
+        state.contextSummary = "Earlier decisions";
+        state.providerBindings[0].contextCursor = "message-1";
+        state.providerBindings[0].contextGeneration = 2;
+
+        const serialized = serializeConversationBindings(state);
+        const restored = deserializeConversationBindings(serialized);
+
+        expect(serializeConversationBindings(restored)).toEqual(serialized);
+        expect(restored.contextSummary).toBe("Earlier decisions");
+        expect(restored.providerBindings[0].contextCursor).toBe("message-1");
+    });
+
+    it("updates the active legacy projection without dropping prior bindings", () => {
+        const legacy = createLegacySession();
+        const state = createConversationBindingsFromLegacySession(legacy);
+        state.providerBindings.push({
+            ...state.providerBindings[0],
+            bindingId: "binding:codex",
+            runtimeId: "codex-acp",
+            runtimeSessionId: "codex-native",
+        });
+
+        const updated = updateConversationBindingsFromLegacySession({
+            ...legacy,
+            modelId: "opus",
+            conversationBindings: state,
+        });
+
+        expect(updated.providerBindings).toHaveLength(2);
+        expect(updated.providerBindings[0].modelId).toBe("opus");
+        expect(updated.providerBindings[1].runtimeSessionId).toBe(
+            "codex-native",
+        );
     });
 });

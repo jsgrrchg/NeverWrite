@@ -12,6 +12,7 @@ use crate::{custom_runtimes::is_custom_acp_runtime_id, domain::AcpContinuationSt
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
+const CONVERSATION_BINDINGS_FILE: &str = "conversation-bindings.json";
 const SESSION_COMPACTION_MARKER_FILE: &str = "compact-state.json";
 const FORMAT_VERSION: u32 = 1;
 const MB: u64 = 1024 * 1024;
@@ -27,6 +28,19 @@ const DEFAULT_TRANSCRIPT_COMPACTION_POLICY: TranscriptCompactionPolicy =
 /// or transaction safety decisions.
 pub fn is_incidental_filesystem_metadata(path: &Path, metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_file() && path.file_name().is_some_and(|name| name == ".DS_Store")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedTurnProvenance {
+    pub binding_id: String,
+    pub runtime_id: String,
+    #[serde(default)]
+    pub runtime_session_id: Option<String>,
+    pub model_id: String,
+    pub mode_id: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+    pub start_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +80,87 @@ pub struct PersistedMessage {
     pub plan_detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_action: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_provenance: Option<PersistedTurnProvenance>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedConversationSelection {
+    pub runtime_id: String,
+    pub model_id: String,
+    pub mode_id: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedProviderBinding {
+    pub binding_id: String,
+    pub conversation_id: String,
+    pub runtime_id: String,
+    #[serde(default)]
+    pub runtime_display_name: Option<String>,
+    #[serde(default)]
+    pub runtime_revision: Option<u64>,
+    #[serde(default)]
+    pub runtime_launch_fingerprint: Option<String>,
+    #[serde(default)]
+    pub runtime_session_id: Option<String>,
+    #[serde(default)]
+    pub continuation_strategy: Option<AcpContinuationStrategy>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    pub model_id: String,
+    pub mode_id: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modes: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_options: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub efforts_by_model: BTreeMap<String, Vec<String>>,
+    pub runtime_state: String,
+    #[serde(default)]
+    pub context_cursor: Option<String>,
+    #[serde(default)]
+    pub context_generation: u64,
+    #[serde(default)]
+    pub created_at: Option<u64>,
+    #[serde(default)]
+    pub updated_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedTranscriptObservation {
+    pub message_count: usize,
+    pub updated_at: u64,
+    #[serde(default)]
+    pub transcript_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedConversationBindings {
+    pub version: u32,
+    pub revision: u64,
+    pub conversation_id: String,
+    pub preferred_selection: PersistedConversationSelection,
+    #[serde(default)]
+    pub active_binding_id: Option<String>,
+    #[serde(default)]
+    pub provider_bindings: Vec<PersistedProviderBinding>,
+    #[serde(default)]
+    pub context_summary: Option<String>,
+    pub transcript_observation: PersistedTranscriptObservation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PersistedSessionHistoryEnvelope {
+    #[serde(flatten)]
+    pub history: PersistedSessionHistory,
+    pub conversation_bindings: PersistedConversationBindings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -641,6 +736,10 @@ fn session_transcript_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SESSION_TRANSCRIPT_FILE)
 }
 
+fn conversation_bindings_path(session_dir: &Path) -> PathBuf {
+    session_dir.join(CONVERSATION_BINDINGS_FILE)
+}
+
 fn session_compaction_marker_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SESSION_COMPACTION_MARKER_FILE)
 }
@@ -655,6 +754,10 @@ fn storage_session_index_file(storage_root: &Path, session_id: &str) -> PathBuf 
 
 fn storage_session_transcript_file(storage_root: &Path, session_id: &str) -> PathBuf {
     session_transcript_path(&storage_session_dir(storage_root, session_id))
+}
+
+fn storage_conversation_bindings_file(storage_root: &Path, session_id: &str) -> PathBuf {
+    conversation_bindings_path(&storage_session_dir(storage_root, session_id))
 }
 
 fn storage_session_is_complete(storage_root: &Path, session_id: &str) -> bool {
@@ -761,6 +864,11 @@ fn load_session_index(
 fn load_session_metadata_from_dir(session_dir: &Path) -> Result<PersistedSessionMetadata, String> {
     recover_incomplete_compaction(session_dir)?;
     read_json_file(&session_meta_path(session_dir))
+}
+
+fn load_session_index_from_dir(session_dir: &Path) -> Result<PersistedTranscriptIndex, String> {
+    recover_incomplete_compaction(session_dir)?;
+    read_json_file(&session_index_path(session_dir))
 }
 
 fn indexed_transcript_bytes(index: &PersistedTranscriptIndex) -> u64 {
@@ -1045,6 +1153,46 @@ fn persisted_history_content_fingerprint(
     Ok(digest_hex(&hasher.finalize().into()))
 }
 
+fn conversation_bindings_content_fingerprint(
+    bindings: &PersistedConversationBindings,
+) -> Result<String, String> {
+    let mut value = serde_json::to_value(bindings).map_err(|error| error.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("revision");
+        object.remove("transcript_observation");
+        if let Some(provider_bindings) = object
+            .get_mut("provider_bindings")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for binding in provider_bindings {
+                if let Some(binding) = binding.as_object_mut() {
+                    binding.remove("created_at");
+                    binding.remove("updated_at");
+                    binding.remove("runtime_state");
+                }
+            }
+        }
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"neverwrite-conversation-bindings-content-v1");
+    update_canonical_json(&value, &mut hasher);
+    Ok(digest_hex(&hasher.finalize().into()))
+}
+
+fn combined_history_content_fingerprint(
+    history_fingerprint: &str,
+    bindings: &PersistedConversationBindings,
+) -> Result<String, String> {
+    let bindings_fingerprint = conversation_bindings_content_fingerprint(bindings)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"neverwrite-canonical-history-content-v1");
+    hasher.update((history_fingerprint.len() as u64).to_le_bytes());
+    hasher.update(history_fingerprint.as_bytes());
+    hasher.update((bindings_fingerprint.len() as u64).to_le_bytes());
+    hasher.update(bindings_fingerprint.as_bytes());
+    Ok(digest_hex(&hasher.finalize().into()))
+}
+
 fn inspect_compaction_state(
     storage_root: &Path,
     session_dir: &Path,
@@ -1195,6 +1343,7 @@ fn inspect_session_directory(
                 if name == SESSION_META_FILE
                     || name == SESSION_INDEX_FILE
                     || name == SESSION_TRANSCRIPT_FILE
+                    || name == CONVERSATION_BINDINGS_FILE
                     || compaction_entries.contains(&name)
                 {
                     continue;
@@ -1236,9 +1385,34 @@ fn inspect_session_directory(
     let metadata_path = session_meta_path(session_dir);
     let index_path = session_index_path(session_dir);
     let transcript_path = session_transcript_path(session_dir);
+    let bindings_path = conversation_bindings_path(session_dir);
     let metadata_bytes =
         read_expected_artifact(storage_root, &metadata_path, inventory, fingerprint);
     let index_bytes = read_expected_artifact(storage_root, &index_path, inventory, fingerprint);
+    let bindings_bytes = match fs::symlink_metadata(&bindings_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            push_read_error(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &bindings_path),
+                error.to_string(),
+            );
+            None
+        }
+        Ok(metadata) if metadata.file_type().is_file() => {
+            read_expected_artifact(storage_root, &bindings_path, inventory, fingerprint)
+        }
+        Ok(_) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &bindings_path),
+                "Conversation bindings sidecar is not a regular file.",
+            );
+            None
+        }
+    };
     let transcript_relative_path = relative_storage_path(storage_root, &transcript_path);
     let transcript_artifact_fingerprint = match fs::symlink_metadata(&transcript_path) {
         Ok(metadata) if metadata.file_type().is_file() => {
@@ -1336,6 +1510,59 @@ fn inspect_session_directory(
         session_id: metadata.session_id.clone(),
         relative_path: relative_dir.clone(),
     });
+    let parsed_bindings = if let Some(artifact) = &bindings_bytes {
+        match serde_json::from_slice::<PersistedConversationBindings>(&artifact.bytes) {
+            Ok(bindings)
+                if bindings.version == FORMAT_VERSION
+                    && bindings.conversation_id == metadata.session_id =>
+            {
+                match validate_persisted_conversation_bindings(&bindings) {
+                    Ok(()) => Some(bindings),
+                    Err(error) => {
+                        push_corrupt_artifact(
+                            inventory,
+                            fingerprint,
+                            relative_storage_path(storage_root, &bindings_path),
+                            error,
+                        );
+                        None
+                    }
+                }
+            }
+            Ok(bindings) if bindings.version != FORMAT_VERSION => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &bindings_path),
+                    format!(
+                        "Unsupported conversation bindings version: {}.",
+                        bindings.version
+                    ),
+                );
+                None
+            }
+            Ok(_) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &bindings_path),
+                    "Conversation bindings belong to another conversation.",
+                );
+                None
+            }
+            Err(error) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &bindings_path),
+                    format!("Invalid conversation bindings: {error}"),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let (Some(index), Some(transcript_artifact_fingerprint)) =
         (index, transcript_artifact_fingerprint)
@@ -1373,16 +1600,35 @@ fn inspect_session_directory(
     else {
         return;
     };
+    let effective_bindings = parsed_bindings
+        .map(|bindings| reconcile_conversation_bindings(bindings, &metadata, &index))
+        .unwrap_or_else(|| synthesize_conversation_bindings(&metadata, &index));
+    let content_fingerprint = match combined_history_content_fingerprint(
+        &transcript_fingerprints.content,
+        &effective_bindings,
+    ) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            push_corrupt_artifact(inventory, fingerprint, relative_dir, error);
+            return;
+        }
+    };
     inventory.sessions.push(InspectedHistory {
         session_id: metadata.session_id,
         relative_path: relative_dir,
         format: InspectedHistoryFormat::Directory,
-        content_fingerprint: transcript_fingerprints.content,
-        artifact_fingerprint: combined_artifact_fingerprint(&[
-            metadata_artifact.fingerprint,
-            index_artifact.fingerprint,
-            transcript_fingerprints.artifact,
-        ]),
+        content_fingerprint,
+        artifact_fingerprint: {
+            let mut artifacts = vec![
+                metadata_artifact.fingerprint,
+                index_artifact.fingerprint,
+                transcript_fingerprints.artifact,
+            ];
+            if let Some(bindings_artifact) = bindings_bytes {
+                artifacts.push(bindings_artifact.fingerprint);
+            }
+            combined_artifact_fingerprint(&artifacts)
+        },
         managed_attachment_ids: transcript_fingerprints.managed_attachment_ids,
     });
 }
@@ -1471,7 +1717,7 @@ fn inspect_legacy_json_history(
             return;
         }
     };
-    let content_fingerprint = match persisted_history_content_fingerprint(&history) {
+    let history_fingerprint = match persisted_history_content_fingerprint(&history) {
         Ok(fingerprint) => fingerprint,
         Err(error) => {
             push_corrupt_artifact(
@@ -1483,6 +1729,33 @@ fn inspect_legacy_json_history(
             return;
         }
     };
+    let metadata = metadata_from_history(&history, history.messages.len());
+    let index = PersistedTranscriptIndex {
+        version: FORMAT_VERSION,
+        message_offsets: vec![],
+        message_lengths: vec![],
+        message_hashes: match history
+            .messages
+            .iter()
+            .map(hash_message)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(hashes) => hashes,
+            Err(error) => {
+                push_corrupt_artifact(inventory, fingerprint, relative_path, error);
+                return;
+            }
+        },
+    };
+    let bindings = synthesize_conversation_bindings(&metadata, &index);
+    let content_fingerprint =
+        match combined_history_content_fingerprint(&history_fingerprint, &bindings) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                push_corrupt_artifact(inventory, fingerprint, relative_path, error);
+                return;
+            }
+        };
     inventory.sessions.push(InspectedHistory {
         session_id: history.session_id,
         relative_path,
@@ -1880,6 +2153,362 @@ fn load_history_from_session_dir(
         vec![]
     };
     Ok(history_from_metadata(metadata, messages))
+}
+
+enum ConversationBindingsFileState {
+    Missing,
+    Supported(PersistedConversationBindings),
+    Unusable,
+}
+
+fn legacy_binding_id(conversation_id: &str, runtime_id: &str) -> String {
+    format!("legacy:{conversation_id}:{runtime_id}")
+}
+
+fn config_option_values(config_options: &Option<serde_json::Value>) -> BTreeMap<String, String> {
+    config_options
+        .as_ref()
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            Some((
+                option.get("id")?.as_str()?.to_string(),
+                option.get("value")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn transcript_fingerprint(index: &PersistedTranscriptIndex) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"neverwrite-canonical-transcript-v1");
+    for hash in &index.message_hashes {
+        hasher.update((hash.len() as u64).to_le_bytes());
+        hasher.update(hash.as_bytes());
+    }
+    digest_hex(&hasher.finalize().into())
+}
+
+fn binding_from_metadata(
+    metadata: &PersistedSessionMetadata,
+    binding_id: String,
+) -> PersistedProviderBinding {
+    let runtime_id = metadata.runtime_id.clone().unwrap_or_default();
+    PersistedProviderBinding {
+        binding_id,
+        conversation_id: metadata.session_id.clone(),
+        runtime_id,
+        runtime_display_name: metadata.runtime_display_name.clone(),
+        runtime_revision: metadata.runtime_revision,
+        runtime_launch_fingerprint: metadata.runtime_launch_fingerprint.clone(),
+        runtime_session_id: metadata.runtime_session_id.clone(),
+        continuation_strategy: metadata.continuation_strategy,
+        capabilities: vec![],
+        model_id: metadata.model_id.clone(),
+        mode_id: metadata.mode_id.clone(),
+        options: config_option_values(&metadata.config_options),
+        models: metadata.models.clone(),
+        modes: metadata.modes.clone(),
+        config_options: metadata.config_options.clone(),
+        efforts_by_model: BTreeMap::new(),
+        runtime_state: "persisted_only".to_string(),
+        context_cursor: None,
+        context_generation: 0,
+        created_at: Some(metadata.created_at),
+        updated_at: Some(metadata.updated_at),
+    }
+}
+
+fn synthesize_conversation_bindings(
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+) -> PersistedConversationBindings {
+    let runtime_id = metadata.runtime_id.clone().unwrap_or_default();
+    let binding_id = legacy_binding_id(&metadata.session_id, &runtime_id);
+    PersistedConversationBindings {
+        version: FORMAT_VERSION,
+        revision: 0,
+        conversation_id: metadata.session_id.clone(),
+        preferred_selection: PersistedConversationSelection {
+            runtime_id,
+            model_id: metadata.model_id.clone(),
+            mode_id: metadata.mode_id.clone(),
+            options: config_option_values(&metadata.config_options),
+        },
+        active_binding_id: Some(binding_id.clone()),
+        provider_bindings: vec![binding_from_metadata(metadata, binding_id)],
+        context_summary: None,
+        transcript_observation: PersistedTranscriptObservation {
+            message_count: metadata.message_count,
+            updated_at: metadata.updated_at,
+            transcript_fingerprint: Some(transcript_fingerprint(index)),
+        },
+    }
+}
+
+fn validate_persisted_conversation_bindings(
+    bindings: &PersistedConversationBindings,
+) -> Result<(), String> {
+    if bindings.version != FORMAT_VERSION {
+        return Err(format!(
+            "Unsupported conversation bindings version: {}.",
+            bindings.version
+        ));
+    }
+    if bindings.conversation_id.trim().is_empty() {
+        return Err("Conversation bindings contain an empty conversation ID.".to_string());
+    }
+    let mut ids = HashSet::new();
+    for binding in &bindings.provider_bindings {
+        if binding.binding_id.trim().is_empty() || !ids.insert(binding.binding_id.as_str()) {
+            return Err(
+                "Conversation bindings contain an invalid or duplicate binding ID.".to_string(),
+            );
+        }
+        if binding.conversation_id != bindings.conversation_id {
+            return Err("Provider binding belongs to another conversation.".to_string());
+        }
+    }
+    if bindings
+        .active_binding_id
+        .as_ref()
+        .is_some_and(|active_id| !ids.contains(active_id.as_str()))
+    {
+        return Err("Conversation bindings reference a missing active binding.".to_string());
+    }
+    Ok(())
+}
+
+fn read_conversation_bindings_file(session_dir: &Path) -> ConversationBindingsFileState {
+    let path = conversation_bindings_path(session_dir);
+    if !path.exists() {
+        return ConversationBindingsFileState::Missing;
+    }
+    let Ok(bindings) = read_json_file::<PersistedConversationBindings>(&path) else {
+        return ConversationBindingsFileState::Unusable;
+    };
+    if validate_persisted_conversation_bindings(&bindings).is_err() {
+        return ConversationBindingsFileState::Unusable;
+    }
+    ConversationBindingsFileState::Supported(bindings)
+}
+
+fn reconcile_conversation_bindings(
+    mut bindings: PersistedConversationBindings,
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+) -> PersistedConversationBindings {
+    if bindings.conversation_id != metadata.session_id
+        || bindings
+            .provider_bindings
+            .iter()
+            .any(|binding| binding.conversation_id != metadata.session_id)
+    {
+        return synthesize_conversation_bindings(metadata, index);
+    }
+
+    let current_fingerprint = transcript_fingerprint(index);
+    let legacy_changed = bindings.transcript_observation.message_count != metadata.message_count
+        || bindings.transcript_observation.updated_at < metadata.updated_at
+        || bindings
+            .transcript_observation
+            .transcript_fingerprint
+            .as_deref()
+            != Some(current_fingerprint.as_str());
+
+    if legacy_changed {
+        for binding in &mut bindings.provider_bindings {
+            binding.context_cursor = None;
+            binding.context_generation = binding.context_generation.saturating_add(1);
+        }
+        let runtime_id = metadata.runtime_id.clone().unwrap_or_default();
+        let position = bindings
+            .provider_bindings
+            .iter()
+            .position(|binding| binding.runtime_id == runtime_id);
+        let binding_id = position
+            .map(|index| bindings.provider_bindings[index].binding_id.clone())
+            .unwrap_or_else(|| legacy_binding_id(&metadata.session_id, &runtime_id));
+        let mut projected = binding_from_metadata(metadata, binding_id.clone());
+        if let Some(index) = position {
+            let previous = &bindings.provider_bindings[index];
+            projected.capabilities = previous.capabilities.clone();
+            projected.context_generation = previous.context_generation;
+            projected.created_at = previous.created_at.or(projected.created_at);
+            bindings.provider_bindings[index] = projected;
+        } else {
+            projected.context_generation = 1;
+            bindings.provider_bindings.push(projected);
+        }
+        bindings.active_binding_id = Some(binding_id);
+        bindings.preferred_selection = PersistedConversationSelection {
+            runtime_id,
+            model_id: metadata.model_id.clone(),
+            mode_id: metadata.mode_id.clone(),
+            options: config_option_values(&metadata.config_options),
+        };
+    }
+
+    bindings.transcript_observation = PersistedTranscriptObservation {
+        message_count: metadata.message_count,
+        updated_at: metadata.updated_at,
+        transcript_fingerprint: Some(current_fingerprint),
+    };
+    bindings
+}
+
+fn load_conversation_bindings_from_dir(
+    session_dir: &Path,
+) -> Result<PersistedConversationBindings, String> {
+    let metadata = load_session_metadata_from_dir(session_dir)?;
+    let index = load_session_index_from_dir(session_dir)?;
+    Ok(match read_conversation_bindings_file(session_dir) {
+        ConversationBindingsFileState::Supported(bindings) => {
+            reconcile_conversation_bindings(bindings, &metadata, &index)
+        }
+        ConversationBindingsFileState::Missing | ConversationBindingsFileState::Unusable => {
+            synthesize_conversation_bindings(&metadata, &index)
+        }
+    })
+}
+
+fn project_active_binding_to_history(
+    history: &mut PersistedSessionHistory,
+    bindings: &PersistedConversationBindings,
+) -> Result<(), String> {
+    if bindings.version != FORMAT_VERSION || bindings.conversation_id != history.session_id {
+        return Err("Invalid canonical conversation bindings payload.".to_string());
+    }
+    if bindings
+        .provider_bindings
+        .iter()
+        .any(|binding| binding.conversation_id != history.session_id)
+    {
+        return Err("Provider binding belongs to another conversation.".to_string());
+    }
+    validate_persisted_conversation_bindings(bindings)?;
+    let active = bindings
+        .active_binding_id
+        .as_ref()
+        .and_then(|active_id| {
+            bindings
+                .provider_bindings
+                .iter()
+                .find(|binding| &binding.binding_id == active_id)
+        })
+        .ok_or_else(|| "Canonical conversation has no active provider binding.".to_string())?;
+    history.runtime_id = Some(active.runtime_id.clone());
+    history.runtime_display_name = active.runtime_display_name.clone();
+    history.runtime_revision = active.runtime_revision;
+    history.runtime_launch_fingerprint = active.runtime_launch_fingerprint.clone();
+    history.runtime_session_id = active.runtime_session_id.clone();
+    history.continuation_strategy = active.continuation_strategy;
+    history.model_id = active.model_id.clone();
+    history.mode_id = active.mode_id.clone();
+    history.models = active.models.clone();
+    history.modes = active.modes.clone();
+    history.config_options = active.config_options.clone();
+    Ok(())
+}
+
+fn merge_conversation_bindings(
+    existing: Option<PersistedConversationBindings>,
+    mut incoming: PersistedConversationBindings,
+) -> PersistedConversationBindings {
+    if let Some(existing) = existing {
+        let mut merged = existing
+            .provider_bindings
+            .into_iter()
+            .map(|binding| (binding.binding_id.clone(), binding))
+            .collect::<BTreeMap<_, _>>();
+        for binding in incoming.provider_bindings {
+            merged.insert(binding.binding_id.clone(), binding);
+        }
+        incoming.provider_bindings = merged.into_values().collect();
+        incoming.context_summary = incoming.context_summary.or(existing.context_summary);
+        incoming.revision = incoming.revision.max(existing.revision).saturating_add(1);
+    } else {
+        incoming.revision = incoming.revision.saturating_add(1);
+    }
+    incoming
+}
+
+pub fn save_session_history_with_bindings(
+    storage_root: &Path,
+    history: &PersistedSessionHistory,
+    bindings: Option<PersistedConversationBindings>,
+) -> Result<(), String> {
+    let session_dir = storage_session_dir(storage_root, &history.session_id);
+    let disk_state = read_conversation_bindings_file(&session_dir);
+    if matches!(disk_state, ConversationBindingsFileState::Unusable) {
+        return save_session_history(storage_root, history);
+    }
+
+    let Some(bindings) = bindings else {
+        return save_session_history(storage_root, history);
+    };
+    validate_persisted_conversation_bindings(&bindings)?;
+    if bindings.conversation_id != history.session_id {
+        return Err("Canonical bindings do not match the persisted history.".to_string());
+    }
+    let existing = match disk_state {
+        ConversationBindingsFileState::Supported(existing) => Some(existing),
+        ConversationBindingsFileState::Missing => None,
+        ConversationBindingsFileState::Unusable => unreachable!(),
+    };
+    let mut bindings = merge_conversation_bindings(existing, bindings);
+    let mut projected_history = history.clone();
+    project_active_binding_to_history(&mut projected_history, &bindings)?;
+    save_session_history(storage_root, &projected_history)?;
+
+    let metadata = load_session_metadata(storage_root, &history.session_id)?;
+    let index = load_session_index(storage_root, &history.session_id)?;
+    bindings.transcript_observation = PersistedTranscriptObservation {
+        message_count: metadata.message_count,
+        updated_at: metadata.updated_at,
+        transcript_fingerprint: Some(transcript_fingerprint(&index)),
+    };
+    write_json_atomic(
+        &storage_conversation_bindings_file(storage_root, &history.session_id),
+        &bindings,
+    )
+}
+
+pub fn load_all_session_histories_with_bindings(
+    storage_root: &Path,
+    include_messages: bool,
+) -> Result<Vec<PersistedSessionHistoryEnvelope>, String> {
+    load_all_session_histories(storage_root, include_messages)?
+        .into_iter()
+        .map(|history| {
+            let session_dir = storage_session_dir(storage_root, &history.session_id);
+            let conversation_bindings =
+                if storage_session_is_complete(storage_root, &history.session_id) {
+                    load_conversation_bindings_from_dir(&session_dir)?
+                } else {
+                    let metadata = metadata_from_history(
+                        &history,
+                        history.message_count.unwrap_or(history.messages.len()),
+                    );
+                    let index = PersistedTranscriptIndex {
+                        version: FORMAT_VERSION,
+                        message_offsets: vec![],
+                        message_lengths: vec![],
+                        message_hashes: history
+                            .messages
+                            .iter()
+                            .map(hash_message)
+                            .collect::<Result<Vec<_>, _>>()?,
+                    };
+                    synthesize_conversation_bindings(&metadata, &index)
+                };
+            Ok(PersistedSessionHistoryEnvelope {
+                history,
+                conversation_bindings,
+            })
+        })
+        .collect()
 }
 
 fn legacy_session_priority(storage_root: &Path, path: &Path, session_id: &str) -> u8 {
@@ -2977,6 +3606,7 @@ pub fn fork_session_history(
     }
 
     let source_meta = load_session_metadata_from_dir(&source_dir)?;
+    let source_bindings = load_conversation_bindings_from_dir(&source_dir)?;
 
     let new_session_id = uuid::Uuid::new_v4().to_string();
     let now_ms = SystemTime::now()
@@ -3046,6 +3676,36 @@ pub fn fork_session_history(
     };
 
     write_json_atomic(&session_meta_path(&dest_dir), &new_metadata)?;
+
+    let mut forked_bindings = source_bindings;
+    let source_active_binding_id = forked_bindings.active_binding_id.clone();
+    let mut next_active_binding_id = None;
+    forked_bindings.conversation_id = new_session_id.clone();
+    forked_bindings.revision = forked_bindings.revision.saturating_add(1);
+    for (index, binding) in forked_bindings.provider_bindings.iter_mut().enumerate() {
+        let was_active = source_active_binding_id.as_deref() == Some(binding.binding_id.as_str());
+        binding.binding_id = format!("fork:{new_session_id}:{}:{index}", binding.runtime_id);
+        binding.conversation_id = new_session_id.clone();
+        if is_custom_acp_runtime_id(&binding.runtime_id) {
+            binding.runtime_session_id = None;
+            binding.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
+        }
+        binding.context_cursor = None;
+        binding.context_generation = binding.context_generation.saturating_add(1);
+        binding.created_at = Some(now_ms);
+        binding.updated_at = Some(now_ms);
+        if was_active {
+            next_active_binding_id = Some(binding.binding_id.clone());
+        }
+    }
+    forked_bindings.active_binding_id = next_active_binding_id;
+    let dest_index = load_session_index_from_dir(&dest_dir)?;
+    forked_bindings.transcript_observation = PersistedTranscriptObservation {
+        message_count: new_metadata.message_count,
+        updated_at: new_metadata.updated_at,
+        transcript_fingerprint: Some(transcript_fingerprint(&dest_index)),
+    };
+    write_json_atomic(&conversation_bindings_path(&dest_dir), &forked_bindings)?;
 
     Ok(new_session_id)
 }
@@ -3159,6 +3819,7 @@ mod tests {
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
+                    turn_provenance: None,
                 },
                 PersistedMessage {
                     id: "assistant:1".to_string(),
@@ -3181,6 +3842,7 @@ mod tests {
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
+                    turn_provenance: None,
                 },
             ],
         }
@@ -3980,6 +4642,15 @@ mod tests {
             forked.continuation_strategy,
             Some(AcpContinuationStrategy::NewSessionOnly)
         );
+        let forked_bindings =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &forked_session_id))
+                .expect("forked bindings should load");
+        assert_eq!(forked_bindings.conversation_id, forked_session_id);
+        assert!(forked_bindings.provider_bindings.iter().all(|binding| {
+            binding.conversation_id == forked_bindings.conversation_id
+                && binding.runtime_session_id.is_none()
+                && binding.context_cursor.is_none()
+        }));
 
         fs::remove_dir_all(dir).ok();
     }
@@ -4155,6 +4826,7 @@ mod tests {
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
+                    turn_provenance: None,
                 },
                 PersistedMessage {
                     id: "plan:1".to_string(),
@@ -4177,6 +4849,7 @@ mod tests {
                     plan_entries: None,
                     plan_detail: Some("Do the thing".to_string()),
                     tool_action: None,
+                    turn_provenance: None,
                 },
             ],
         };
@@ -4417,6 +5090,7 @@ mod tests {
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
+            turn_provenance: None,
         };
         let permission = PersistedMessage {
             id: "permission:1".to_string(),
@@ -4467,6 +5141,7 @@ mod tests {
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
+            turn_provenance: None,
         };
         let user_input = PersistedMessage {
             id: "input:1".to_string(),
@@ -4499,6 +5174,7 @@ mod tests {
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
+            turn_provenance: None,
         };
         let plan = PersistedMessage {
             id: "plan:1".to_string(),
@@ -4531,6 +5207,15 @@ mod tests {
                 "session_id": "child-session",
                 "label": "Open child"
             })),
+            turn_provenance: Some(PersistedTurnProvenance {
+                binding_id: "binding-1".to_string(),
+                runtime_id: "codex-acp".to_string(),
+                runtime_session_id: Some("runtime-1".to_string()),
+                model_id: "test-model".to_string(),
+                mode_id: "default".to_string(),
+                options: BTreeMap::new(),
+                start_reason: "normal".to_string(),
+            }),
         };
 
         let expected_messages = vec![
@@ -4656,5 +5341,233 @@ mod tests {
         );
 
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_history_load_synthesizes_bindings_without_writing_the_sidecar() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("legacy-compatible history should persist");
+
+        let envelopes = load_all_session_histories_with_bindings(&dir, false)
+            .expect("canonical history summaries should load");
+
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0].conversation_bindings.revision, 0);
+        assert_eq!(
+            envelopes[0].conversation_bindings.conversation_id,
+            history.session_id
+        );
+        assert_eq!(
+            envelopes[0].conversation_bindings.provider_bindings[0].runtime_id,
+            "codex-acp"
+        );
+        assert!(!storage_conversation_bindings_file(&dir, &history.session_id).exists());
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn canonical_save_materializes_sidecar_and_keeps_legacy_projection() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let mut bindings =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &history.session_id))
+                .expect("legacy projection should synthesize");
+        let active = &mut bindings.provider_bindings[0];
+        active.runtime_id = "claude-acp".to_string();
+        active.model_id = "sonnet".to_string();
+        bindings.preferred_selection.runtime_id = "claude-acp".to_string();
+        bindings.preferred_selection.model_id = "sonnet".to_string();
+
+        save_session_history_with_bindings(&dir, &history, Some(bindings))
+            .expect("canonical history should persist");
+
+        let sidecar: PersistedConversationBindings = read_json_file(
+            &storage_conversation_bindings_file(&dir, &history.session_id),
+        )
+        .expect("sidecar should load");
+        let metadata =
+            load_session_metadata(&dir, &history.session_id).expect("legacy metadata should load");
+        assert_eq!(sidecar.revision, 1);
+        assert_eq!(metadata.runtime_id.as_deref(), Some("claude-acp"));
+        assert_eq!(metadata.model_id, "sonnet");
+        let inventory = inspect_history_storage(&dir);
+        assert!(inventory.histories.unknown_entries.is_empty());
+        assert!(inventory.histories.corrupt_artifacts.is_empty());
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn downgrade_write_reconciles_without_losing_existing_bindings() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let bindings =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &history.session_id))
+                .expect("legacy projection should synthesize");
+        save_session_history_with_bindings(&dir, &history, Some(bindings))
+            .expect("sidecar should materialize");
+
+        let mut legacy_write = history.clone();
+        legacy_write.runtime_id = Some("gemini-acp".to_string());
+        legacy_write.model_id = "gemini-pro".to_string();
+        legacy_write.updated_at = 30;
+        legacy_write.messages.push(PersistedMessage {
+            id: "assistant:legacy".to_string(),
+            role: "assistant".to_string(),
+            kind: "text".to_string(),
+            content: "Written after downgrade".to_string(),
+            timestamp: 30,
+            attachments: None,
+            title: None,
+            meta: None,
+            permission_request_id: None,
+            permission_options: None,
+            diffs: None,
+            review_diffs: None,
+            user_input_request_id: None,
+            user_input_questions: None,
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
+            plan_entries: None,
+            plan_detail: None,
+            tool_action: None,
+            turn_provenance: None,
+        });
+        legacy_write.message_count = Some(legacy_write.messages.len());
+        save_session_history(&dir, &legacy_write).expect("legacy write should remain supported");
+
+        let mut envelopes = load_all_session_histories_with_bindings(&dir, true)
+            .expect("upgraded history should reconcile");
+        let envelope = envelopes.pop().expect("history should exist");
+        assert_eq!(envelope.history.messages.len(), 3);
+        assert_eq!(
+            envelope
+                .conversation_bindings
+                .provider_bindings
+                .iter()
+                .map(|binding| binding.runtime_id.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["codex-acp", "gemini-acp"])
+        );
+        assert!(envelope
+            .conversation_bindings
+            .provider_bindings
+            .iter()
+            .all(|binding| binding.context_cursor.is_none()));
+
+        save_session_history_with_bindings(
+            &dir,
+            &envelope.history,
+            Some(envelope.conversation_bindings),
+        )
+        .expect("reconciled state should persist");
+        let persisted: PersistedConversationBindings = read_json_file(
+            &storage_conversation_bindings_file(&dir, &history.session_id),
+        )
+        .expect("sidecar should load");
+        assert_eq!(persisted.revision, 2);
+        assert_eq!(persisted.provider_bindings.len(), 2);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn future_sidecar_degrades_to_legacy_without_being_overwritten() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let synthesized =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &history.session_id))
+                .expect("bindings should synthesize");
+        let future = serde_json::json!({
+            "version": 99,
+            "future_payload": { "keep": true }
+        });
+        let sidecar_path = storage_conversation_bindings_file(&dir, &history.session_id);
+        write_json_atomic(&sidecar_path, &future).expect("future sidecar should persist");
+        let before = fs::read(&sidecar_path).expect("future sidecar should be readable");
+        history.updated_at = 30;
+
+        save_session_history_with_bindings(&dir, &history, Some(synthesized))
+            .expect("legacy projection should still save");
+
+        assert_eq!(
+            fs::read(&sidecar_path).expect("future sidecar should remain"),
+            before
+        );
+        let loaded = load_all_session_histories_with_bindings(&dir, false)
+            .expect("history should degrade to synthesized bindings");
+        assert_eq!(loaded[0].conversation_bindings.revision, 0);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn corrupt_sidecar_degrades_to_legacy_without_blocking_history_load() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let sidecar_path = storage_conversation_bindings_file(&dir, &history.session_id);
+        fs::write(&sidecar_path, b"{not-json").expect("corrupt sidecar should persist");
+
+        let loaded = load_all_session_histories_with_bindings(&dir, true)
+            .expect("history should fall back to legacy projection");
+
+        assert_eq!(loaded[0].history.messages.len(), history.messages.len());
+        assert_eq!(loaded[0].conversation_bindings.revision, 0);
+        assert_eq!(
+            fs::read(&sidecar_path).expect("corrupt sidecar should remain"),
+            b"{not-json"
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn versioned_legacy_fixtures_upgrade_lazily_and_idempotently() {
+        for fixture in [
+            include_str!("../testdata/session-history/v0.7.1.json"),
+            include_str!("../testdata/session-history/minimum-v1.json"),
+        ] {
+            let dir = make_temp_dir();
+            let history: PersistedSessionHistory =
+                serde_json::from_str(fixture).expect("legacy fixture should deserialize");
+            save_session_history(&dir, &history).expect("legacy fixture should persist");
+            let sidecar_path = storage_conversation_bindings_file(&dir, &history.session_id);
+            assert!(!sidecar_path.exists());
+
+            let first = load_all_session_histories_with_bindings(&dir, true)
+                .expect("fixture should load")
+                .pop()
+                .expect("fixture history should exist");
+            assert!(!sidecar_path.exists());
+            save_session_history_with_bindings(
+                &dir,
+                &first.history,
+                Some(first.conversation_bindings),
+            )
+            .expect("fixture should upgrade");
+
+            let second = load_all_session_histories_with_bindings(&dir, true)
+                .expect("upgraded fixture should load")
+                .pop()
+                .expect("upgraded fixture history should exist");
+            save_session_history_with_bindings(
+                &dir,
+                &second.history,
+                Some(second.conversation_bindings),
+            )
+            .expect("repeated upgrade should remain valid");
+            let persisted: PersistedConversationBindings =
+                read_json_file(&sidecar_path).expect("materialized sidecar should remain readable");
+            assert_eq!(persisted.provider_bindings.len(), 1);
+
+            fs::remove_dir_all(dir).ok();
+        }
     }
 }

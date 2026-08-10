@@ -16566,6 +16566,15 @@ describe("chatStore", () => {
                                 status: "completed",
                                 target: "/vault/src/watcher.rs",
                             },
+                            turnProvenance: {
+                                bindingId: "binding-codex",
+                                runtimeId: "codex-acp",
+                                runtimeSessionId: "runtime-session-1",
+                                modelId: "test-model",
+                                modeId: "default",
+                                options: { reasoning_effort: "medium" },
+                                startReason: "normal",
+                            },
                         },
                     ],
                 },
@@ -16598,6 +16607,20 @@ describe("chatStore", () => {
                         value: "medium",
                     }),
                 ]),
+                conversation_bindings: expect.objectContaining({
+                    version: 1,
+                    revision: 0,
+                    conversation_id: activeSessionId,
+                    active_binding_id: expect.any(String),
+                    provider_bindings: [
+                        expect.objectContaining({
+                            conversation_id: activeSessionId,
+                            runtime_id: "codex-acp",
+                            model_id: "test-model",
+                            mode_id: "default",
+                        }),
+                    ],
+                }),
                 messages: expect.arrayContaining([
                     expect.objectContaining({
                         kind: "tool",
@@ -16609,6 +16632,15 @@ describe("chatStore", () => {
                                 new_text: "new line",
                             },
                         ],
+                        turn_provenance: {
+                            binding_id: "binding-codex",
+                            runtime_id: "codex-acp",
+                            runtime_session_id: "runtime-session-1",
+                            model_id: "test-model",
+                            mode_id: "default",
+                            options: { reasoning_effort: "medium" },
+                            start_reason: "normal",
+                        },
                     }),
                 ]),
             }),

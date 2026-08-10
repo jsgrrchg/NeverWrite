@@ -159,6 +159,11 @@ import {
 } from "../types";
 import { isCancellableChatTurnStatus } from "../chatTurnStatus";
 import {
+    deserializeConversationBindings,
+    serializeConversationBindings,
+    updateConversationBindingsFromLegacySession,
+} from "../conversationModel";
+import {
     getLastTranscriptMessage,
     getSessionTranscriptLength,
     getSessionTranscriptMessages,
@@ -5912,6 +5917,11 @@ function applyPersistedHistoryMetadata(
             persistedPreview: sanitizePersistedDisplayText(history.preview),
             persistedMessageCount,
             loadedPersistedMessageStart,
+            conversationBindings: history.conversation_bindings
+                ? deserializeConversationBindings(
+                      history.conversation_bindings,
+                  )
+                : nextSession.conversationBindings,
         },
         persistedCatalog,
     );
@@ -6072,6 +6082,11 @@ function createPersistedSession(
                         )
                       : null,
             isLoadingPersistedMessages: false,
+            conversationBindings: history.conversation_bindings
+                ? deserializeConversationBindings(
+                      history.conversation_bindings,
+                  )
+                : undefined,
         },
         runtime,
     );
@@ -6649,6 +6664,18 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             plan_entries: m.planEntries,
             plan_detail: m.planDetail,
             tool_action: m.toolAction,
+            turn_provenance: m.turnProvenance
+                ? {
+                      binding_id: m.turnProvenance.bindingId,
+                      runtime_id: m.turnProvenance.runtimeId,
+                      runtime_session_id:
+                          m.turnProvenance.runtimeSessionId,
+                      model_id: m.turnProvenance.modelId,
+                      mode_id: m.turnProvenance.modeId,
+                      options: m.turnProvenance.options,
+                      start_reason: m.turnProvenance.startReason,
+                  }
+                : undefined,
         }));
 
     const timestamps = messages.map((m) => m.timestamp);
@@ -6661,6 +6688,17 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         timestamps.length > 0
             ? Math.max(session.persistedUpdatedAt ?? 0, ...timestamps)
             : (session.persistedUpdatedAt ?? Date.now());
+
+    const conversationBindings = updateConversationBindingsFromLegacySession({
+        ...session,
+        persistedMessageCount: messageCount,
+        persistedUpdatedAt: updatedAt,
+    });
+    conversationBindings.transcriptObservation = {
+        ...conversationBindings.transcriptObservation,
+        messageCount,
+        updatedAt,
+    };
 
     return {
         version: 1,
@@ -6720,6 +6758,8 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         custom_title: session.customTitle ?? undefined,
         preview: getSessionPreview(session),
         messages,
+        conversation_bindings:
+            serializeConversationBindings(conversationBindings),
     };
 }
 
@@ -7360,6 +7400,18 @@ function restoreMessagesFromHistory(
                 planEntries: m.plan_entries,
                 planDetail: m.plan_detail,
                 toolAction: m.tool_action,
+                turnProvenance: m.turn_provenance
+                    ? {
+                          bindingId: m.turn_provenance.binding_id,
+                          runtimeId: m.turn_provenance.runtime_id,
+                          runtimeSessionId:
+                              m.turn_provenance.runtime_session_id,
+                          modelId: m.turn_provenance.model_id,
+                          modeId: m.turn_provenance.mode_id,
+                          options: m.turn_provenance.options,
+                          startReason: m.turn_provenance.start_reason,
+                      }
+                    : undefined,
             }),
         )
         .filter((message) => !isInternalRuntimeUserEchoMessage(message));

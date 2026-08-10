@@ -4,7 +4,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use neverwrite_ai::persistence::{
-    self, InspectedHistory, PersistedSessionHistory, StorageInventory,
+    self, InspectedHistory, PersistedSessionHistory, PersistedSessionHistoryEnvelope,
+    StorageInventory,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -710,11 +711,11 @@ fn build_stage(
     let destination_histories = load_histories_strict(destination)?;
     let mut by_source = source_histories
         .into_iter()
-        .map(|history| (history.session_id.clone(), history))
+        .map(|envelope| (envelope.history.session_id.clone(), envelope))
         .collect::<BTreeMap<_, _>>();
     let mut by_destination = destination_histories
         .into_iter()
-        .map(|history| (history.session_id.clone(), history))
+        .map(|envelope| (envelope.history.session_id.clone(), envelope))
         .collect::<BTreeMap<_, _>>();
     let mut converted_sessions = BTreeSet::new();
     let mut legacy_files = BTreeMap::new();
@@ -723,10 +724,10 @@ fn build_stage(
             MergeSource::Source(_) => (by_source.remove(session_id), source),
             MergeSource::Destination(_) => (by_destination.remove(session_id), destination),
         };
-        let mut history =
+        let mut envelope =
             history.ok_or_else(|| format!("Could not load inspected session {session_id}."))?;
         if convert_legacy_attachments(
-            &mut history,
+            &mut envelope.history,
             owner_root,
             managed_stage,
             attachments_by_id,
@@ -734,15 +735,19 @@ fn build_stage(
         )? {
             converted_sessions.insert(session_id.clone());
         }
-        persistence::save_session_history(stage, &history)?;
+        persistence::save_session_history_with_bindings(
+            stage,
+            &envelope.history,
+            Some(envelope.conversation_bindings),
+        )?;
     }
     sync_tree(stage)?;
     sync_directory(stage)?;
     Ok((converted_sessions, legacy_files))
 }
 
-fn load_histories_strict(root: &Path) -> Result<Vec<PersistedSessionHistory>, String> {
-    let histories = persistence::load_all_session_histories(root, true)?;
+fn load_histories_strict(root: &Path) -> Result<Vec<PersistedSessionHistoryEnvelope>, String> {
+    let histories = persistence::load_all_session_histories_with_bindings(root, true)?;
     let inventory = persistence::inspect_history_storage(root);
     if histories.len() != inventory.histories.sessions.len() {
         return Err("Strict inventory and loaded history count differ.".into());
@@ -2005,6 +2010,7 @@ mod tests {
                 plan_entries: None,
                 plan_detail: None,
                 tool_action: None,
+                turn_provenance: None,
             }],
         }
     }

@@ -3,7 +3,9 @@ import type {
     AIChatSession,
     AIConfigOption,
     AIConversation,
+    ConversationBindingsState,
     ConversationSelection,
+    PersistedConversationBindings,
 } from "./types";
 
 export interface CanonicalConversationProjection {
@@ -141,6 +143,222 @@ export function projectLegacySessionToCanonical(
             isResumingSession: session.isResumingSession ?? false,
         },
         bindings: [binding],
+    };
+}
+
+export function createConversationBindingsFromLegacySession(
+    session: AIChatSession,
+): ConversationBindingsState {
+    const { conversation, bindings } = projectLegacySessionToCanonical(session);
+    return {
+        version: 1,
+        revision: 0,
+        conversationId: conversation.conversationId,
+        preferredSelection: conversation.preferredSelection,
+        activeBindingId: conversation.activeBindingId,
+        providerBindings: bindings,
+        contextSummary: null,
+        transcriptObservation: {
+            messageCount: session.persistedMessageCount ?? session.messages.length,
+            updatedAt: session.persistedUpdatedAt ?? 0,
+            transcriptFingerprint: null,
+        },
+    };
+}
+
+export function updateConversationBindingsFromLegacySession(
+    session: AIChatSession,
+): ConversationBindingsState {
+    const projected = projectLegacySessionToCanonical(session);
+    const current =
+        session.conversationBindings ??
+        createConversationBindingsFromLegacySession(session);
+    const projectedBinding = projected.bindings[0];
+    const activeBinding = current.providerBindings.find(
+        (binding) => binding.bindingId === current.activeBindingId,
+    );
+    const nextBinding: AcpConversationBinding = activeBinding
+        ? {
+              ...activeBinding,
+              runtimeId: projectedBinding.runtimeId,
+              runtimeDisplayName: projectedBinding.runtimeDisplayName,
+              runtimeRevision: projectedBinding.runtimeRevision,
+              runtimeLaunchFingerprint:
+                  projectedBinding.runtimeLaunchFingerprint,
+              runtimeSessionId: projectedBinding.runtimeSessionId,
+              continuationStrategy: projectedBinding.continuationStrategy,
+              modelId: projectedBinding.modelId,
+              modeId: projectedBinding.modeId,
+              options: projectedBinding.options,
+              models: projectedBinding.models,
+              modes: projectedBinding.modes,
+              configOptions: projectedBinding.configOptions,
+              availableCommands: projectedBinding.availableCommands,
+              effortsByModel: projectedBinding.effortsByModel,
+              runtimeState: projectedBinding.runtimeState,
+              updatedAt: projectedBinding.updatedAt,
+          }
+        : projectedBinding;
+    const providerBindings = activeBinding
+        ? current.providerBindings.map((binding) =>
+              binding.bindingId === activeBinding.bindingId
+                  ? nextBinding
+                  : binding,
+          )
+        : [...current.providerBindings, nextBinding];
+
+    return {
+        ...current,
+        conversationId: projected.conversation.conversationId,
+        preferredSelection: projected.conversation.preferredSelection,
+        activeBindingId: nextBinding.bindingId,
+        providerBindings,
+    };
+}
+
+export function serializeConversationBindings(
+    state: ConversationBindingsState,
+): PersistedConversationBindings {
+    return {
+        version: state.version,
+        revision: state.revision,
+        conversation_id: state.conversationId,
+        preferred_selection: {
+            runtime_id: state.preferredSelection.runtimeId,
+            model_id: state.preferredSelection.modelId,
+            mode_id: state.preferredSelection.modeId,
+            options: state.preferredSelection.options,
+        },
+        active_binding_id: state.activeBindingId,
+        provider_bindings: state.providerBindings.map((binding) => ({
+            binding_id: binding.bindingId,
+            conversation_id: binding.conversationId,
+            runtime_id: binding.runtimeId,
+            runtime_display_name: binding.runtimeDisplayName,
+            runtime_revision: binding.runtimeRevision,
+            runtime_launch_fingerprint: binding.runtimeLaunchFingerprint,
+            runtime_session_id: binding.runtimeSessionId,
+            continuation_strategy: binding.continuationStrategy,
+            capabilities: binding.capabilities,
+            model_id: binding.modelId,
+            mode_id: binding.modeId,
+            options: binding.options,
+            models: binding.models.map((model) => ({
+                id: model.id,
+                runtime_id: model.runtimeId,
+                name: model.name,
+                description: model.description,
+                agent_type: model.agentType,
+            })),
+            modes: binding.modes.map((mode) => ({
+                id: mode.id,
+                runtime_id: mode.runtimeId,
+                name: mode.name,
+                description: mode.description,
+                disabled: mode.disabled ?? false,
+            })),
+            config_options: binding.configOptions.map((option) => ({
+                id: option.id,
+                runtime_id: option.runtimeId,
+                category: option.category,
+                label: option.label,
+                description: option.description,
+                type: option.type,
+                value: option.value,
+                options: option.options.map((item) => ({
+                    value: item.value,
+                    label: item.label,
+                    description: item.description,
+                    agent_type: item.agentType,
+                })),
+            })),
+            efforts_by_model: binding.effortsByModel,
+            runtime_state: binding.runtimeState,
+            context_cursor: binding.contextCursor,
+            context_generation: binding.contextGeneration,
+            created_at: binding.createdAt,
+            updated_at: binding.updatedAt,
+        })),
+        context_summary: state.contextSummary,
+        transcript_observation: {
+            message_count: state.transcriptObservation.messageCount,
+            updated_at: state.transcriptObservation.updatedAt,
+            transcript_fingerprint:
+                state.transcriptObservation.transcriptFingerprint,
+        },
+    };
+}
+
+export function deserializeConversationBindings(
+    persisted: PersistedConversationBindings,
+): ConversationBindingsState {
+    return {
+        version: persisted.version,
+        revision: persisted.revision,
+        conversationId: persisted.conversation_id,
+        preferredSelection: {
+            runtimeId: persisted.preferred_selection.runtime_id,
+            modelId: persisted.preferred_selection.model_id,
+            modeId: persisted.preferred_selection.mode_id,
+            options: persisted.preferred_selection.options,
+        },
+        activeBindingId: persisted.active_binding_id,
+        providerBindings: persisted.provider_bindings.map((binding) => ({
+            bindingId: binding.binding_id,
+            conversationId: binding.conversation_id,
+            runtimeId: binding.runtime_id,
+            runtimeDisplayName: binding.runtime_display_name,
+            runtimeRevision: binding.runtime_revision,
+            runtimeLaunchFingerprint: binding.runtime_launch_fingerprint,
+            runtimeSessionId: binding.runtime_session_id,
+            continuationStrategy: binding.continuation_strategy,
+            capabilities: binding.capabilities,
+            modelId: binding.model_id,
+            modeId: binding.mode_id,
+            options: binding.options,
+            models: (binding.models ?? []).map((model) => ({
+                id: model.id,
+                runtimeId: model.runtime_id,
+                name: model.name,
+                description: model.description,
+                agentType: model.agent_type ?? undefined,
+            })),
+            modes: (binding.modes ?? []).map((mode) => ({
+                id: mode.id,
+                runtimeId: mode.runtime_id,
+                name: mode.name,
+                description: mode.description,
+                disabled: mode.disabled,
+            })),
+            configOptions: (binding.config_options ?? []).map((option) => ({
+                id: option.id,
+                runtimeId: option.runtime_id,
+                category: option.category,
+                label: option.label,
+                description: option.description ?? undefined,
+                type: option.type,
+                value: option.value,
+                options: option.options.map((item) => ({
+                    value: item.value,
+                    label: item.label,
+                    description: item.description ?? undefined,
+                    agentType: item.agent_type ?? undefined,
+                })),
+            })),
+            effortsByModel: binding.efforts_by_model ?? {},
+            runtimeState: binding.runtime_state,
+            contextCursor: binding.context_cursor,
+            contextGeneration: binding.context_generation,
+            createdAt: binding.created_at,
+            updatedAt: binding.updated_at,
+        })),
+        contextSummary: persisted.context_summary,
+        transcriptObservation: {
+            messageCount: persisted.transcript_observation.message_count,
+            updatedAt: persisted.transcript_observation.updated_at,
+            transcriptFingerprint:
+                persisted.transcript_observation.transcript_fingerprint,
+        },
     };
 }
 

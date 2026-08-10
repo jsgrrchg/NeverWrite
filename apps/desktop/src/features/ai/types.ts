@@ -510,6 +510,23 @@ export interface AcpConversationBinding {
     updatedAt: number | null;
 }
 
+export interface ConversationTranscriptObservation {
+    messageCount: number;
+    updatedAt: number;
+    transcriptFingerprint: string | null;
+}
+
+export interface ConversationBindingsState {
+    version: number;
+    revision: number;
+    conversationId: string;
+    preferredSelection: ConversationSelection;
+    activeBindingId: string | null;
+    providerBindings: AcpConversationBinding[];
+    contextSummary: string | null;
+    transcriptObservation: ConversationTranscriptObservation;
+}
+
 export interface AIConversation {
     conversationId: string;
     parentConversationId: string | null;
@@ -603,6 +620,8 @@ export interface AIChatSession {
     resumeContextPending?: boolean;
     resumeReconnectFailed?: boolean;
     runtimeState?: AIRuntimeSessionState;
+    /** Canonical provider bindings loaded from the versioned history sidecar. */
+    conversationBindings?: ConversationBindingsState;
 }
 
 export interface AIRuntimeDescriptor {
@@ -917,6 +936,57 @@ export interface PersistedMessage {
     plan_entries?: AIPlanEntry[];
     plan_detail?: string;
     tool_action?: AIToolActivityAction | null;
+    turn_provenance?: {
+        binding_id: string;
+        runtime_id: string;
+        runtime_session_id: string | null;
+        model_id: string;
+        mode_id: string;
+        options: Record<string, string>;
+        start_reason: ConversationTurnStartReason;
+    };
+}
+
+export interface PersistedConversationBindings {
+    version: number;
+    revision: number;
+    conversation_id: string;
+    preferred_selection: {
+        runtime_id: string;
+        model_id: string;
+        mode_id: string;
+        options: Record<string, string>;
+    };
+    active_binding_id: string | null;
+    provider_bindings: Array<{
+        binding_id: string;
+        conversation_id: string;
+        runtime_id: string;
+        runtime_display_name: string | null;
+        runtime_revision: number | null;
+        runtime_launch_fingerprint: string | null;
+        runtime_session_id: string | null;
+        continuation_strategy: AcpContinuationStrategy | null;
+        capabilities: string[];
+        model_id: string;
+        mode_id: string;
+        options: Record<string, string>;
+        models?: AIBackendRuntimeDescriptorPayload["models"];
+        modes?: AIBackendRuntimeDescriptorPayload["modes"];
+        config_options?: AIBackendSessionPayload["config_options"];
+        efforts_by_model?: Record<string, string[]>;
+        runtime_state: AIRuntimeSessionState;
+        context_cursor: string | null;
+        context_generation: number;
+        created_at: number | null;
+        updated_at: number | null;
+    }>;
+    context_summary: string | null;
+    transcript_observation: {
+        message_count: number;
+        updated_at: number;
+        transcript_fingerprint: string | null;
+    };
 }
 
 export interface PersistedSessionHistory {
@@ -944,6 +1014,7 @@ export interface PersistedSessionHistory {
     custom_title?: string | null;
     preview?: string;
     messages: PersistedMessage[];
+    conversation_bindings?: PersistedConversationBindings;
 }
 
 export interface PersistedSessionHistoryPage {
