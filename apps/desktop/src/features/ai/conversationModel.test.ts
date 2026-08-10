@@ -4,6 +4,7 @@ import {
     createConversationBindingsFromLegacySession,
     createLegacyBindingId,
     deserializeConversationBindings,
+    forkConversationBindings,
     getConversationSwitchBlocker,
     getLegacyConversationId,
     projectCanonicalConversationToLegacy,
@@ -255,5 +256,29 @@ describe("canonical conversation model", () => {
         expect(updated.providerBindings[1].runtimeSessionId).toBe(
             "codex-native",
         );
+    });
+
+    it("resets each provider cursor when forking a canonical conversation", () => {
+        const source = createConversationBindingsFromLegacySession(
+            createLegacySession(),
+        );
+        source.providerBindings[0].contextCursor = "message-1";
+        source.providerBindings[0].contextGeneration = 4;
+
+        const forked = forkConversationBindings(source, "fork-history", 30);
+
+        expect(forked).toMatchObject({
+            conversationId: "fork-history",
+            revision: source.revision + 1,
+            activeBindingId: "fork:fork-history:claude-acp:0",
+        });
+        expect(forked.providerBindings[0]).toMatchObject({
+            bindingId: "fork:fork-history:claude-acp:0",
+            conversationId: "fork-history",
+            contextCursor: null,
+            contextGeneration: 5,
+            createdAt: 30,
+            updatedAt: 30,
+        });
     });
 });

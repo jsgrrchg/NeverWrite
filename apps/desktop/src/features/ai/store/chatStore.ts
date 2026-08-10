@@ -133,6 +133,7 @@ import {
     type AIChatSession,
     type AIConversation,
     type AcpConversationBinding,
+    type AcpContextHandoffMetadata,
     type AIClaudeProviderRouting,
     type AIComposerPart,
     type DraftAttachmentId,
@@ -159,9 +160,16 @@ import {
     type QueuedChatMessage,
     type QueuedChatMessageStatus,
 } from "../types";
+import {
+    ACP_HANDOFF_PROMPT_HEADER,
+    buildAcpContextHandoff,
+    extractAcpContextHandoffUserMessage,
+    isAcpContextHandoffPrompt,
+} from "../contextHandoff";
 import { isCancellableChatTurnStatus } from "../chatTurnStatus";
 import {
     deserializeConversationBindings,
+    forkConversationBindings,
     serializeConversationBindings,
     updateConversationBindingsFromLegacySession,
 } from "../conversationModel";
@@ -2718,18 +2726,11 @@ function findMostRecentSessionIdForRuntime(
     );
 }
 
-const RESUME_CONTEXT_PROMPT_HEADER =
-    "Use the saved transcript below as prior conversation context for this session.";
-const SAVED_TRANSCRIPT_MARKER = "Saved transcript:";
-const NEW_USER_MESSAGE_MARKER = "New user message:";
+const RESUME_CONTEXT_PROMPT_HEADER = ACP_HANDOFF_PROMPT_HEADER;
 const ATTACHED_SELECTION_OPEN_TAG = "<attached_selection";
 
 function isResumeContextPromptText(text: string) {
-    return (
-        text.includes(RESUME_CONTEXT_PROMPT_HEADER) &&
-        text.includes(SAVED_TRANSCRIPT_MARKER) &&
-        text.includes(NEW_USER_MESSAGE_MARKER)
-    );
+    return isAcpContextHandoffPrompt(text);
 }
 
 function isPotentialResumeContextPromptText(text: string) {
@@ -2741,9 +2742,7 @@ function isPotentialResumeContextPromptText(text: string) {
 }
 
 function extractResumeContextNewUserMessage(text: string) {
-    const index = text.lastIndexOf(NEW_USER_MESSAGE_MARKER);
-    if (index < 0) return null;
-    return text.slice(index + NEW_USER_MESSAGE_MARKER.length).trim();
+    return extractAcpContextHandoffUserMessage(text);
 }
 
 function hasAttachedSelectionMarkup(text: string) {
@@ -2771,54 +2770,69 @@ function sanitizePersistedDisplayText(value?: string | null) {
 
 function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
     if (!session.resumeContextPending) {
-        return prompt;
+        return { prompt, contextHandoff: undefined };
     }
 
-    const history = getSessionTranscriptMessages(session)
-        .filter((message) => !message.inProgress)
-        .filter(
-            (message) =>
-                message.kind !== "permission" &&
-                message.kind !== "plan" &&
-                message.kind !== "user_input_request" &&
-                message.kind !== "url_elicitation_request" &&
-                message.kind !== "status",
-        )
-        .filter((message) => !isInternalRuntimeUserEchoMessage(message))
-        .map((message) => {
-            const role =
-                message.role === "assistant"
-                    ? "Assistant"
-                    : message.role === "system"
-                      ? "System"
-                      : "User";
-            const label =
-                message.kind === "text"
-                    ? role
-                    : `${role} (${message.kind.replaceAll("_", " ")})`;
-            return `${label}: ${message.content}`.trim();
-        })
-        .filter(Boolean)
-        .join("\n\n");
+    const bindings = updateConversationBindingsFromLegacySession(session);
+    const activeBinding = bindings.providerBindings.find(
+        (binding) => binding.bindingId === bindings.activeBindingId,
+    );
+    const result = buildAcpContextHandoff({
+        messages: getSessionTranscriptMessages(session),
+        newUserMessage: prompt,
+        bindingId: activeBinding?.bindingId ?? null,
+        contextCursor: activeBinding?.contextCursor ?? null,
+        contextSummary: bindings.contextSummary,
+        reason: "transcript_handoff",
+    });
 
-    if (!history) {
-        return prompt;
+    return {
+        prompt: result.prompt,
+        contextHandoff: result.hasHandoff ? result.metadata : undefined,
+    };
+}
+
+function acceptContextHandoff(
+    session: AIChatSession,
+    contextHandoff: AcpContextHandoffMetadata | undefined,
+) {
+    if (!contextHandoff?.nextCursor || !contextHandoff.bindingId) {
+        return { ...session, resumeContextPending: false };
     }
 
-    return [
-        "Use the saved transcript below as prior conversation context for this session.",
-        "",
-        "Important:",
-        "- The transcript is historical context only and may not reflect the current workspace state.",
-        "- If the transcript conflicts with the current files, current environment, or the user's latest message, trust the current state.",
-        "- Do not assume prior pending tasks, approvals, permissions, or unfinished plans are still valid; verify when needed.",
-        "- Continue naturally from this context without repeating the transcript unless it is useful.",
-        "",
-        "Saved transcript:",
-        history,
-        "",
-        `New user message: ${prompt}`,
-    ].join("\n");
+    const bindings = updateConversationBindingsFromLegacySession(session);
+    if (bindings.activeBindingId !== contextHandoff.bindingId) {
+        return session;
+    }
+
+    const now = Date.now();
+    let didAdvanceCursor = false;
+    const providerBindings = bindings.providerBindings.map((binding) => {
+        if (
+            binding.bindingId !== contextHandoff.bindingId ||
+            binding.contextCursor === contextHandoff.nextCursor
+        ) {
+            return binding;
+        }
+        didAdvanceCursor = true;
+        return {
+            ...binding,
+            contextCursor: contextHandoff.nextCursor,
+            updatedAt: now,
+        };
+    });
+
+    return {
+        ...session,
+        resumeContextPending: false,
+        conversationBindings: didAdvanceCursor
+            ? {
+                  ...bindings,
+                  revision: bindings.revision + 1,
+                  providerBindings,
+              }
+            : bindings,
+    };
 }
 
 function cloneAttachment(attachment: AIChatAttachment): AIChatAttachment {
@@ -3261,10 +3275,11 @@ function buildQueuedMessage(
         return null;
     }
 
+    const preparedPrompt = buildPromptWithResumeContext(session, prompt);
     return {
         id: crypto.randomUUID(),
         content,
-        prompt: buildPromptWithResumeContext(session, prompt),
+        prompt: preparedPrompt.prompt,
         composerParts: composerPartsSnapshot,
         attachments,
         createdAt: Date.now(),
@@ -3274,6 +3289,7 @@ function buildQueuedMessage(
         optionsSnapshot: Object.fromEntries(
             session.configOptions.map((option) => [option.id, option.value]),
         ),
+        contextHandoff: preparedPrompt.contextHandoff,
     };
 }
 
@@ -8433,16 +8449,21 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 sessionsById: updateSessionById(
                     state,
                     activeSessionId,
-                    (current) => ({
-                        ...current,
-                        resumeContextPending: false,
-                    }),
+                    (current) =>
+                        acceptContextHandoff(
+                            current,
+                            currentItem.contextHandoff,
+                        ),
                 ),
             }));
+            const acceptedSession = get().sessionsById[activeSessionId];
             get().upsertSession({
                 ...nextSession,
                 historySessionId: session.historySessionId,
                 resumeContextPending: false,
+                conversationBindings:
+                    acceptedSession?.conversationBindings ??
+                    nextSession.conversationBindings,
             });
         } catch (error) {
             const message = getAiErrorMessage(
@@ -14462,6 +14483,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const forkedTitle = `${getSessionTitle(session)} (fork)`;
                 const now = Date.now();
                 const forkedSessionId = `persisted:${newHistoryId}`;
+                const forkedBindings = forkConversationBindings(
+                    updateConversationBindingsFromLegacySession(session),
+                    newHistoryId,
+                    now,
+                );
 
                 const runtime =
                     state.runtimes.find(
@@ -14496,6 +14522,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     isLoadingPersistedMessages: false,
                     activeWorkCycleId: null,
                     visibleWorkCycleId: null,
+                    conversationBindings: forkedBindings,
                 };
 
                 get().upsertSession(forkedSession, true);

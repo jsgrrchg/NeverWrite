@@ -41,6 +41,17 @@ export type ConversationTurnStartReason =
     | "native_resume"
     | "transcript_handoff";
 
+export interface AcpContextHandoffMetadata {
+    bindingId: string | null;
+    fromCursor: string | null;
+    nextCursor: string | null;
+    cursorFound: boolean;
+    includedMessageIds: string[];
+    omittedTurnCount: number;
+    truncated: boolean;
+    reason: ConversationTurnStartReason;
+}
+
 export interface ConversationTurnProvenance {
     bindingId: string;
     runtimeId: string;
@@ -338,6 +349,8 @@ export interface QueuedChatMessage {
     modeId: string | null;
     optionsSnapshot: Record<string, string>;
     optimisticMessageId?: string;
+    /** Internal ACP payload metadata. Never rendered as a user message. */
+    contextHandoff?: AcpContextHandoffMetadata;
 }
 
 export type AIChatRole = "user" | "assistant" | "system";

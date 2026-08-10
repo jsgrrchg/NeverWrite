@@ -10,6 +10,7 @@ import {
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { serializeComposerParts } from "../composerParts";
+import { updateConversationBindingsFromLegacySession } from "../conversationModel";
 import type {
     AIChatAttachment,
     AIChatSession,
@@ -14331,6 +14332,76 @@ describe("chatStore", () => {
                 ([command]) => command === "ai_create_session",
             ),
         ).toBe(false);
+    });
+
+    it("advances the active binding cursor only after a handoff is accepted", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const conversationBindings =
+            updateConversationBindingsFromLegacySession(session);
+        const bindingId = conversationBindings.activeBindingId!;
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    runtimeState: "live",
+                    status: "idle",
+                    resumeContextPending: true,
+                    conversationBindings,
+                    messages: [
+                        {
+                            id: "handoff-user",
+                            role: "user",
+                            kind: "text",
+                            content: "Retain this context",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "handoff-assistant",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Context retained",
+                            timestamp: 20,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                expect((args as { content: string }).content).toContain(
+                    "Assistant: Context retained",
+                );
+                return {
+                    ...sessionPayload,
+                    session_id: activeSessionId,
+                    status: "streaming",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Continue"), activeSessionId);
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        const acceptedBindings =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .conversationBindings!;
+        expect(acceptedBindings.revision).toBe(
+            conversationBindings.revision + 1,
+        );
+        expect(
+            acceptedBindings.providerBindings.find(
+                (binding) => binding.bindingId === bindingId,
+            )?.contextCursor,
+        ).toBe("handoff-assistant");
     });
 
     it("omits internal runtime user echoes from saved transcript recovery prompts", async () => {

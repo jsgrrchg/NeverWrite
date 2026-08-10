@@ -216,6 +216,52 @@ export function updateConversationBindingsFromLegacySession(
     };
 }
 
+/**
+ * A transcript fork owns fresh binding identities and must replay context to
+ * every provider independently from the beginning of the copied transcript.
+ */
+export function forkConversationBindings(
+    source: ConversationBindingsState,
+    conversationId: string,
+    now: number,
+): ConversationBindingsState {
+    let activeBindingId: string | null = null;
+    const providerBindings = source.providerBindings.map((binding, index) => {
+        const bindingId = `fork:${conversationId}:${binding.runtimeId}:${index}`;
+        if (binding.bindingId === source.activeBindingId) {
+            activeBindingId = bindingId;
+        }
+        const isCustomRuntime = binding.runtimeId.startsWith("custom:");
+        return {
+            ...binding,
+            bindingId,
+            conversationId,
+            runtimeSessionId: isCustomRuntime
+                ? null
+                : binding.runtimeSessionId,
+            continuationStrategy: isCustomRuntime
+                ? "new_session_only"
+                : binding.continuationStrategy,
+            contextCursor: null,
+            contextGeneration: binding.contextGeneration + 1,
+            createdAt: now,
+            updatedAt: now,
+        };
+    });
+
+    return {
+        ...source,
+        revision: source.revision + 1,
+        conversationId,
+        activeBindingId,
+        providerBindings,
+        transcriptObservation: {
+            ...source.transcriptObservation,
+            updatedAt: now,
+        },
+    };
+}
+
 export function serializeConversationBindings(
     state: ConversationBindingsState,
 ): PersistedConversationBindings {
