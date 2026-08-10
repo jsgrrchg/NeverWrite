@@ -33,6 +33,10 @@ interface DropdownOption {
     description?: string;
     agentType?: string;
     disabled?: boolean;
+    configOptionId?: string;
+    groupLabel?: string;
+    isDefault?: boolean;
+    selected?: boolean;
 }
 
 interface DropdownFieldProps {
@@ -43,8 +47,20 @@ interface DropdownFieldProps {
     searchable?: boolean;
     searchPlaceholder?: string;
     emptySearchMessage?: string;
+    displayValue?: string;
+    menuMinWidth?: number;
     leadingIcon?: ReactNode;
-    onChange: (value: string) => void;
+    onChange?: (value: string) => void;
+    onOptionChange?: (value: string, option: DropdownOption) => void;
+}
+
+interface TraitMenuSection {
+    kind: "reasoning" | "service_tier";
+    optionId: string;
+    label: string;
+    value: string;
+    options: DropdownOption[];
+    defaultValues: string[];
 }
 
 const SEARCHABLE_MODEL_RUNTIME_IDS = new Set([
@@ -135,17 +151,24 @@ function DropdownField({
     searchable = false,
     searchPlaceholder = "Search…",
     emptySearchMessage = "No matches found.",
+    displayValue: displayValueOverride,
+    menuMinWidth,
     leadingIcon,
     onChange,
+    onOptionChange,
 }: DropdownFieldProps) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const ref = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const lastFocusedElementRef = useRef<HTMLElement | null>(null);
-    const selected = options.find((option) => option.value === value);
+    const selected = options.find(
+        (option) => option.selected ?? option.value === value,
+    );
     const displayValue =
-        selected?.label ?? (value.trim() ? formatFallbackLabel(value) : label);
+        displayValueOverride ??
+        selected?.label ??
+        (value.trim() ? formatFallbackLabel(value) : label);
     const isDisabled = disabled || options.length === 0;
     const rememberFocusedElement = () => {
         const activeElement = document.activeElement;
@@ -260,6 +283,7 @@ function DropdownField({
                         backgroundColor: "var(--bg-secondary)",
                         border: "1px solid var(--border)",
                         boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                        minWidth: menuMinWidth,
                         maxHeight: searchable ? 320 : undefined,
                         display: searchable ? "flex" : undefined,
                         flexDirection: searchable ? "column" : undefined,
@@ -350,57 +374,132 @@ function DropdownField({
                                 {emptySearchMessage}
                             </div>
                         ) : (
-                            filteredOptions.map((option) => (
-                                <button
-                                    key={option.value}
-                                    type="button"
-                                    disabled={option.disabled}
-                                    title={option.description}
-                                    onMouseDown={(event) => {
-                                        if (option.disabled) {
-                                            return;
-                                        }
-
-                                        event.preventDefault();
-                                    }}
-                                    onClick={() => {
-                                        onChange(option.value);
-                                        closeDropdown();
-                                        restoreFocusedElement();
-                                    }}
-                                    className="flex w-full items-center px-3 py-1.5 text-left text-xs"
+                            filteredOptions.map((option, index) => (
+                                <div
+                                    key={`${option.groupLabel ?? ""}:${option.configOptionId ?? ""}:${option.value}`}
                                     style={{
-                                        color:
-                                            option.value === value
-                                                ? "var(--accent)"
-                                                : option.disabled
-                                                  ? "var(--text-secondary)"
-                                                  : "var(--text-primary)",
-                                        backgroundColor: "transparent",
-                                        border: "none",
-                                        opacity: option.disabled ? 0.4 : 1,
-                                        transition:
-                                            "background-color 80ms ease",
-                                    }}
-                                    onMouseEnter={(event) => {
-                                        if (!option.disabled) {
-                                            event.currentTarget.style.backgroundColor =
-                                                "var(--bg-tertiary)";
-                                        }
-                                    }}
-                                    onMouseLeave={(event) => {
-                                        event.currentTarget.style.backgroundColor =
-                                            "transparent";
+                                        borderTop:
+                                            option.groupLabel &&
+                                            index > 0 &&
+                                            filteredOptions[index - 1]
+                                                ?.groupLabel !== option.groupLabel
+                                                ? "1px solid var(--border)"
+                                                : undefined,
                                     }}
                                 >
-                                    {option.label}
-                                </button>
+                                    {option.groupLabel &&
+                                    (index === 0 ||
+                                        filteredOptions[index - 1]
+                                            ?.groupLabel !==
+                                            option.groupLabel) ? (
+                                        <div
+                                            className="px-3 pb-1 pt-1.5 text-[10px] font-medium"
+                                            style={{
+                                                color: "var(--text-secondary)",
+                                            }}
+                                        >
+                                            {option.groupLabel}
+                                        </div>
+                                    ) : null}
+                                    <button
+                                        type="button"
+                                        disabled={option.disabled}
+                                        title={option.description}
+                                        onMouseDown={(event) => {
+                                            if (option.disabled) {
+                                                return;
+                                            }
+
+                                            event.preventDefault();
+                                        }}
+                                        onClick={() => {
+                                            if (onOptionChange) {
+                                                onOptionChange(
+                                                    option.value,
+                                                    option,
+                                                );
+                                            } else {
+                                                onChange?.(option.value);
+                                            }
+                                            closeDropdown();
+                                            restoreFocusedElement();
+                                        }}
+                                        className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-xs"
+                                        style={{
+                                            color:
+                                                option.selected === true
+                                                    ? "var(--text-primary)"
+                                                    : option.value === value
+                                                      ? "var(--accent)"
+                                                      : option.disabled
+                                                        ? "var(--text-secondary)"
+                                                        : "var(--text-primary)",
+                                            backgroundColor:
+                                                option.selected === true
+                                                    ? "var(--bg-tertiary)"
+                                                    : "transparent",
+                                            border: "none",
+                                            opacity: option.disabled ? 0.4 : 1,
+                                            transition:
+                                                "background-color 80ms ease",
+                                        }}
+                                        onMouseEnter={(event) => {
+                                            if (!option.disabled) {
+                                                event.currentTarget.style.backgroundColor =
+                                                    "var(--bg-tertiary)";
+                                            }
+                                        }}
+                                        onMouseLeave={(event) => {
+                                            event.currentTarget.style.backgroundColor =
+                                                option.selected === true
+                                                    ? "var(--bg-tertiary)"
+                                                    : "transparent";
+                                        }}
+                                    >
+                                        <span className="truncate">
+                                            {option.label}
+                                        </span>
+                                        {option.isDefault ? (
+                                            <span
+                                                className="ml-3 shrink-0 rounded px-1 py-0.5 font-mono text-[9px] font-semibold leading-none"
+                                                style={{
+                                                    backgroundColor:
+                                                        "var(--bg-primary)",
+                                                    color: "var(--text-secondary)",
+                                                }}
+                                            >
+                                                Default
+                                            </span>
+                                        ) : null}
+                                    </button>
+                                </div>
                             ))
                         )}
                     </div>
                 </div>
             )}
         </div>
+    );
+}
+
+function isFastServiceTierValue(value: string) {
+    return ["fast", "on", "priority"].includes(
+        normalizeConfigOptionId(value),
+    );
+}
+
+function FastModeIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            className="shrink-0"
+            fill="currentColor"
+            height="11"
+            viewBox="0 0 16 16"
+            width="11"
+        >
+            <path d="M9.35 1.25 3.4 8.45h3.75l-.5 6.3 5.95-7.2H8.85l.5-6.3Z" />
+        </svg>
     );
 }
 
@@ -548,33 +647,62 @@ function isDuplicateThoughtLevelMode(
     );
 }
 
-function normalizeExtraConfigPresentation(
+function normalizeConfigOptionId(value: string) {
+    return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function configPresentationCategory(
     runtimeId: string | undefined,
     option: AIConfigOption,
-    options: DropdownOption[],
 ) {
-    if (
-        runtimeId !== CLAUDE_RUNTIME_ID ||
-        option.id !== CLAUDE_FAST_OPTION_ID
-    ) {
-        return {
-            label: option.label,
-            options,
-        };
+    if (option.category === "reasoning") {
+        return "reasoning" as const;
+    }
+    if (option.category === "service_tier") {
+        return "service_tier" as const;
     }
 
-    return {
-        label: "Fast Mode",
-        options: options.map((item) => {
-            if (item.value === "on") {
-                return { ...item, label: "Fast" };
-            }
-            if (item.value === "off") {
-                return { ...item, label: "Off" };
-            }
-            return item;
-        }),
-    };
+    const normalizedId = normalizeConfigOptionId(option.id);
+    if (
+        normalizedId === "servicetier" ||
+        normalizedId === "fastmode" ||
+        (runtimeId === CLAUDE_RUNTIME_ID &&
+            option.id === CLAUDE_FAST_OPTION_ID)
+    ) {
+        return "service_tier" as const;
+    }
+
+    return "other" as const;
+}
+
+function normalizeServiceTierOptions(
+    options: DropdownOption[],
+    description?: string,
+) {
+    return options.map((item) => {
+        const value = normalizeConfigOptionId(item.value);
+        if (["off", "default", "standard", "normal"].includes(value)) {
+            return { ...item, label: "Standard" };
+        }
+        if (["fast", "on", "priority"].includes(value)) {
+            return {
+                ...item,
+                label: "Fast",
+                description: item.description ?? description,
+            };
+        }
+        return item;
+    });
+}
+
+function defaultServiceTierValues(options: DropdownOption[]) {
+    return options
+        .filter((item) =>
+            ["off", "default", "standard", "normal"].includes(
+                normalizeConfigOptionId(item.value),
+            ),
+        )
+        .map((item) => item.value);
 }
 
 export function AIChatAgentControls({
@@ -663,23 +791,119 @@ export function AIChatAgentControls({
                 }),
         [configOptions, modeId, modes],
     );
-    const visibleExtraConfigs = useMemo(
+    const visibleConfigs = useMemo(
         () =>
             extraConfigs
                 .map((option) => ({
                     option,
-                    ...normalizeExtraConfigPresentation(
+                    presentationCategory: configPresentationCategory(
                         runtimeId,
                         option,
-                        filterConfigOptions(
-                            option,
-                            selectedModelId,
-                            effortsByModel,
-                        ),
+                    ),
+                    options: filterConfigOptions(
+                        option,
+                        selectedModelId,
+                        effortsByModel,
                     ),
                 }))
                 .filter(({ options }) => options.length > 0),
         [effortsByModel, extraConfigs, runtimeId, selectedModelId],
+    );
+    const traitSections = useMemo<TraitMenuSection[]>(
+        () =>
+            visibleConfigs
+                .filter(
+                    ({ presentationCategory }) =>
+                        presentationCategory === "reasoning" ||
+                        presentationCategory === "service_tier",
+                )
+                .sort((left, right) =>
+                    left.presentationCategory === right.presentationCategory
+                        ? 0
+                        : left.presentationCategory === "reasoning"
+                          ? -1
+                          : 1,
+                )
+                .map(({ option, options, presentationCategory }) => ({
+                    kind: presentationCategory as
+                        | "reasoning"
+                        | "service_tier",
+                    optionId: option.id,
+                    label:
+                        presentationCategory === "reasoning"
+                            ? "Reasoning"
+                            : "Service Tier",
+                    value: option.value,
+                    options:
+                        presentationCategory === "service_tier"
+                            ? normalizeServiceTierOptions(
+                                  options,
+                                  option.description,
+                              )
+                            : options,
+                    defaultValues:
+                        presentationCategory === "service_tier"
+                            ? defaultServiceTierValues(options)
+                            : [],
+                })),
+        [visibleConfigs],
+    );
+    const traitDropdown = useMemo(() => {
+        const reasoningSection = traitSections.find(
+            (section) => section.kind === "reasoning",
+        );
+        const serviceTierSection = traitSections.find(
+            (section) => section.kind === "service_tier",
+        );
+        const primarySection =
+            reasoningSection ?? serviceTierSection ?? traitSections[0];
+        if (!primarySection) {
+            return null;
+        }
+
+        const selected = primarySection.options.find(
+            (option) => option.value === primarySection.value,
+        );
+        return {
+            label: reasoningSection
+                ? serviceTierSection
+                    ? "Reasoning and Service Tier"
+                    : "Reasoning"
+                : "Service Tier",
+            value: primarySection.value,
+            displayValue:
+                selected?.label ??
+                (primarySection.value.trim()
+                    ? formatFallbackLabel(primarySection.value)
+                    : "Traits"),
+            fastModeEnabled: Boolean(
+                serviceTierSection &&
+                isFastServiceTierValue(serviceTierSection.value),
+            ),
+            options: traitSections.flatMap((section) =>
+                section.options.map((option) => ({
+                    ...option,
+                    configOptionId: section.optionId,
+                    groupLabel: section.label,
+                    isDefault: section.defaultValues.includes(option.value),
+                    selected: option.value === section.value,
+                })),
+            ),
+        };
+    }, [traitSections]);
+    const visibleExtraConfigs = useMemo(
+        () =>
+            visibleConfigs
+                .filter(
+                    ({ presentationCategory }) =>
+                        presentationCategory === "other",
+                )
+                .map(({ option, options }) => ({
+                    option,
+                    label: option.label,
+                    options,
+                })),
+        [visibleConfigs],
     );
     const showFullAccessPolicyHelp =
         runtimeId === CODEX_RUNTIME_ID && modeId === CODEX_FULL_ACCESS_MODE_ID;
@@ -716,9 +940,37 @@ export function AIChatAgentControls({
                     }
                 />
             ) : null}
+            {traitDropdown ? (
+                <>
+                    {hasControlBeforeExtras ? <ControlSeparator /> : null}
+                    <DropdownField
+                        disabled={disabled}
+                        displayValue={traitDropdown.displayValue}
+                        label={traitDropdown.label}
+                        leadingIcon={
+                            traitDropdown.fastModeEnabled ? (
+                                <FastModeIcon />
+                            ) : undefined
+                        }
+                        menuMinWidth={168}
+                        options={traitDropdown.options}
+                        value={traitDropdown.value}
+                        onOptionChange={(value, option) => {
+                            if (option.configOptionId) {
+                                onConfigOptionChange(
+                                    option.configOptionId,
+                                    value,
+                                );
+                            }
+                        }}
+                    />
+                </>
+            ) : null}
             {visibleExtraConfigs.map(({ option, label, options }, index) => (
                 <div className="contents" key={option.id}>
-                    {hasControlBeforeExtras || index > 0 ? (
+                    {hasControlBeforeExtras ||
+                    traitSections.length > 0 ||
+                    index > 0 ? (
                         <ControlSeparator />
                     ) : null}
                     <DropdownField
@@ -734,7 +986,9 @@ export function AIChatAgentControls({
             ))}
             {modes.length > 0 ? (
                 <>
-                    {hasControlBeforeExtras || visibleExtraConfigs.length > 0 ? (
+                    {hasControlBeforeExtras ||
+                    traitSections.length > 0 ||
+                    visibleExtraConfigs.length > 0 ? (
                         <ControlSeparator />
                     ) : null}
                     <DropdownField

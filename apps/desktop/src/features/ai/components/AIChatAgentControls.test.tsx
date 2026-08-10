@@ -289,12 +289,13 @@ describe("AIChatAgentControls", () => {
             />,
         );
 
-        fireEvent.click(screen.getByTitle("Reasoning Effort"));
+        fireEvent.click(screen.getByTitle("Reasoning"));
 
         expect(screen.getAllByText("Medium")).toHaveLength(2);
         expect(screen.getByText("High")).toBeInTheDocument();
         expect(screen.queryByText("Low")).not.toBeInTheDocument();
         expect(screen.queryByText("Very High")).not.toBeInTheDocument();
+        expect(screen.queryByText("Service Tier")).not.toBeInTheDocument();
     });
 
     it("hides reasoning efforts when the selected model has none", () => {
@@ -404,7 +405,72 @@ describe("AIChatAgentControls", () => {
         expect(screen.queryByTitle("Thinking")).not.toBeInTheDocument();
     });
 
-    it("presents Claude fast mode as Off/Fast while preserving ACP values", () => {
+    it("groups Codex reasoning and service tier while preserving ACP values", () => {
+        const onConfigOptionChange = vi.fn();
+
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="codex-acp"
+                modelId="gpt-5.6"
+                modeId="default"
+                effortsByModel={{}}
+                models={[]}
+                modes={[]}
+                configOptions={[
+                    {
+                        id: "reasoning_effort",
+                        runtimeId: "codex-acp",
+                        category: "reasoning",
+                        label: "Reasoning Effort",
+                        type: "select",
+                        value: "medium",
+                        options: [
+                            { value: "low", label: "Low" },
+                            { value: "medium", label: "Medium" },
+                            { value: "high", label: "High" },
+                        ],
+                    },
+                    {
+                        id: "service_tier",
+                        runtimeId: "codex-acp",
+                        category: "service_tier",
+                        label: "Fast Mode",
+                        type: "select",
+                        value: "off",
+                        options: [
+                            { value: "off", label: "Off" },
+                            { value: "fast", label: "Fast" },
+                            { value: "flex", label: "Flex" },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={onConfigOptionChange}
+            />,
+        );
+
+        expect(screen.getByText("Medium")).toBeInTheDocument();
+        expect(screen.queryByTitle("Fast Mode")).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByTitle("Reasoning and Service Tier"));
+
+        expect(screen.getByText("Reasoning")).toBeInTheDocument();
+        expect(screen.getByText("Service Tier")).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Standard Default" }),
+        ).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Flex" })).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Fast" }));
+
+        expect(onConfigOptionChange).toHaveBeenCalledWith(
+            "service_tier",
+            "fast",
+        );
+    });
+
+    it("presents a legacy Claude fast option as a service tier", () => {
         const onConfigOptionChange = vi.fn();
 
         renderComponent(
@@ -435,14 +501,50 @@ describe("AIChatAgentControls", () => {
             />,
         );
 
-        fireEvent.click(screen.getByTitle("Fast Mode"));
+        fireEvent.click(screen.getByTitle("Service Tier"));
 
         expect(screen.getByRole("button", { name: "Fast" })).toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "On" })).not.toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Standard Default" }),
+        ).toBeInTheDocument();
 
         fireEvent.click(screen.getByRole("button", { name: "Fast" }));
 
         expect(onConfigOptionChange).toHaveBeenCalledWith("fast", "on");
+    });
+
+    it("does not reinterpret an unrelated fast option from another ACP", () => {
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="custom:example"
+                modelId="example-model"
+                modeId="default"
+                effortsByModel={{}}
+                models={[]}
+                modes={[]}
+                configOptions={[
+                    {
+                        id: "fast",
+                        runtimeId: "custom:example",
+                        category: "other",
+                        label: "Fast Mode",
+                        type: "select",
+                        value: "off",
+                        options: [
+                            { value: "on", label: "On" },
+                            { value: "off", label: "Off" },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+
+        expect(screen.getByTitle("Fast Mode")).toBeInTheDocument();
+        expect(screen.queryByTitle("Service Tier")).not.toBeInTheDocument();
     });
 
     it("uses the ACP model config option as the source of truth", () => {

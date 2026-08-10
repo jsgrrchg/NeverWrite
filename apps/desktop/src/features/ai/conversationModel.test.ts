@@ -220,6 +220,19 @@ describe("canonical conversation model", () => {
         state.contextSummary = "Earlier decisions";
         state.providerBindings[0].contextCursor = "message-1";
         state.providerBindings[0].contextGeneration = 2;
+        state.providerBindings[0].options.fast = "on";
+        state.providerBindings[0].configOptions.push({
+            id: "fast",
+            runtimeId: "claude-acp",
+            category: "service_tier",
+            label: "Fast mode",
+            type: "select",
+            value: "on",
+            options: [
+                { value: "on", label: "On" },
+                { value: "off", label: "Off" },
+            ],
+        });
 
         const serialized = serializeConversationBindings(state);
         const restored = deserializeConversationBindings(serialized);
@@ -227,6 +240,10 @@ describe("canonical conversation model", () => {
         expect(serializeConversationBindings(restored)).toEqual(serialized);
         expect(restored.contextSummary).toBe("Earlier decisions");
         expect(restored.providerBindings[0].contextCursor).toBe("message-1");
+        expect(restored.providerBindings[0].options.fast).toBe("on");
+        expect(restored.providerBindings[0].configOptions[1]?.category).toBe(
+            "service_tier",
+        );
     });
 
     it("updates the active legacy projection without dropping prior bindings", () => {

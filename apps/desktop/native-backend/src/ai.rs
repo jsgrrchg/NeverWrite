@@ -5692,6 +5692,7 @@ async fn start_acp12_runtime_session(
                 session_id: response.session_id.0.to_string(),
                 modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
                 config_options: acp12_session_config_options(
+                    &spec.runtime_id,
                     response.config_options,
                     response.models.or_else(|| initialize_model_state.clone()),
                 )
@@ -5723,6 +5724,7 @@ async fn start_acp12_runtime_session(
                 session_id: session_id.clone(),
                 modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
                 config_options: acp12_session_config_options(
+                    &spec.runtime_id,
                     response.config_options,
                     response.models.or_else(|| initialize_model_state.clone()),
                 )
@@ -5744,6 +5746,7 @@ fn acp12_initialize_model_state(
 }
 
 fn acp12_session_config_options(
+    runtime_id: &str,
     legacy_options: Option<Vec<acp12::schema::SessionConfigOption>>,
     legacy_models: Option<acp12::schema::SessionModelState>,
 ) -> Result<Option<Vec<SessionConfigOption>>, String> {
@@ -5755,7 +5758,7 @@ fn acp12_session_config_options(
     let options = options.get_or_insert_with(Vec::new);
     if !options.iter().any(|option| {
         matches!(
-            map_config_option_category(&option.id.0, option.category.as_ref()),
+            map_config_option_category(runtime_id, &option.id.0, option.category.as_ref()),
             AiConfigOptionCategory::Model
         )
     }) {
@@ -6301,7 +6304,11 @@ fn map_session_config_options(
             Some(AiConfigOption {
                 id: option.id.0.to_string(),
                 runtime_id: runtime_id.to_string(),
-                category: map_config_option_category(&option.id.0, option.category.as_ref()),
+                category: map_config_option_category(
+                    runtime_id,
+                    &option.id.0,
+                    option.category.as_ref(),
+                ),
                 label: option.name,
                 description: option.description,
                 kind: "select".to_string(),
@@ -6338,6 +6345,7 @@ fn align_synthesized_config_options_to_acp_state(
 }
 
 fn map_config_option_category(
+    runtime_id: &str,
     option_id: &str,
     category: Option<&SessionConfigOptionCategory>,
 ) -> AiConfigOptionCategory {
@@ -6357,6 +6365,11 @@ fn map_config_option_category(
     ) {
         return AiConfigOptionCategory::Reasoning;
     }
+    if matches!(normalized_id.as_str(), "servicetier" | "fastmode")
+        || (runtime_id == CLAUDE_RUNTIME_ID && normalized_id == "fast")
+    {
+        return AiConfigOptionCategory::ServiceTier;
+    }
 
     match category {
         Some(SessionConfigOptionCategory::Mode) => AiConfigOptionCategory::Mode,
@@ -6369,6 +6382,14 @@ fn map_config_option_category(
             ) =>
         {
             AiConfigOptionCategory::Reasoning
+        }
+        Some(SessionConfigOptionCategory::Other(value))
+            if matches!(
+                normalize_config_option_key(value).as_str(),
+                "servicetier" | "fastmode"
+            ) =>
+        {
+            AiConfigOptionCategory::ServiceTier
         }
         _ => AiConfigOptionCategory::Other,
     }
@@ -15075,6 +15096,15 @@ mod tests {
                     "high",
                     vec![SessionConfigSelectOption::new("high", "High")],
                 ),
+                SessionConfigOption::select(
+                    "service_tier",
+                    "Fast Mode",
+                    "off",
+                    vec![
+                        SessionConfigSelectOption::new("off", "Off"),
+                        SessionConfigSelectOption::new("fast", "Fast"),
+                    ],
+                ),
             ],
         );
 
@@ -15083,6 +15113,10 @@ mod tests {
         assert!(matches!(
             options[2].category,
             AiConfigOptionCategory::Reasoning
+        ));
+        assert!(matches!(
+            options[3].category,
+            AiConfigOptionCategory::ServiceTier
         ));
     }
 
@@ -15117,6 +15151,7 @@ mod tests {
     #[test]
     fn acp12_model_state_is_exposed_as_model_config_option() {
         let config_options = acp12_session_config_options(
+            GROK_RUNTIME_ID,
             None,
             Some(acp12::schema::SessionModelState::new(
                 "grok-build",
@@ -16076,6 +16111,46 @@ mod tests {
         assert!(matches!(
             mapped[0].category,
             AiConfigOptionCategory::Reasoning
+        ));
+    }
+
+    #[test]
+    fn acp_config_mapping_classifies_only_known_fast_options_as_service_tiers() {
+        let claude = map_session_config_options(
+            CLAUDE_RUNTIME_ID,
+            vec![SessionConfigOption::select(
+                "fast",
+                "Fast mode",
+                "off",
+                vec![
+                    SessionConfigSelectOption::new("off", "Off"),
+                    SessionConfigSelectOption::new("on", "On"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Other(
+                "model_config".to_string(),
+            ))],
+        );
+        let unrelated = map_session_config_options(
+            "custom:example",
+            vec![SessionConfigOption::select(
+                "fast",
+                "Fast mode",
+                "off",
+                vec![
+                    SessionConfigSelectOption::new("off", "Off"),
+                    SessionConfigSelectOption::new("on", "On"),
+                ],
+            )],
+        );
+
+        assert!(matches!(
+            claude[0].category,
+            AiConfigOptionCategory::ServiceTier
+        ));
+        assert!(matches!(
+            unrelated[0].category,
+            AiConfigOptionCategory::Other
         ));
     }
 

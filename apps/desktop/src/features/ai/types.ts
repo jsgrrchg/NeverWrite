@@ -280,7 +280,7 @@ export interface AIConfigSelectOption {
 export interface AIConfigOption {
     id: string;
     runtimeId: string;
-    category: "mode" | "model" | "reasoning" | "other";
+    category: "mode" | "model" | "reasoning" | "service_tier" | "other";
     label: string;
     description?: string;
     type: "select";
@@ -674,7 +674,12 @@ export interface AIBackendSessionPayload {
     config_options: Array<{
         id: string;
         runtime_id: string;
-        category: "mode" | "model" | "reasoning" | "other";
+        category:
+            | "mode"
+            | "model"
+            | "reasoning"
+            | "service_tier"
+            | "other";
         label: string;
         description?: string | null;
         type: "select";
