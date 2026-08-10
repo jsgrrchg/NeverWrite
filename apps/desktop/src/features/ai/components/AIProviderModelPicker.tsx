@@ -461,7 +461,7 @@ export function AIProviderModelPicker({
                                 <SearchIcon />
                                 <input
                                     aria-label="Provider and model search"
-                                    className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+                                    className="h-full min-w-0 flex-1 bg-transparent p-0 text-sm leading-none outline-none"
                                     onChange={(event) => setQuery(event.target.value)}
                                     onKeyDown={handleSearchKeyDown}
                                     placeholder="Search models..."
