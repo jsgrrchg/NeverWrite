@@ -95,6 +95,15 @@ process.on("unhandledRejection", (error) => {
 });
 
 async function main() {
+    await runOnce("cargo", [
+        "build",
+        "--locked",
+        "--manifest-path",
+        "../../vendor/codex-acp/Cargo.toml",
+        "--bin",
+        "codex-acp",
+    ]);
+
     await runOnce(
         "cargo",
         ["build", "-p", "neverwrite-native-backend"],
