@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { create, type StateCreator } from "zustand";
 import { confirm, openUrl } from "@neverwrite/runtime";
 import {
     normalizeEditorFontFamily,
@@ -131,6 +131,8 @@ import {
     type AIChatNoteSummary,
     type AIChatRole,
     type AIChatSession,
+    type AIConversation,
+    type AcpConversationBinding,
     type AIClaudeProviderRouting,
     type AIComposerPart,
     type DraftAttachmentId,
@@ -163,6 +165,12 @@ import {
     serializeConversationBindings,
     updateConversationBindingsFromLegacySession,
 } from "../conversationModel";
+import {
+    projectChatStoreToCanonical,
+    projectSessionMapToConversations,
+    resolveConversationId,
+    resolveLegacySessionId,
+} from "./chatStoreConversationProjection";
 import {
     getLastTranscriptMessage,
     getSessionTranscriptLength,
@@ -1555,6 +1563,13 @@ interface ChatStore {
     runtimeConnectionByRuntimeId: Record<string, AIRuntimeConnectionState>;
     setupStatusByRuntimeId: Record<string, AIRuntimeSetupStatus>;
     runtimes: AIRuntimeDescriptor[];
+    /** Canonical chat authority. AIChatSession below is a compatibility view. */
+    conversationsById: Record<string, AIConversation>;
+    bindingsById: Record<string, AcpConversationBinding>;
+    conversationOrder: string[];
+    activeConversationId: string | null;
+    conversationIdBySessionRef: Record<string, string>;
+    sessionIdByConversationId: Record<string, string>;
     sessionsById: Record<string, AIChatSession>;
     sessionOrder: string[];
     pendingAvailableCommandsBySessionId: Record<
@@ -1582,12 +1597,25 @@ interface ChatStore {
     screenshotRetentionSeconds: number;
     toolActivityDisplayMode: ActivityDisplayMode;
     composerPartsBySessionId: Record<string, AIComposerPart[]>;
+    composerPartsByConversationId: Record<string, AIComposerPart[]>;
     queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>;
+    queuedMessagesByConversationId: Record<string, QueuedChatMessage[]>;
     queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
+    queuedMessageEditByConversationId: Record<string, QueuedMessageEditState>;
     activeQueuedMessageBySessionId: Record<string, DeferredQueuedMessage>;
+    activeQueuedMessageByConversationId: Record<
+        string,
+        DeferredQueuedMessage
+    >;
     pausedQueueBySessionId: Record<string, PausedQueueState>;
+    pausedQueueByConversationId: Record<string, PausedQueueState>;
     interruptedTurnStateBySessionId: Record<string, InterruptedTurnState>;
+    interruptedTurnStateByConversationId: Record<
+        string,
+        InterruptedTurnState
+    >;
     tokenUsageBySessionId: Record<string, AITokenUsage>;
+    tokenUsageByConversationId: Record<string, AITokenUsage>;
     initialize: (options?: {
         createDefaultSession?: boolean;
     }) => Promise<ChatInitializationResult>;
@@ -7417,7 +7445,196 @@ function restoreMessagesFromHistory(
         .filter((message) => !isInternalRuntimeUserEchoMessage(message));
 }
 
-export const useChatStore = create<ChatStore>((set, get) => {
+function migrateConversationScopedSessionMap<T>(
+    valuesBySessionId: Record<string, T>,
+    valuesByConversationId: Record<string, T>,
+    previousSessionIdByConversationId: Record<string, string>,
+    nextSessionIdByConversationId: Record<string, string>,
+) {
+    let next = valuesBySessionId;
+    for (const [conversationId, nextSessionId] of Object.entries(
+        nextSessionIdByConversationId,
+    )) {
+        const previousSessionId =
+            previousSessionIdByConversationId[conversationId];
+        if (!previousSessionId || previousSessionId === nextSessionId) {
+            continue;
+        }
+        const value =
+            valuesByConversationId[conversationId] ??
+            valuesBySessionId[previousSessionId];
+        if (value === undefined) continue;
+        if (next === valuesBySessionId) next = { ...valuesBySessionId };
+        delete next[previousSessionId];
+        next[nextSessionId] = value;
+    }
+    return next;
+}
+
+function synchronizeCanonicalChatProjection(state: ChatStore): ChatStore {
+    const projection = projectChatStoreToCanonical(state);
+    const composerPartsBySessionId = migrateConversationScopedSessionMap(
+        state.composerPartsBySessionId,
+        state.composerPartsByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    const queuedMessagesBySessionId = migrateConversationScopedSessionMap(
+        state.queuedMessagesBySessionId,
+        state.queuedMessagesByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    const queuedMessageEditBySessionId = migrateConversationScopedSessionMap(
+        state.queuedMessageEditBySessionId,
+        state.queuedMessageEditByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    const activeQueuedMessageBySessionId =
+        migrateConversationScopedSessionMap(
+            state.activeQueuedMessageBySessionId,
+            state.activeQueuedMessageByConversationId,
+            state.sessionIdByConversationId,
+            projection.sessionIdByConversationId,
+        );
+    const pausedQueueBySessionId = migrateConversationScopedSessionMap(
+        state.pausedQueueBySessionId,
+        state.pausedQueueByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    const interruptedTurnStateBySessionId =
+        migrateConversationScopedSessionMap(
+            state.interruptedTurnStateBySessionId,
+            state.interruptedTurnStateByConversationId,
+            state.sessionIdByConversationId,
+            projection.sessionIdByConversationId,
+        );
+    const tokenUsageBySessionId = migrateConversationScopedSessionMap(
+        state.tokenUsageBySessionId,
+        state.tokenUsageByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    return {
+        ...state,
+        ...projection,
+        composerPartsBySessionId,
+        queuedMessagesBySessionId,
+        queuedMessageEditBySessionId,
+        activeQueuedMessageBySessionId,
+        pausedQueueBySessionId,
+        interruptedTurnStateBySessionId,
+        tokenUsageBySessionId,
+        composerPartsByConversationId: projectSessionMapToConversations(
+            composerPartsBySessionId,
+            projection,
+        ),
+        queuedMessagesByConversationId: projectSessionMapToConversations(
+            queuedMessagesBySessionId,
+            projection,
+        ),
+        queuedMessageEditByConversationId: projectSessionMapToConversations(
+            queuedMessageEditBySessionId,
+            projection,
+        ),
+        activeQueuedMessageByConversationId: projectSessionMapToConversations(
+            activeQueuedMessageBySessionId,
+            projection,
+        ),
+        pausedQueueByConversationId: projectSessionMapToConversations(
+            pausedQueueBySessionId,
+            projection,
+        ),
+        interruptedTurnStateByConversationId:
+            projectSessionMapToConversations(
+                interruptedTurnStateBySessionId,
+                projection,
+            ),
+        tokenUsageByConversationId: projectSessionMapToConversations(
+            tokenUsageBySessionId,
+            projection,
+        ),
+    };
+}
+
+function canonicalChatProjectionInputsEqual(
+    left: ChatStore,
+    right: ChatStore,
+) {
+    return (
+        left.sessionsById === right.sessionsById &&
+        left.sessionOrder === right.sessionOrder &&
+        left.activeSessionId === right.activeSessionId &&
+        left.composerPartsBySessionId === right.composerPartsBySessionId &&
+        left.queuedMessagesBySessionId === right.queuedMessagesBySessionId &&
+        left.queuedMessageEditBySessionId ===
+            right.queuedMessageEditBySessionId &&
+        left.activeQueuedMessageBySessionId ===
+            right.activeQueuedMessageBySessionId &&
+        left.pausedQueueBySessionId === right.pausedQueueBySessionId &&
+        left.interruptedTurnStateBySessionId ===
+            right.interruptedTurnStateBySessionId &&
+        left.tokenUsageBySessionId === right.tokenUsageBySessionId
+    );
+}
+
+function withCanonicalChatProjection(
+    configure: StateCreator<ChatStore>,
+): StateCreator<ChatStore> {
+    return (set, get, api) => {
+        const projectedSet = ((partial, replace) => {
+            const update = (state: ChatStore) => {
+                const patch =
+                    typeof partial === "function" ? partial(state) : partial;
+                if (!replace && patch === state) return state;
+                const nextState = replace
+                    ? (patch as ChatStore)
+                    : ({ ...state, ...patch } as ChatStore);
+                return !replace &&
+                    canonicalChatProjectionInputsEqual(state, nextState)
+                    ? nextState
+                    : synchronizeCanonicalChatProjection(nextState);
+            };
+
+            if (replace) {
+                set(update, true);
+            } else {
+                set(update);
+            }
+        }) as typeof set;
+
+        api.setState = projectedSet;
+        return synchronizeCanonicalChatProjection(
+            configure(projectedSet, get, api),
+        );
+    };
+}
+
+export function resolveChatConversationId(
+    state: Pick<
+        ChatStore,
+        "conversationIdBySessionRef" | "conversationsById"
+    >,
+    ref: string | null | undefined,
+) {
+    return resolveConversationId(state, ref);
+}
+
+export function resolveChatSessionId(
+    state: Pick<
+        ChatStore,
+        | "conversationIdBySessionRef"
+        | "conversationsById"
+        | "sessionIdByConversationId"
+    >,
+    ref: string | null | undefined,
+) {
+    return resolveLegacySessionId(state, ref);
+}
+
+const createChatStore: StateCreator<ChatStore> = (set, get) => {
     async function loadPersistedTranscript(
         sessionId: string,
         mode: "latest" | "full" | "older",
@@ -8408,6 +8625,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     return {
+        conversationsById: {},
+        bindingsById: {},
+        conversationOrder: [],
+        activeConversationId: null,
+        conversationIdBySessionRef: {},
+        sessionIdByConversationId: {},
         runtimeConnectionByRuntimeId: {},
         setupStatusByRuntimeId: {},
         runtimes: [],
@@ -8436,12 +8659,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
             DEFAULT_AI_PREFERENCES.screenshotRetentionSeconds,
         toolActivityDisplayMode: DEFAULT_AI_PREFERENCES.toolActivityDisplayMode,
         composerPartsBySessionId: {},
+        composerPartsByConversationId: {},
         queuedMessagesBySessionId: {},
+        queuedMessagesByConversationId: {},
         queuedMessageEditBySessionId: {},
+        queuedMessageEditByConversationId: {},
         activeQueuedMessageBySessionId: {},
+        activeQueuedMessageByConversationId: {},
         pausedQueueBySessionId: {},
+        pausedQueueByConversationId: {},
         interruptedTurnStateBySessionId: {},
+        interruptedTurnStateByConversationId: {},
         tokenUsageBySessionId: {},
+        tokenUsageByConversationId: {},
 
         syncAutoContextForVault: (vaultPath) => {
             const next = loadAutoContextPreference(vaultPath);
@@ -9719,8 +9949,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
-        applyTokenUsage: ({ session_id, used, size, cost }) => {
+        applyTokenUsage: ({ session_id: sessionRef, used, size, cost }) => {
             set((state) => {
+                const session_id =
+                    resolveLegacySessionId(state, sessionRef) ?? sessionRef;
                 if (!state.sessionsById[session_id]) {
                     return state;
                 }
@@ -14282,7 +14514,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
     };
-});
+};
+
+export const useChatStore = create<ChatStore>()(
+    withCanonicalChatProjection(createChatStore),
+);
 
 // Stop retaining agent-owned review state as soon as the current vault turns
 // AI change review off. File writes and the ordinary vault watcher are not

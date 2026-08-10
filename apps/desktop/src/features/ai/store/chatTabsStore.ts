@@ -10,6 +10,8 @@ const CHAT_TABS_PERSIST_VERSION = 1;
 
 export interface ChatWorkspaceTab {
     id: string;
+    /** Stable canonical identity; optional only for persisted v1 compatibility. */
+    conversationId?: string;
     sessionId: string;
     historySessionId?: string;
     runtimeId?: string;
@@ -81,19 +83,21 @@ function normalizeTabs(
 ): ChatWorkspaceTab[] {
     const deduped: ChatWorkspaceTab[] = [];
     const indexesByTabId = new Map<string, number>();
-    const indexesBySessionId = new Map<string, number>();
+    const indexesByConversationId = new Map<string, number>();
 
     for (const tab of tabs) {
         if (!tab.id || !tab.sessionId) continue;
 
+        const conversationId = resolveTabConversationId(tab);
         const existingIndex =
-            indexesByTabId.get(tab.id) ?? indexesBySessionId.get(tab.sessionId);
+            indexesByTabId.get(tab.id) ??
+            indexesByConversationId.get(conversationId);
 
         if (existingIndex === undefined) {
             const nextIndex = deduped.length;
             deduped.push(tab);
             indexesByTabId.set(tab.id, nextIndex);
-            indexesBySessionId.set(tab.sessionId, nextIndex);
+            indexesByConversationId.set(conversationId, nextIndex);
             continue;
         }
 
@@ -108,9 +112,11 @@ function normalizeTabs(
             indexesByTabId.set(preferred.id, existingIndex);
         }
 
-        if (preferred.sessionId !== existing.sessionId) {
-            indexesBySessionId.delete(existing.sessionId);
-            indexesBySessionId.set(preferred.sessionId, existingIndex);
+        const existingConversationId = resolveTabConversationId(existing);
+        const preferredConversationId = resolveTabConversationId(preferred);
+        if (preferredConversationId !== existingConversationId) {
+            indexesByConversationId.delete(existingConversationId);
+            indexesByConversationId.set(preferredConversationId, existingIndex);
         }
     }
 
@@ -174,6 +180,7 @@ function normalizeParsedWorkspace(raw: unknown): PersistedChatWorkspace | null {
             if (!tab || typeof tab !== "object") return null;
             const current = tab as {
                 id?: unknown;
+                conversationId?: unknown;
                 sessionId?: unknown;
                 historySessionId?: unknown;
                 runtimeId?: unknown;
@@ -193,6 +200,13 @@ function normalizeParsedWorkspace(raw: unknown): PersistedChatWorkspace | null {
                 id: current.id,
                 sessionId: current.sessionId,
             };
+
+            if (
+                typeof current.conversationId === "string" &&
+                current.conversationId.length > 0
+            ) {
+                normalizedTab.conversationId = current.conversationId;
+            }
 
             if (
                 typeof current.historySessionId === "string" &&
@@ -231,6 +245,11 @@ function createTab(
 ): ChatWorkspaceTab {
     const tab: ChatWorkspaceTab = {
         id: crypto.randomUUID(),
+        conversationId:
+            historySessionId ??
+            (sessionId.startsWith("persisted:")
+                ? sessionId.slice("persisted:".length) || sessionId
+                : sessionId),
         sessionId,
     };
 
@@ -253,6 +272,12 @@ function resolveTabHistorySessionId(tab: ChatWorkspaceTab) {
     return null;
 }
 
+function resolveTabConversationId(tab: ChatWorkspaceTab) {
+    return (
+        tab.conversationId ?? resolveTabHistorySessionId(tab) ?? tab.sessionId
+    );
+}
+
 function syncTabMetadata(
     tab: ChatWorkspaceTab,
     historySessionId?: string | null,
@@ -260,16 +285,23 @@ function syncTabMetadata(
 ): ChatWorkspaceTab {
     const nextHistorySessionId = historySessionId ?? tab.historySessionId;
     const nextRuntimeId = runtimeId ?? tab.runtimeId;
+    const nextConversationId =
+        tab.conversationId ??
+        nextHistorySessionId ??
+        resolveTabHistorySessionId(tab) ??
+        tab.sessionId;
 
     if (
         nextHistorySessionId === tab.historySessionId &&
-        nextRuntimeId === tab.runtimeId
+        nextRuntimeId === tab.runtimeId &&
+        nextConversationId === tab.conversationId
     ) {
         return tab;
     }
 
     return {
         ...tab,
+        conversationId: nextConversationId,
         ...(nextHistorySessionId
             ? { historySessionId: nextHistorySessionId }
             : {}),
@@ -394,18 +426,30 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         runtimeId = null,
     ) => {
         let ensuredTabId = "";
+        const requestedConversationId =
+            historySessionId ??
+            (sessionId.startsWith("persisted:")
+                ? sessionId.slice("persisted:".length) || sessionId
+                : sessionId);
 
         set((state) => {
             const existing = state.tabs.find(
-                (tab) => tab.sessionId === sessionId,
+                (tab) =>
+                    resolveTabConversationId(tab) === requestedConversationId,
             );
             if (existing) {
                 ensuredTabId = existing.id;
-                const nextTabs = state.tabs.map((tab) =>
-                    tab.id === existing.id
-                        ? syncTabMetadata(tab, historySessionId, runtimeId)
-                        : tab,
-                );
+                const nextTabs = state.tabs.map((tab) => {
+                    if (tab.id !== existing.id) return tab;
+                    const synced = syncTabMetadata(
+                        tab,
+                        historySessionId,
+                        runtimeId,
+                    );
+                    return synced.sessionId === sessionId
+                        ? synced
+                        : { ...synced, sessionId };
+                });
                 const tabsChanged = nextTabs.some(
                     (tab, index) => tab !== state.tabs[index],
                 );
@@ -459,14 +503,19 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         set((state) => {
             const removedTabIndexes = state.tabs.reduce<number[]>(
                 (indexes, tab, index) =>
-                    tab.sessionId === sessionId ? [...indexes, index] : indexes,
+                    tab.sessionId === sessionId ||
+                    resolveTabConversationId(tab) === sessionId
+                        ? [...indexes, index]
+                        : indexes,
                 [],
             );
 
             if (!removedTabIndexes.length) return state;
 
             const tabs = state.tabs.filter(
-                (tab) => tab.sessionId !== sessionId,
+                (tab) =>
+                    tab.sessionId !== sessionId &&
+                    resolveTabConversationId(tab) !== sessionId,
             );
             const activeTabId =
                 state.tabs[removedTabIndexes[0]]?.id === state.activeTabId
@@ -483,10 +532,13 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
 
     pruneInvalidTabs: (validSessionIds) => {
         const validSessionIdSet = new Set(validSessionIds);
+        const isValid = (tab: ChatWorkspaceTab) =>
+            validSessionIdSet.has(tab.sessionId) ||
+            validSessionIdSet.has(resolveTabConversationId(tab));
 
         set((state) => {
             const removedTabIndex = state.tabs.findIndex(
-                (tab) => !validSessionIdSet.has(tab.sessionId),
+                (tab) => !isValid(tab),
             );
             if (removedTabIndex === -1) {
                 const tabs = normalizeTabs(state.tabs, state.activeTabId);
@@ -497,9 +549,7 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
             }
 
             const tabs = normalizeTabs(
-                state.tabs.filter((tab) =>
-                    validSessionIdSet.has(tab.sessionId),
-                ),
+                state.tabs.filter((tab) => isValid(tab)),
                 state.activeTabId,
             );
             const activeTabId =
@@ -529,10 +579,15 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         );
         const sessionIdByHistoryId = new Map<string, string>();
         const historyIdBySessionId = new Map<string, string>();
+        const sessionIdByConversationId = new Map<string, string>();
         const runtimeIdBySessionId = new Map<string, string>();
         const runtimeIdByHistoryId = new Map<string, string>();
         for (const session of validSessions) {
             const historySessionId = session.historySessionId ?? null;
+            sessionIdByConversationId.set(
+                historySessionId ?? session.sessionId,
+                session.sessionId,
+            );
             if (!historySessionId) continue;
             sessionIdByHistoryId.set(historySessionId, session.sessionId);
             historyIdBySessionId.set(session.sessionId, historySessionId);
@@ -550,6 +605,23 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         let tabs = normalizeTabs(
             (workspace?.tabs ?? [])
                 .map((tab): ChatWorkspaceTab | null => {
+                    const conversationId = resolveTabConversationId(tab);
+                    const canonicalSessionId =
+                        sessionIdByConversationId.get(conversationId);
+                    if (canonicalSessionId) {
+                        return syncTabMetadata(
+                            {
+                                ...tab,
+                                conversationId,
+                                sessionId: canonicalSessionId,
+                            },
+                            historyIdBySessionId.get(canonicalSessionId) ??
+                                resolveTabHistorySessionId(tab),
+                            runtimeIdBySessionId.get(canonicalSessionId) ??
+                                runtimeIdByHistoryId.get(conversationId) ??
+                                tab.runtimeId,
+                        );
+                    }
                     if (validSessionIdSet.has(tab.sessionId)) {
                         return syncTabMetadata(
                             tab,
@@ -572,6 +644,7 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
 
                     return {
                         ...tab,
+                        conversationId: historySessionId,
                         sessionId: resolvedSessionId,
                         historySessionId,
                         runtimeId:
@@ -625,6 +698,10 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
                     tab.sessionId === oldSessionId
                         ? {
                               ...tab,
+                              conversationId:
+                                  historySessionId ??
+                                  tab.conversationId ??
+                                  resolveTabConversationId(tab),
                               sessionId: newSessionId,
                               historySessionId:
                                   historySessionId ??
@@ -662,7 +739,7 @@ useChatTabsStore.subscribe((state) => {
     // Cheap fingerprint to skip expensive serialization when nothing relevant changed
     let sig = state.activeTabId ?? "";
     for (const t of state.tabs) {
-        sig += `|${t.id}|${t.sessionId ?? ""}|${t.historySessionId ?? ""}|${t.runtimeId ?? ""}|${t.pinned ? "1" : "0"}`;
+        sig += `|${t.id}|${t.conversationId ?? ""}|${t.sessionId ?? ""}|${t.historySessionId ?? ""}|${t.runtimeId ?? ""}|${t.pinned ? "1" : "0"}`;
     }
     if (sig === _lastChatTabsSig) return;
     _lastChatTabsSig = sig;

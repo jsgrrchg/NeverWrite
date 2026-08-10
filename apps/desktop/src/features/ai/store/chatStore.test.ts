@@ -621,6 +621,90 @@ describe("chatStore", () => {
         );
     });
 
+    it("projects session state under its canonical conversation identity", () => {
+        const session = createSessionWithTrackedFiles("local-session", []);
+        session.historySessionId = "conversation-1";
+        session.runtimeSessionId = "native-session";
+        useChatStore.getState().upsertSession(session, true);
+        const bindingId = useChatStore.getState().conversationsById[
+            "conversation-1"
+        ]?.activeBindingId;
+        expect(bindingId).toBeTruthy();
+
+        const queued = createQueuedMessage("queued-1", "Continue");
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [session.sessionId]: createTextParts("Draft"),
+            },
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [session.sessionId]: [queued],
+            },
+        }));
+        useChatStore.getState().applyTokenUsage({
+            session_id: bindingId!,
+            used: 12,
+            size: 100,
+        });
+
+        const state = useChatStore.getState();
+        expect(state.activeConversationId).toBe("conversation-1");
+        expect(state.conversationOrder).toEqual(["conversation-1"]);
+        expect(state.conversationsById["conversation-1"]).toMatchObject({
+            conversationId: "conversation-1",
+            actionLog: session.actionLog,
+        });
+        expect(state.composerPartsByConversationId["conversation-1"]).toEqual(
+            createTextParts("Draft"),
+        );
+        expect(state.queuedMessagesByConversationId["conversation-1"]).toEqual(
+            [queued],
+        );
+        expect(state.tokenUsageByConversationId["conversation-1"]).toMatchObject(
+            { used: 12, size: 100 },
+        );
+        expect(state.conversationIdBySessionRef["native-session"]).toBe(
+            "conversation-1",
+        );
+        expect(state.conversationIdBySessionRef[bindingId!]).toBe(
+            "conversation-1",
+        );
+    });
+
+    it("keeps one canonical conversation when the local session id changes", () => {
+        const persisted = createSessionWithTrackedFiles(
+            "persisted:conversation-1",
+            [],
+        );
+        persisted.historySessionId = "conversation-1";
+        persisted.runtimeState = "persisted_only";
+        useChatStore.getState().upsertSession(persisted, true);
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [persisted.sessionId]: createTextParts("Survives resume"),
+            },
+        }));
+
+        const live = cloneSessionForTest(persisted, "local-live", {
+            historySessionId: "conversation-1",
+            runtimeSessionId: "native-live",
+            runtimeState: "live",
+            isPersistedSession: false,
+        });
+        useChatStore.getState().upsertSession(live, true);
+
+        const state = useChatStore.getState();
+        expect(state.conversationOrder).toEqual(["conversation-1"]);
+        expect(state.sessionIdByConversationId["conversation-1"]).toBe(
+            "local-live",
+        );
+        expect(state.composerPartsByConversationId["conversation-1"]).toEqual(
+            createTextParts("Survives resume"),
+        );
+    });
+
     it("does not let an older storage refresh overwrite a newer snapshot", async () => {
         disposeChatStoreRuntime();
         useVaultStore.setState({ vaultPath: "/vault" });
@@ -6713,6 +6797,7 @@ describe("chatStore", () => {
         expect(useChatTabsStore.getState().tabs).toEqual([
             {
                 id: "tab-detached",
+                conversationId: "history-42",
                 sessionId: resumedSessionId,
                 historySessionId: "history-42",
                 runtimeId: "codex-acp",
@@ -17101,6 +17186,7 @@ describe("chatStore", () => {
         expect(useChatTabsStore.getState().tabs).toEqual([
             {
                 id: "tab-history-1",
+                conversationId: "history-1",
                 sessionId: "codex-session-1",
                 historySessionId: "history-1",
                 runtimeId: "codex-acp",

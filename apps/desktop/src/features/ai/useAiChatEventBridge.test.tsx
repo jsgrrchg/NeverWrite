@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AITokenUsagePayload } from "./types";
+import type { AIChatSession, AITokenUsagePayload } from "./types";
 
 const listeners = vi.hoisted(() => ({
     tokenUsage: undefined as
@@ -49,8 +49,24 @@ describe("useAiChatEventBridge", () => {
         unlisten.mockClear();
         noOpListener.mockClear();
         tokenUsageListener.mockClear();
+        const session: AIChatSession = {
+            sessionId: "session-1",
+            historySessionId: "conversation-1",
+            runtimeSessionId: "native-session-1",
+            status: "idle",
+            runtimeId: "test-runtime",
+            modelId: "test-model",
+            modeId: "default",
+            models: [],
+            modes: [],
+            configOptions: [],
+            messages: [],
+            attachments: [],
+        };
         useChatStore.setState({
-            sessionsById: { "session-1": {} as never },
+            sessionsById: { "session-1": session },
+            sessionOrder: ["session-1"],
+            activeSessionId: "session-1",
         });
     });
 
@@ -65,7 +81,7 @@ describe("useAiChatEventBridge", () => {
 
         act(() => {
             listeners.tokenUsage?.({
-                session_id: "session-1",
+                session_id: "native-session-1",
                 used: 136_000,
                 size: 272_000,
             });
@@ -77,6 +93,11 @@ describe("useAiChatEventBridge", () => {
                 used: 136_000,
                 size: 272_000,
         });
+        expect(
+            useChatStore.getState().tokenUsageByConversationId[
+                "conversation-1"
+            ],
+        ).toMatchObject({ used: 136_000, size: 272_000 });
 
         unmount();
         expect(unlisten).toHaveBeenCalledTimes(19);
