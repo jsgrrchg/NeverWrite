@@ -258,6 +258,24 @@ describe("canonical conversation model", () => {
         );
     });
 
+    it("preserves a different provider selected for the next turn", () => {
+        const legacy = createLegacySession();
+        const state = createConversationBindingsFromLegacySession(legacy);
+        state.preferredSelection = {
+            runtimeId: "codex-acp",
+            modelId: "gpt-5",
+            modeId: "default",
+            options: {},
+        };
+
+        const updated = updateConversationBindingsFromLegacySession({
+            ...legacy,
+            conversationBindings: state,
+        });
+
+        expect(updated.preferredSelection).toEqual(state.preferredSelection);
+    });
+
     it("resets each provider cursor when forking a canonical conversation", () => {
         const source = createConversationBindingsFromLegacySession(
             createLegacySession(),

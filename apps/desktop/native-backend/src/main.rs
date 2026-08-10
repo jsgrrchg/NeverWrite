@@ -890,6 +890,7 @@ impl NativeBackend {
             "ai_set_model" => self.ai.set_model(&args),
             "ai_set_mode" => self.ai.set_mode(&args),
             "ai_set_config_option" => self.ai.set_config_option(&args),
+            "ai_start_conversation_turn" => self.ai.start_conversation_turn(&args),
             "ai_send_message" => self.ai.send_message(&args, &self.ai_history),
             "ai_cancel_turn" => self.ai.cancel_turn(&args),
             "ai_respond_permission" => self.ai.respond_permission(&args),

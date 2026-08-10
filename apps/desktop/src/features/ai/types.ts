@@ -345,6 +345,8 @@ export interface QueuedChatMessage {
     attachments: AIChatAttachment[];
     createdAt: number;
     status: QueuedChatMessageStatus;
+    /** Provider selected for this turn. Omitted only by legacy queue entries. */
+    runtimeId?: string | null;
     modelId: string | null;
     modeId: string | null;
     optionsSnapshot: Record<string, string>;
@@ -633,6 +635,8 @@ export interface AIChatSession {
     resumeContextPending?: boolean;
     resumeReconnectFailed?: boolean;
     runtimeState?: AIRuntimeSessionState;
+    /** Provenance applied to runtime events until the accepted turn completes. */
+    activeTurnProvenance?: ConversationTurnProvenance | null;
     /** Canonical provider bindings loaded from the versioned history sidecar. */
     conversationBindings?: ConversationBindingsState;
 }

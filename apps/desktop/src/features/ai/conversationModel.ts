@@ -210,7 +210,10 @@ export function updateConversationBindingsFromLegacySession(
     return {
         ...current,
         conversationId: projected.conversation.conversationId,
-        preferredSelection: projected.conversation.preferredSelection,
+        preferredSelection:
+            current.preferredSelection.runtimeId === activeBinding?.runtimeId
+                ? projected.conversation.preferredSelection
+                : current.preferredSelection,
         activeBindingId: nextBinding.bindingId,
         providerBindings,
     };

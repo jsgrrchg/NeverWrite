@@ -307,6 +307,24 @@ struct AiCreateSessionInput {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct AiConversationTurnSelectionInput {
+    runtime_id: String,
+    model_id: String,
+    mode_id: String,
+    #[serde(default)]
+    options: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiStartConversationTurnInput {
+    conversation_id: String,
+    binding_id: String,
+    runtime_id: String,
+    session_id: String,
+    selection: AiConversationTurnSelectionInput,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct AiCustomRuntimeContinuationInput {
     runtime_id: String,
     runtime_session_id: String,
@@ -1536,6 +1554,54 @@ impl NativeAi {
         drop(state);
         self.emit_session("ai://session-updated", &session);
         Ok(json!(session))
+    }
+
+    pub(crate) fn start_conversation_turn(&self, args: &Value) -> Result<Value, String> {
+        let input: AiStartConversationTurnInput = input_from_args(args)?;
+        if input.conversation_id.trim().is_empty() || input.binding_id.trim().is_empty() {
+            return Err("Conversation and binding ids are required to start a turn.".to_string());
+        }
+        if input.selection.runtime_id != input.runtime_id {
+            return Err(
+                "Conversation turn selection does not match the target runtime.".to_string(),
+            );
+        }
+
+        let state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        let session = state
+            .sessions
+            .get(&input.session_id)
+            .map(|managed| &managed.session)
+            .ok_or_else(|| format!("AI session not found: {}", input.session_id))?;
+        if session.runtime_id != input.runtime_id {
+            return Err(
+                "Refusing to start a conversation turn on another provider's session.".to_string(),
+            );
+        }
+        if session.model_id != input.selection.model_id
+            || session.mode_id != input.selection.mode_id
+        {
+            return Err(
+                "Conversation turn selection was not applied to the target session.".to_string(),
+            );
+        }
+        for (option_id, expected_value) in &input.selection.options {
+            if let Some(option) = session
+                .config_options
+                .iter()
+                .find(|option| option.id == *option_id)
+            {
+                if option.value != *expected_value {
+                    return Err(format!(
+                        "Conversation turn option was not applied: {option_id}"
+                    ));
+                }
+            }
+        }
+        Ok(json!(null))
     }
 
     pub(crate) fn create_session(
@@ -10783,6 +10849,30 @@ mod tests {
         let empty = normalize_additional_roots(Some(vec![]));
         assert!(empty.kept.is_empty());
         assert!(empty.discarded.is_empty());
+    }
+
+    #[test]
+    fn conversation_turn_rejects_a_selection_for_another_runtime() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let error = ai
+            .start_conversation_turn(&json!({
+                "input": {
+                    "conversation_id": "conversation-1",
+                    "binding_id": "binding-b",
+                    "runtime_id": "provider-b",
+                    "session_id": "local-b",
+                    "selection": {
+                        "runtime_id": "provider-a",
+                        "model_id": "model-a",
+                        "mode_id": "default",
+                        "options": {}
+                    }
+                }
+            }))
+            .expect_err("cross-runtime selections must be rejected");
+
+        assert!(error.contains("does not match the target runtime"));
     }
 
     #[test]

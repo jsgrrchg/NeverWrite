@@ -20,6 +20,7 @@ import {
     aiListSessions,
     aiListRuntimes,
     aiResumeRuntimeSession,
+    aiLoadRuntimeSession,
     aiLoadSession,
     aiLoadSessionHistoryPage,
     aiLoadSessionHistories,
@@ -31,6 +32,7 @@ import {
     aiSaveSessionHistory,
     aiSendMessage,
     aiStartAuth,
+    aiStartConversationTurn,
     aiSetConfigOption,
     aiSetMode,
     aiSetModel,
@@ -159,6 +161,8 @@ import {
     type ManagedAttachmentId,
     type QueuedChatMessage,
     type QueuedChatMessageStatus,
+    type ConversationSelection,
+    type ConversationTurnProvenance,
 } from "../types";
 import {
     ACP_HANDOFF_PROMPT_HEADER,
@@ -168,8 +172,14 @@ import {
 } from "../contextHandoff";
 import { isCancellableChatTurnStatus } from "../chatTurnStatus";
 import {
+    planConversationTurnRoute,
+    type ConversationTurnRoute,
+} from "../conversationTurnRouting";
+import {
     deserializeConversationBindings,
     forkConversationBindings,
+    getConversationSelection,
+    getConversationSwitchBlocker,
     serializeConversationBindings,
     updateConversationBindingsFromLegacySession,
 } from "../conversationModel";
@@ -1751,6 +1761,10 @@ interface ChatStore {
         sessionId?: string,
     ) => Promise<void>;
     setComposerParts: (parts: AIComposerPart[], sessionId?: string) => void;
+    startConversationTurn: (
+        conversationId: string,
+        selection: ConversationSelection,
+    ) => Promise<void>;
     sendMessage: (sessionId?: string) => Promise<void>;
     enqueueMessage: (sessionId: string, item: QueuedChatMessage) => void;
     removeQueuedMessage: (sessionId: string, messageId: string) => void;
@@ -2173,28 +2187,37 @@ function appendSessionMessage(session: AIChatSession, message: AIChatMessage) {
     const normalized = ensurePersistedTranscriptWindowAnchor(
         normalizeSessionTranscript(session),
     );
-    const nextMessages = [...normalized.messages, message];
+    const attributedMessage =
+        message.turnProvenance || !normalized.activeTurnProvenance
+            ? message
+            : {
+                  ...message,
+                  turnProvenance: normalized.activeTurnProvenance,
+              };
+    const nextMessages = [...normalized.messages, attributedMessage];
 
     return {
         ...normalized,
         messages: nextMessages,
-        messageOrder: [...normalized.messageOrder!, message.id],
+        messageOrder: [...normalized.messageOrder!, attributedMessage.id],
         messagesById: {
             ...normalized.messagesById!,
-            [message.id]: message,
+            [attributedMessage.id]: attributedMessage,
         },
         messageIndexById: {
             ...normalized.messageIndexById!,
-            [message.id]: nextMessages.length - 1,
+            [attributedMessage.id]: nextMessages.length - 1,
         },
-        lastAssistantMessageId: isAssistantTextMessage(message)
-            ? message.id
+        lastAssistantMessageId: isAssistantTextMessage(attributedMessage)
+            ? attributedMessage.id
             : (normalized.lastAssistantMessageId ?? null),
-        lastTurnStartedMessageId: isTurnStartedStatusMessage(message)
-            ? message.id
+        lastTurnStartedMessageId: isTurnStartedStatusMessage(
+            attributedMessage,
+        )
+            ? attributedMessage.id
             : (normalized.lastTurnStartedMessageId ?? null),
-        activePlanMessageId: isIncompletePlanMessage(message)
-            ? message.id
+        activePlanMessageId: isIncompletePlanMessage(attributedMessage)
+            ? attributedMessage.id
             : (normalized.activePlanMessageId ?? null),
     };
 }
@@ -2768,22 +2791,25 @@ function sanitizePersistedDisplayText(value?: string | null) {
         : value;
 }
 
-function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
-    if (!session.resumeContextPending) {
+function buildPromptWithContextHandoff(
+    session: AIChatSession,
+    prompt: string,
+    binding: AcpConversationBinding | null,
+    reason: ConversationTurnRoute["startReason"],
+    required: boolean,
+) {
+    if (!required) {
         return { prompt, contextHandoff: undefined };
     }
 
     const bindings = updateConversationBindingsFromLegacySession(session);
-    const activeBinding = bindings.providerBindings.find(
-        (binding) => binding.bindingId === bindings.activeBindingId,
-    );
     const result = buildAcpContextHandoff({
         messages: getSessionTranscriptMessages(session),
         newUserMessage: prompt,
-        bindingId: activeBinding?.bindingId ?? null,
-        contextCursor: activeBinding?.contextCursor ?? null,
+        bindingId: binding?.bindingId ?? null,
+        contextCursor: binding?.contextCursor ?? null,
         contextSummary: bindings.contextSummary,
-        reason: "transcript_handoff",
+        reason,
     });
 
     return {
@@ -2792,40 +2818,184 @@ function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
     };
 }
 
-function acceptContextHandoff(
-    session: AIChatSession,
-    contextHandoff: AcpContextHandoffMetadata | undefined,
+function createTurnBinding(
+    conversationId: string,
+    runtimeSession: AIChatSession,
+    existing: AcpConversationBinding | null,
+    capabilities: readonly string[],
 ) {
-    if (!contextHandoff?.nextCursor || !contextHandoff.bindingId) {
-        return { ...session, resumeContextPending: false };
-    }
-
-    const bindings = updateConversationBindingsFromLegacySession(session);
-    if (bindings.activeBindingId !== contextHandoff.bindingId) {
-        return session;
-    }
-
     const now = Date.now();
-    let didAdvanceCursor = false;
+    const selection = getConversationSelection(runtimeSession);
+    return {
+        bindingId:
+            existing?.bindingId ??
+            `binding:${encodeURIComponent(conversationId)}:${encodeURIComponent(runtimeSession.runtimeId)}:${crypto.randomUUID()}`,
+        conversationId,
+        runtimeId: runtimeSession.runtimeId,
+        runtimeDisplayName: runtimeSession.runtimeDisplayName ?? null,
+        runtimeRevision: runtimeSession.runtimeRevision ?? null,
+        runtimeLaunchFingerprint:
+            runtimeSession.runtimeLaunchFingerprint ?? null,
+        runtimeSessionId: runtimeSession.runtimeSessionId ?? null,
+        continuationStrategy: runtimeSession.continuationStrategy ?? null,
+        capabilities: [...capabilities],
+        modelId: selection.modelId,
+        modeId: selection.modeId,
+        options: { ...selection.options },
+        models: runtimeSession.models,
+        modes: runtimeSession.modes,
+        configOptions: runtimeSession.configOptions,
+        availableCommands: runtimeSession.availableCommands,
+        effortsByModel: runtimeSession.effortsByModel ?? {},
+        runtimeState: runtimeSession.runtimeState ?? "live",
+        contextCursor: existing?.contextCursor ?? null,
+        contextGeneration: existing?.contextGeneration ?? 0,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+    } satisfies AcpConversationBinding;
+}
+
+function commitAcceptedConversationTurn(input: {
+    sourceSession: AIChatSession;
+    acceptedRuntimeSession: AIChatSession;
+    route: ConversationTurnRoute;
+    targetBinding: AcpConversationBinding;
+    contextHandoff?: AcpContextHandoffMetadata;
+    userMessageId: string;
+}) {
+    const bindings = updateConversationBindingsFromLegacySession(
+        input.sourceSession,
+    );
+    const acceptedSelection = getConversationSelection(
+        input.acceptedRuntimeSession,
+    );
+    const contextCursor =
+        input.contextHandoff?.bindingId === input.targetBinding.bindingId
+            ? (input.contextHandoff.nextCursor ??
+              input.targetBinding.contextCursor)
+            : input.targetBinding.contextCursor;
+    const targetBinding: AcpConversationBinding = {
+        ...input.targetBinding,
+        runtimeDisplayName:
+            input.acceptedRuntimeSession.runtimeDisplayName ??
+            input.targetBinding.runtimeDisplayName,
+        runtimeRevision:
+            input.acceptedRuntimeSession.runtimeRevision ??
+            input.targetBinding.runtimeRevision,
+        runtimeLaunchFingerprint:
+            input.acceptedRuntimeSession.runtimeLaunchFingerprint ??
+            input.targetBinding.runtimeLaunchFingerprint,
+        runtimeSessionId:
+            input.acceptedRuntimeSession.runtimeSessionId ??
+            input.targetBinding.runtimeSessionId,
+        continuationStrategy:
+            input.acceptedRuntimeSession.continuationStrategy ??
+            input.targetBinding.continuationStrategy,
+        modelId: acceptedSelection.modelId,
+        modeId: acceptedSelection.modeId,
+        options: { ...acceptedSelection.options },
+        models: input.acceptedRuntimeSession.models,
+        modes: input.acceptedRuntimeSession.modes,
+        configOptions: input.acceptedRuntimeSession.configOptions,
+        availableCommands: input.acceptedRuntimeSession.availableCommands,
+        effortsByModel:
+            input.acceptedRuntimeSession.effortsByModel ??
+            input.targetBinding.effortsByModel,
+        runtimeState: "live",
+        contextCursor,
+        updatedAt: Date.now(),
+    };
+    const providerBindings = bindings.providerBindings.some(
+        (binding) => binding.bindingId === targetBinding.bindingId,
+    )
+        ? bindings.providerBindings.map((binding) =>
+              binding.bindingId === targetBinding.bindingId
+                  ? targetBinding
+                  : binding,
+          )
+        : [...bindings.providerBindings, targetBinding];
+    const conversationBindings = {
+        ...bindings,
+        revision: bindings.revision + 1,
+        preferredSelection: acceptedSelection,
+        activeBindingId: targetBinding.bindingId,
+        providerBindings,
+    };
+    const provenance: ConversationTurnProvenance = {
+        bindingId: targetBinding.bindingId,
+        runtimeId: targetBinding.runtimeId,
+        runtimeSessionId: targetBinding.runtimeSessionId,
+        modelId: targetBinding.modelId,
+        modeId: targetBinding.modeId,
+        options: { ...targetBinding.options },
+        startReason: input.route.startReason,
+    };
+    const attributedSource = replaceSessionMessage(
+        input.sourceSession,
+        input.userMessageId,
+        (message) => ({ ...message, turnProvenance: provenance }),
+    );
+
+    return replaceSessionTranscript(
+        {
+            ...attributedSource,
+            ...input.acceptedRuntimeSession,
+            historySessionId: attributedSource.historySessionId,
+            parentSessionId: attributedSource.parentSessionId ?? null,
+            vaultPath: attributedSource.vaultPath ?? null,
+            customTitle: attributedSource.customTitle ?? null,
+            persistedTitle: attributedSource.persistedTitle ?? null,
+            persistedPreview: attributedSource.persistedPreview ?? null,
+            persistedCreatedAt: attributedSource.persistedCreatedAt ?? null,
+            persistedUpdatedAt: attributedSource.persistedUpdatedAt ?? null,
+            persistedMessageCount:
+                attributedSource.persistedMessageCount ??
+                getSessionTranscriptLength(attributedSource),
+            loadedPersistedMessageStart:
+                attributedSource.loadedPersistedMessageStart ?? 0,
+            attachments: attributedSource.attachments,
+            activeWorkCycleId: attributedSource.activeWorkCycleId ?? null,
+            visibleWorkCycleId: attributedSource.visibleWorkCycleId ?? null,
+            actionLog: attributedSource.actionLog,
+            isPersistedSession: false,
+            isResumingSession: false,
+            resumeContextPending: false,
+            runtimeState: "live",
+            conversationBindings,
+            activeTurnProvenance: provenance,
+        },
+        getSessionTranscriptMessages(attributedSource),
+    );
+}
+
+function completeActiveBindingTurn(
+    session: AIChatSession,
+    messageId: string,
+) {
+    const bindings = updateConversationBindingsFromLegacySession(session);
+    const activeBindingId = bindings.activeBindingId;
+    if (!activeBindingId) {
+        return { ...session, activeTurnProvenance: null };
+    }
+    let changed = false;
     const providerBindings = bindings.providerBindings.map((binding) => {
         if (
-            binding.bindingId !== contextHandoff.bindingId ||
-            binding.contextCursor === contextHandoff.nextCursor
+            binding.bindingId !== activeBindingId ||
+            binding.contextCursor === messageId
         ) {
             return binding;
         }
-        didAdvanceCursor = true;
+        changed = true;
         return {
             ...binding,
-            contextCursor: contextHandoff.nextCursor,
-            updatedAt: now,
+            contextCursor: messageId,
+            updatedAt: Date.now(),
         };
     });
-
     return {
         ...session,
-        resumeContextPending: false,
-        conversationBindings: didAdvanceCursor
+        activeTurnProvenance: null,
+        conversationBindings: changed
             ? {
                   ...bindings,
                   revision: bindings.revision + 1,
@@ -3227,6 +3397,7 @@ function registerOpenEditorBaselines(sessionId: string) {
 function buildQueuedMessage(
     session: AIChatSession,
     composerParts: AIComposerPart[],
+    selection: ConversationSelection,
 ): QueuedChatMessage | null {
     const composerPartsSnapshot = cloneComposerParts(composerParts);
     const content = serializeComposerParts(composerParts).trim();
@@ -3275,21 +3446,18 @@ function buildQueuedMessage(
         return null;
     }
 
-    const preparedPrompt = buildPromptWithResumeContext(session, prompt);
     return {
         id: crypto.randomUUID(),
         content,
-        prompt: preparedPrompt.prompt,
+        prompt,
         composerParts: composerPartsSnapshot,
         attachments,
         createdAt: Date.now(),
         status: "queued",
-        modelId: session.modelId ?? null,
-        modeId: session.modeId ?? null,
-        optionsSnapshot: Object.fromEntries(
-            session.configOptions.map((option) => [option.id, option.value]),
-        ),
-        contextHandoff: preparedPrompt.contextHandoff,
+        runtimeId: selection.runtimeId,
+        modelId: selection.modelId ?? null,
+        modeId: selection.modeId ?? null,
+        optionsSnapshot: { ...selection.options },
     };
 }
 
@@ -6819,6 +6987,10 @@ const _composerPreflightOwnershipBySessionId = new Map<
 >();
 const _pendingStopBySessionId = new Map<string, Promise<void>>();
 const _pendingSessionPersistence = new Map<string, AIChatSession>();
+const _pendingTurnSelectionByConversationId = new Map<
+    string,
+    ConversationSelection
+>();
 let _sessionPersistenceFlushScheduled = false;
 let _sessionPersistenceEpoch = 0;
 
@@ -8156,6 +8328,214 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         return session;
     }
 
+    async function configureConversationTurnSession(
+        initialSession: AIChatSession,
+        selection: ConversationSelection,
+    ) {
+        let session = initialSession;
+        if (
+            selection.modelId &&
+            selection.modelId !==
+                (getModelConfigOption(session)?.value ?? session.modelId) &&
+            supportsModelSelection(session, selection.modelId)
+        ) {
+            const modelConfig = getModelConfigOption(session);
+            session = modelConfig
+                ? await aiSetConfigOption(
+                      session.sessionId,
+                      modelConfig.id,
+                      selection.modelId,
+                  )
+                : await aiSetModel(session.sessionId, selection.modelId);
+        }
+        if (
+            selection.modeId &&
+            selection.modeId !== session.modeId &&
+            session.modes.some(
+                (mode) => mode.id === selection.modeId && !mode.disabled,
+            )
+        ) {
+            session = await aiSetMode(session.sessionId, selection.modeId);
+        }
+
+        const modelOptionId = getModelConfigOption(session)?.id ?? null;
+        for (const [optionId, value] of Object.entries(selection.options)) {
+            const option = session.configOptions.find(
+                (candidate) => candidate.id === optionId,
+            );
+            if (
+                !option ||
+                option.category === "mode" ||
+                option.id === modelOptionId ||
+                option.value === value ||
+                !option.options.some((candidate) => candidate.value === value)
+            ) {
+                continue;
+            }
+            session = await aiSetConfigOption(
+                session.sessionId,
+                option.id,
+                value,
+            );
+        }
+        return session;
+    }
+
+    async function connectCustomConversationBinding(
+        binding: AcpConversationBinding,
+        vaultPath: string | null,
+        additionalRoots: string[],
+    ) {
+        const runtimeSessionId = binding.runtimeSessionId?.trim();
+        const launchFingerprint = binding.runtimeLaunchFingerprint?.trim();
+        const continuationStrategy = binding.continuationStrategy;
+        if (
+            !runtimeSessionId ||
+            !launchFingerprint ||
+            !continuationStrategy ||
+            continuationStrategy === "new_session_only"
+        ) {
+            throw new Error(
+                "The selected custom ACP binding cannot be continued.",
+            );
+        }
+
+        let confirmedLaunchFingerprint: string | null = null;
+        let result = await aiContinueCustomRuntimeSession({
+            runtimeId: binding.runtimeId,
+            runtimeSessionId,
+            runtimeLaunchFingerprint: launchFingerprint,
+            continuationStrategy,
+            confirmedLaunchFingerprint,
+            vaultPath,
+            additionalRoots,
+        });
+        while (result.status === "confirmation_required") {
+            const approved = await confirm(result.message, {
+                title: "Custom ACP runtime changed",
+                kind: "warning",
+                okLabel: "Continue",
+                cancelLabel: "Cancel",
+            });
+            if (!approved) {
+                const cancelled = new Error(
+                    "Conversation provider switch cancelled.",
+                );
+                cancelled.name = "ConversationTurnCancelledError";
+                throw cancelled;
+            }
+            confirmedLaunchFingerprint = result.launchFingerprint;
+            result = await aiContinueCustomRuntimeSession({
+                runtimeId: binding.runtimeId,
+                runtimeSessionId,
+                runtimeLaunchFingerprint: launchFingerprint,
+                continuationStrategy,
+                confirmedLaunchFingerprint,
+                vaultPath,
+                additionalRoots,
+            });
+        }
+        if (result.status !== "connected") {
+            throw new Error(result.message);
+        }
+        return result.session;
+    }
+
+    async function connectConversationTurn(input: {
+        sourceSession: AIChatSession;
+        route: ConversationTurnRoute;
+        attachments: AIChatAttachment[];
+    }) {
+        const runtime = get().runtimes.find(
+            (candidate) =>
+                candidate.runtime.id === input.route.selection.runtimeId,
+        );
+        if (!runtime) {
+            throw new Error("The selected ACP provider is unavailable.");
+        }
+        const vaultPath =
+            input.sourceSession.vaultPath ??
+            useVaultStore.getState().vaultPath;
+        const additionalRoots = Array.from(
+            new Set([
+                ...(input.sourceSession.additionalRoots ?? []),
+                ...collectExternalAdditionalRoots(
+                    input.attachments,
+                    vaultPath ?? null,
+                ),
+            ]),
+        );
+        let runtimeSession: AIChatSession;
+        let created = false;
+
+        if (input.route.strategy === "continue") {
+            runtimeSession = input.sourceSession;
+        } else if (
+            input.route.targetBinding?.runtimeId.startsWith("custom:") &&
+            (input.route.strategy === "load" ||
+                input.route.strategy === "resume")
+        ) {
+            runtimeSession = await connectCustomConversationBinding(
+                input.route.targetBinding,
+                vaultPath ?? null,
+                additionalRoots,
+            );
+        } else if (
+            input.route.strategy === "load" &&
+            input.route.targetBinding?.runtimeSessionId
+        ) {
+            runtimeSession = await aiLoadRuntimeSession(
+                input.route.selection.runtimeId,
+                input.route.targetBinding.runtimeSessionId,
+                vaultPath ?? null,
+                additionalRoots,
+            );
+        } else if (
+            input.route.strategy === "resume" &&
+            input.route.targetBinding?.runtimeSessionId
+        ) {
+            runtimeSession = await aiResumeRuntimeSession(
+                input.route.selection.runtimeId,
+                input.route.targetBinding.runtimeSessionId,
+                vaultPath ?? null,
+                additionalRoots,
+            );
+        } else {
+            runtimeSession = await aiCreateSession(
+                input.route.selection.runtimeId,
+                vaultPath ?? null,
+                additionalRoots,
+            );
+            created = true;
+        }
+
+        try {
+            runtimeSession = await configureConversationTurnSession(
+                runtimeSession,
+                input.route.selection,
+            );
+        } catch (error) {
+            if (created) {
+                await aiDeleteRuntimeSession(runtimeSession.sessionId).catch(
+                    () => {},
+                );
+            }
+            throw error;
+        }
+
+        const targetBinding = createTurnBinding(
+            updateConversationBindingsFromLegacySession(
+                input.sourceSession,
+            ).conversationId,
+            runtimeSession,
+            input.route.strategy === "create"
+                ? null
+                : input.route.targetBinding,
+            runtime.runtime.capabilities,
+        );
+        return { runtimeSession, targetBinding, created };
+    }
+
     async function ensureRuntimeVisibleAfterOnboarding(runtimeId: string) {
         const state = get();
         const activeRuntimeId = state.activeSessionId
@@ -8202,11 +8582,55 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         let optimisticMessageInserted = false;
         let optimisticMessageId: string | null = null;
         let shouldRecoverPromptForRetry = false;
+        let preparedTurn:
+            | {
+                  runtimeSession: AIChatSession;
+                  targetBinding: AcpConversationBinding;
+                  route: ConversationTurnRoute;
+                  created: boolean;
+              }
+            | null = null;
+        let turnAccepted = false;
         let preflightOwnership = options?.preflightOwnership ?? null;
         let session = get().sessionsById[activeSessionId];
         try {
         if (!session || session.isResumingSession) {
             return;
+        }
+
+        const requestedRuntimeId = currentItem.runtimeId ?? session.runtimeId;
+        const providerSwitchRequested =
+            requestedRuntimeId !== session.runtimeId;
+        if (providerSwitchRequested) {
+            const state = get();
+            const conversationId =
+                resolveConversationId(state, activeSessionId) ??
+                session.historySessionId;
+            const conversation = state.conversationsById[conversationId];
+            const blocker = conversation
+                ? getConversationSwitchBlocker(conversation, {
+                      hasQueuedMessages:
+                          (state.queuedMessagesBySessionId[activeSessionId]
+                              ?.length ?? 0) > 0 ||
+                          state.activeQueuedMessageBySessionId[
+                              activeSessionId
+                          ] != null,
+                  })
+                : "session_transition_pending";
+            const runtime = state.runtimes.find(
+                (candidate) =>
+                    candidate.runtime.id === requestedRuntimeId,
+            );
+            const setupStatus =
+                state.setupStatusByRuntimeId[requestedRuntimeId];
+            if (
+                blocker ||
+                !runtime ||
+                isClaudeTerminalRuntimeId(requestedRuntimeId) ||
+                (setupStatus != null && !isRuntimeSetupReady(setupStatus))
+            ) {
+                return;
+            }
         }
 
             if (!preflightOwnership) {
@@ -8228,7 +8652,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
 
         clearInterruptedTurnState(activeSessionId);
 
-        if (!isLiveRuntimeSession(session)) {
+        if (!providerSwitchRequested && !isLiveRuntimeSession(session)) {
                 const resumedSessionId =
                     await get().resumeSession(activeSessionId);
             if (!resumedSessionId) {
@@ -8290,7 +8714,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         }
 
         try {
-            if (source === "immediate") {
+            if (!providerSwitchRequested && source === "immediate") {
                 const replacementSessionId =
                     await replaceEmptySessionForAdditionalRoots(
                         activeSessionId,
@@ -8316,12 +8740,68 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 }
             }
 
-            session =
+            if (!providerSwitchRequested) {
+                session =
                     (await syncQueuedMessageConfig(
                         activeSessionId,
                         currentItem,
                     )) ?? session;
-            if (!session) return;
+                if (!session) return;
+            } else if (!hasFullPersistedTranscriptLoaded(session)) {
+                const loaded = await loadPersistedTranscript(
+                    activeSessionId,
+                    "full",
+                );
+                if (!loaded) {
+                    throw new Error(
+                        "Failed to load the canonical transcript before changing ACP provider.",
+                    );
+                }
+                session = get().sessionsById[activeSessionId] ?? session;
+            }
+
+            const bindings =
+                updateConversationBindingsFromLegacySession(session);
+            const selection: ConversationSelection = {
+                runtimeId: requestedRuntimeId,
+                modelId: currentItem.modelId ?? session.modelId,
+                modeId: currentItem.modeId ?? session.modeId,
+                options: { ...currentItem.optionsSnapshot },
+            };
+            let route = planConversationTurnRoute({
+                session,
+                bindings,
+                selection,
+                runtimeCapabilities:
+                    get().runtimes.find(
+                        (runtime) =>
+                            runtime.runtime.id === requestedRuntimeId,
+                    )?.runtime.capabilities ?? [],
+                hasTranscript:
+                    getSessionTranscriptMessages(session).length > 0,
+            });
+            if (session.resumeContextPending && !route.providerChanged) {
+                route = { ...route, startReason: "transcript_handoff" };
+            }
+            const connected = await connectConversationTurn({
+                sourceSession: session,
+                route,
+                attachments: currentItem.attachments,
+            });
+            preparedTurn = { ...connected, route };
+            const preparedPrompt = buildPromptWithContextHandoff(
+                session,
+                currentItem.prompt,
+                connected.targetBinding,
+                route.startReason,
+                route.providerChanged ||
+                    session.resumeContextPending === true,
+            );
+            currentItem = {
+                ...currentItem,
+                prompt: preparedPrompt.prompt,
+                contextHandoff: preparedPrompt.contextHandoff,
+            };
 
                 const promotedDrafts =
                     await promoteQueuedMessageDrafts(currentItem);
@@ -8422,12 +8902,12 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     return;
                 }
 
-                if (preflightOwnership) {
+                if (preflightOwnership && !route.providerChanged) {
                     const releasedOwnership =
                         releaseComposerPreflightOwnership(
-                        activeSessionId,
-                        preflightOwnership.token,
-                    );
+                            activeSessionId,
+                            preflightOwnership.token,
+                        );
                     if (releasedOwnership) {
                         preflightOwnership = null;
                     }
@@ -8436,44 +8916,85 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 cleanupPromotedDrafts(promotedDrafts.promotions);
 
             const afterSend = get().sessionsById[activeSessionId];
-            if (afterSend) {
+            if (afterSend && !route.providerChanged) {
                 void persistSession(afterSend);
             }
 
+            if (route.providerChanged) {
+                await aiStartConversationTurn({
+                    conversationId: bindings.conversationId,
+                    bindingId: connected.targetBinding.bindingId,
+                    runtimeId: connected.runtimeSession.runtimeId,
+                    sessionId: connected.runtimeSession.sessionId,
+                    selection: getConversationSelection(
+                        connected.runtimeSession,
+                    ),
+                });
+            }
             const nextSession = await aiSendMessage(
-                activeSessionId,
+                connected.runtimeSession.sessionId,
                 currentItem.prompt,
                 currentItem.attachments,
             );
-            set((state) => ({
-                sessionsById: updateSessionById(
-                    state,
-                    activeSessionId,
-                    (current) =>
-                        acceptContextHandoff(
-                            current,
-                            currentItem.contextHandoff,
-                        ),
-                ),
-            }));
-            const acceptedSession = get().sessionsById[activeSessionId];
-            get().upsertSession({
-                ...nextSession,
-                historySessionId: session.historySessionId,
-                resumeContextPending: false,
-                conversationBindings:
-                    acceptedSession?.conversationBindings ??
-                    nextSession.conversationBindings,
+            turnAccepted = true;
+            const sourceAfterSend =
+                get().sessionsById[activeSessionId] ?? session;
+            const acceptedBinding = createTurnBinding(
+                bindings.conversationId,
+                nextSession,
+                connected.targetBinding,
+                get().runtimes.find(
+                    (runtime) =>
+                        runtime.runtime.id === nextSession.runtimeId,
+                )?.runtime.capabilities ?? [],
+            );
+            const committedSession = commitAcceptedConversationTurn({
+                sourceSession: sourceAfterSend,
+                acceptedRuntimeSession: nextSession,
+                route,
+                targetBinding: acceptedBinding,
+                contextHandoff: currentItem.contextHandoff,
+                userMessageId,
             });
+            if (preflightOwnership) {
+                const releasedOwnership = releaseComposerPreflightOwnership(
+                    activeSessionId,
+                    preflightOwnership.token,
+                );
+                if (releasedOwnership) {
+                    preflightOwnership = null;
+                }
+            }
+            if (committedSession.sessionId === activeSessionId) {
+                set((state) => ({
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [activeSessionId]: committedSession,
+                    },
+                }));
+            } else {
+                migrateSessionLocalState(activeSessionId, committedSession);
+                activeSessionId = committedSession.sessionId;
+            }
+            persistCurrentSession(activeSessionId);
         } catch (error) {
+            if (preparedTurn?.created && !turnAccepted) {
+                await aiDeleteRuntimeSession(
+                    preparedTurn.runtimeSession.sessionId,
+                ).catch(() => {});
+            }
+            const cancelled =
+                error instanceof Error &&
+                error.name === "ConversationTurnCancelledError";
             const message = getAiErrorMessage(
                 error,
                 "Failed to send the message.",
-                session.runtimeId,
+                currentItem.runtimeId ?? session.runtimeId,
             );
             shouldRecoverPromptForRetry =
                 source === "immediate" &&
-                isRuntimeSessionDisconnectedErrorMessage(message);
+                (providerSwitchRequested ||
+                    isRuntimeSessionDisconnectedErrorMessage(message));
             const failedOptimisticMessageId = shouldRecoverPromptForRetry
                 ? optimisticMessageId
                 : null;
@@ -8498,15 +9019,21 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     status: "failed",
                 }));
             }
-            get().applySessionError({
-                session_id: activeSessionId,
-                message,
-            });
+            if (!cancelled) {
+                get().applySessionError({
+                    session_id: activeSessionId,
+                    message,
+                });
+            }
             if (shouldRecoverPromptForRetry) {
                 persistCurrentSession(activeSessionId);
             }
-            if (isAuthenticationErrorMessage(message, session.runtimeId)) {
-                await get().refreshSetupStatus(session.runtimeId);
+            const failedRuntimeId = currentItem.runtimeId ?? session.runtimeId;
+            if (
+                !cancelled &&
+                isAuthenticationErrorMessage(message, failedRuntimeId)
+            ) {
+                await get().refreshSetupStatus(failedRuntimeId);
             }
         }
         } finally {
@@ -10232,7 +10759,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 if (!session) return state;
                 const activeQueuedMessage =
                     state.activeQueuedMessageBySessionId[session_id] ?? null;
-                const nextSession = finalizeActionLogForWorkCycle(
+                const finalizedSession = finalizeActionLogForWorkCycle(
                     stampElapsedOnTurnStartedSession(
                         {
                             ...markAllMessagesComplete(session),
@@ -10240,6 +10767,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         },
                         completedAt,
                     ),
+                );
+                const nextSession = completeActiveBindingTurn(
+                    { ...finalizedSession, activeWorkCycleId: null },
+                    message_id,
                 );
 
                 return {
@@ -12019,6 +12550,68 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             }
         },
 
+        startConversationTurn: async (conversationId, selection) => {
+            const state = get();
+            const sessionId =
+                state.sessionIdByConversationId[conversationId] ??
+                resolveLegacySessionId(state, conversationId);
+            const session = sessionId
+                ? state.sessionsById[sessionId]
+                : undefined;
+            const conversation = state.conversationsById[conversationId];
+            if (!sessionId || !session || !conversation) return;
+
+            const activeBinding = conversation.activeBindingId
+                ? state.bindingsById[conversation.activeBindingId]
+                : null;
+            const providerChanged =
+                activeBinding != null &&
+                activeBinding.runtimeId !== selection.runtimeId;
+            if (providerChanged) {
+                const blocker = getConversationSwitchBlocker(conversation, {
+                    hasQueuedMessages:
+                        (state.queuedMessagesBySessionId[sessionId]?.length ??
+                            0) > 0 ||
+                        state.activeQueuedMessageBySessionId[sessionId] != null,
+                });
+                const runtime = state.runtimes.find(
+                    (candidate) =>
+                        candidate.runtime.id === selection.runtimeId,
+                );
+                const setupStatus =
+                    state.setupStatusByRuntimeId[selection.runtimeId];
+                if (
+                    blocker ||
+                    !runtime ||
+                    isClaudeTerminalRuntimeId(selection.runtimeId) ||
+                    (setupStatus != null &&
+                        !isRuntimeSetupReady(setupStatus))
+                ) {
+                    return;
+                }
+            }
+
+            const pendingSelection = {
+                ...selection,
+                options: { ...selection.options },
+            };
+            _pendingTurnSelectionByConversationId.set(
+                conversationId,
+                pendingSelection,
+            );
+            try {
+                await get().sendMessage(sessionId);
+            } finally {
+                const pending =
+                    _pendingTurnSelectionByConversationId.get(conversationId);
+                if (pending === pendingSelection) {
+                    _pendingTurnSelectionByConversationId.delete(
+                        conversationId,
+                    );
+                }
+            }
+        },
+
         sendMessage: async (sessionId) => {
             let resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
@@ -12033,9 +12626,18 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 return;
             }
 
+            const conversationId =
+                resolveConversationId(get(), resolvedSessionId) ??
+                session.historySessionId;
+            const selection =
+                _pendingTurnSelectionByConversationId.get(conversationId) ??
+                updateConversationBindingsFromLegacySession(session)
+                    .preferredSelection;
+            const providerChanged = selection.runtimeId !== session.runtimeId;
+
             if (
-                !isLiveRuntimeSession(session) ||
-                needsFullResumeContextTranscript(session)
+                (!providerChanged && !isLiveRuntimeSession(session)) ||
+                (!providerChanged && needsFullResumeContextTranscript(session))
             ) {
                 const preparedSessionId =
                     await prepareSessionForPromptBuild(resolvedSessionId);
@@ -12053,7 +12655,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             const composerParts =
                 composerPartsBySessionId[resolvedSessionId] ??
                 createEmptyComposerParts();
-            const queuedItem = buildQueuedMessage(session, composerParts);
+            const queuedItem = buildQueuedMessage(
+                session,
+                composerParts,
+                selection,
+            );
             if (!queuedItem) return;
             const pendingStop = _pendingStopBySessionId.get(resolvedSessionId);
 

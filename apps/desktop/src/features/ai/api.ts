@@ -41,6 +41,7 @@ import type {
     PersistedSessionHistory,
     PersistedSessionHistoryPage,
     CustomRuntimeContinuationResult,
+    ConversationSelection,
 } from "./types";
 import { buildFallbackRuntimeDescriptors } from "./utils/runtimeMetadata";
 import { isClaudeTerminalAuthMethodId } from "./utils/authMethods";
@@ -792,6 +793,30 @@ export async function aiSendMessage(
         attachments,
     });
     return normalizeBackendSession(session);
+}
+
+export async function aiStartConversationTurn(input: {
+    conversationId: string;
+    bindingId: string;
+    runtimeId: string;
+    sessionId: string;
+    selection: ConversationSelection;
+}) {
+    assertRuntimeSessionId(input.sessionId, "start a conversation turn");
+    await invoke("ai_start_conversation_turn", {
+        input: {
+            conversation_id: input.conversationId,
+            binding_id: input.bindingId,
+            runtime_id: input.runtimeId,
+            session_id: input.sessionId,
+            selection: {
+                runtime_id: input.selection.runtimeId,
+                model_id: input.selection.modelId,
+                mode_id: input.selection.modeId,
+                options: input.selection.options,
+            },
+        },
+    });
 }
 
 export async function aiCancelTurn(sessionId: string) {

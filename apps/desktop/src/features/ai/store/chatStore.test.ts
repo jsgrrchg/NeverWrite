@@ -14404,6 +14404,406 @@ describe("chatStore", () => {
         ).toBe("handoff-assistant");
     });
 
+    it("routes A to B to A through canonical bindings with delta handoff", async () => {
+        await useChatStore.getState().initialize();
+
+        const providerASessionId = getActiveSessionId();
+        const providerASession = {
+            ...useChatStore.getState().sessionsById[providerASessionId]!,
+            runtimeSessionId: "native-a",
+            continuationStrategy: "resume" as const,
+            activeWorkCycleId: null,
+            visibleWorkCycleId: null,
+            status: "idle" as const,
+            messages: [
+                {
+                    id: "a-user",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "Original provider context",
+                    timestamp: 10,
+                },
+                {
+                    id: "a-assistant",
+                    role: "assistant" as const,
+                    kind: "text" as const,
+                    content: "Original provider response",
+                    timestamp: 20,
+                },
+            ],
+        };
+        const conversationBindings =
+            updateConversationBindingsFromLegacySession(providerASession);
+        conversationBindings.providerBindings[0].contextCursor =
+            "a-assistant";
+        const providerBPayload = {
+            ...sessionPayload,
+            session_id: "local-b",
+            runtime_id: "provider-b",
+            runtime_session_id: "native-b",
+            continuation_strategy: "resume" as const,
+            model_id: "model-b",
+            models: [],
+            modes: [],
+            config_options: [],
+        };
+        const resumedProviderAPayload = {
+            ...sessionPayload,
+            session_id: "local-a-resumed",
+            runtime_session_id: "native-a",
+            continuation_strategy: "resume" as const,
+        };
+        const sentPrompts: { sessionId: string; content: string }[] = [];
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    ...readySetupStatusState,
+                    runtimeId: "provider-b",
+                },
+            },
+            sessionsById: {
+                ...state.sessionsById,
+                [providerASessionId]: {
+                    ...providerASession,
+                    conversationBindings,
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                expect(args).toMatchObject({
+                    input: { runtime_id: "provider-b" },
+                });
+                return providerBPayload;
+            }
+            if (command === "ai_resume_runtime_session") {
+                expect(args).toMatchObject({
+                    input: {
+                        runtime_id: "codex-acp",
+                        session_id: "native-a",
+                    },
+                });
+                return resumedProviderAPayload;
+            }
+            if (command === "ai_send_message") {
+                const input = args as { sessionId: string; content: string };
+                sentPrompts.push(input);
+                return input.sessionId === "local-b"
+                    ? { ...providerBPayload, status: "streaming" }
+                    : { ...resumedProviderAPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const conversationId =
+            useChatStore.getState().activeConversationId!;
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Question for B"), providerASessionId);
+        await useChatStore.getState().startConversationTurn(conversationId, {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        });
+
+        expect(sentPrompts[0]).toMatchObject({ sessionId: "local-b" });
+        expect(sentPrompts[0].content).toContain("another ACP provider");
+        expect(sentPrompts[0].content).toContain("Original provider context");
+        let switched = useChatStore.getState().sessionsById["local-b"]!;
+        expect(switched.historySessionId).toBe(conversationId);
+        expect(switched.conversationBindings).toMatchObject({
+            activeBindingId: expect.stringContaining("provider-b"),
+            preferredSelection: { runtimeId: "provider-b" },
+        });
+        expect(
+            switched.messages.find(
+                (message) => message.content === "Question for B",
+            )?.turnProvenance,
+        ).toMatchObject({
+            runtimeId: "provider-b",
+            startReason: "provider_switch",
+        });
+        expect(
+            switched.messages.some((message) =>
+                message.content.includes("Use the saved transcript below"),
+            ),
+        ).toBe(false);
+
+        useChatStore.getState().applyMessageStarted({
+            session_id: "local-b",
+            message_id: "b-assistant",
+            role: "assistant",
+        });
+        useChatStore.getState().applyMessageDelta({
+            session_id: "local-b",
+            message_id: "b-assistant",
+            delta: "Provider B response",
+            role: "assistant",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageCompleted({
+            session_id: "local-b",
+            message_id: "b-assistant",
+            role: "assistant",
+            turn_complete: true,
+        });
+        switched = useChatStore.getState().sessionsById["local-b"]!;
+        expect(
+            switched.messages.find((message) => message.id === "b-assistant")
+                ?.turnProvenance,
+        ).toMatchObject({ runtimeId: "provider-b" });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Back to A"), "local-b");
+        await useChatStore.getState().startConversationTurn(conversationId, {
+            runtimeId: "codex-acp",
+            modelId: "test-model",
+            modeId: "default",
+            options: { model: "test-model", reasoning_effort: "medium" },
+        });
+
+        expect(sentPrompts[1]).toMatchObject({
+            sessionId: "local-a-resumed",
+        });
+        expect(sentPrompts[1].content).not.toContain(
+            "Original provider context",
+        );
+        expect(sentPrompts[1].content).toContain("Question for B");
+        expect(sentPrompts[1].content).toContain("Provider B response");
+        const returned =
+            useChatStore.getState().sessionsById["local-a-resumed"]!;
+        expect(returned.conversationBindings?.providerBindings).toHaveLength(2);
+        expect(returned.conversationBindings?.preferredSelection.runtimeId).toBe(
+            "codex-acp",
+        );
+    });
+
+    it("rolls back a new provider binding and restores the composer on send failure", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId =
+            useChatStore.getState().activeConversationId!;
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    ...readySetupStatusState,
+                    runtimeId: "provider-b",
+                },
+            },
+            sessionsById: {
+                ...state.sessionsById,
+                [sourceSessionId]: {
+                    ...state.sessionsById[sourceSessionId]!,
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                    status: "idle",
+                    messages: [
+                        {
+                            id: "existing",
+                            role: "user",
+                            kind: "text",
+                            content: "Existing transcript",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+        const bindingsBefore =
+            updateConversationBindingsFromLegacySession(
+                useChatStore.getState().sessionsById[sourceSessionId]!,
+            );
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: "failed-provider-b",
+                    runtime_id: "provider-b",
+                    runtime_session_id: "native-b",
+                    model_id: "model-b",
+                    models: [],
+                    modes: [],
+                    config_options: [],
+                };
+            }
+            if (command === "ai_send_message") {
+                throw new Error("Provider B rejected the turn");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Do not lose this"), sourceSessionId);
+        await useChatStore.getState().startConversationTurn(conversationId, {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        });
+
+        const state = useChatStore.getState();
+        expect(state.activeSessionId).toBe(sourceSessionId);
+        expect(
+            state.sessionsById[sourceSessionId]?.conversationBindings
+                ?.providerBindings ?? bindingsBefore.providerBindings,
+        ).toHaveLength(1);
+        expect(
+            serializeComposerParts(
+                state.composerPartsBySessionId[sourceSessionId] ?? [],
+            ),
+        ).toContain("Do not lose this");
+        expect(invokeMock).toHaveBeenCalledWith("ai_delete_runtime_session", {
+            sessionId: "failed-provider-b",
+        });
+    });
+
+    it("keeps the active provider and composer when a prior binding cannot resume", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const sourceSession = {
+            ...useChatStore.getState().sessionsById[sourceSessionId]!,
+            runtimeSessionId: "native-a",
+            continuationStrategy: "resume" as const,
+            activeWorkCycleId: null,
+            visibleWorkCycleId: null,
+            status: "idle" as const,
+            messages: [
+                {
+                    id: "existing",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "Existing transcript",
+                    timestamp: 1,
+                },
+            ],
+        };
+        const bindings =
+            updateConversationBindingsFromLegacySession(sourceSession);
+        const activeBindingId = bindings.activeBindingId;
+        bindings.providerBindings.push({
+            ...bindings.providerBindings[0],
+            bindingId: "binding-b",
+            runtimeId: "provider-b",
+            runtimeSessionId: "native-b",
+            continuationStrategy: "resume",
+            modelId: "model-b",
+            options: {},
+            contextCursor: "existing",
+        });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    ...readySetupStatusState,
+                    runtimeId: "provider-b",
+                },
+            },
+            sessionsById: {
+                ...state.sessionsById,
+                [sourceSessionId]: {
+                    ...sourceSession,
+                    conversationBindings: bindings,
+                },
+            },
+        }));
+        const conversationId =
+            useChatStore.getState().activeConversationId!;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_resume_runtime_session") {
+                expect(args).toMatchObject({
+                    input: {
+                        runtime_id: "provider-b",
+                        session_id: "native-b",
+                    },
+                });
+                throw new Error("Native resume failed");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Retry without loss"), sourceSessionId);
+        await useChatStore.getState().startConversationTurn(conversationId, {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        });
+
+        const state = useChatStore.getState();
+        expect(state.activeSessionId).toBe(sourceSessionId);
+        expect(
+            state.sessionsById[sourceSessionId]?.conversationBindings
+                ?.activeBindingId,
+        ).toBe(activeBindingId);
+        expect(
+            serializeComposerParts(
+                state.composerPartsBySessionId[sourceSessionId] ?? [],
+            ),
+        ).toContain("Retry without loss");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toBe(false);
+    });
+
     it("omits internal runtime user echoes from saved transcript recovery prompts", async () => {
         await useChatStore.getState().initialize();
 
