@@ -94,10 +94,10 @@ impl WinChild {
 
 impl ChildKiller for WinChild {
     fn kill(&mut self) -> IoResult<()> {
-        if let Err(err) = self.do_kill() {
+        self.do_kill().map_err(|err| {
             log::warn!("ConPTY failed to terminate process tree: {err}");
-        }
-        Ok(())
+            err
+        })
     }
 
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {

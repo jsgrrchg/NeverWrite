@@ -22,6 +22,7 @@ const defaultCargoLockPath = path.join(
 );
 const defaultCacheRoot = path.join(appRoot, ".cache", "codex-v8");
 const releaseBaseUrl = "https://github.com/openai/codex/releases/download";
+const defaultDownloadTimeoutMs = 5 * 60 * 1000;
 const supportedTargets = new Set([
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -222,10 +223,20 @@ async function validateCachedArtifacts(plan, expectedManifestChecksum) {
     }
 }
 
-async function downloadFile(url, destinationPath, fetchImpl) {
+async function downloadFile(
+    url,
+    destinationPath,
+    fetchImpl,
+    timeoutMs,
+) {
     const tempPath = `${destinationPath}.${randomUUID()}.tmp`;
+    const controller = new AbortController();
+    let stage = "response headers";
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const response = await fetchImpl(url);
+        const response = await fetchImpl(url, {
+            signal: controller.signal,
+        });
         if (!response.ok) {
             throw new Error(
                 `Failed to download ${url}: ${response.status} ${response.statusText}`,
@@ -235,12 +246,24 @@ async function downloadFile(url, destinationPath, fetchImpl) {
             throw new Error(`Failed to download ${url}: empty response body`);
         }
 
+        stage = "response body";
         await pipeline(
             Readable.fromWeb(response.body),
             createWriteStream(tempPath, { flags: "wx" }),
+            { signal: controller.signal },
         );
+        clearTimeout(timeout);
         await fs.rename(tempPath, destinationPath);
+    } catch (error) {
+        if (controller.signal.aborted) {
+            throw new Error(
+                `Timed out downloading ${url} while receiving ${stage} after ${timeoutMs} ms`,
+                { cause: error },
+            );
+        }
+        throw error;
     } finally {
+        clearTimeout(timeout);
         await fs.rm(tempPath, { force: true });
     }
 }
@@ -270,6 +293,7 @@ export async function fetchCodexV8Artifacts({
     cargoLockPath = defaultCargoLockPath,
     cacheRoot = defaultCacheRoot,
     fetchImpl = globalThis.fetch,
+    downloadTimeoutMs = defaultDownloadTimeoutMs,
 }) {
     const resolvedVersion = version ?? (await resolveV8Version(cargoLockPath));
     const plan = createV8ArtifactPlan({
@@ -305,6 +329,7 @@ export async function fetchCodexV8Artifacts({
             plan.manifestUrl,
             stagingPlan.manifestPath,
             fetchImpl,
+            downloadTimeoutMs,
         );
         const checksums = await readVerifiedChecksumManifest(
             stagingPlan,
@@ -312,8 +337,18 @@ export async function fetchCodexV8Artifacts({
         );
 
         await Promise.all([
-            downloadFile(plan.archiveUrl, stagingPlan.archivePath, fetchImpl),
-            downloadFile(plan.bindingUrl, stagingPlan.bindingPath, fetchImpl),
+            downloadFile(
+                plan.archiveUrl,
+                stagingPlan.archivePath,
+                fetchImpl,
+                downloadTimeoutMs,
+            ),
+            downloadFile(
+                plan.bindingUrl,
+                stagingPlan.bindingPath,
+                fetchImpl,
+                downloadTimeoutMs,
+            ),
         ]);
 
         const [archiveValid, bindingValid] = await Promise.all([
@@ -384,7 +419,7 @@ export async function resolveCodexV8CargoEnvironment({
         };
     }
 
-    if (["1", "true", "yes"].includes(env.V8_FROM_SOURCE?.toLowerCase())) {
+    if (["1", "true", "yes"].includes(env.V8_FROM_SOURCE)) {
         if (requireVerifiedArtifacts) {
             throw new Error(
                 "Verified V8 artifacts are required; V8_FROM_SOURCE is not allowed",

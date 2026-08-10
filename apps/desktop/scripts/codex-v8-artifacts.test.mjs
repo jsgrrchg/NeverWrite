@@ -257,6 +257,10 @@ describe("V8 checksum manifests", () => {
             `${checksum}  ${archiveName}\n${checksum}  foreign.rs\n`,
             /Unexpected V8 checksum artifact/,
         ],
+        [
+            `${checksum}  ${archiveName}\n${checksum}  ${archiveName}\n`,
+            /Duplicate V8 checksum artifact/,
+        ],
     ])("rejects incomplete or foreign manifests", (manifest, error) => {
         expect(() =>
             parseV8ChecksumManifest(manifest, [archiveName, bindingName]),
@@ -404,8 +408,72 @@ describe("V8 artifact cache", () => {
             }),
         ).rejects.toThrow(/failed pinned SHA-256 validation/);
         expect(fetchImpl).toHaveBeenCalledTimes(1);
-        expect(fetchImpl).toHaveBeenCalledWith(plan.manifestUrl);
+        expect(fetchImpl).toHaveBeenCalledWith(
+            plan.manifestUrl,
+            expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        );
     });
+
+    it.each(["response headers", "response body"])(
+        "times out stalled artifact %s and removes temporary files",
+        async (stalledStage) => {
+            const plan = createV8ArtifactPlan({
+                version,
+                profile,
+                targetTriple,
+                cacheRoot: testRoot,
+            });
+            const files = trustFixtureManifest(plan, artifactFixture(plan));
+            const fetchImpl = vi.fn(async (url, { signal } = {}) => {
+                const name = path.basename(new URL(url).pathname);
+                if (name !== plan.archiveName) {
+                    return new Response(files.get(name));
+                }
+                if (stalledStage === "response headers") {
+                    return new Promise((resolve, reject) => {
+                        signal.addEventListener(
+                            "abort",
+                            () => reject(signal.reason),
+                            { once: true },
+                        );
+                    });
+                }
+                return new Response(
+                    new ReadableStream({
+                        start(controller) {
+                            controller.enqueue(Buffer.from("partial archive"));
+                        },
+                    }),
+                );
+            });
+
+            await expect(
+                fetchCodexV8Artifacts({
+                    version,
+                    profile,
+                    targetTriple,
+                    cacheRoot: testRoot,
+                    fetchImpl,
+                    downloadTimeoutMs: 25,
+                }),
+            ).rejects.toThrow(
+                new RegExp(`Timed out downloading .* while receiving ${stalledStage}`),
+            );
+
+            await expect(fs.access(plan.cacheDir)).rejects.toMatchObject({
+                code: "ENOENT",
+            });
+            const cacheParentEntries = await fs.readdir(
+                path.dirname(plan.cacheDir),
+            );
+            const temporaryCachePrefix = `${path.basename(plan.cacheDir)}.tmp-`;
+            expect(
+                cacheParentEntries.some((entry) =>
+                    entry.startsWith(temporaryCachePrefix),
+                ),
+            ).toBe(false);
+        },
+    );
 
     it("redownloads all artifacts when the cached manifest is manipulated", async () => {
         const plan = createV8ArtifactPlan({
@@ -509,6 +577,50 @@ describe("V8 Cargo environment", () => {
             }),
         ).rejects.toThrow(/V8_FROM_SOURCE is not allowed/);
     });
+
+    it.each(["1", "true", "yes"])(
+        "accepts the exact upstream V8_FROM_SOURCE value %s",
+        async (value) => {
+            await expect(
+                resolveCodexV8CargoEnvironment({
+                    targetTriple,
+                    env: { V8_FROM_SOURCE: value },
+                    cargoLockPath: path.join(testRoot, "missing.lock"),
+                }),
+            ).resolves.toEqual({});
+        },
+    );
+
+    it("does not normalize differently-cased V8_FROM_SOURCE values", async () => {
+        const cargoLockPath = path.join(testRoot, "Cargo.lock");
+        await fs.writeFile(
+            cargoLockPath,
+            `[[package]]\nname = "v8"\nversion = "${version}"\n`,
+        );
+        const plan = createV8ArtifactPlan({
+            version,
+            profile,
+            targetTriple,
+            cacheRoot: testRoot,
+        });
+        const fetchImpl = fixtureFetch(
+            trustFixtureManifest(plan, artifactFixture(plan)),
+        );
+
+        await expect(
+            resolveCodexV8CargoEnvironment({
+                targetTriple,
+                env: { V8_FROM_SOURCE: "TRUE" },
+                cargoLockPath,
+                cacheRoot: testRoot,
+                fetchImpl,
+            }),
+        ).resolves.toEqual({
+            RUSTY_V8_ARCHIVE: plan.archivePath,
+            RUSTY_V8_SRC_BINDING_PATH: plan.bindingPath,
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
+    });
 });
 
 describe("V8 command wrapper", () => {
@@ -611,31 +723,54 @@ describe("V8 command wrapper", () => {
         });
 
         it("forwards signals received by the wrapper", async () => {
-            const result = await new Promise((resolve, reject) => {
-                const child = spawn(
-                    process.execPath,
-                    [
-                        wrapperPath,
-                        "--target",
-                        targetTriple,
-                        "--",
+            let child;
+            try {
+                const result = await new Promise((resolve, reject) => {
+                    child = spawn(
                         process.execPath,
-                        "-e",
-                        "process.on('SIGTERM', () => process.exit(42)); console.log('ready'); setInterval(() => {}, 1000);",
-                    ],
-                    {
-                        env: wrapperEnvironment(),
-                        stdio: ["ignore", "pipe", "inherit"],
-                    },
-                );
-                child.once("error", reject);
-                child.stdout.once("data", () => child.kill("SIGTERM"));
-                child.once("exit", (code, signal) =>
-                    resolve({ code, signal }),
-                );
-            });
+                        [
+                            wrapperPath,
+                            "--target",
+                            targetTriple,
+                            "--",
+                            process.execPath,
+                            "-e",
+                            "process.on('SIGTERM', () => process.exit(42)); console.log('ready'); setInterval(() => {}, 1000);",
+                        ],
+                        {
+                            env: wrapperEnvironment(),
+                            stdio: ["ignore", "pipe", "inherit"],
+                        },
+                    );
+                    const timeout = setTimeout(
+                        () => reject(new Error("wrapper did not forward SIGTERM")),
+                        2_000,
+                    );
+                    child.once("error", (error) => {
+                        clearTimeout(timeout);
+                        reject(error);
+                    });
+                    child.stdout.once("data", () => child.kill("SIGTERM"));
+                    child.once("exit", (code, signal) => {
+                        clearTimeout(timeout);
+                        resolve({ code, signal });
+                    });
+                });
 
-            expect(result).toEqual({ code: 42, signal: null });
+                expect(result).toEqual({ code: 42, signal: null });
+            } finally {
+                if (child && child.exitCode === null && child.signalCode === null) {
+                    await new Promise((resolve) => {
+                        const cleanupTimeout = setTimeout(resolve, 1_000);
+                        cleanupTimeout.unref();
+                        child.once("exit", () => {
+                            clearTimeout(cleanupTimeout);
+                            resolve();
+                        });
+                        child.kill("SIGKILL");
+                    });
+                }
+            }
         });
     }
 });

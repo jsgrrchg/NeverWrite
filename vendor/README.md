@@ -46,7 +46,7 @@ That means the directory is intentionally reproducible, but not yet minimal.
 - `codex-acp/`
   - upstream baseline: `zed-industries/codex-acp` `0.16.0`
   - synced against upstream commit `863d433fc91855d0b5427372bf635c894bf68cb6`
-  - latest upstream adapter sync from `0.14.0` brought in 5 commits: `d9bf1c1`, `0c2d828`, `8aef91b`, `f67ca5f`, `863d433`
+  - latest upstream adapter sync from adapter `v0.14.0` to `v0.16.0` brought in 5 commits: `d9bf1c1`, `0c2d828`, `8aef91b`, `f67ca5f`, `863d433`
   - OpenAI Codex Rust crates: `rust-v0.147.0` (`be6e8eac029b183056b7e4402879f15d2c85f61b`)
   - vendor ACP SDK: `agent-client-protocol` `0.14.0`
   - ACP wire protocol: v1; ACP v2 is not enabled by this runtime promotion

@@ -123,8 +123,9 @@ enum PipeStdinMode {
     Null,
 }
 
-/// On Windows, process-tree containment is best-effort because Tokio returns
-/// only after the root process starts, so job assignment cannot be atomic.
+/// On Windows, a Job Object is created before launch and the root is assigned
+/// while suspended. If Job Object creation itself fails, only the root process
+/// can be terminated.
 async fn spawn_process_with_stdin_mode(
     program: &str,
     args: &[String],
@@ -182,32 +183,24 @@ async fn spawn_process_with_stdin_mode(
     command.stderr(Stdio::piped());
 
     #[cfg(windows)]
-    let job = crate::win::JobObject::create().map(Arc::new);
-    let mut child = command.spawn()?;
-    #[cfg(windows)]
-    let windows_terminator = {
-        // Accept the small race: a descendant created between spawn and
-        // assignment is not guaranteed to join the job and can escape termination.
-        let pid = child
-            .id()
-            .ok_or_else(|| io::Error::other("missing child pid"))?;
-        let assigned_job = job.and_then(|job| {
-            let process_handle = child
-                .raw_handle()
-                .ok_or_else(|| io::Error::other("missing child process handle"))?;
-            job.assign_process(process_handle)?;
-            Ok(job)
-        });
-        match assigned_job {
-            Ok(job) => WindowsChildTerminator::Job(job),
-            Err(err) => {
-                log::warn!(
-                    "Windows pipe process tree containment unavailable for pid {pid}: {err}"
-                );
-                WindowsChildTerminator::Process(pid)
-            }
+    let (mut child, windows_terminator) = match crate::win::JobObject::create() {
+        Ok(job) => {
+            let job = Arc::new(job);
+            let child = job.spawn_contained(&mut command)?;
+            (child, WindowsChildTerminator::Job(job))
+        }
+        Err(error) => {
+            log::warn!("Windows pipe Job Object creation failed; containing only the root process: {error}");
+            command.kill_on_drop(true);
+            let child = command.spawn()?;
+            let pid = child
+                .id()
+                .ok_or_else(|| io::Error::other("missing child pid"))?;
+            (child, WindowsChildTerminator::Process(pid))
         }
     };
+    #[cfg(not(windows))]
+    let mut child = command.spawn()?;
     #[cfg(unix)]
     let process_group_id = child
         .id()

@@ -3617,15 +3617,22 @@ impl PromptState {
                                 DynamicToolCallOutputContentItem::InputText { text } => {
                                     ToolCallContent::Content(Content::new(text))
                                 }
-                                DynamicToolCallOutputContentItem::InputImage { image_url }
-                                | DynamicToolCallOutputContentItem::InputAudio {
-                                    audio_url: image_url,
-                                } => ToolCallContent::Content(Content::new(
-                                    ContentBlock::ResourceLink(ResourceLink::new(
-                                        image_url.clone(),
-                                        image_url,
-                                    )),
-                                )),
+                                DynamicToolCallOutputContentItem::InputImage { image_url } => {
+                                    ToolCallContent::Content(Content::new(
+                                        ContentBlock::ResourceLink(ResourceLink::new(
+                                            "Image output",
+                                            image_url,
+                                        )),
+                                    ))
+                                }
+                                DynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                                    ToolCallContent::Content(Content::new(
+                                        ContentBlock::ResourceLink(ResourceLink::new(
+                                            "Audio output",
+                                            audio_url,
+                                        )),
+                                    ))
+                                }
                             })
                             .chain(error.map(|e| ToolCallContent::Content(Content::new(e))))
                             .collect::<Vec<_>>(),

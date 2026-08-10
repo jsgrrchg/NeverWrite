@@ -923,7 +923,7 @@ impl CodexAgent {
                 .start_thread(start_thread_options(config.clone())),
         )
         .await
-        .map_err(|_e| Error::internal_error())?;
+        .map_err(|error| Error::internal_error().data(error.to_string()))?;
 
         Self::sync_config_with_session(&mut config, &session_configured)?;
 
@@ -1327,19 +1327,20 @@ fn stored_session_title(name: Option<&str>, preview: &str) -> Option<String> {
 mod tests {
     use acp::schema::{EnvVariable, HttpHeader};
     use codex_config::{AppToolApproval, McpServerAuth};
-    use codex_core::config::ConfigOverrides;
+    use codex_core::config::ConfigBuilder;
     use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::openai_models::ReasoningEffort;
     use serde_json::json;
 
     use super::*;
 
-    async fn test_config() -> anyhow::Result<Config> {
-        Ok(Config::load_with_cli_overrides_and_harness_overrides(
-            vec![],
-            ConfigOverrides::default(),
-        )
-        .await?)
+    async fn test_config() -> anyhow::Result<(Config, tempfile::TempDir)> {
+        let codex_home = tempfile::tempdir()?;
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await?;
+        Ok((config, codex_home))
     }
 
     #[test]
@@ -1379,7 +1380,7 @@ mod tests {
     #[tokio::test]
     async fn start_options_preserve_session_config_and_disable_unowned_extensions()
     -> anyhow::Result<()> {
-        let mut config = test_config().await?;
+        let (mut config, _codex_home) = test_config().await?;
         config.model = Some("session-model".to_string());
         config.model_reasoning_effort = Some(ReasoningEffort::High);
         config.service_tier = Some("fast".to_string());
@@ -1416,7 +1417,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_session_snapshot_restores_runtime_configuration() -> anyhow::Result<()> {
-        let mut config = test_config().await?;
+        let (mut config, _codex_home) = test_config().await?;
         let thread_id = ThreadId::new();
         let cwd = config.cwd.clone();
         let snapshot: SessionConfiguredEvent = serde_json::from_value(json!({
@@ -1477,7 +1478,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_config_preserves_mcp_transport_auth_env_and_cwd() -> anyhow::Result<()> {
-        let mut base_config = test_config().await?;
+        let (mut base_config, _codex_home) = test_config().await?;
         let base_server = McpServerConfig {
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://base.example/mcp".to_string(),

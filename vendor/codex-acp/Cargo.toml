@@ -61,6 +61,9 @@ heck = "0.5.0"
 unicode-segmentation = "1.11.0"
 uuid = { version = "1", features = ["v4"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints.rust]
 let-underscore = "warn"
 rust-2018-idioms = "warn"

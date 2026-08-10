@@ -14,7 +14,6 @@ use winapi::um::jobapi2::SetInformationJobObject;
 use winapi::um::jobapi2::TerminateJobObject;
 use winapi::um::winbase::CREATE_SUSPENDED;
 use winapi::um::winnt::HANDLE;
-use winapi::um::winnt::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
 use winapi::um::winnt::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 use winapi::um::winnt::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
 use winapi::um::winnt::JobObjectExtendedLimitInformation;
@@ -42,10 +41,7 @@ impl JobObject {
         }
         let handle = unsafe { OwnedHandle::from_raw_handle(handle.cast()) };
 
-        Self::set_limit_flags(
-            &handle,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-        )?;
+        Self::set_limit_flags(&handle, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)?;
 
         Ok(Self {
             handle,
@@ -88,20 +84,53 @@ impl JobObject {
     /// Starts a process only after assigning it to this Job Object.
     pub fn spawn_contained(&self, command: &mut Command) -> io::Result<Child> {
         command.creation_flags(CREATE_SUSPENDED).kill_on_drop(true);
-        let child = command.spawn()?;
-        let process_handle = child
-            .raw_handle()
-            .ok_or_else(|| io::Error::other("missing child process handle"))?;
-        self.assign_process(process_handle)?;
+        let mut child = command.spawn()?;
+        let Some(process_handle) = child.raw_handle() else {
+            let error = io::Error::other("missing child process handle");
+            return Err(self.cleanup_failed_spawn(&mut child, /*assigned_to_job*/ false, error));
+        };
+        if let Err(error) = self.assign_process(process_handle) {
+            return Err(self.cleanup_failed_spawn(&mut child, /*assigned_to_job*/ false, error));
+        }
 
         let status = unsafe { NtResumeProcess(process_handle.cast()) };
         if !NT_SUCCESS(status) {
-            return Err(io::Error::other(format!(
+            let error = io::Error::other(format!(
                 "failed to resume contained process: NTSTATUS {status:#x}"
-            )));
+            ));
+            return Err(self.cleanup_failed_spawn(&mut child, /*assigned_to_job*/ true, error));
         }
 
         Ok(child)
+    }
+
+    fn cleanup_failed_spawn(
+        &self,
+        child: &mut Child,
+        assigned_to_job: bool,
+        spawn_error: io::Error,
+    ) -> io::Error {
+        let job_cleanup_error = assigned_to_job
+            .then(|| self.terminate().err())
+            .flatten();
+        let process_cleanup_error = if assigned_to_job && job_cleanup_error.is_none() {
+            None
+        } else {
+            child.start_kill().err()
+        };
+
+        match (job_cleanup_error, process_cleanup_error) {
+            (None, None) => spawn_error,
+            (job_error, process_error) => io::Error::new(
+                spawn_error.kind(),
+                format!(
+                    "{spawn_error}; failed to clean up suspended process (job: {}, process: {})",
+                    job_error.map_or_else(|| "not applicable".to_string(), |error| error.to_string()),
+                    process_error
+                        .map_or_else(|| "not applicable".to_string(), |error| error.to_string())
+                ),
+            ),
+        }
     }
 
     /// Allows contained descendants to keep running after the root exits normally.
@@ -119,7 +148,7 @@ impl JobObject {
             return Ok(());
         }
 
-        Self::set_limit_flags(&self.handle, JOB_OBJECT_LIMIT_BREAKAWAY_OK)?;
+        Self::set_limit_flags(&self.handle, 0)?;
         *preserve_descendants = true;
         Ok(())
     }
