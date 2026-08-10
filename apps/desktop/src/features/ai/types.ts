@@ -22,6 +22,35 @@ export type AIChatSessionStatus =
     | "review_required"
     | "error";
 
+export type AIRuntimeSessionState =
+    | "live"
+    | "persisted_only"
+    | "transcript_only"
+    | "detached";
+
+export interface ConversationSelection {
+    runtimeId: string;
+    modelId: string;
+    modeId: string;
+    options: Record<string, string>;
+}
+
+export type ConversationTurnStartReason =
+    | "normal"
+    | "provider_switch"
+    | "native_resume"
+    | "transcript_handoff";
+
+export interface ConversationTurnProvenance {
+    bindingId: string;
+    runtimeId: string;
+    runtimeSessionId: string | null;
+    modelId: string;
+    modeId: string;
+    options: Record<string, string>;
+    startReason: ConversationTurnStartReason;
+}
+
 export type AIRuntimeConnectionStatus = "idle" | "loading" | "ready" | "error";
 
 export type AIRuntimeBinarySource =
@@ -452,6 +481,59 @@ export interface AIChatMessage {
     planEntries?: AIPlanEntry[];
     planDetail?: string;
     toolAction?: AIToolActivityAction | null;
+    /** Runtime that executed this canonical turn. Persisted in phase A2. */
+    turnProvenance?: ConversationTurnProvenance;
+}
+
+export interface AcpConversationBinding {
+    bindingId: string;
+    conversationId: string;
+    runtimeId: string;
+    runtimeDisplayName: string | null;
+    runtimeRevision: number | null;
+    runtimeLaunchFingerprint: string | null;
+    runtimeSessionId: string | null;
+    continuationStrategy: AcpContinuationStrategy | null;
+    capabilities: string[];
+    modelId: string;
+    modeId: string;
+    options: Record<string, string>;
+    models: AIModelOption[];
+    modes: AIModeOption[];
+    configOptions: AIConfigOption[];
+    availableCommands?: AIAvailableCommand[];
+    effortsByModel: Record<string, string[]>;
+    runtimeState: AIRuntimeSessionState;
+    contextCursor: string | null;
+    contextGeneration: number;
+    createdAt: number | null;
+    updatedAt: number | null;
+}
+
+export interface AIConversation {
+    conversationId: string;
+    parentConversationId: string | null;
+    vaultPath: string | null;
+    closedAt: string | null;
+    status: AIChatSessionStatus;
+    activeWorkCycleId: string | null;
+    visibleWorkCycleId: string | null;
+    actionLog?: import("./diff/actionLogTypes").ActionLogState;
+    messages: AIChatMessage[];
+    attachments: AIChatAttachment[];
+    preferredSelection: ConversationSelection;
+    activeBindingId: string | null;
+    persistedCreatedAt: number | null;
+    persistedUpdatedAt: number | null;
+    persistedTitle: string | null;
+    customTitle: string | null;
+    persistedPreview: string | null;
+    persistedMessageCount?: number;
+    loadedPersistedMessageStart?: number | null;
+    isLoadingPersistedMessages?: boolean;
+    isPersistedSession: boolean;
+    isPendingSessionCreation: boolean;
+    isResumingSession: boolean;
 }
 
 export interface AIChatSession {
@@ -520,11 +602,7 @@ export interface AIChatSession {
     pendingSessionError?: string | null;
     resumeContextPending?: boolean;
     resumeReconnectFailed?: boolean;
-    runtimeState?:
-        | "live"
-        | "persisted_only"
-        | "transcript_only"
-        | "detached";
+    runtimeState?: AIRuntimeSessionState;
 }
 
 export interface AIRuntimeDescriptor {
