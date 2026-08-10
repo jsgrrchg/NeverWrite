@@ -261,6 +261,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         conversationId,
         conversation,
         conversationBindings,
+        preparedTurnCatalog,
         parentSession,
         composerParts,
         queuedMessages,
@@ -295,6 +296,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 conversationBindings:
                     s?.conversationBindings?.providerBindings ??
                     EMPTY_CONVERSATION_BINDINGS,
+                preparedTurnCatalog: conversationId
+                    ? (state.preparedTurnCatalogByConversationId[
+                          conversationId
+                      ] ?? null)
+                    : null,
                 parentSession: parent,
                 composerParts: sid
                     ? (state.composerPartsBySessionId[sid] ??
@@ -360,6 +366,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                       session,
                       runtimes,
                       bindings: conversationBindings,
+                      preparedCatalog: preparedTurnCatalog,
                   })
                 : {
                       models: [],
@@ -367,8 +374,58 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                       configOptions: [],
                       effortsByModel: {},
                   },
-        [conversationBindings, runtimes, session, turnSelection],
+        [
+            conversationBindings,
+            preparedTurnCatalog,
+            runtimes,
+            session,
+            turnSelection,
+        ],
     );
+
+    useEffect(() => {
+        if (!conversationId || !session || !turnSelection) return;
+
+        // A staged provider/model switch has no live session yet, so its
+        // dynamic ACP options cannot be projected from the active provider.
+        // Prepare the exact target catalog before the user sends the turn.
+        const preparedMatches =
+            preparedTurnCatalog?.runtimeId === turnSelection.runtimeId &&
+            preparedTurnCatalog.modelId === turnSelection.modelId;
+        if (preparedMatches) return;
+
+        const liveSelection = getConversationSelection(session);
+        const selectionMatchesLiveSession =
+            liveSelection.runtimeId === turnSelection.runtimeId &&
+            liveSelection.modelId === turnSelection.modelId;
+        const runtimeAdvertisesReasoning =
+            selectedRuntime?.runtime.capabilities.includes("reasoning") ??
+            false;
+        const liveCatalogHasReasoning = session.configOptions.some(
+            (option) => option.category === "reasoning",
+        );
+        if (
+            selectionMatchesLiveSession &&
+            session.configOptions.length > 0 &&
+            (!runtimeAdvertisesReasoning || liveCatalogHasReasoning)
+        ) {
+            // Prefer the real live-session catalog when it already represents
+            // the selected provider/model; probing it again would be wasteful.
+            return;
+        }
+
+        void chatActions.prepareConversationTurnCatalog(
+            conversationId,
+            turnSelection,
+        );
+    }, [
+        chatActions,
+        conversationId,
+        preparedTurnCatalog,
+        selectedRuntime,
+        session,
+        turnSelection,
+    ]);
     const providerOptions = useMemo(
         () =>
             conversation && session

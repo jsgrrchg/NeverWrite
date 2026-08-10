@@ -175,6 +175,7 @@ import {
     planConversationTurnRoute,
     type ConversationTurnRoute,
 } from "../conversationTurnRouting";
+import type { PreparedConversationTurnCatalog } from "../conversationPickerModel";
 import {
     deserializeConversationBindings,
     forkConversationBindings,
@@ -1581,6 +1582,10 @@ interface ChatStore {
     runtimeConnectionByRuntimeId: Record<string, AIRuntimeConnectionState>;
     setupStatusByRuntimeId: Record<string, AIRuntimeSetupStatus>;
     runtimes: AIRuntimeDescriptor[];
+    preparedTurnCatalogByConversationId: Record<
+        string,
+        PreparedConversationTurnCatalog
+    >;
     /** Canonical chat authority. AIChatSession below is a compatibility view. */
     conversationsById: Record<string, AIConversation>;
     bindingsById: Record<string, AcpConversationBinding>;
@@ -1765,6 +1770,10 @@ interface ChatStore {
         conversationId: string,
         selection: ConversationSelection,
     ) => void;
+    prepareConversationTurnCatalog: (
+        conversationId: string,
+        selection: ConversationSelection,
+    ) => Promise<void>;
     startConversationTurn: (
         conversationId: string,
         selection: ConversationSelection,
@@ -7170,6 +7179,18 @@ const _pendingTurnSelectionByConversationId = new Map<
     string,
     ConversationSelection
 >();
+const _pendingTurnCatalogKeyByConversationId = new Map<string, string>();
+// Keep probe ids on globalThis so Vite HMR cannot forget them while an async
+// ACP probe is running. Session-created/list events must never project these
+// implementation-detail sessions as user-visible conversations.
+const turnCatalogProbeGlobal = globalThis as typeof globalThis & {
+    __neverwriteTurnCatalogProbeSessionIds?: Set<string>;
+};
+const _turnCatalogProbeSessionIds =
+    turnCatalogProbeGlobal.__neverwriteTurnCatalogProbeSessionIds ??
+    new Set<string>();
+turnCatalogProbeGlobal.__neverwriteTurnCatalogProbeSessionIds =
+    _turnCatalogProbeSessionIds;
 type PendingConversationTurnEventRoute = {
     sourceSessionId: string;
     token: string;
@@ -7184,6 +7205,14 @@ let _sessionPersistenceEpoch = 0;
 
 function getSessionPersistenceKey(session: AIChatSession) {
     return session.historySessionId || session.sessionId;
+}
+
+function getPreparedTurnCatalogKey(
+    selection: Pick<ConversationSelection, "runtimeId" | "modelId">,
+) {
+    // ACP options can change with the model, so a runtime-only cache key would
+    // incorrectly reuse reasoning or service-tier choices across models.
+    return `${selection.runtimeId}\u0000${selection.modelId}`;
 }
 
 async function persistSessionNow(session: AIChatSession) {
@@ -9487,6 +9516,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         runtimeConnectionByRuntimeId: {},
         setupStatusByRuntimeId: {},
         runtimes: [],
+        preparedTurnCatalogByConversationId: {},
         sessionsById: {},
         sessionOrder: [],
         pendingAvailableCommandsBySessionId: {},
@@ -9807,7 +9837,12 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 } else if (!get().historyStorageVaultPath) {
                     set({ historyStorageStatus: null });
                 }
-                const sessions = await aiListSessions(vaultPath);
+                // Initialization can overlap a probe during HMR. Filter it at
+                // inventory ingestion as well as at event ingestion below.
+                const sessions = (await aiListSessions(vaultPath)).filter(
+                    (session) =>
+                        !_turnCatalogProbeSessionIds.has(session.sessionId),
+                );
                 const hydratedRuntimes = hydrateRuntimesFromSessions(
                     runtimes,
                     sessions,
@@ -10420,6 +10455,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         },
 
         upsertSession: (session, activate = false, options = {}) => {
+            // Probe sessions exist only to obtain model-dependent config and
+            // must not enter the canonical conversation projection.
+            if (_turnCatalogProbeSessionIds.has(session.sessionId)) {
+                return;
+            }
             let shouldDrainQueue = false;
             let sessionToPersist: AIChatSession | null = null;
             set((state) => {
@@ -12647,6 +12687,153 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             });
         },
 
+        prepareConversationTurnCatalog: async (conversationId, selection) => {
+            const requestKey = getPreparedTurnCatalogKey(selection);
+            const prepared =
+                get().preparedTurnCatalogByConversationId[conversationId];
+            if (
+                (prepared &&
+                    getPreparedTurnCatalogKey(prepared) === requestKey) ||
+                _pendingTurnCatalogKeyByConversationId.get(conversationId) ===
+                    requestKey
+            ) {
+                return;
+            }
+
+            const state = get();
+            const runtime = state.runtimes.find(
+                (candidate) => candidate.runtime.id === selection.runtimeId,
+            );
+            if (
+                !runtime?.runtime.capabilities.includes("create_session")
+            ) {
+                return;
+            }
+            const sessionId =
+                state.sessionIdByConversationId[conversationId] ??
+                resolveLegacySessionId(state, conversationId);
+            const sourceSession = sessionId
+                ? state.sessionsById[sessionId]
+                : null;
+            if (!sourceSession) {
+                return;
+            }
+
+            _pendingTurnCatalogKeyByConversationId.set(
+                conversationId,
+                requestKey,
+            );
+            let probeSessionId: string | null = null;
+            try {
+                const vaultPath =
+                    sourceSession.vaultPath ??
+                    useVaultStore.getState().vaultPath ??
+                    null;
+                const probeSession = await aiCreateSession(
+                    selection.runtimeId,
+                    vaultPath,
+                    sourceSession.additionalRoots ?? [],
+                );
+                probeSessionId = probeSession.sessionId;
+                _turnCatalogProbeSessionIds.add(probeSessionId);
+                // Configure the probe exactly like the eventual turn. Several
+                // ACPs reveal reasoning and service-tier options only after the
+                // target model has been selected.
+                const configuredSession =
+                    await configureConversationTurnSession(
+                        probeSession,
+                        selection,
+                    );
+
+                if (
+                    _pendingTurnCatalogKeyByConversationId.get(
+                        conversationId,
+                    ) !== requestKey
+                ) {
+                    // A newer selection won the race; never publish stale
+                    // options from the superseded probe.
+                    return;
+                }
+                const currentConversation =
+                    get().conversationsById[conversationId];
+                if (
+                    !currentConversation ||
+                    getPreparedTurnCatalogKey(
+                        currentConversation.preferredSelection,
+                    ) !== requestKey
+                ) {
+                    return;
+                }
+
+                set((currentState) => ({
+                    preparedTurnCatalogByConversationId: {
+                        ...currentState.preparedTurnCatalogByConversationId,
+                        [conversationId]: {
+                            runtimeId: selection.runtimeId,
+                            modelId: selection.modelId,
+                            models: configuredSession.models,
+                            modes: configuredSession.modes,
+                            configOptions: configuredSession.configOptions,
+                            effortsByModel:
+                                configuredSession.effortsByModel ?? {},
+                        },
+                    },
+                }));
+            } catch (error) {
+                logWarn(
+                    "chat-store",
+                    `Failed to prepare turn catalog for ${selection.runtimeId}`,
+                    error,
+                );
+            } finally {
+                if (probeSessionId) {
+                    await aiDeleteRuntimeSession(probeSessionId).catch(
+                        () => {},
+                    );
+                    const sessionIdToRemove = probeSessionId;
+                    // The event bridge normally ignores probe sessions, but a
+                    // hot reload can race with creation. Remove any leaked
+                    // compatibility projection defensively after cleanup.
+                    set((currentState) => {
+                        if (!currentState.sessionsById[sessionIdToRemove]) {
+                            return currentState;
+                        }
+                        const sessionsById = {
+                            ...currentState.sessionsById,
+                        };
+                        delete sessionsById[sessionIdToRemove];
+                        return {
+                            sessionsById,
+                            sessionOrder: currentState.sessionOrder.filter(
+                                (sessionId) =>
+                                    sessionId !== sessionIdToRemove,
+                            ),
+                            activeSessionId:
+                                currentState.activeSessionId ===
+                                sessionIdToRemove
+                                    ? sourceSession.sessionId
+                                    : currentState.activeSessionId,
+                            lastFocusedSessionId:
+                                currentState.lastFocusedSessionId ===
+                                sessionIdToRemove
+                                    ? sourceSession.sessionId
+                                    : currentState.lastFocusedSessionId,
+                        };
+                    });
+                    _turnCatalogProbeSessionIds.delete(probeSessionId);
+                }
+                if (
+                    _pendingTurnCatalogKeyByConversationId.get(
+                        conversationId,
+                    ) === requestKey
+                ) {
+                    _pendingTurnCatalogKeyByConversationId.delete(
+                        conversationId,
+                    );
+                }
+            }
+        },
+
         setConversationTurnSelection: (conversationId, selection) => {
             const state = get();
             const sessionId =
@@ -12696,6 +12883,16 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const bindings =
                     updateConversationBindingsFromLegacySession(session);
                 const previous = bindings.preferredSelection;
+                const preparedCatalog =
+                    currentState.preparedTurnCatalogByConversationId[
+                        conversationId
+                    ];
+                const clearPreparedCatalog =
+                    preparedCatalog != null &&
+                    getPreparedTurnCatalogKey(preparedCatalog) !==
+                        getPreparedTurnCatalogKey(selection);
+                // Preserve the catalog when only effort/tier values change;
+                // invalidate it only when provider or model changes.
                 const optionKeys = new Set([
                     ...Object.keys(previous.options),
                     ...Object.keys(selection.options),
@@ -12728,6 +12925,15 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                             },
                         },
                     },
+                    ...(clearPreparedCatalog
+                        ? {
+                              preparedTurnCatalogByConversationId:
+                                  removeSessionMapEntry(
+                                      currentState.preparedTurnCatalogByConversationId,
+                                      conversationId,
+                                  ),
+                          }
+                        : {}),
                 };
             });
             if (changed) persistCurrentSession(sessionId);
@@ -15717,6 +15923,8 @@ export function resetChatStore() {
     _queueDrainLocks.clear();
     _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
+    _pendingTurnCatalogKeyByConversationId.clear();
+    _turnCatalogProbeSessionIds.clear();
     _pendingConversationTurnEventRouteBySessionId.clear();
     _pendingSessionPersistence.clear();
     _deltaBuffer.messageDelta.clear();
@@ -15735,6 +15943,7 @@ export function resetChatStore() {
         runtimeConnectionByRuntimeId: {},
         setupStatusByRuntimeId: {},
         runtimes: [],
+        preparedTurnCatalogByConversationId: {},
         sessionsById: {},
         sessionOrder: [],
         pendingAvailableCommandsBySessionId: {},
@@ -15790,6 +15999,8 @@ export function disposeChatStoreRuntime() {
     chatRuntimeInitialized = false;
     _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
+    _pendingTurnCatalogKeyByConversationId.clear();
+    _turnCatalogProbeSessionIds.clear();
     _pendingConversationTurnEventRouteBySessionId.clear();
     clearTrackedPersistedReconciliationTimers();
 }
