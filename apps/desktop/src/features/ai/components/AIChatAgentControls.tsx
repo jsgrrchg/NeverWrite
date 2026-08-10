@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { ConversationProviderPickerOption } from "../conversationPickerModel";
 import type { AIConfigOption, AIModeOption, AIModelOption } from "../types";
 
 interface AIChatAgentControlsProps {
@@ -11,6 +12,8 @@ interface AIChatAgentControlsProps {
     models: AIModelOption[];
     modes: AIModeOption[];
     configOptions: AIConfigOption[];
+    providers?: ConversationProviderPickerOption[];
+    onProviderModelChange?: (runtimeId: string, modelId: string) => void;
     onModelChange: (modelId: string) => void;
     onModeChange: (modeId: string) => void;
     onConfigOptionChange: (optionId: string, value: string) => void;
@@ -530,6 +533,8 @@ export function AIChatAgentControls({
     models,
     modes,
     configOptions,
+    providers = [],
+    onProviderModelChange,
     onModelChange,
     onModeChange,
     onConfigOptionChange,
@@ -565,6 +570,52 @@ export function AIChatAgentControls({
             runtimeId,
             selectedModelId,
         ],
+    );
+    const providerModelOptions = useMemo(
+        () =>
+            providers.flatMap((provider) => {
+                const models =
+                    provider.runtimeId === runtimeId &&
+                    lockedModelOptions.length > 0
+                        ? lockedModelOptions.map((model) => ({
+                              modelId: model.value,
+                              label: model.label,
+                              description: model.description,
+                              disabled: model.disabled,
+                          }))
+                        : provider.models.map((model) => ({
+                              modelId: model.modelId,
+                              label: formatFallbackLabel(model.label),
+                              description:
+                                  model.disabledReason ?? model.description,
+                              disabled: model.disabledReason != null,
+                          }));
+                const availableModels =
+                    models.length > 0
+                        ? models
+                        : [
+                              {
+                                  modelId: provider.defaultModelId,
+                                  label: "Default model",
+                                  description: provider.description,
+                                  disabled: false,
+                              },
+                          ];
+                return availableModels.map((model) => ({
+                    value: `${provider.runtimeId}\u0000${model.modelId}`,
+                    label:
+                        model.modelId || providers.length > 1
+                            ? `${provider.label} · ${model.label}`
+                            : provider.label,
+                    description:
+                        provider.disabledReason ??
+                        model.description ??
+                        provider.description,
+                    disabled:
+                        provider.disabledReason != null || model.disabled,
+                }));
+            }),
+        [lockedModelOptions, providers, runtimeId],
     );
     const extraConfigs = useMemo(
         () =>
@@ -605,6 +656,24 @@ export function AIChatAgentControls({
 
     return (
         <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {providers.length > 0 && runtimeId && onProviderModelChange ? (
+                <DropdownField
+                    disabled={disabled}
+                    label="Provider and model"
+                    value={`${runtimeId}\u0000${selectedModelId}`}
+                    options={providerModelOptions}
+                    searchable={providerModelOptions.length > 10}
+                    searchPlaceholder="Search providers and models..."
+                    emptySearchMessage="No providers or models match that search."
+                    onChange={(value) => {
+                        const separator = value.indexOf("\u0000");
+                        onProviderModelChange(
+                            value.slice(0, separator),
+                            value.slice(separator + 1),
+                        );
+                    }}
+                />
+            ) : null}
             {modes.length > 0 ? (
                 <DropdownField
                     disabled={disabled}
@@ -620,7 +689,7 @@ export function AIChatAgentControls({
                 />
             ) : null}
             {showFullAccessPolicyHelp ? <FullAccessPolicyHelp /> : null}
-            {lockedModelOptions.length > 0 ? (
+            {providers.length === 0 && lockedModelOptions.length > 0 ? (
                 <DropdownField
                     disabled={disabled}
                     label="Model"

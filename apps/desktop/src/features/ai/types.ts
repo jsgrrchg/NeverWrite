@@ -60,6 +60,10 @@ export interface ConversationTurnProvenance {
     modeId: string;
     options: Record<string, string>;
     startReason: ConversationTurnStartReason;
+    /** Whether the bounded transcript handoff omitted context for this turn. */
+    handoffTruncated?: boolean;
+    /** Complete turns omitted from the handoff budget. */
+    handoffOmittedTurnCount?: number;
 }
 
 export type AIRuntimeConnectionStatus = "idle" | "loading" | "ready" | "error";
@@ -961,6 +965,8 @@ export interface PersistedMessage {
         mode_id: string;
         options: Record<string, string>;
         start_reason: ConversationTurnStartReason;
+        handoff_truncated?: boolean;
+        handoff_omitted_turn_count?: number;
     };
 }
 

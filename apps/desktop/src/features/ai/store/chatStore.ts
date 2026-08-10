@@ -1761,6 +1761,10 @@ interface ChatStore {
         sessionId?: string,
     ) => Promise<void>;
     setComposerParts: (parts: AIComposerPart[], sessionId?: string) => void;
+    setConversationTurnSelection: (
+        conversationId: string,
+        selection: ConversationSelection,
+    ) => void;
     startConversationTurn: (
         conversationId: string,
         selection: ConversationSelection,
@@ -2929,6 +2933,9 @@ function commitAcceptedConversationTurn(input: {
         modeId: targetBinding.modeId,
         options: { ...targetBinding.options },
         startReason: input.route.startReason,
+        handoffTruncated: input.contextHandoff?.truncated ?? false,
+        handoffOmittedTurnCount:
+            input.contextHandoff?.omittedTurnCount ?? 0,
     };
     const attributedSource = replaceSessionMessage(
         input.sourceSession,
@@ -6886,6 +6893,19 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
                       mode_id: m.turnProvenance.modeId,
                       options: m.turnProvenance.options,
                       start_reason: m.turnProvenance.startReason,
+                      ...(m.turnProvenance.handoffTruncated !== undefined
+                          ? {
+                                handoff_truncated:
+                                    m.turnProvenance.handoffTruncated,
+                            }
+                          : {}),
+                      ...(m.turnProvenance.handoffOmittedTurnCount !== undefined
+                          ? {
+                                handoff_omitted_turn_count:
+                                    m.turnProvenance
+                                        .handoffOmittedTurnCount,
+                            }
+                          : {}),
                   }
                 : undefined,
         }));
@@ -7626,6 +7646,11 @@ function restoreMessagesFromHistory(
                           modeId: m.turn_provenance.mode_id,
                           options: m.turn_provenance.options,
                           startReason: m.turn_provenance.start_reason,
+                          handoffTruncated:
+                              m.turn_provenance.handoff_truncated,
+                          handoffOmittedTurnCount:
+                              m.turn_provenance
+                                  .handoff_omitted_turn_count,
                       }
                     : undefined,
             }),
@@ -12337,6 +12362,92 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         : {}),
                 };
             });
+        },
+
+        setConversationTurnSelection: (conversationId, selection) => {
+            const state = get();
+            const sessionId =
+                state.sessionIdByConversationId[conversationId] ??
+                resolveLegacySessionId(state, conversationId);
+            if (!sessionId) return;
+
+            let changed = false;
+            set((currentState) => {
+                const session = currentState.sessionsById[sessionId];
+                const conversation =
+                    currentState.conversationsById[conversationId];
+                const runtime = currentState.runtimes.find(
+                    (candidate) =>
+                        candidate.runtime.id === selection.runtimeId,
+                );
+                if (!session || !conversation || !runtime) {
+                    return currentState;
+                }
+
+                const activeBinding = conversation.activeBindingId
+                    ? currentState.bindingsById[conversation.activeBindingId]
+                    : null;
+                const providerChanged =
+                    activeBinding != null &&
+                    activeBinding.runtimeId !== selection.runtimeId;
+                const setupStatus =
+                    currentState.setupStatusByRuntimeId[selection.runtimeId];
+                if (
+                    isClaudeTerminalRuntimeId(selection.runtimeId) ||
+                    (providerChanged &&
+                        (getConversationSwitchBlocker(conversation, {
+                            hasQueuedMessages:
+                                (currentState.queuedMessagesBySessionId[
+                                    sessionId
+                                ]?.length ?? 0) > 0 ||
+                                currentState.activeQueuedMessageBySessionId[
+                                    sessionId
+                                ] != null,
+                        }) != null ||
+                            (setupStatus != null &&
+                                !isRuntimeSetupReady(setupStatus))))
+                ) {
+                    return currentState;
+                }
+
+                const bindings =
+                    updateConversationBindingsFromLegacySession(session);
+                const previous = bindings.preferredSelection;
+                const optionKeys = new Set([
+                    ...Object.keys(previous.options),
+                    ...Object.keys(selection.options),
+                ]);
+                if (
+                    previous.runtimeId === selection.runtimeId &&
+                    previous.modelId === selection.modelId &&
+                    previous.modeId === selection.modeId &&
+                    [...optionKeys].every(
+                        (key) =>
+                            previous.options[key] === selection.options[key],
+                    )
+                ) {
+                    return currentState;
+                }
+
+                changed = true;
+                return {
+                    sessionsById: {
+                        ...currentState.sessionsById,
+                        [sessionId]: {
+                            ...session,
+                            conversationBindings: {
+                                ...bindings,
+                                revision: bindings.revision + 1,
+                                preferredSelection: {
+                                    ...selection,
+                                    options: { ...selection.options },
+                                },
+                            },
+                        },
+                    },
+                };
+            });
+            if (changed) persistCurrentSession(sessionId);
         },
 
         enqueueMessage: (sessionId, item) =>

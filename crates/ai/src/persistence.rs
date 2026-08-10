@@ -41,6 +41,10 @@ pub struct PersistedTurnProvenance {
     #[serde(default)]
     pub options: BTreeMap<String, String>,
     pub start_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_omitted_turn_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5215,6 +5219,8 @@ mod tests {
                 mode_id: "default".to_string(),
                 options: BTreeMap::new(),
                 start_reason: "normal".to_string(),
+                handoff_truncated: Some(true),
+                handoff_omitted_turn_count: Some(3),
             }),
         };
 

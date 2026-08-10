@@ -5,6 +5,72 @@ import { renderComponent } from "../../../test/test-utils";
 import { AIChatAgentControls } from "./AIChatAgentControls";
 
 describe("AIChatAgentControls", () => {
+    it("shows provider choices and exposes disabled reasons", async () => {
+        const user = userEvent.setup();
+        const onProviderChange = vi.fn();
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="codex-acp"
+                modelId="gpt-5"
+                modeId="default"
+                models={[]}
+                modes={[]}
+                configOptions={[]}
+                providers={[
+                    {
+                        runtimeId: "codex-acp",
+                        label: "Codex",
+                        description: "Codex provider",
+                        disabledReason: null,
+                        defaultModelId: "gpt-5",
+                        models: [
+                            {
+                                modelId: "gpt-5",
+                                label: "GPT-5",
+                                disabledReason: null,
+                            },
+                        ],
+                    },
+                    {
+                        runtimeId: "claude-acp",
+                        label: "Claude",
+                        description: "Claude provider",
+                        disabledReason:
+                            "Finish the current turn before switching providers.",
+                        defaultModelId: "claude-sonnet",
+                        models: [
+                            {
+                                modelId: "claude-sonnet",
+                                label: "Claude Sonnet",
+                                disabledReason: null,
+                            },
+                        ],
+                    },
+                ]}
+                onProviderModelChange={onProviderChange}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+
+        await user.click(screen.getByTitle("Provider and model"));
+        const disabledClaude = screen.getByRole("button", {
+            name: "Claude · Claude Sonnet",
+        });
+        expect(disabledClaude).toBeDisabled();
+        expect(disabledClaude).toHaveAttribute(
+            "title",
+            "Finish the current turn before switching providers.",
+        );
+        const codexOption = screen
+            .getAllByRole("button", { name: "Codex · GPT 5" })
+            .find((button) => button.getAttribute("title") === "Codex provider");
+        expect(codexOption).toBeDefined();
+        await user.click(codexOption!);
+        expect(onProviderChange).toHaveBeenCalledWith("codex-acp", "gpt-5");
+    });
+
     it("shows contextual safety help only for Codex Full Access", () => {
         const fullAccessDescription =
             "Codex can edit files outside this workspace and access the internet without asking for approval. Exercise caution when using.";

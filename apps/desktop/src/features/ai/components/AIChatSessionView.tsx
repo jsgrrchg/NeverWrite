@@ -18,7 +18,7 @@ import {
     useState,
     type ReactNode,
 } from "react";
-import { open as runtimeOpen } from "@neverwrite/runtime";
+import { confirm, open as runtimeOpen } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
 import {
     isChatTab,
@@ -36,9 +36,11 @@ import {
     vaultInvokeForPath,
 } from "../../../app/utils/vaultInvoke";
 import {
+    type AcpConversationBinding,
     type AIComposerPart,
     type AIChatMessage,
     type AIRuntimeConnectionState,
+    type ConversationSelection,
     type DraftAttachmentId,
     type QueuedChatMessage,
 } from "../types";
@@ -84,8 +86,17 @@ import {
     ChatPromptOutlineMenu,
     type ChatPromptOutlineItem,
 } from "./ChatPromptOutlineMenu";
+import {
+    buildConversationProviderOptions,
+    getConversationTurnCatalog,
+    getDefaultConversationSelection,
+    requiresFirstProviderHandoffConfirmation,
+    updateConversationSelection,
+} from "../conversationPickerModel";
+import { getConversationSelection } from "../conversationModel";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
+const EMPTY_CONVERSATION_BINDINGS: AcpConversationBinding[] = [];
 
 function managedAttachmentIds(parts: AIComposerPart[]) {
     return new Set(
@@ -247,6 +258,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     // Session data
     const {
         session,
+        conversationId,
+        conversation,
+        conversationBindings,
         parentSession,
         composerParts,
         queuedMessages,
@@ -260,6 +274,14 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 ? (state.sessionsById[sessionId] ?? null)
                 : null;
             const sid = s?.sessionId ?? null;
+            const conversationId = sid
+                ? (state.conversationIdBySessionRef[sid] ??
+                  s?.historySessionId ??
+                  null)
+                : null;
+            const conversation = conversationId
+                ? (state.conversationsById[conversationId] ?? null)
+                : null;
             const parent = s?.parentSessionId
                 ? findSessionForHistorySelection(
                       state.sessionsById,
@@ -268,6 +290,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 : null;
             return {
                 session: s,
+                conversationId,
+                conversation,
+                conversationBindings:
+                    s?.conversationBindings?.providerBindings ??
+                    EMPTY_CONVERSATION_BINDINGS,
                 parentSession: parent,
                 composerParts: sid
                     ? (state.composerPartsBySessionId[sid] ??
@@ -293,6 +320,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
 
     // Runtime resolution
     const runtimes = useChatStore((s) => s.runtimes);
+    const setupStatusByRuntimeId = useChatStore(
+        (state) => state.setupStatusByRuntimeId,
+    );
     const activeRuntimeId = session?.runtimeId ?? null;
     const activeRuntime = runtimes.find(
         (d) => d.runtime.id === activeRuntimeId,
@@ -313,21 +343,56 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
           }
         : activeConnection;
 
-    const agentCatalog = useMemo(() => {
-        const models =
-            session && session.models.length > 0
-                ? session.models
-                : (activeRuntime?.models ?? []);
-        const modes =
-            session && session.modes.length > 0
-                ? session.modes
-                : (activeRuntime?.modes ?? []);
-        const configOptions =
-            session && session.configOptions.length > 0
-                ? session.configOptions
-                : (activeRuntime?.configOptions ?? []);
-        return { models, modes, configOptions };
-    }, [session, activeRuntime]);
+    const turnSelection = useMemo<ConversationSelection | null>(() => {
+        if (conversation) {
+            return conversation.preferredSelection;
+        }
+        return session ? getConversationSelection(session) : null;
+    }, [conversation, session]);
+    const selectedRuntime = runtimes.find(
+        (runtime) => runtime.runtime.id === turnSelection?.runtimeId,
+    );
+    const agentCatalog = useMemo(
+        () =>
+            session && turnSelection
+                ? getConversationTurnCatalog({
+                      selection: turnSelection,
+                      session,
+                      runtimes,
+                      bindings: conversationBindings,
+                  })
+                : {
+                      models: [],
+                      modes: [],
+                      configOptions: [],
+                      effortsByModel: {},
+                  },
+        [conversationBindings, runtimes, session, turnSelection],
+    );
+    const providerOptions = useMemo(
+        () =>
+            conversation && session
+                ? buildConversationProviderOptions({
+                      runtimes,
+                      setupStatusByRuntimeId,
+                      conversation,
+                      bindings: conversationBindings,
+                      activeRuntimeId: session.runtimeId,
+                      hasQueuedMessages:
+                          queuedMessages.length > 0 ||
+                          queuedMessageEdit != null,
+                  })
+                : [],
+        [
+            conversation,
+            conversationBindings,
+            queuedMessageEdit,
+            queuedMessages.length,
+            runtimes,
+            session,
+            setupStatusByRuntimeId,
+        ],
+    );
 
     // Settings
     const requireCmdEnterToSend = useChatStore((s) => s.requireCmdEnterToSend);
@@ -400,7 +465,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     );
 
     const runtimeLabel =
-        activeRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
+        selectedRuntime?.runtime.name.replace(/ ACP$/, "") ??
+        activeRuntime?.runtime.name.replace(/ ACP$/, "") ??
+        "Assistant";
     const isClosedSubagent = Boolean(session?.parentSessionId && session.closedAt);
     const isRemovedGeminiAcpSession = session?.runtimeId === "gemini-acp";
     const agentControlsDisabled =
@@ -410,9 +477,101 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         isPendingSessionCreation ||
         Boolean(session.isResumingSession);
     const lockIncompatibleModelSwitches =
-        session?.runtimeId === "grok-acp" &&
-        (session.messages.length > 0 ||
-            (session.persistedMessageCount ?? 0) > 0);
+        turnSelection?.runtimeId === "grok-acp" &&
+        conversationBindings.some(
+            (binding) => binding.runtimeId === "grok-acp",
+        ) &&
+        ((session?.messages.length ?? 0) > 0 ||
+            (session?.persistedMessageCount ?? 0) > 0);
+
+    const updateTurnSelection = useCallback(
+        (selection: ConversationSelection) => {
+            if (!conversationId) return;
+            chatActions.setConversationTurnSelection(
+                conversationId,
+                selection,
+            );
+        },
+        [chatActions, conversationId],
+    );
+
+    const handleProviderModelChange = useCallback(
+        async (runtimeId: string, modelId: string) => {
+            if (!session || !turnSelection) {
+                return;
+            }
+            if (runtimeId === turnSelection.runtimeId) {
+                if (modelId && modelId !== turnSelection.modelId) {
+                    updateTurnSelection(
+                        updateConversationSelection(
+                            turnSelection,
+                            agentCatalog.configOptions,
+                            { kind: "model", value: modelId },
+                        ),
+                    );
+                }
+                return;
+            }
+            const option = providerOptions.find(
+                (candidate) => candidate.runtimeId === runtimeId,
+            );
+            const runtime = runtimes.find(
+                (candidate) => candidate.runtime.id === runtimeId,
+            );
+            if (!option || option.disabledReason || !runtime) return;
+
+            if (
+                requiresFirstProviderHandoffConfirmation({
+                    activeRuntimeId: session.runtimeId,
+                    targetRuntimeId: runtimeId,
+                    bindings: conversationBindings,
+                    messageCount: Math.max(
+                        session.messages.length,
+                        session.persistedMessageCount ?? 0,
+                    ),
+                })
+            ) {
+                const approved = await confirm(
+                    `The next message will continue this conversation with ${option.label}. A bounded transcript handoff will be sent to the new provider.`,
+                    {
+                        title: "Switch ACP provider",
+                        kind: "warning",
+                        okLabel: "Switch provider",
+                        cancelLabel: "Cancel",
+                    },
+                );
+                if (!approved) return;
+            }
+
+            let nextSelection = getDefaultConversationSelection({
+                runtime,
+                bindings: conversationBindings,
+            });
+            if (modelId && modelId !== nextSelection.modelId) {
+                const targetCatalog = getConversationTurnCatalog({
+                    selection: nextSelection,
+                    session,
+                    runtimes,
+                    bindings: conversationBindings,
+                });
+                nextSelection = updateConversationSelection(
+                    nextSelection,
+                    targetCatalog.configOptions,
+                    { kind: "model", value: modelId },
+                );
+            }
+            updateTurnSelection(nextSelection);
+        },
+        [
+            agentCatalog.configOptions,
+            conversationBindings,
+            providerOptions,
+            runtimes,
+            session,
+            turnSelection,
+            updateTurnSelection,
+        ],
+    );
 
     // Handlers
     const handleRemoveAttachment = useCallback(
@@ -1166,7 +1325,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                             files={fileOptions}
                             status={session?.status ?? "idle"}
                             runtimeName={runtimeLabel}
-                            runtimeId={session?.runtimeId}
+                            runtimeId={turnSelection?.runtimeId}
                             requireCmdEnterToSend={requireCmdEnterToSend}
                             composerFontSize={composerFontSize}
                             composerFontFamily={composerFontFamily}
@@ -1233,35 +1392,66 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                                     {!isPendingSessionCreation && (
                                         <AIChatAgentControls
                                             disabled={agentControlsDisabled}
-                                            runtimeId={session?.runtimeId}
+                                            runtimeId={turnSelection?.runtimeId}
                                             lockIncompatibleModelSwitches={
                                                 lockIncompatibleModelSwitches
                                             }
-                                            modelId={session?.modelId ?? ""}
-                                            modeId={session?.modeId ?? ""}
+                                            modelId={turnSelection?.modelId ?? ""}
+                                            modeId={turnSelection?.modeId ?? ""}
                                             effortsByModel={
-                                                session?.effortsByModel ?? {}
+                                                agentCatalog.effortsByModel
                                             }
                                             models={agentCatalog.models}
                                             modes={agentCatalog.modes}
                                             configOptions={agentCatalog.configOptions}
-                                            onModelChange={(modelId) => {
-                                                void chatActions.setModel(
+                                            providers={providerOptions}
+                                            onProviderModelChange={(
+                                                runtimeId,
+                                                modelId,
+                                            ) => {
+                                                void handleProviderModelChange(
+                                                    runtimeId,
                                                     modelId,
-                                                    sessionId,
+                                                );
+                                            }}
+                                            onModelChange={(modelId) => {
+                                                if (!turnSelection) return;
+                                                updateTurnSelection(
+                                                    updateConversationSelection(
+                                                        turnSelection,
+                                                        agentCatalog.configOptions,
+                                                        {
+                                                            kind: "model",
+                                                            value: modelId,
+                                                        },
+                                                    ),
                                                 );
                                             }}
                                             onModeChange={(modeId) => {
-                                                void chatActions.setMode(
-                                                    modeId,
-                                                    sessionId,
+                                                if (!turnSelection) return;
+                                                updateTurnSelection(
+                                                    updateConversationSelection(
+                                                        turnSelection,
+                                                        agentCatalog.configOptions,
+                                                        {
+                                                            kind: "mode",
+                                                            value: modeId,
+                                                        },
+                                                    ),
                                                 );
                                             }}
                                             onConfigOptionChange={(optionId, value) => {
-                                                void chatActions.setConfigOption(
-                                                    optionId,
-                                                    value,
-                                                    sessionId,
+                                                if (!turnSelection) return;
+                                                updateTurnSelection(
+                                                    updateConversationSelection(
+                                                        turnSelection,
+                                                        agentCatalog.configOptions,
+                                                        {
+                                                            kind: "option",
+                                                            optionId,
+                                                            value,
+                                                        },
+                                                    ),
                                                 );
                                             }}
                                         />
@@ -1279,7 +1469,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                             onAttachFile={handleAttachFile}
                             onPasteImage={handlePasteImage}
                             onImageAttachmentValidationFailure={(reason) => {
-                                const runtimeId = session?.runtimeId ?? null;
+                                const runtimeId = turnSelection?.runtimeId ?? null;
                                 setImageAttachmentNotice(
                                     imageAttachmentValidationMessage(reason, runtimeId),
                                 );
@@ -1299,7 +1489,14 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                             }}
                             onSubmit={() => {
                                 setComposerExpanded(false);
-                                void chatActions.sendMessage(sessionId);
+                                if (conversationId && turnSelection) {
+                                    void chatActions.startConversationTurn(
+                                        conversationId,
+                                        turnSelection,
+                                    );
+                                } else {
+                                    void chatActions.sendMessage(sessionId);
+                                }
                             }}
                             onStop={() => {
                                 void chatActions.stopStreaming(sessionId);

@@ -87,6 +87,13 @@ type TimelineRow =
           message: AIChatMessage;
       }
     | {
+          key: string;
+          kind: "provider-boundary";
+          runtimeId: string;
+          handoffTruncated: boolean;
+          omittedTurnCount: number;
+      }
+    | {
           isCurrentTurnTail: boolean;
           key: string;
           kind: "activity-segment";
@@ -215,6 +222,67 @@ function StreamingRunIndicator({
     );
 }
 
+function formatProviderFallback(runtimeId: string) {
+    return runtimeId
+        .replace(/^custom:/, "")
+        .replace(/-acp$/, "")
+        .replace(/[-_]+/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function ProviderBoundaryMarker({
+    runtimeId,
+    runtimeName,
+    handoffTruncated,
+    omittedTurnCount,
+}: {
+    runtimeId: string;
+    runtimeName?: string;
+    handoffTruncated: boolean;
+    omittedTurnCount: number;
+}) {
+    const label = runtimeName?.replace(/ ACP$/, "") ||
+        formatProviderFallback(runtimeId);
+    return (
+        <div
+            className="flex items-center gap-2 py-1 text-[11px]"
+            data-testid="provider-boundary-marker"
+            data-runtime-id={runtimeId}
+            style={{ color: "var(--text-secondary)" }}
+        >
+            <span
+                aria-hidden="true"
+                className="h-px min-w-4 flex-1"
+                style={{ backgroundColor: "var(--border)" }}
+            />
+            <span className="shrink-0">Continued with {label}</span>
+            {handoffTruncated ? (
+                <span
+                    className="shrink-0 rounded px-1.5 py-0.5"
+                    data-testid="provider-handoff-warning"
+                    style={{
+                        backgroundColor:
+                            "color-mix(in srgb, #f59e0b 10%, transparent)",
+                        color: "#f59e0b",
+                    }}
+                    title={
+                        omittedTurnCount > 0
+                            ? `${omittedTurnCount} earlier ${omittedTurnCount === 1 ? "turn was" : "turns were"} omitted from the bounded handoff.`
+                            : "Part of the earlier context was omitted from the bounded handoff."
+                    }
+                >
+                    Context truncated
+                </span>
+            ) : null}
+            <span
+                aria-hidden="true"
+                className="h-px min-w-4 flex-1"
+                style={{ backgroundColor: "var(--border)" }}
+            />
+        </div>
+    );
+}
+
 function deriveMessageListDecorations(
     messages: AIChatMessage[],
     active: boolean,
@@ -302,6 +370,7 @@ function renderTimelineRow(
         forceExpandedMessageId?: string | null;
         forceExpandedForSearch?: boolean;
         activityDisplayMode: ActivityDisplayMode;
+        runtimeNamesById: Readonly<Record<string, string>>;
     },
 ) {
     if (row.kind === "run-indicator") {
@@ -327,6 +396,17 @@ function renderTimelineRow(
                 }
                 segment={row.segment}
                 sessionId={options.sessionId}
+            />
+        );
+    }
+
+    if (row.kind === "provider-boundary") {
+        return (
+            <ProviderBoundaryMarker
+                runtimeId={row.runtimeId}
+                runtimeName={options.runtimeNamesById[row.runtimeId]}
+                handoffTruncated={row.handoffTruncated}
+                omittedTurnCount={row.omittedTurnCount}
             />
         );
     }
@@ -451,6 +531,17 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     const dismissMessage = useChatStore((state) => state.dismissMessage);
     const activityDisplayMode = useChatStore(
         (state) => state.toolActivityDisplayMode,
+    );
+    const runtimes = useChatStore((state) => state.runtimes);
+    const runtimeNamesById = useMemo(
+        () =>
+            Object.fromEntries(
+                runtimes.map((runtime) => [
+                    runtime.runtime.id,
+                    runtime.runtime.name,
+                ]),
+            ),
+        [runtimes],
     );
     const handleDismissMessage = useCallback(
         (messageId: string) => {
@@ -582,6 +673,24 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
         for (const presentationRow of presentationRows) {
             if (presentationRow.kind === "message") {
+                const provenance = presentationRow.message.turnProvenance;
+                if (
+                    presentationRow.message.role === "user" &&
+                    provenance?.startReason === "provider_switch"
+                ) {
+                    rows.push({
+                        key: scopeTimelineRowKey(
+                            sessionId,
+                            `provider-boundary:${presentationRow.id}`,
+                        ),
+                        kind: "provider-boundary",
+                        runtimeId: provenance.runtimeId,
+                        handoffTruncated:
+                            provenance.handoffTruncated === true,
+                        omittedTurnCount:
+                            provenance.handoffOmittedTurnCount ?? 0,
+                    });
+                }
                 rows.push({
                     key: scopeTimelineRowKey(sessionId, presentationRow.id),
                     kind: "message",
@@ -639,6 +748,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             forceExpandedForSearch: findOpen && findQuery.trim().length > 0,
             highlightedMessageId: outlineHighlightedMessageId,
             activityDisplayMode,
+            runtimeNamesById,
         }),
         [
             activityDisplayMode,
@@ -654,6 +764,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             onUrlElicitationResponse,
             pillMetrics,
             readOnly,
+            runtimeNamesById,
             sessionId,
             visibleWorkCycleId,
         ],

@@ -111,6 +111,57 @@ describe("AIChatMessageList streaming run indicator", () => {
         useChatStore.setState({ toolActivityDisplayMode: "collapsed" });
     });
 
+    it("marks provider boundaries and warns when handoff context was truncated", () => {
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        id: "claude-acp",
+                        name: "Claude ACP",
+                        description: "Claude provider",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+        });
+        renderComponent(
+            <AIChatMessageList
+                messages={[
+                    {
+                        id: "user:switch",
+                        role: "user",
+                        kind: "text",
+                        content: "Continue here",
+                        timestamp: 1,
+                        turnProvenance: {
+                            bindingId: "binding-claude",
+                            runtimeId: "claude-acp",
+                            runtimeSessionId: "native-claude",
+                            modelId: "claude-sonnet",
+                            modeId: "default",
+                            options: {},
+                            startReason: "provider_switch",
+                            handoffTruncated: true,
+                            handoffOmittedTurnCount: 3,
+                        },
+                    },
+                ]}
+                status="idle"
+            />,
+        );
+
+        expect(screen.getByTestId("provider-boundary-marker")).toHaveTextContent(
+            "Continued with Claude",
+        );
+        expect(screen.getByTestId("provider-handoff-warning")).toHaveAttribute(
+            "title",
+            "3 earlier turns were omitted from the bounded handoff.",
+        );
+    });
+
     it("keeps reasoning, web, edit, and MCP activity in one chronological rail", () => {
         renderComponent(
             <AIChatMessageList
