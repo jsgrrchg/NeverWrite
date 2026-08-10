@@ -198,7 +198,7 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         id: CLAUDE_RUNTIME_ID,
         name: "Claude",
         description: "Claude ACP-compatible agent runtime.",
-        default_executable: "claude",
+        default_executable: "claude-agent-acp",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
         acp_protocol: AcpProtocolFlavor::Current,
@@ -317,7 +317,7 @@ mod tests {
             ),
             (
                 CLAUDE_RUNTIME_ID,
-                "claude",
+                "claude-agent-acp",
                 Some("NEVERWRITE_CLAUDE_ACP_BIN"),
                 Vec::new(),
             ),

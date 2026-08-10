@@ -76,6 +76,8 @@ static ACP_PROCESS_COUNTER: AtomicU64 = AtomicU64::new(1);
 const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str = "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
 const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
     "Grok login looks invalid or expired. Run Grok login again to reconnect.";
+const CLAUDE_LOGIN_INVALIDATED_MESSAGE: &str =
+    "Claude login looks invalid or expired. Run Claude subscription login again to reconnect.";
 const GROK_STORED_XAI_API_KEY_INVALID_MESSAGE: &str =
     "Stored xAI API key looks invalid. Add a new xAI API key to reconnect Grok.";
 const GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE: &str =
@@ -1650,13 +1652,13 @@ impl NativeAi {
         ) {
             Ok(created) => created,
             Err(error) => {
-                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                if let Err(update_error) = self.invalidate_auth_after_session_start_error(
                     &input.runtime_id,
                     &setup,
                     error.message(),
                 ) {
                     return Err(format!(
-                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                        "{error}\n\nFailed to update runtime auth state: {update_error}"
                     ));
                 }
                 return Err(error.to_string());
@@ -1763,13 +1765,13 @@ impl NativeAi {
         ) {
             Ok(created) => created,
             Err(error) => {
-                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                if let Err(update_error) = self.invalidate_auth_after_session_start_error(
                     &input.runtime_id,
                     &setup,
                     error.message(),
                 ) {
                     return Err(format!(
-                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                        "{error}\n\nFailed to update runtime auth state: {update_error}"
                     ));
                 }
                 return Err(error.to_string());
@@ -2363,19 +2365,22 @@ impl NativeAi {
         Ok(())
     }
 
-    fn invalidate_grok_auth_after_session_start_error(
+    fn invalidate_auth_after_session_start_error(
         &self,
         runtime_id: &str,
         setup_at_start: &RuntimeSetupState,
         error: &str,
     ) -> Result<(), String> {
-        if runtime_id != GROK_RUNTIME_ID || !is_grok_auth_error(error) {
+        let claude_method = (runtime_id == CLAUDE_RUNTIME_ID && is_claude_auth_error(error))
+            .then(|| effective_auth_method_for_acp_process_spec(runtime_id, setup_at_start))
+            .flatten()
+            .filter(|method| matches!(method.as_str(), "claude-ai-login" | "claude-login"));
+        let grok_source = (runtime_id == GROK_RUNTIME_ID && is_grok_auth_error(error))
+            .then(|| grok_auth_failure_source(setup_at_start))
+            .flatten();
+        if claude_method.is_none() && grok_source.is_none() {
             return Ok(());
         }
-
-        let Some(source) = grok_auth_failure_source(setup_at_start) else {
-            return Ok(());
-        };
 
         let (mut pending_setup, setup_load_error) = {
             let state = self
@@ -2389,7 +2394,11 @@ impl NativeAi {
         }
 
         let setup = pending_setup.entry(runtime_id.to_string()).or_default();
-        apply_grok_auth_failure(setup, source);
+        if let Some(method) = claude_method {
+            apply_claude_auth_failure(setup, method);
+        } else if let Some(source) = grok_source {
+            apply_grok_auth_failure(setup, source);
+        }
         self.setup_store.save(&pending_setup)?;
 
         let mut state = self
@@ -8114,7 +8123,7 @@ fn resolve_base_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> Reso
 
     if runtime_id == CLAUDE_RUNTIME_ID {
         let vendor = claude_vendor_entry_path();
-        if vendor.is_file() {
+        if vendor.is_file() && claude_runtime_dependencies_ready(&vendor) {
             return ResolvedAcpCommand {
                 display: Some(vendor.display().to_string()),
                 program: Some(PathBuf::from("node")),
@@ -8178,7 +8187,7 @@ fn resolve_packaged_acp_command(runtime_id: &str) -> Option<ResolvedAcpCommand> 
                 .join("claude-agent-acp")
                 .join("dist")
                 .join("index.js");
-            if node.is_file() && entry.is_file() {
+            if node.is_file() && entry.is_file() && claude_runtime_dependencies_ready(&entry) {
                 return Some(ResolvedAcpCommand {
                     display: Some(entry.display().to_string()),
                     program: Some(node),
@@ -8560,12 +8569,44 @@ fn persisted_cli_auth_method_with_invalidated_at(
     auth_invalidated_at_ms: Option<u64>,
 ) -> Option<String> {
     let home = home_dir()?;
-    persisted_cli_auth_method_for_home_with_invalidated_at(
+    let method = persisted_cli_auth_method_for_home_with_invalidated_at(
         runtime_id,
         &home,
         is_claude_remote_environment(),
         auth_invalidated_at_ms,
-    )
+    );
+    if runtime_id != CLAUDE_RUNTIME_ID || method.is_none() {
+        return method;
+    }
+
+    match claude_cli_auth_ready() {
+        Some(true) => method,
+        Some(false) => None,
+        None if auth_invalidated_at_ms.is_some() => None,
+        None => method,
+    }
+}
+
+fn parse_claude_auth_status(raw: &[u8]) -> Option<bool> {
+    serde_json::from_slice::<Value>(raw)
+        .ok()?
+        .get("loggedIn")?
+        .as_bool()
+}
+
+fn claude_cli_auth_ready() -> Option<bool> {
+    let mut resolved = resolve_base_acp_command(CLAUDE_RUNTIME_ID, &RuntimeSetupState::default());
+    let program = resolved.program.take()?;
+    resolved.args.extend([
+        "--cli".to_string(),
+        "auth".to_string(),
+        "status".to_string(),
+    ]);
+    let output = std::process::Command::new(program)
+        .args(resolved.args)
+        .output()
+        .ok()?;
+    parse_claude_auth_status(&output.stdout).or_else(|| parse_claude_auth_status(&output.stderr))
 }
 
 #[cfg(test)]
@@ -8809,12 +8850,17 @@ fn should_persist_auth_method(
 fn is_persistable_external_auth_method(runtime_id: &str, method_id: &str) -> bool {
     matches!(
         (runtime_id, method_id),
-        (GROK_RUNTIME_ID, "grok-login") | (OPENCODE_RUNTIME_ID, "opencode-login")
+        (CLAUDE_RUNTIME_ID, "claude-ai-login" | "claude-login")
+            | (GROK_RUNTIME_ID, "grok-login")
+            | (OPENCODE_RUNTIME_ID, "opencode-login")
     )
 }
 
 fn is_invalidation_tracked_external_auth_runtime(runtime_id: &str) -> bool {
-    matches!(runtime_id, GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID)
+    matches!(
+        runtime_id,
+        CLAUDE_RUNTIME_ID | GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID
+    )
 }
 
 fn is_local_auth_method(method_id: &str) -> bool {
@@ -8950,6 +8996,29 @@ enum GrokAuthFailureSource {
     InheritedXaiApiKey,
 }
 
+fn is_claude_auth_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+    [
+        "oauth session expired",
+        "failed to authenticate",
+        "authentication_failed",
+        "authentication required",
+        "auth_required",
+        "not logged in",
+    ]
+    .into_iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn apply_claude_auth_failure(setup: &mut RuntimeSetupState, method: String) {
+    setup.auth_method = Some(method);
+    setup.auth_ready = false;
+    setup.suppress_persisted_auth = false;
+    setup.auth_invalidated_at_ms = Some(current_epoch_ms());
+    setup.message = Some(CLAUDE_LOGIN_INVALIDATED_MESSAGE.to_string());
+    refresh_runtime_setup_flags(CLAUDE_RUNTIME_ID, setup);
+}
+
 fn is_grok_auth_error(error: &str) -> bool {
     let normalized = error.to_lowercase();
     [
@@ -9056,6 +9125,25 @@ fn codex_vendor_binary_path() -> PathBuf {
 fn claude_vendor_entry_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../vendor/Claude-agent-acp-upstream/dist/index.js")
+}
+
+fn claude_runtime_dependencies_ready(entry: &Path) -> bool {
+    let Some(runtime_root) = entry.parent().and_then(Path::parent) else {
+        return false;
+    };
+    [
+        ["@agentclientprotocol", "sdk"],
+        ["@anthropic-ai", "claude-agent-sdk"],
+        ["zod", ""],
+    ]
+    .iter()
+    .all(|components| {
+        let mut package = runtime_root.join("node_modules").join(components[0]);
+        if !components[1].is_empty() {
+            package = package.join(components[1]);
+        }
+        package.join("package.json").is_file()
+    })
 }
 
 fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
@@ -10849,6 +10937,39 @@ mod tests {
         let empty = normalize_additional_roots(Some(vec![]));
         assert!(empty.kept.is_empty());
         assert!(empty.discarded.is_empty());
+    }
+
+    #[test]
+    fn claude_runtime_requires_its_production_dependencies() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("dist/index.js");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, b"").unwrap();
+
+        assert!(!claude_runtime_dependencies_ready(&entry));
+    }
+
+    #[test]
+    fn claude_runtime_accepts_a_complete_production_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("dist/index.js");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, b"").unwrap();
+        for package in [
+            "@agentclientprotocol/sdk",
+            "@anthropic-ai/claude-agent-sdk",
+            "zod",
+        ] {
+            let package_json = temp
+                .path()
+                .join("node_modules")
+                .join(package)
+                .join("package.json");
+            fs::create_dir_all(package_json.parent().unwrap()).unwrap();
+            fs::write(package_json, b"{}").unwrap();
+        }
+
+        assert!(claude_runtime_dependencies_ready(&entry));
     }
 
     #[test]
@@ -18165,6 +18286,91 @@ mod tests {
     }
 
     #[test]
+    fn claude_auth_status_parser_uses_the_cli_logged_in_flag() {
+        assert_eq!(
+            parse_claude_auth_status(br#"{"loggedIn":true,"authMethod":"claude.ai"}"#),
+            Some(true)
+        );
+        assert_eq!(
+            parse_claude_auth_status(br#"{"loggedIn":false,"authMethod":"none"}"#),
+            Some(false)
+        );
+        assert_eq!(parse_claude_auth_status(b"not-json"), None);
+    }
+
+    #[test]
+    fn claude_auth_error_detector_matches_expired_oauth() {
+        for error in [
+            "Failed to authenticate: OAuth session expired and could not be refreshed",
+            "authentication_failed",
+            "authentication required",
+            "auth_required",
+            "Claude is not logged in",
+        ] {
+            assert!(is_claude_auth_error(error), "{error:?} should be detected");
+        }
+
+        assert!(!is_claude_auth_error("model does not support that option"));
+    }
+
+    #[test]
+    fn claude_oauth_error_marks_subscription_login_invalidated() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path,
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let setup_at_start = RuntimeSetupState {
+            auth_method: Some("claude-ai-login".to_string()),
+            auth_ready: true,
+            ..RuntimeSetupState::default()
+        };
+        native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .insert(CLAUDE_RUNTIME_ID.to_string(), setup_at_start.clone());
+
+        native_ai
+            .invalidate_auth_after_session_start_error(
+                CLAUDE_RUNTIME_ID,
+                &setup_at_start,
+                "Failed to authenticate: OAuth session expired and could not be refreshed",
+            )
+            .unwrap();
+
+        let setup = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(CLAUDE_RUNTIME_ID)
+            .cloned()
+            .expect("Claude setup should remain");
+        assert_eq!(setup.auth_method.as_deref(), Some("claude-ai-login"));
+        assert!(!setup.auth_ready);
+        assert!(setup.auth_invalidated_at_ms.is_some());
+        assert_eq!(
+            setup.message.as_deref(),
+            Some(CLAUDE_LOGIN_INVALIDATED_MESSAGE)
+        );
+
+        let persisted_setup = native_ai
+            .setup_store
+            .load()
+            .unwrap()
+            .remove(CLAUDE_RUNTIME_ID)
+            .expect("Claude setup should persist invalidated login");
+        assert_eq!(
+            persisted_setup.auth_method.as_deref(),
+            Some("claude-ai-login")
+        );
+        assert!(persisted_setup.auth_invalidated_at_ms.is_some());
+    }
+
+    #[test]
     fn grok_login_auth_error_marks_external_auth_invalidated() {
         let _guard = ENV_TEST_LOCK.lock().unwrap();
         let previous = std::env::var_os("XAI_API_KEY");
@@ -18189,7 +18395,7 @@ mod tests {
             .insert(GROK_RUNTIME_ID.to_string(), setup_at_start.clone());
 
         native_ai
-            .invalidate_grok_auth_after_session_start_error(
+            .invalidate_auth_after_session_start_error(
                 GROK_RUNTIME_ID,
                 &setup_at_start,
                 "cached_token unauthorized",
@@ -18265,7 +18471,7 @@ mod tests {
             .cloned()
             .expect("Grok setup should exist");
         native_ai
-            .invalidate_grok_auth_after_session_start_error(
+            .invalidate_auth_after_session_start_error(
                 GROK_RUNTIME_ID,
                 &setup_at_start,
                 "401 invalid api key",
@@ -18328,7 +18534,7 @@ mod tests {
             .cloned()
             .expect("Grok setup should exist");
         native_ai
-            .invalidate_grok_auth_after_session_start_error(
+            .invalidate_auth_after_session_start_error(
                 GROK_RUNTIME_ID,
                 &setup_at_start,
                 "unauthorized",
