@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use anyhow::Result;
 use clap::Parser;
 use codex_arg0::arg0_dispatch_or_else;

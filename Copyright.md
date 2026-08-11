@@ -279,7 +279,7 @@ The bundled dictionary metadata lives in
 | Package                          | License     | Source                                  |
 | -------------------------------- | ----------- | --------------------------------------- |
 | codex-acp 0.16.0                 | Apache-2.0  | github.com/zed-industries/codex-acp     |
-| OpenAI Codex runtime rust-v0.144.6 | Apache-2.0 | github.com/openai/codex                 |
+| OpenAI Codex runtime rust-v0.147.0 | Apache-2.0 | github.com/openai/codex                 |
 | Claude-agent-acp-upstream        | Apache-2.0  | Anthropic                               |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
@@ -297,12 +297,15 @@ Original source: https://github.com/zed-industries/codex-acp (version 0.16.0).
 
 Zed Industries has deprecated Codex ACP. NeverWrite maintains this vendored adapter internally to preserve its Codex integration and compatibility with the application's review and session workflows.
 
-The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.144.6`; its packages are declared as Git dependencies in `vendor/codex-acp/Cargo.toml`.
+The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.147.0`; its packages are declared as Git dependencies in `vendor/codex-acp/Cargo.toml`.
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
 | `src/thread.rs`       | Extended to support AI review flow, multi-vault sessions, and custom diff streaming |
 | `src/codex_agent.rs`  | Adapted for Agent Client Protocol 0.14 compatibility and session configuration |
+| `src/prompt_args.rs`, `src/subagents.rs` | Added custom-prompt parsing and NeverWrite child-session lifecycle projection |
+| `src/lib.rs`, `src/main.rs` | Adjusted crate wiring and compile limits for the promoted runtime graph |
+| `vendor/codex-utils-pty/` | Maintains the standalone PTY snapshot and NeverWrite's macOS process-group fallback on the upstream 0.147.0 source |
 
 ### `vendor/Claude-agent-acp-upstream` — Anthropic (Apache-2.0)
 
@@ -332,4 +335,4 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 
 ---
 
-*This file is maintained from project dependency metadata. Last updated: 2026-08-03.*
+*This file is maintained from project dependency metadata. Last updated: 2026-08-09.*

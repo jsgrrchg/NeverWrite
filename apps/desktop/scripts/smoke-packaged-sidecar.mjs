@@ -6,6 +6,8 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import { isolateExecutableForSmoke } from "./packaged-sidecar-isolation.mjs";
+
 const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const executableName =
     process.platform === "win32"
@@ -194,7 +196,16 @@ function readRequestBody(request) {
     });
 }
 
-async function startResponsesMock(marker) {
+function collectStringValues(value) {
+    if (typeof value === "string") return [value];
+    if (Array.isArray(value)) return value.flatMap(collectStringValues);
+    if (value && typeof value === "object") {
+        return Object.values(value).flatMap(collectStringValues);
+    }
+    return [];
+}
+
+async function startResponsesMock({ marker, expectedToolOutput }) {
     const requests = [];
     const server = http.createServer(async (request, response) => {
         try {
@@ -243,9 +254,10 @@ async function startResponsesMock(marker) {
                         item.type === "custom_tool_call_output" &&
                         item.call_id === "neverwrite-code-mode-call",
                 );
-                if (!JSON.stringify(toolOutput).includes(marker)) {
+                const toolOutputText = collectStringValues(toolOutput).join("\n");
+                if (!expectedToolOutput(toolOutputText)) {
                     throw new Error(
-                        "Code-mode output did not contain the expected marker",
+                        `Code-mode output did not satisfy the smoke expectation: ${JSON.stringify(toolOutput)}`,
                     );
                 }
                 events = [
@@ -390,6 +402,10 @@ class AcpClient {
         });
     }
 
+    get pid() {
+        return this.child.pid;
+    }
+
     async close() {
         this.stopped = true;
         this.failPending(new Error("Packaged Codex ACP runtime was stopped"));
@@ -404,8 +420,90 @@ class AcpClient {
     }
 }
 
-async function smokeCodexAcpCodeMode(acpPath, hostPath) {
-    const marker = "neverwrite_code_mode_packaged_smoke";
+function capture(command, args) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(command, args, {
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+        });
+        const stdout = [];
+        const stderr = [];
+        child.stdout.on("data", (chunk) => stdout.push(String(chunk)));
+        child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+        child.once("error", reject);
+        child.once("exit", (code, signal) => {
+            if (code === 0) {
+                resolve(stdout.join(""));
+                return;
+            }
+            reject(
+                new Error(
+                    `${command} failed with ${code ?? signal ?? "unknown status"}.${formatStderr(stderr)}`,
+                ),
+            );
+        });
+    });
+}
+
+async function directChildProcesses(parentPid) {
+    if (process.platform === "win32") {
+        const script = [
+            `$items = @(Get-CimInstance Win32_Process -Filter \"ParentProcessId = ${parentPid}\")`,
+            "$items | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress",
+        ].join("; ");
+        const output = (
+            await capture("powershell.exe", ["-NoProfile", "-Command", script])
+        ).trim();
+        if (!output) return [];
+        const parsed = JSON.parse(output);
+        return (Array.isArray(parsed) ? parsed : [parsed]).map((processInfo) => ({
+            pid: processInfo.ProcessId,
+            command: processInfo.ExecutablePath || processInfo.CommandLine || "",
+        }));
+    }
+
+    const output = await capture("ps", ["-ww", "-axo", "pid=,ppid=,command="]);
+    const children = [];
+    for (const line of output.split("\n")) {
+        const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
+        if (!match || Number(match[2]) !== parentPid) continue;
+        children.push({ pid: Number(match[1]), command: match[3] });
+    }
+    return children;
+}
+
+async function assertStandaloneHostProcess(parentPid, hostPath) {
+    const expectedPath = path.resolve(hostPath);
+    let observed = [];
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        observed = await directChildProcesses(parentPid);
+        const found = observed.some((processInfo) => {
+            const command =
+                process.platform === "win32"
+                    ? processInfo.command.toLowerCase()
+                    : processInfo.command;
+            const expected =
+                process.platform === "win32"
+                    ? expectedPath.toLowerCase()
+                    : expectedPath;
+            return command.includes(expected);
+        });
+        if (found) return;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    throw new Error(
+        `Packaged code mode did not launch the configured standalone host ${expectedPath}. Direct children: ${JSON.stringify(observed)}`,
+    );
+}
+
+async function runCodeModeTurn({
+    acpPath,
+    hostPath,
+    marker,
+    expectedToolOutput,
+    requireStandaloneHost,
+}) {
     const codexHome = await fs.mkdtemp(
         path.join(os.tmpdir(), "neverwrite-codex-acp-smoke-"),
     );
@@ -416,15 +514,14 @@ async function smokeCodexAcpCodeMode(acpPath, hostPath) {
     let client;
 
     try {
-        mock = await startResponsesMock(marker);
+        mock = await startResponsesMock({ marker, expectedToolOutput });
         await fs.writeFile(
             path.join(codexHome, "config.toml"),
-            `model = "test-gpt-5.1-codex"\nmodel_provider = "neverwrite-packaging-smoke"\nsuppress_unstable_features_warning = true\n\n[features]\ncode_mode = true\n\n[model_providers.neverwrite-packaging-smoke]\nname = "NeverWrite packaging smoke"\nbase_url = "${mock.baseUrl}"\nenv_key = "NEVERWRITE_PACKAGING_SMOKE_API_KEY"\nwire_api = "responses"\n`,
+            `model = "test-gpt-5.1-codex"\nmodel_provider = "neverwrite-packaging-smoke"\nsuppress_unstable_features_warning = true\n\n[features.code_mode]\nenabled = true\n\n[features.code_mode_host]\nenabled = true\ndisable_in_process_fallback = true\n\n[model_providers.neverwrite-packaging-smoke]\nname = "NeverWrite packaging smoke"\nbase_url = "${mock.baseUrl}"\nenv_key = "NEVERWRITE_PACKAGING_SMOKE_API_KEY"\nwire_api = "responses"\n`,
         );
         client = new AcpClient(acpPath, {
             ...process.env,
             CODEX_HOME: codexHome,
-            CODEX_CODE_MODE_HOST_PATH: hostPath,
             NEVERWRITE_PACKAGING_SMOKE_API_KEY: "neverwrite-packaging-smoke",
         });
 
@@ -476,6 +573,9 @@ async function smokeCodexAcpCodeMode(acpPath, hostPath) {
         if (!sawCodeModeResult) {
             throw new Error("ACP did not publish the packaged code-mode result");
         }
+        if (requireStandaloneHost) {
+            await assertStandaloneHostProcess(client.pid, hostPath);
+        }
     } finally {
         await client?.close();
         await mock?.close();
@@ -483,6 +583,47 @@ async function smokeCodexAcpCodeMode(acpPath, hostPath) {
             fs.rm(codexHome, { recursive: true, force: true }),
             fs.rm(workspace, { recursive: true, force: true }),
         ]);
+    }
+}
+
+async function smokeCodexAcpCodeMode(acpPath, hostPath) {
+    const marker = "neverwrite_code_mode_packaged_smoke";
+    await runCodeModeTurn({
+        acpPath,
+        hostPath,
+        marker,
+        expectedToolOutput: (output) => output.includes(marker),
+        requireStandaloneHost: true,
+    });
+}
+
+async function smokeMissingCodeModeHostFailsClosed(acpPath, packagedHostPath) {
+    const isolatedRuntimeDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "neverwrite-missing-code-mode-host-"),
+    );
+    const isolatedAcpPath = path.join(
+        isolatedRuntimeDir,
+        path.basename(acpPath),
+    );
+    const missingHostPath = path.join(
+        isolatedRuntimeDir,
+        path.basename(packagedHostPath),
+    );
+    const marker = "neverwrite_missing_code_mode_host_smoke";
+    try {
+        await isolateExecutableForSmoke(acpPath, isolatedAcpPath);
+        await runCodeModeTurn({
+            acpPath: isolatedAcpPath,
+            hostPath: missingHostPath,
+            marker,
+            expectedToolOutput: (output) =>
+                output.includes(missingHostPath) &&
+                (output.includes("host executable was not found") ||
+                    output.includes("failed to spawn code-mode host")),
+            requireStandaloneHost: false,
+        });
+    } finally {
+        await fs.rm(isolatedRuntimeDir, { recursive: true, force: true });
     }
 }
 
@@ -577,8 +718,10 @@ assertExecutableMode(stats, sidecarPath, "sidecar");
 const codexAcpPath = await findCodexAcpPath(sidecarPath);
 const codeModeHostPath = await findCodeModeHostPath(sidecarPath);
 await smokeCodexAcpCodeMode(codexAcpPath, codeModeHostPath);
+await smokeMissingCodeModeHostFailsClosed(codexAcpPath, codeModeHostPath);
 await smokePing(sidecarPath);
 
 console.log(`Packaged Codex ACP completed a code-mode turn: ${codexAcpPath}`);
 console.log(`Packaged Codex code-mode host executed JavaScript: ${codeModeHostPath}`);
+console.log("Packaged Codex ACP failed closed with a missing code-mode host.");
 console.log(`Packaged native backend sidecar responded to ping: ${sidecarPath}`);

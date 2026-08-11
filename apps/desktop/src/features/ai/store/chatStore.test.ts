@@ -13,6 +13,7 @@ import { serializeComposerParts } from "../composerParts";
 import { updateConversationBindingsFromLegacySession } from "../conversationModel";
 import type {
     AIChatAttachment,
+    AIChatMessage,
     AIChatSession,
     AIComposerPart,
     DraftAttachmentId,
@@ -6393,6 +6394,243 @@ describe("chatStore", () => {
                 content: "All child agents completed",
             },
         ]);
+    });
+
+    it("replaces fallback activity timestamps with the first backend timestamp", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        vi.spyOn(Date, "now").mockReturnValue(8_000_000);
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "fallback-tool",
+            title: "Read README.md",
+            kind: "read",
+            status: "in_progress",
+            summary: "Reading README.md",
+            started_at_ms: null,
+        });
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "fallback-tool",
+            title: "Read README.md",
+            kind: "read",
+            status: "completed",
+            summary: "README.md",
+            started_at_ms: 1_234_567,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "fallback-status",
+            kind: "item_activity",
+            status: "in_progress",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 0,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "fallback-status",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 2_345_678,
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(
+            messages.find((message) => message.id === "tool:fallback-tool"),
+        ).toMatchObject({
+            timestamp: 1_234_567,
+            meta: {
+                status: "completed",
+                activity_timestamp_source: "backend",
+            },
+        });
+        expect(
+            messages.find(
+                (message) => message.id === "status:fallback-status",
+            ),
+        ).toMatchObject({
+            timestamp: 2_345_678,
+            meta: {
+                status: "completed",
+                activity_timestamp_source: "backend",
+            },
+        });
+    });
+
+    it("preserves the first fallback timestamp across fallback updates", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const now = vi.spyOn(Date, "now").mockReturnValue(3_456_789);
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "repeated-fallback-status",
+            kind: "item_activity",
+            status: "in_progress",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: null,
+        });
+        now.mockReturnValue(9_999_999);
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "repeated-fallback-status",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 0,
+        });
+
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.find(
+                    (message) =>
+                        message.id === "status:repeated-fallback-status",
+                ),
+        ).toMatchObject({
+            timestamp: 3_456_789,
+            meta: {
+                status: "completed",
+                activity_timestamp_source: "fallback",
+            },
+        });
+    });
+
+    it("uses restored backend activity start times without changing them on updates", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "restored-tool",
+            title: "Read README.md",
+            kind: "read",
+            status: "completed",
+            summary: "README.md",
+            started_at_ms: 1_234_567,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "neverwrite:status:item:sleep-restored",
+            kind: "item_activity",
+            status: "in_progress",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 2_345_678,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "neverwrite:status:item:sleep-restored",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 9_999_999,
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(
+            messages.find((message) => message.id === "tool:restored-tool")
+                ?.timestamp,
+        ).toBe(1_234_567);
+        const sleepMessages = messages.filter(
+            (message) =>
+                message.id ===
+                "status:neverwrite:status:item:sleep-restored",
+        );
+        expect(sleepMessages).toHaveLength(1);
+        expect(sleepMessages[0]?.timestamp).toBe(2_345_678);
+        expect(sleepMessages[0]?.meta?.status).toBe("completed");
+        expect(sleepMessages[0]?.meta?.activity_timestamp_source).toBe(
+            "backend",
+        );
+    });
+
+    it("persists timestamp provenance and upgrades a replayed fallback", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        vi.spyOn(Date, "now").mockReturnValue(4_567_890);
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "persisted-fallback-status",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: null,
+        });
+        await Promise.resolve();
+
+        const saveCall = invokeMock.mock.calls.findLast(
+            ([command]) => command === "ai_save_session_history",
+        );
+        const persistedMessages = (
+            saveCall?.[1] as {
+                history?: { messages?: AIChatMessage[] };
+            }
+        )?.history?.messages;
+        const persistedMessage = persistedMessages?.find(
+            (message) => message.id === "status:persisted-fallback-status",
+        );
+        expect(persistedMessage).toMatchObject({
+            timestamp: 4_567_890,
+            meta: {
+                activity_timestamp_source: "fallback",
+            },
+        });
+        if (!persistedMessage) {
+            throw new Error("Expected the fallback activity to be persisted");
+        }
+
+        const replaySessionId = "replayed-activity-session";
+        const replaySession = createSessionWithTrackedFiles(
+            replaySessionId,
+            [],
+        );
+        replaySession.messages = [structuredClone(persistedMessage)];
+        resetChatStore();
+        useChatStore.setState({
+            sessionsById: { [replaySessionId]: replaySession },
+            sessionOrder: [replaySessionId],
+            activeSessionId: replaySessionId,
+        });
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: replaySessionId,
+            event_id: "persisted-fallback-status",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 5_678_901,
+        });
+
+        expect(
+            useChatStore.getState().sessionsById[replaySessionId]?.messages[0],
+        ).toMatchObject({
+            timestamp: 5_678_901,
+            meta: {
+                activity_timestamp_source: "backend",
+            },
+        });
     });
 
     it("keeps assistant text segments around tool activity in runtime order", async () => {

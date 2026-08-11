@@ -7,7 +7,9 @@ use agent_client_protocol::schema::{
 use codex_core::ThreadConfigSnapshot;
 use codex_protocol::{
     AgentPath, ThreadId,
-    items::SubAgentActivityItem,
+    items::{
+        CollabAgentTool, CollabAgentToolCallItem, CollabAgentToolCallStatus, SubAgentActivityItem,
+    },
     protocol::{
         AgentStatus, CollabAgentRef, CollabAgentStatusEntry, EventMsg, SessionSource,
         SubAgentActivityEvent, SubAgentActivityKind, SubAgentSource,
@@ -54,10 +56,24 @@ pub(crate) enum SubagentProjection {
 pub(crate) struct SubagentProjectionState {
     wait_tool_call_ids_by_group: HashMap<String, String>,
     wait_tool_call_ids_by_call: HashMap<String, String>,
-    wait_group_keys_by_call: HashMap<String, String>,
+    active_canonical_wait_turn_id: Option<String>,
 }
 
 impl SubagentProjectionState {
+    fn begin_canonical_wait_turn(&mut self, turn_id: &str) {
+        if self.active_canonical_wait_turn_id.as_deref() == Some(turn_id) {
+            return;
+        }
+
+        if let Some(previous_turn_id) = self.active_canonical_wait_turn_id.replace(turn_id.into()) {
+            let previous_turn_prefix = format!("{previous_turn_id}:");
+            self.wait_tool_call_ids_by_group
+                .retain(|key, _| !key.starts_with(&previous_turn_prefix));
+            self.wait_tool_call_ids_by_call
+                .retain(|key, _| !key.starts_with(&previous_turn_prefix));
+        }
+    }
+
     pub(crate) fn coalesce_wait_projection(
         &mut self,
         event: &EventMsg,
@@ -65,43 +81,80 @@ impl SubagentProjectionState {
     ) {
         let stable_tool_call_id = match event {
             EventMsg::CollabWaitingBegin(event) => {
-                let group_key = waiting_group_key(event);
+                let group_key = waiting_group_key(
+                    "legacy-turn",
+                    event.sender_thread_id,
+                    event
+                        .receiver_thread_ids
+                        .iter()
+                        .chain(event.receiver_agents.iter().map(|agent| &agent.thread_id)),
+                );
                 let stable_tool_call_id = self
                     .wait_tool_call_ids_by_group
-                    .entry(group_key.clone())
+                    .entry(group_key)
                     .or_insert_with(|| subagent_tool_call_id(&event.call_id))
                     .clone();
                 self.wait_tool_call_ids_by_call
                     .insert(event.call_id.clone(), stable_tool_call_id.clone());
-                self.wait_group_keys_by_call
-                    .insert(event.call_id.clone(), group_key);
                 stable_tool_call_id
             }
-            EventMsg::CollabWaitingEnd(event) => {
-                let stable_tool_call_id = self
-                    .wait_tool_call_ids_by_call
-                    .remove(&event.call_id)
-                    .unwrap_or_else(|| subagent_tool_call_id(&event.call_id));
-                if let Some(group_key) = self.wait_group_keys_by_call.remove(&event.call_id)
-                    && !self
-                        .wait_group_keys_by_call
-                        .values()
-                        .any(|active_group_key| active_group_key == &group_key)
-                {
-                    self.wait_tool_call_ids_by_group.remove(&group_key);
-                }
-                stable_tool_call_id
-            }
+            EventMsg::CollabWaitingEnd(event) => self
+                .wait_tool_call_ids_by_call
+                .get(&event.call_id)
+                .cloned()
+                .unwrap_or_else(|| subagent_tool_call_id(&event.call_id)),
             _ => return,
         };
 
-        match projection {
-            SubagentProjection::ToolCall(tool_call) => {
-                tool_call.tool_call_id = stable_tool_call_id.into();
-            }
-            SubagentProjection::ToolCallUpdate(update) => {
-                update.tool_call_id = stable_tool_call_id.into();
-            }
+        set_projection_tool_call_id(projection, stable_tool_call_id);
+    }
+
+    pub(crate) fn coalesce_wait_item_projection(
+        &mut self,
+        turn_id: &str,
+        item: &CollabAgentToolCallItem,
+        projection: &mut SubagentProjection,
+    ) {
+        if item.tool != CollabAgentTool::Wait {
+            return;
+        }
+
+        let call_key = format!("{turn_id}:{}", item.id);
+        let stable_tool_call_id = if item.status == CollabAgentToolCallStatus::InProgress {
+            self.begin_canonical_wait_turn(turn_id);
+            let group_key = waiting_group_key(
+                turn_id,
+                item.sender_thread_id,
+                item.receiver_thread_ids
+                    .iter()
+                    .chain(item.receiver_agents.iter().map(|agent| &agent.thread_id)),
+            );
+            let stable_tool_call_id = self
+                .wait_tool_call_ids_by_group
+                .entry(group_key)
+                .or_insert_with(|| subagent_tool_call_id(&item.id))
+                .clone();
+            self.wait_tool_call_ids_by_call
+                .insert(call_key, stable_tool_call_id.clone());
+            stable_tool_call_id
+        } else {
+            self.wait_tool_call_ids_by_call
+                .get(&call_key)
+                .cloned()
+                .unwrap_or_else(|| subagent_tool_call_id(&item.id))
+        };
+
+        set_projection_tool_call_id(projection, stable_tool_call_id);
+    }
+}
+
+fn set_projection_tool_call_id(projection: &mut SubagentProjection, tool_call_id: String) {
+    match projection {
+        SubagentProjection::ToolCall(tool_call) => {
+            tool_call.tool_call_id = tool_call_id.into();
+        }
+        SubagentProjection::ToolCallUpdate(update) => {
+            update.tool_call_id = tool_call_id.into();
         }
     }
 }
@@ -411,6 +464,200 @@ pub(crate) fn projection_for_event(
     }
 }
 
+pub(crate) fn projection_for_collab_item(item: &CollabAgentToolCallItem) -> SubagentProjection {
+    let receiver = collab_item_receiver(item);
+    let display_name = receiver
+        .as_ref()
+        .and_then(|receiver| {
+            subagent_display_name(receiver.agent_nickname, None, Some(receiver.thread_id))
+        })
+        .unwrap_or_else(|| "subagent".to_string());
+    let in_progress = item.status == CollabAgentToolCallStatus::InProgress;
+    let event_type = match (item.tool, in_progress) {
+        (CollabAgentTool::SpawnAgent, true) => "spawn_begin",
+        (CollabAgentTool::SpawnAgent, false) => "spawn_end",
+        (CollabAgentTool::SendInput, true) => "interaction_begin",
+        (CollabAgentTool::SendInput, false) => "interaction_end",
+        (CollabAgentTool::ResumeAgent, true) => "resume_begin",
+        (CollabAgentTool::ResumeAgent, false) => "resume_end",
+        (CollabAgentTool::Wait, true) => "waiting_begin",
+        (CollabAgentTool::Wait, false) => "waiting_end",
+        (CollabAgentTool::CloseAgent, true) => "close_begin",
+        (CollabAgentTool::CloseAgent, false) => "close_end",
+    };
+    let title = collab_item_title(item, &display_name);
+    let detail = collab_item_detail(item);
+    let meta = collab_item_breadcrumb_meta(event_type, item, receiver.as_ref());
+    let tool_call_id = subagent_tool_call_id(&item.id);
+
+    if in_progress {
+        let mut tool_call = ToolCall::new(tool_call_id, title)
+            .kind(ToolKind::Other)
+            .status(ToolCallStatus::InProgress)
+            .raw_input(raw_event(item))
+            .meta(meta);
+        if let Some(detail) = detail {
+            tool_call = tool_call.content(content(Some(detail)));
+        }
+        SubagentProjection::ToolCall(tool_call)
+    } else {
+        let mut fields = ToolCallUpdateFields::new()
+            .title(title)
+            .status(collab_item_tool_status(item))
+            .raw_output(raw_event(item));
+        if let Some(detail) = detail {
+            fields = fields.content(content(Some(detail)));
+        }
+        SubagentProjection::ToolCallUpdate(ToolCallUpdate::new(tool_call_id, fields).meta(meta))
+    }
+}
+
+struct CollabItemReceiver<'a> {
+    thread_id: ThreadId,
+    agent_nickname: Option<&'a str>,
+    agent_role: Option<&'a str>,
+}
+
+fn collab_item_receiver(item: &CollabAgentToolCallItem) -> Option<CollabItemReceiver<'_>> {
+    item.receiver_agents
+        .first()
+        .map(|agent| CollabItemReceiver {
+            thread_id: agent.thread_id,
+            agent_nickname: agent.agent_nickname.as_deref(),
+            agent_role: agent.agent_role.as_deref(),
+        })
+        .or_else(|| {
+            item.receiver_thread_ids
+                .first()
+                .copied()
+                .map(|thread_id| CollabItemReceiver {
+                    thread_id,
+                    agent_nickname: None,
+                    agent_role: None,
+                })
+        })
+}
+
+fn collab_item_title(item: &CollabAgentToolCallItem, display_name: &str) -> String {
+    let failed = item.status == CollabAgentToolCallStatus::Failed;
+    match (item.tool, item.status) {
+        (CollabAgentTool::SpawnAgent, CollabAgentToolCallStatus::InProgress) => {
+            "Spawning subagent".to_string()
+        }
+        (CollabAgentTool::SpawnAgent, _) if failed => {
+            format!("Failed to spawn {display_name}")
+        }
+        (CollabAgentTool::SpawnAgent, _) => format!("Spawned {display_name}"),
+        (CollabAgentTool::SendInput, CollabAgentToolCallStatus::InProgress) => {
+            format!("Contacting {display_name}")
+        }
+        (CollabAgentTool::SendInput, _) if failed => {
+            format!("Failed to contact {display_name}")
+        }
+        (CollabAgentTool::SendInput, _) => format!("{display_name} responded"),
+        (CollabAgentTool::ResumeAgent, CollabAgentToolCallStatus::InProgress) => {
+            format!("Resuming {display_name}")
+        }
+        (CollabAgentTool::ResumeAgent, _) if failed => {
+            format!("Failed to resume {display_name}")
+        }
+        (CollabAgentTool::ResumeAgent, _) => format!("Resumed {display_name}"),
+        (CollabAgentTool::Wait, CollabAgentToolCallStatus::InProgress) => {
+            "Waiting for subagents".to_string()
+        }
+        (CollabAgentTool::Wait, _) => waiting_title_for_statuses(&item.agents_states).to_string(),
+        (CollabAgentTool::CloseAgent, CollabAgentToolCallStatus::InProgress) => {
+            format!("Closing {display_name}")
+        }
+        (CollabAgentTool::CloseAgent, _) if failed => {
+            format!("Failed to close {display_name}")
+        }
+        (CollabAgentTool::CloseAgent, _) => format!("Closed {display_name}"),
+    }
+}
+
+fn collab_item_detail(item: &CollabAgentToolCallItem) -> Option<String> {
+    if item.tool == CollabAgentTool::Wait {
+        if item.agents_states.is_empty() {
+            return format_agent_refs(&item.receiver_agents).or_else(|| {
+                (!item.receiver_thread_ids.is_empty()).then(|| {
+                    item.receiver_thread_ids
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+            });
+        }
+        return format_thread_statuses(&item.agents_states);
+    }
+
+    let mut lines = Vec::new();
+    if let Some(prompt) = item
+        .prompt
+        .as_deref()
+        .filter(|prompt| !prompt.trim().is_empty())
+    {
+        lines.push(format!("Prompt: {}", trim_for_detail(prompt)));
+    }
+    if let Some(model) = item.model.as_deref().filter(|model| !model.is_empty()) {
+        lines.push(format!("Model: {model}"));
+    }
+    if let Some(reasoning_effort) = item.reasoning_effort.as_ref() {
+        lines.push(format!(
+            "Reasoning effort: {}",
+            format_jsonish(reasoning_effort)
+        ));
+    }
+    if !item.agents_states.is_empty()
+        && let Some(statuses) = format_thread_statuses(&item.agents_states)
+    {
+        lines.push(statuses);
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn collab_item_tool_status(item: &CollabAgentToolCallItem) -> ToolCallStatus {
+    if item.status == CollabAgentToolCallStatus::Failed {
+        return ToolCallStatus::Failed;
+    }
+
+    if item.tool == CollabAgentTool::Wait
+        && (item.agents_states.is_empty()
+            || !item.agents_states.values().all(is_terminal_agent_status))
+    {
+        return ToolCallStatus::InProgress;
+    }
+
+    ToolCallStatus::Completed
+}
+
+fn collab_item_breadcrumb_meta(
+    event_type: &str,
+    item: &CollabAgentToolCallItem,
+    receiver: Option<&CollabItemReceiver<'_>>,
+) -> Meta {
+    let status = receiver.and_then(|receiver| item.agents_states.get(&receiver.thread_id));
+    let mut meta = breadcrumb_meta(
+        event_type,
+        item.sender_thread_id,
+        receiver.map(|receiver| receiver.thread_id),
+        receiver.and_then(|receiver| receiver.agent_nickname),
+        receiver.and_then(|receiver| receiver.agent_role),
+        status,
+    );
+    if item.tool == CollabAgentTool::Wait && !item.agents_states.is_empty() {
+        meta.insert(
+            CODEX_ACP_AGENT_STATUSES_KEY.to_string(),
+            json!(agent_status_values(
+                &item.agents_states,
+                &item.receiver_agents
+            )),
+        );
+    }
+    meta
+}
+
 fn project_subagent_activity(
     event: &SubAgentActivityEvent,
     current_thread_id: ThreadId,
@@ -631,29 +878,37 @@ fn waiting_end_breadcrumb_meta(event: &codex_protocol::protocol::CollabWaitingEn
     meta
 }
 
-fn waiting_group_key(event: &codex_protocol::protocol::CollabWaitingBeginEvent) -> String {
-    let mut receiver_thread_ids = event
-        .receiver_thread_ids
-        .iter()
-        .chain(event.receiver_agents.iter().map(|agent| &agent.thread_id))
+fn waiting_group_key<'a>(
+    turn_id: &str,
+    sender_thread_id: ThreadId,
+    receiver_thread_ids: impl Iterator<Item = &'a ThreadId>,
+) -> String {
+    let mut receiver_thread_ids = receiver_thread_ids
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     receiver_thread_ids.sort();
     receiver_thread_ids.dedup();
 
     if receiver_thread_ids.is_empty() {
-        format!("{}:all", event.sender_thread_id)
+        format!("{turn_id}:{sender_thread_id}:all")
     } else {
         format!(
-            "{}:{}",
-            event.sender_thread_id,
+            "{turn_id}:{sender_thread_id}:{}",
             receiver_thread_ids.join(",")
         )
     }
 }
 
 fn waiting_end_title(event: &codex_protocol::protocol::CollabWaitingEndEvent) -> &'static str {
-    let statuses = waiting_end_agent_statuses(event);
+    waiting_title(waiting_end_agent_statuses(event).into_iter())
+}
+
+fn waiting_title_for_statuses(statuses: &HashMap<ThreadId, AgentStatus>) -> &'static str {
+    waiting_title(statuses.values())
+}
+
+fn waiting_title<'a>(statuses: impl Iterator<Item = &'a AgentStatus>) -> &'static str {
+    let statuses = statuses.collect::<Vec<_>>();
     if statuses.is_empty() {
         "Checked subagents"
     } else if statuses
@@ -696,7 +951,13 @@ fn waiting_end_agent_statuses(
 }
 
 fn is_terminal_agent_status(status: &AgentStatus) -> bool {
-    !matches!(status, AgentStatus::PendingInit | AgentStatus::Running)
+    matches!(
+        status,
+        AgentStatus::Completed(_)
+            | AgentStatus::Errored(_)
+            | AgentStatus::Shutdown
+            | AgentStatus::NotFound
+    )
 }
 
 fn waiting_end_statuses(
@@ -729,6 +990,35 @@ fn waiting_end_statuses(
             })
         })
         .collect()
+}
+
+fn agent_status_values(
+    statuses: &HashMap<ThreadId, AgentStatus>,
+    agents: &[CollabAgentRef],
+) -> Vec<serde_json::Value> {
+    let mut values = statuses
+        .iter()
+        .map(|(thread_id, status)| {
+            let agent = agents.iter().find(|agent| agent.thread_id == *thread_id);
+            json!({
+                "codexAcpChildSessionId": thread_id.to_string(),
+                "codexAcpChildThreadId": thread_id.to_string(),
+                "codexAcpAgentNickname": agent.and_then(|agent| agent.agent_nickname.as_deref()),
+                "codexAcpAgentRole": agent.and_then(|agent| agent.agent_role.as_deref()),
+                "codexAcpAgentStatus": status,
+            })
+        })
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| {
+        left.get(CODEX_ACP_CHILD_THREAD_ID_KEY)
+            .and_then(serde_json::Value::as_str)
+            .cmp(
+                &right
+                    .get(CODEX_ACP_CHILD_THREAD_ID_KEY)
+                    .and_then(serde_json::Value::as_str),
+            )
+    });
+    values
 }
 
 fn subagent_tool_call_id(call_id: &str) -> String {
@@ -1203,6 +1493,248 @@ mod tests {
     }
 
     #[test]
+    fn canonical_collab_item_projects_navigable_spawn_breadcrumbs() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let begin_item = CollabAgentToolCallItem {
+            id: "spawn-canonical".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: parent_thread_id,
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: Some("inspect the renderer".to_string()),
+            model: Some("gpt-5.5".to_string()),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            agents_states: HashMap::new(),
+        };
+        let SubagentProjection::ToolCall(begin) = projection_for_collab_item(&begin_item) else {
+            panic!("canonical spawn start should create a tool call");
+        };
+        assert_eq!(begin.title, "Spawning subagent");
+        assert_eq!(
+            begin.tool_call_id.0.as_ref(),
+            "codex-acp:subagent:spawn-canonical"
+        );
+        assert!(
+            begin
+                .meta
+                .as_ref()
+                .is_some_and(|meta| !meta.contains_key(CODEX_ACP_CHILD_THREAD_ID_KEY))
+        );
+
+        let completed_item = CollabAgentToolCallItem {
+            status: CollabAgentToolCallStatus::Completed,
+            receiver_thread_ids: vec![child_thread_id],
+            receiver_agents: vec![CollabAgentRef {
+                thread_id: child_thread_id,
+                agent_nickname: Some("Galileo".to_string()),
+                agent_role: Some("explorer".to_string()),
+            }],
+            agents_states: HashMap::from([(child_thread_id, AgentStatus::Running)]),
+            ..begin_item
+        };
+        let SubagentProjection::ToolCallUpdate(completed) =
+            projection_for_collab_item(&completed_item)
+        else {
+            panic!("canonical spawn completion should update the tool call");
+        };
+        assert_eq!(
+            completed.tool_call_id.0.as_ref(),
+            "codex-acp:subagent:spawn-canonical"
+        );
+        assert_eq!(completed.fields.title.as_deref(), Some("Spawned Galileo"));
+        assert_eq!(completed.fields.status, Some(ToolCallStatus::Completed));
+        assert_eq!(
+            completed
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get(CODEX_ACP_CHILD_THREAD_ID_KEY))
+                .and_then(serde_json::Value::as_str),
+            Some(child_thread_id.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn canonical_waits_coalesce_only_within_the_same_turn() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let mut state = SubagentProjectionState::default();
+        let wait_item = |id: &str| CollabAgentToolCallItem {
+            id: id.to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: parent_thread_id,
+            receiver_thread_ids: vec![child_thread_id],
+            receiver_agents: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+        };
+        let project = |state: &mut SubagentProjectionState, turn_id: &str, item| {
+            let mut projection = projection_for_collab_item(&item);
+            state.coalesce_wait_item_projection(turn_id, &item, &mut projection);
+            let SubagentProjection::ToolCall(tool_call) = projection else {
+                panic!("wait start should create a tool call");
+            };
+            tool_call.tool_call_id.to_string()
+        };
+
+        let first = project(&mut state, "turn-1", wait_item("wait-1"));
+        let equivalent = project(&mut state, "turn-1", wait_item("wait-2"));
+        let next_turn = project(&mut state, "turn-2", wait_item("wait-3"));
+
+        assert_eq!(first, equivalent);
+        assert_ne!(first, next_turn);
+        assert!(
+            state
+                .wait_tool_call_ids_by_group
+                .keys()
+                .all(|key| !key.starts_with("turn-1:"))
+        );
+        assert!(
+            state
+                .wait_tool_call_ids_by_call
+                .keys()
+                .all(|key| !key.starts_with("turn-1:"))
+        );
+    }
+
+    #[test]
+    fn canonical_wait_pruning_preserves_legacy_correlations() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let parent_session_id = SessionId::new(parent_thread_id.to_string());
+        let mut state = SubagentProjectionState::default();
+        let legacy_begin =
+            EventMsg::CollabWaitingBegin(codex_protocol::protocol::CollabWaitingBeginEvent {
+                sender_thread_id: parent_thread_id,
+                receiver_thread_ids: vec![child_thread_id],
+                receiver_agents: Vec::new(),
+                call_id: "legacy-wait".to_string(),
+                started_at_ms: 0,
+            });
+        let mut legacy_projection =
+            projection_for_event(&legacy_begin, parent_thread_id, &parent_session_id)
+                .expect("legacy wait begin should project");
+        state.coalesce_wait_projection(&legacy_begin, &mut legacy_projection);
+        let SubagentProjection::ToolCall(legacy_tool_call) = legacy_projection else {
+            panic!("legacy wait begin should create a tool call");
+        };
+        let legacy_tool_call_id = legacy_tool_call.tool_call_id.to_string();
+
+        for (turn_id, item_id) in [("turn-1", "wait-1"), ("turn-2", "wait-2")] {
+            let item = CollabAgentToolCallItem {
+                id: item_id.to_string(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: parent_thread_id,
+                receiver_thread_ids: vec![child_thread_id],
+                receiver_agents: Vec::new(),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            };
+            let mut projection = projection_for_collab_item(&item);
+            state.coalesce_wait_item_projection(turn_id, &item, &mut projection);
+        }
+
+        let legacy_end =
+            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id: parent_thread_id,
+                call_id: "legacy-wait".to_string(),
+                agent_statuses: Vec::new(),
+                statuses: HashMap::new(),
+                completed_at_ms: 0,
+            });
+        let mut legacy_projection =
+            projection_for_event(&legacy_end, parent_thread_id, &parent_session_id)
+                .expect("legacy wait end should project");
+        state.coalesce_wait_projection(&legacy_end, &mut legacy_projection);
+        let SubagentProjection::ToolCallUpdate(legacy_update) = legacy_projection else {
+            panic!("legacy wait end should update a tool call");
+        };
+
+        assert_eq!(legacy_update.tool_call_id.to_string(), legacy_tool_call_id);
+        assert!(
+            state
+                .wait_tool_call_ids_by_group
+                .keys()
+                .any(|key| key.starts_with("legacy-turn:"))
+        );
+        assert!(state.wait_tool_call_ids_by_call.contains_key("legacy-wait"));
+    }
+
+    #[test]
+    fn only_final_agent_states_terminalize_waits() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let wait_with_status = |status| CollabAgentToolCallItem {
+            id: format!("wait-{status:?}"),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: parent_thread_id,
+            receiver_thread_ids: vec![child_thread_id],
+            receiver_agents: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::from([(child_thread_id, status)]),
+        };
+
+        for status in [
+            AgentStatus::Completed(None),
+            AgentStatus::Errored("failed".to_string()),
+            AgentStatus::Shutdown,
+            AgentStatus::NotFound,
+        ] {
+            let SubagentProjection::ToolCallUpdate(update) =
+                projection_for_collab_item(&wait_with_status(status))
+            else {
+                panic!("completed wait should update a tool call");
+            };
+            assert!(matches!(
+                update.fields.status,
+                Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+            ));
+        }
+
+        for status in [
+            AgentStatus::PendingInit,
+            AgentStatus::Running,
+            AgentStatus::Interrupted,
+        ] {
+            let SubagentProjection::ToolCallUpdate(update) =
+                projection_for_collab_item(&wait_with_status(status))
+            else {
+                panic!("wait result should update a tool call");
+            };
+            assert_eq!(update.fields.status, Some(ToolCallStatus::InProgress));
+        }
+
+        let failed_wait_without_states = CollabAgentToolCallItem {
+            id: "wait-failed-empty".to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Failed,
+            sender_thread_id: parent_thread_id,
+            receiver_thread_ids: vec![child_thread_id],
+            receiver_agents: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+        };
+        let SubagentProjection::ToolCallUpdate(update) =
+            projection_for_collab_item(&failed_wait_without_states)
+        else {
+            panic!("failed wait should update a tool call");
+        };
+        assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
+    }
+
+    #[test]
     fn collab_waiting_end_projects_structured_agent_statuses() {
         let parent_thread_id = ThreadId::new();
         let child_thread_id = ThreadId::new();
@@ -1410,7 +1942,10 @@ mod tests {
             "wait-next-cycle",
             vec![first_child_thread_id, second_child_thread_id],
         );
-        assert_ne!(next_cycle, first, "a completed wait group must be reusable");
+        assert_eq!(
+            next_cycle, first,
+            "equivalent waits remain coalesced for the owning turn"
+        );
 
         let end_without_begin =
             EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {

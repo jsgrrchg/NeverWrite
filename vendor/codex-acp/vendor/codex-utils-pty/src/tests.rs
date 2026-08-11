@@ -4,13 +4,10 @@ use std::path::Path;
 use pretty_assertions::assert_eq;
 
 use crate::ProcessDriver;
+use crate::ProcessSignal;
 use crate::SpawnedProcess;
 use crate::TerminalSize;
 use crate::combine_output_receivers;
-#[cfg(unix)]
-use crate::pipe::spawn_process_no_stdin_with_inherited_fds;
-#[cfg(unix)]
-use crate::pty::spawn_process_with_inherited_fds;
 use crate::spawn_from_driver;
 use crate::spawn_pipe_process;
 use crate::spawn_pipe_process_no_stdin;
@@ -365,6 +362,7 @@ async fn pty_python_repl_emits_output_and_exits() -> anyhow::Result<()> {
         &env_map,
         &None,
         TerminalSize::default(),
+        &[],
     )
     .await?;
     let (session, mut output_rx, exit_rx) = combine_spawned_output(spawned);
@@ -421,7 +419,7 @@ async fn pipe_process_round_trips_stdin() -> anyhow::Result<()> {
         )
     };
     let env_map: HashMap<String, String> = std::env::vars().collect();
-    let spawned = spawn_pipe_process(&program, &args, Path::new("."), &env_map, &None).await?;
+    let spawned = spawn_pipe_process(&program, &args, Path::new("."), &env_map, &None, &[]).await?;
     let (session, output_rx, exit_rx) = combine_spawned_output(spawned);
     let writer = session.writer_sender();
     let newline = if cfg!(windows) { "\r\n" } else { "\n" };
@@ -454,7 +452,7 @@ async fn pipe_process_detaches_from_parent_session() -> anyhow::Result<()> {
     let env_map: HashMap<String, String> = std::env::vars().collect();
     let script = "echo $$; sleep 0.2";
     let (program, args) = shell_command(script);
-    let spawned = spawn_pipe_process(&program, &args, Path::new("."), &env_map, &None).await?;
+    let spawned = spawn_pipe_process(&program, &args, Path::new("."), &env_map, &None, &[]).await?;
 
     let (_session, mut output_rx, exit_rx) = combine_spawned_output(spawned);
     let pid_bytes =
@@ -493,8 +491,15 @@ async fn pipe_and_pty_share_interface() -> anyhow::Result<()> {
     let (pipe_program, pipe_args) = shell_command(&echo_sleep_command("pipe_ok"));
     let (pty_program, pty_args) = shell_command(&echo_sleep_command("pty_ok"));
 
-    let pipe =
-        spawn_pipe_process(&pipe_program, &pipe_args, Path::new("."), &env_map, &None).await?;
+    let pipe = spawn_pipe_process(
+        &pipe_program,
+        &pipe_args,
+        Path::new("."),
+        &env_map,
+        &None,
+        &[],
+    )
+    .await?;
     let pty = spawn_pty_process(
         &pty_program,
         &pty_args,
@@ -502,6 +507,7 @@ async fn pipe_and_pty_share_interface() -> anyhow::Result<()> {
         &env_map,
         &None,
         TerminalSize::default(),
+        &[],
     )
     .await?;
     let (_pipe_session, pipe_output_rx, pipe_exit_rx) = combine_spawned_output(pipe);
@@ -537,7 +543,7 @@ async fn pipe_drains_stderr_without_stdout_activity() -> anyhow::Result<()> {
     let script = "import sys\nchunk = 'E' * 65536\nfor _ in range(64):\n    sys.stderr.write(chunk)\n    sys.stderr.flush()\n";
     let args = vec!["-c".to_string(), script.to_string()];
     let env_map: HashMap<String, String> = std::env::vars().collect();
-    let spawned = spawn_pipe_process(&python, &args, Path::new("."), &env_map, &None).await?;
+    let spawned = spawn_pipe_process(&python, &args, Path::new("."), &env_map, &None, &[]).await?;
     let (_session, output_rx, exit_rx) = combine_spawned_output(spawned);
 
     let (output, code) = collect_output_until_exit(output_rx, exit_rx, /*timeout_ms*/ 10_000).await;
@@ -553,7 +559,7 @@ async fn pipe_process_can_expose_split_stdout_and_stderr() -> anyhow::Result<()>
     let env_map: HashMap<String, String> = std::env::vars().collect();
     let (program, args) = shell_command(&split_stdout_stderr_command());
     let spawned =
-        spawn_pipe_process_no_stdin(&program, &args, Path::new("."), &env_map, &None).await?;
+        spawn_pipe_process_no_stdin(&program, &args, Path::new("."), &env_map, &None, &[]).await?;
     let SpawnedProcess {
         session: _session,
         stdout_rx,
@@ -609,7 +615,14 @@ async fn driver_backed_process_can_expose_split_stdout_and_stderr() -> anyhow::R
         terminator: None,
         writer_handle: None,
         resizer: None,
+        #[cfg(windows)]
+        tty: false,
     });
+    let error = spawned
+        .session
+        .signal(ProcessSignal::Interrupt)
+        .expect_err("interrupting a driver without a terminator should remain unsupported");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
 
     let SpawnedProcess {
         session: _session,
@@ -645,6 +658,37 @@ async fn driver_backed_process_can_expose_split_stdout_and_stderr() -> anyhow::R
     Ok(())
 }
 
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_backed_interrupt_terminates_once() {
+    let terminations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback_terminations = std::sync::Arc::clone(&terminations);
+    let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+    let (_stdout_tx, stdout_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(1);
+    let (_exit_tx, exit_rx) = tokio::sync::oneshot::channel::<i32>();
+    let spawned = spawn_from_driver(ProcessDriver {
+        writer_tx,
+        stdout_rx,
+        stderr_rx: None,
+        exit_rx,
+        terminator: Some(Box::new(move || {
+            callback_terminations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })),
+        writer_handle: None,
+        resizer: None,
+        #[cfg(windows)]
+        tty: false,
+    });
+
+    spawned
+        .session
+        .signal(ProcessSignal::Interrupt)
+        .expect("interrupt should terminate the driver-backed process");
+    drop(spawned.session);
+
+    assert_eq!(terminations.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_backed_process_can_resize_via_resizer_hook() -> anyhow::Result<()> {
     let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
@@ -658,7 +702,7 @@ async fn driver_backed_process_can_resize_via_resizer_hook() -> anyhow::Result<(
         stdout_rx: stdout_driver_rx,
         stderr_rx: None,
         exit_rx,
-        terminator: None,
+        terminator: Some(Box::new(|| {})),
         writer_handle: None,
         resizer: Some(Box::new(move |size| {
             if let Ok(mut guard) = size_tx.lock()
@@ -668,7 +712,15 @@ async fn driver_backed_process_can_resize_via_resizer_hook() -> anyhow::Result<(
             }
             Ok(())
         })),
+        #[cfg(windows)]
+        tty: true,
     });
+
+    let error = spawned
+        .session
+        .signal(ProcessSignal::Interrupt)
+        .expect_err("interrupting a PTY-backed driver should remain unsupported");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
 
     spawned.session.resize(TerminalSize {
         rows: 40,
@@ -706,6 +758,8 @@ async fn driver_backed_process_drains_output_that_arrives_after_exit_signal() ->
         terminator: None,
         writer_handle: None,
         resizer: None,
+        #[cfg(windows)]
+        tty: false,
     });
 
     let SpawnedProcess {
@@ -747,7 +801,7 @@ async fn pipe_terminate_aborts_detached_readers() -> anyhow::Result<()> {
     let script =
         "setsid sh -c 'i=0; while [ $i -lt 200 ]; do echo tick; sleep 0.01; i=$((i+1)); done' &";
     let (program, args) = shell_command(script);
-    let spawned = spawn_pipe_process(&program, &args, Path::new("."), &env_map, &None).await?;
+    let spawned = spawn_pipe_process(&program, &args, Path::new("."), &env_map, &None, &[]).await?;
     let (session, mut output_rx, _exit_rx) = combine_spawned_output(spawned);
 
     let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), output_rx.recv())
@@ -787,6 +841,7 @@ async fn pty_terminate_kills_background_children_in_same_process_group() -> anyh
         &env_map,
         &None,
         TerminalSize::default(),
+        &[],
     )
     .await?;
     let (session, mut output_rx, _exit_rx) = combine_spawned_output(spawned);
@@ -841,7 +896,7 @@ async fn pty_spawn_can_preserve_inherited_fds() -> anyhow::Result<()> {
     );
 
     let script = "printf __preserved__ >\"/dev/fd/$PRESERVED_FD\"";
-    let spawned = spawn_process_with_inherited_fds(
+    let spawned = spawn_pty_process(
         "/bin/sh",
         &["-c".to_string(), script.to_string()],
         Path::new("."),
@@ -893,7 +948,7 @@ async fn pty_preserving_inherited_fds_keeps_python_repl_running() -> anyhow::Res
         preserved_fd.as_raw_fd().to_string(),
     );
 
-    let spawned = spawn_process_with_inherited_fds(
+    let spawned = spawn_pty_process(
         &python,
         &[],
         Path::new("."),
@@ -959,7 +1014,7 @@ async fn pty_spawn_with_inherited_fds_reports_exec_failures() -> anyhow::Result<
     let write_end = unsafe { std::fs::File::from_raw_fd(fds[1]) };
 
     let env_map: HashMap<String, String> = std::env::vars().collect();
-    let spawn_result = spawn_process_with_inherited_fds(
+    let spawn_result = spawn_pty_process(
         "/definitely/missing/command",
         &[],
         Path::new("."),
@@ -1008,7 +1063,7 @@ async fn pty_spawn_with_inherited_fds_supports_resize() -> anyhow::Result<()> {
 
     let env_map: HashMap<String, String> = std::env::vars().collect();
     let script = "stty -echo; printf 'start:%s\\n' \"$(stty size)\"; IFS= read _line; printf 'after:%s\\n' \"$(stty size)\"";
-    let spawned = spawn_process_with_inherited_fds(
+    let spawned = spawn_pty_process(
         "/bin/sh",
         &["-c".to_string(), script.to_string()],
         Path::new("."),
@@ -1079,7 +1134,7 @@ async fn pipe_spawn_no_stdin_can_preserve_inherited_fds() -> anyhow::Result<()> 
     );
 
     let script = "printf __pipe_preserved__ >\"/dev/fd/$PRESERVED_FD\"";
-    let spawned = spawn_process_no_stdin_with_inherited_fds(
+    let spawned = spawn_pipe_process_no_stdin(
         "/bin/sh",
         &["-c".to_string(), script.to_string()],
         Path::new("."),

@@ -16,8 +16,14 @@ export default mergeConfig(
                 "src/**/*.test.tsx",
                 "src-electron/**/*.test.ts",
                 "src-electron/**/*.test.tsx",
+                "scripts/codex-v8-artifacts.test.mjs",
+                "scripts/packaged-sidecar-isolation.test.mjs",
+                "scripts/stage-electron-sidecar.test.mjs",
             ],
-            exclude: ["scripts/**/*.test.mjs"],
+            exclude: [
+                "scripts/electron-builder-config.test.mjs",
+                "scripts/stage-electron-release-assets.test.mjs",
+            ],
         },
     }),
 );

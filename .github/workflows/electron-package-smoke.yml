@@ -60,8 +60,8 @@ jobs:
               run: |
                   cargo build -p neverwrite-native-backend --quiet --release --target aarch64-apple-darwin
                   cargo build -p neverwrite-native-backend --quiet --release --target x86_64-apple-darwin
-                  cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin --bins
-                  cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin --bins
+                  node apps/desktop/scripts/run-with-codex-v8.mjs --target aarch64-apple-darwin --require-verified-artifacts -- cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin --bins
+                  node apps/desktop/scripts/run-with-codex-v8.mjs --target x86_64-apple-darwin --require-verified-artifacts -- cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin --bins
 
             - name: Download embedded Node runtimes
               shell: bash
@@ -184,7 +184,7 @@ jobs:
               shell: bash
               run: |
                   cargo build -p neverwrite-native-backend --quiet --release --target ${{ matrix.target }}
-                  cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
+                  node apps/desktop/scripts/run-with-codex-v8.mjs --target ${{ matrix.target }} --require-verified-artifacts -- cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
 
             - name: Download embedded Node runtime
               shell: bash
@@ -309,7 +309,7 @@ jobs:
               shell: bash
               run: |
                   cargo build -p neverwrite-native-backend --quiet --release --target ${{ matrix.target }}
-                  cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
+                  node apps/desktop/scripts/run-with-codex-v8.mjs --target ${{ matrix.target }} --require-verified-artifacts -- cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
 
             - name: Export sidecar environment
               shell: bash

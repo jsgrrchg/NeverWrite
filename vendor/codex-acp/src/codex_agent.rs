@@ -15,15 +15,18 @@ use acp::{Agent, Client, ConnectTo, ConnectionTo, Error};
 use agent_client_protocol as acp;
 use codex_config::{DEFAULT_MCP_SERVER_ENVIRONMENT_ID, McpServerConfig, McpServerTransportConfig};
 use codex_core::{
-    NewThread, RolloutRecorder, StateDbHandle, ThreadConfigSnapshot, ThreadManager,
+    CodexAppsToolsCache, NewThread, RolloutRecorder, StartThreadOptions, StateDbHandle,
+    ThreadConfigSnapshot, ThreadManager, build_models_manager,
     config::{Config, PermissionProfileSnapshot},
-    find_thread_path_by_id_str, init_state_db, resolve_installation_id, thread_store_from_config,
+    find_thread_path_by_id_str, init_state_db, local_agent_graph_store_from_state_db,
+    resolve_installation_id, thread_store_from_config,
 };
 use codex_exec_server::{EnvironmentManager, ExecServerRuntimePaths};
 use codex_extension_api::{
     LoadUserInstructionsFuture, LoadedUserInstructions, UserInstructionsProvider,
     empty_extension_registry,
 };
+use codex_features::Feature;
 use codex_login::{
     CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR,
     auth::{
@@ -33,6 +36,7 @@ use codex_login::{
 };
 use codex_protocol::{
     ThreadId,
+    mcp::ClientMcpExtensions,
     protocol::{InitialHistory, SessionConfiguredEvent, SessionSource},
 };
 use codex_thread_store::{
@@ -90,22 +94,52 @@ pub struct CodexAgent {
 const SESSION_LIST_PAGE_SIZE: usize = 25;
 const SESSION_TITLE_MAX_GRAPHEMES: usize = 120;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionRestoreKind {
+    Load,
+    Resume,
+}
+
+impl SessionRestoreKind {
+    fn replays_history(self) -> bool {
+        matches!(self, Self::Load)
+    }
+}
+
+fn client_mcp_extensions() -> ClientMcpExtensions {
+    // ACP 0.14 has no trusted declaration boundary for Codex MCP extensions.
+    // Keeping this empty also leaves MCP 2026-07-28 negotiation disabled.
+    ClientMcpExtensions::default()
+}
+
+fn start_thread_options(config: Config) -> StartThreadOptions {
+    StartThreadOptions {
+        client_mcp_extensions: client_mcp_extensions(),
+        ..StartThreadOptions::new(config)
+    }
+}
+
+fn apply_runtime_feature_contracts(config: &mut Config) -> std::io::Result<()> {
+    config
+        .features
+        .disable(Feature::Mcp20260728)
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "MCP protocol 2026-07-28 must remain disabled for ACP 0.14: {error}"
+            ))
+        })
+}
+
 impl CodexAgent {
     /// Create a new `CodexAgent` with the given configuration
     pub async fn new(
-        config: Config,
+        mut config: Config,
         codex_linux_sandbox_exe: Option<PathBuf>,
     ) -> std::io::Result<Self> {
-        let auth_manager = AuthManager::shared(
-            config.codex_home.to_path_buf(),
-            false,
-            config.cli_auth_credentials_store_mode,
-            None,
-            Some(config.chatgpt_base_url.clone()),
-            AuthKeyringBackendKind::default(),
-            None,
-        )
-        .await;
+        // The modern MCP protocol remains outside NeverWrite's ACP 0.14 contract.
+        apply_runtime_feature_contracts(&mut config)?;
+        let auth_manager =
+            AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await;
 
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
         let session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>> = Arc::default();
@@ -113,22 +147,28 @@ impl CodexAgent {
         let local_runtime_paths =
             ExecServerRuntimePaths::new(std::env::current_exe()?, codex_linux_sandbox_exe)?;
         let environment_manager = Arc::new(
-            EnvironmentManager::from_codex_home(&config.codex_home, Some(local_runtime_paths))
-                .await
-                .map_err(std::io::Error::other)?,
+            EnvironmentManager::from_codex_home(
+                &config.codex_home,
+                Some(local_runtime_paths),
+                config.http_client_factory(),
+            )
+            .await
+            .map_err(std::io::Error::other)?,
         );
         let thread_store = thread_store_from_config(&config, state_db.clone());
         let installation_id = resolve_installation_id(&config.codex_home).await?;
         let thread_manager = Arc::new(ThreadManager::new(
             &config,
             auth_manager.clone(),
+            build_models_manager(&config, auth_manager.clone()),
+            CodexAppsToolsCache::default(),
             SessionSource::Unknown,
             environment_manager,
             empty_extension_registry(),
             Arc::new(EmptyUserInstructionsProvider),
             None,
             thread_store.clone(),
-            None,
+            local_agent_graph_store_from_state_db(state_db.as_ref()),
             installation_id,
             None,
             None,
@@ -385,6 +425,18 @@ impl CodexAgent {
 
         let task_cx = cx.clone();
         if let Err(error) = cx.spawn(async move {
+            reconcile_subagent_threads(
+                thread_manager.clone(),
+                sessions.clone(),
+                session_roots.clone(),
+                auth_manager.clone(),
+                models_manager.clone(),
+                client_capabilities.clone(),
+                base_config.clone(),
+                task_cx.clone(),
+            )
+            .await;
+
             loop {
                 match thread_created_rx.recv().await {
                     Ok(thread_id) => {
@@ -406,25 +458,17 @@ impl CodexAgent {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!("Skipped {skipped} child thread creation notifications");
-                        for thread_id in thread_manager.list_thread_ids().await {
-                            if let Err(error) = register_subagent_thread(
-                                thread_id,
-                                thread_manager.clone(),
-                                sessions.clone(),
-                                session_roots.clone(),
-                                auth_manager.clone(),
-                                models_manager.clone(),
-                                client_capabilities.clone(),
-                                base_config.clone(),
-                                task_cx.clone(),
-                            )
-                            .await
-                            {
-                                warn!(
-                                    "Failed to reconcile spawned child thread {thread_id}: {error:?}"
-                                );
-                            }
-                        }
+                        reconcile_subagent_threads(
+                            thread_manager.clone(),
+                            sessions.clone(),
+                            session_roots.clone(),
+                            auth_manager.clone(),
+                            models_manager.clone(),
+                            client_capabilities.clone(),
+                            base_config.clone(),
+                            task_cx.clone(),
+                        )
+                        .await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -442,11 +486,11 @@ impl CodexAgent {
     /// Build a session config from base config, working directory, and MCP servers.
     /// This is shared between `new_session` and `load_session`.
     fn build_session_config(
-        &self,
+        base_config: &Config,
         cwd: &Path,
         mcp_servers: Vec<McpServer>,
     ) -> Result<Config, Error> {
-        let mut config = self.config.clone();
+        let mut config = base_config.clone();
         config.cwd = cwd.try_into().map_err(Error::into_internal_error)?;
         let cwd = config.cwd.clone();
 
@@ -454,12 +498,12 @@ impl CodexAgent {
         let mut new_mcp_servers = config.mcp_servers.get().clone();
         for mcp_server in mcp_servers {
             match mcp_server {
-                // Not supported in codex
+                // Not supported in Codex.
                 McpServer::Sse(..) => {}
                 McpServer::Http(McpServerHttp {
                     name, url, headers, ..
                 }) => {
-                    // Codex does not allow whitespace in MCP server names; replace with underscores.
+                    // Codex does not allow whitespace in MCP server names; replace it with underscores.
                     let name = name.replace(|c: char| c.is_whitespace(), "_");
                     new_mcp_servers.insert(
                         name,
@@ -487,6 +531,7 @@ impl CodexAgent {
                             tools: Default::default(),
                             environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                             supports_parallel_tool_calls: false,
+                            omit_tools_from: None,
                             default_tools_approval_mode: None,
                             auth: Default::default(),
                         },
@@ -499,7 +544,7 @@ impl CodexAgent {
                     env,
                     ..
                 }) => {
-                    // Codex does not allow whitespace in MCP server names; replace with underscores.
+                    // Codex does not allow whitespace in MCP server names; replace it with underscores.
                     let name = name.replace(|c: char| c.is_whitespace(), "_");
                     new_mcp_servers.insert(
                         name,
@@ -530,6 +575,7 @@ impl CodexAgent {
                             tools: Default::default(),
                             environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                             supports_parallel_tool_calls: false,
+                            omit_tools_from: None,
                             default_tools_approval_mode: None,
                             auth: Default::default(),
                         },
@@ -556,6 +602,7 @@ impl CodexAgent {
         config.model_provider_id = session_configured.model_provider_id.clone();
         config.model_reasoning_effort = session_configured.reasoning_effort.clone();
         config.service_tier = session_configured.service_tier.clone();
+        config.approvals_reviewer = session_configured.approvals_reviewer;
         config
             .permissions
             .approval_policy
@@ -581,7 +628,10 @@ impl CodexAgent {
         config.model = Some(snapshot.model.clone());
         config.model_provider_id = snapshot.model_provider_id.clone();
         config.model_reasoning_effort = snapshot.reasoning_effort.clone();
+        config.model_reasoning_summary = snapshot.reasoning_summary;
         config.service_tier = snapshot.service_tier.clone();
+        config.personality = snapshot.personality;
+        config.approvals_reviewer = snapshot.approvals_reviewer;
         config
             .permissions
             .approval_policy
@@ -597,6 +647,36 @@ impl CodexAgent {
             )
             .map_err(Error::into_internal_error)?;
         Ok(())
+    }
+}
+
+#[expect(clippy::too_many_arguments)]
+async fn reconcile_subagent_threads(
+    thread_manager: Arc<ThreadManager>,
+    sessions: Arc<Mutex<HashMap<SessionId, Arc<Thread>>>>,
+    session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>>,
+    auth_manager: Arc<AuthManager>,
+    models_manager: Arc<dyn crate::thread::ModelsManagerImpl>,
+    client_capabilities: Arc<Mutex<ClientCapabilities>>,
+    config: Config,
+    cx: ConnectionTo<Client>,
+) {
+    for thread_id in thread_manager.list_thread_ids().await {
+        if let Err(error) = register_subagent_thread(
+            thread_id,
+            thread_manager.clone(),
+            sessions.clone(),
+            session_roots.clone(),
+            auth_manager.clone(),
+            models_manager.clone(),
+            client_capabilities.clone(),
+            config.clone(),
+            cx.clone(),
+        )
+        .await
+        {
+            warn!("Failed to reconcile spawned child thread {thread_id}: {error:?}");
+        }
     }
 }
 
@@ -731,15 +811,7 @@ impl CodexAgent {
             .list(SessionListCapabilities::new())
             .resume(SessionResumeCapabilities::new());
 
-        let mut auth_methods = vec![
-            CodexAuthMethod::ChatGpt.into(),
-            CodexAuthMethod::CodexApiKey.into(),
-            CodexAuthMethod::OpenAiApiKey.into(),
-        ];
-        // Until codex device code auth works, we can't use this in remote ssh projects
-        if std::env::var("NO_BROWSER").is_ok() {
-            auth_methods.remove(0);
-        }
+        let auth_methods = supported_auth_methods(std::env::var("NO_BROWSER").is_ok());
 
         Ok(InitializeResponse::new(protocol_version)
             .agent_capabilities(agent_capabilities)
@@ -776,7 +848,7 @@ impl CodexAgent {
                     None,
                     self.config.cli_auth_credentials_store_mode,
                     AuthKeyringBackendKind::default(),
-                    None,
+                    self.config.auth_route_config(),
                 );
 
                 let server =
@@ -839,16 +911,19 @@ impl CodexAgent {
         } = request;
         info!("Creating new session with cwd: {}", cwd.display());
 
-        let mut config = self.build_session_config(&cwd, mcp_servers)?;
+        let mut config = Self::build_session_config(&self.config, &cwd, mcp_servers)?;
         let num_mcp_servers = config.mcp_servers.len();
 
         let NewThread {
             thread_id,
             thread,
             session_configured,
-        } = Box::pin(self.thread_manager.start_thread(config.clone()))
-            .await
-            .map_err(|_e| Error::internal_error())?;
+        } = Box::pin(
+            self.thread_manager
+                .start_thread(start_thread_options(config.clone())),
+        )
+        .await
+        .map_err(|error| Error::internal_error().data(error.to_string()))?;
 
         Self::sync_config_with_session(&mut config, &session_configured)?;
 
@@ -898,7 +973,7 @@ impl CodexAgent {
             ..
         } = request;
 
-        self.restore_session(session_id, cwd, mcp_servers, cx, true)
+        self.restore_session(session_id, cwd, mcp_servers, cx, SessionRestoreKind::Load)
             .await
     }
 
@@ -919,7 +994,7 @@ impl CodexAgent {
         } = request;
 
         let load = self
-            .restore_session(session_id, cwd, mcp_servers, cx, false)
+            .restore_session(session_id, cwd, mcp_servers, cx, SessionRestoreKind::Resume)
             .await?;
 
         Ok(ResumeSessionResponse::new()
@@ -933,7 +1008,7 @@ impl CodexAgent {
         cwd: PathBuf,
         mcp_servers: Vec<McpServer>,
         cx: ConnectionTo<Client>,
-        replay_history: bool,
+        restore_kind: SessionRestoreKind,
     ) -> Result<LoadSessionResponse, Error> {
         let rollout_path = find_thread_path_by_id_str(
             &self.config.codex_home,
@@ -944,7 +1019,7 @@ impl CodexAgent {
         .map_err(|e| Error::internal_error().data(e.to_string()))?
         .ok_or_else(|| Error::resource_not_found(None))?;
 
-        let rollout_items = if replay_history {
+        let rollout_items = if restore_kind.replays_history() {
             let history = RolloutRecorder::get_rollout_history(&rollout_path)
                 .await
                 .map_err(|e| Error::internal_error().data(e.to_string()))?;
@@ -958,7 +1033,7 @@ impl CodexAgent {
             Vec::new()
         };
 
-        let mut config = self.build_session_config(&cwd, mcp_servers)?;
+        let mut config = Self::build_session_config(&self.config, &cwd, mcp_servers)?;
 
         let NewThread {
             thread_id,
@@ -969,7 +1044,7 @@ impl CodexAgent {
             rollout_path,
             self.auth_manager.clone(),
             None,
-            false,
+            client_mcp_extensions(),
         ))
         .await
         .map_err(|e| Error::internal_error().data(e.to_string()))?;
@@ -987,7 +1062,7 @@ impl CodexAgent {
             cx,
         ));
 
-        if replay_history {
+        if restore_kind.replays_history() {
             thread.replay_history(rollout_items).await?;
         }
 
@@ -1028,6 +1103,7 @@ impl CodexAgent {
                 allowed_sources: allowed_sources.to_vec(),
                 model_providers: None,
                 cwd_filters: cwd.map(|cwd| vec![cwd]),
+                section: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,
@@ -1134,6 +1210,26 @@ enum CodexAuthMethod {
     OpenAiApiKey,
 }
 
+fn supported_auth_methods(no_browser: bool) -> Vec<AuthMethod> {
+    supported_codex_auth_methods(no_browser)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+fn supported_codex_auth_methods(no_browser: bool) -> Vec<CodexAuthMethod> {
+    let methods = [
+        CodexAuthMethod::ChatGpt,
+        CodexAuthMethod::CodexApiKey,
+        CodexAuthMethod::OpenAiApiKey,
+    ];
+
+    methods
+        .into_iter()
+        .filter(|method| !(no_browser && *method == CodexAuthMethod::ChatGpt))
+        .collect()
+}
+
 impl From<CodexAuthMethod> for AuthMethodId {
     fn from(method: CodexAuthMethod) -> Self {
         Self::new(match method {
@@ -1229,7 +1325,246 @@ fn stored_session_title(name: Option<&str>, preview: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use acp::schema::{EnvVariable, HttpHeader};
+    use codex_config::{AppToolApproval, McpServerAuth};
+    use codex_core::config::ConfigBuilder;
+    use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use serde_json::json;
+
     use super::*;
+
+    async fn test_config() -> anyhow::Result<(Config, tempfile::TempDir)> {
+        let codex_home = tempfile::tempdir()?;
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await?;
+        Ok((config, codex_home))
+    }
+
+    #[test]
+    fn thread_id_is_the_runtime_identity_behind_the_acp_session_id() {
+        let thread_id = ThreadId::new();
+        let session_id = CodexAgent::session_id_from_thread_id(thread_id);
+
+        assert_eq!(
+            ThreadId::from_string(&session_id.0)
+                .expect("ACP session ID should contain a thread ID"),
+            thread_id
+        );
+    }
+
+    #[test]
+    fn load_and_resume_have_distinct_replay_contracts() {
+        assert!(SessionRestoreKind::Load.replays_history());
+        assert!(!SessionRestoreKind::Resume.replays_history());
+    }
+
+    #[test]
+    fn auth_methods_preserve_browser_and_api_key_precedence() {
+        assert_eq!(
+            supported_codex_auth_methods(false),
+            vec![
+                CodexAuthMethod::ChatGpt,
+                CodexAuthMethod::CodexApiKey,
+                CodexAuthMethod::OpenAiApiKey,
+            ]
+        );
+        assert_eq!(
+            supported_codex_auth_methods(true),
+            vec![CodexAuthMethod::CodexApiKey, CodexAuthMethod::OpenAiApiKey]
+        );
+    }
+
+    #[tokio::test]
+    async fn start_options_preserve_session_config_and_disable_unowned_extensions()
+    -> anyhow::Result<()> {
+        let (mut config, _codex_home) = test_config().await?;
+        config.model = Some("session-model".to_string());
+        config.model_reasoning_effort = Some(ReasoningEffort::High);
+        config.service_tier = Some("fast".to_string());
+        config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+        config.features.enable(Feature::Mcp20260728)?;
+        apply_runtime_feature_contracts(&mut config)?;
+
+        let options = start_thread_options(config.clone());
+
+        assert_eq!(options.config.cwd, config.cwd);
+        assert_eq!(options.config.model, config.model);
+        assert_eq!(options.config.model_provider_id, config.model_provider_id);
+        assert_eq!(
+            options.config.model_reasoning_effort,
+            config.model_reasoning_effort
+        );
+        assert_eq!(options.config.service_tier, config.service_tier);
+        assert_eq!(
+            options.config.permissions.permission_profile(),
+            config.permissions.permission_profile()
+        );
+        assert_eq!(
+            options.config.approvals_reviewer,
+            ApprovalsReviewer::AutoReview
+        );
+        assert_eq!(
+            options.client_mcp_extensions,
+            ClientMcpExtensions::default()
+        );
+        assert!(options.environments.is_none());
+        assert!(!options.config.features.enabled(Feature::Mcp20260728));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_session_snapshot_restores_runtime_configuration() -> anyhow::Result<()> {
+        let (mut config, _codex_home) = test_config().await?;
+        let thread_id = ThreadId::new();
+        let cwd = config.cwd.clone();
+        let snapshot: SessionConfiguredEvent = serde_json::from_value(json!({
+            "session_id": thread_id,
+            "model": "restored-model",
+            "model_provider_id": "restored-provider",
+            "service_tier": "fast",
+            "approval_policy": "never",
+            "approvals_reviewer": "auto_review",
+            "sandbox_policy": {
+                "type": "workspace-write",
+                "writable_roots": [],
+                "network_access": false,
+                "exclude_tmpdir_env_var": false,
+                "exclude_slash_tmp": false
+            },
+            "cwd": cwd,
+            "reasoning_effort": "high"
+        }))?;
+
+        CodexAgent::sync_config_with_session(&mut config, &snapshot)?;
+
+        assert_eq!(snapshot.thread_id, thread_id);
+        assert_eq!(config.cwd, cwd);
+        assert_eq!(config.model.as_deref(), Some("restored-model"));
+        assert_eq!(config.model_provider_id, "restored-provider");
+        assert_eq!(config.service_tier.as_deref(), Some("fast"));
+        assert_eq!(
+            config
+                .model_reasoning_effort
+                .as_ref()
+                .map(ToString::to_string),
+            Some("high".to_string())
+        );
+        assert_eq!(config.approvals_reviewer, ApprovalsReviewer::AutoReview);
+        assert!(
+            config
+                .permissions
+                .permission_profile()
+                .file_system_sandbox_policy()
+                .can_write_path_with_cwd(cwd.as_path(), cwd.as_path())
+        );
+
+        let cleared_snapshot: SessionConfiguredEvent = serde_json::from_value(json!({
+            "session_id": thread_id,
+            "model": "restored-model",
+            "model_provider_id": "restored-provider",
+            "approval_policy": "never",
+            "sandbox_policy": { "type": "read-only" },
+            "cwd": cwd
+        }))?;
+        CodexAgent::sync_config_with_session(&mut config, &cleared_snapshot)?;
+        assert_eq!(config.model_reasoning_effort, None);
+        assert_eq!(config.service_tier, None);
+        assert_eq!(config.approvals_reviewer, ApprovalsReviewer::User);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_config_preserves_mcp_transport_auth_env_and_cwd() -> anyhow::Result<()> {
+        let (mut base_config, _codex_home) = test_config().await?;
+        let base_server = McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://base.example/mcp".to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            auth: McpServerAuth::ChatGpt,
+            environment_id: "base-environment".to_string(),
+            enabled: true,
+            required: true,
+            supports_parallel_tool_calls: true,
+            omit_tools_from: None,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: Some(AppToolApproval::Prompt),
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: Default::default(),
+        };
+        base_config
+            .mcp_servers
+            .set(HashMap::from([("base".to_string(), base_server.clone())]))?;
+        let cwd = base_config.cwd.to_path_buf();
+        let client_servers = vec![
+            McpServer::Stdio(
+                McpServerStdio::new("local server", "example-mcp")
+                    .args(vec!["--stdio".to_string()])
+                    .env(vec![EnvVariable::new("SESSION_TOKEN", "secret")]),
+            ),
+            McpServer::Http(
+                McpServerHttp::new("remote server", "https://client.example/mcp")
+                    .headers(vec![HttpHeader::new("Authorization", "Bearer client")]),
+            ),
+        ];
+
+        let config = CodexAgent::build_session_config(&base_config, &cwd, client_servers)?;
+        let servers = config.mcp_servers.get();
+
+        assert_eq!(servers.get("base"), Some(&base_server));
+        let local = servers
+            .get("local_server")
+            .expect("stdio server should be preserved");
+        let McpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            cwd: server_cwd,
+            ..
+        } = &local.transport
+        else {
+            panic!("client stdio server should remain stdio");
+        };
+        assert_eq!(command, "example-mcp");
+        assert_eq!(args, &["--stdio"]);
+        assert_eq!(
+            env.as_ref()
+                .and_then(|env| env.get("SESSION_TOKEN"))
+                .map(String::as_str),
+            Some("secret")
+        );
+        assert_eq!(
+            server_cwd.as_ref().map(ToString::to_string),
+            Some(cwd.display().to_string())
+        );
+
+        let remote = servers
+            .get("remote_server")
+            .expect("HTTP server should be preserved");
+        let McpServerTransportConfig::StreamableHttp { http_headers, .. } = &remote.transport
+        else {
+            panic!("client HTTP server should remain HTTP");
+        };
+        assert_eq!(
+            http_headers
+                .as_ref()
+                .and_then(|headers| headers.get("Authorization"))
+                .map(String::as_str),
+            Some("Bearer client")
+        );
+        Ok(())
+    }
 
     #[test]
     fn stored_session_title_prefers_thread_name() {

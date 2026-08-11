@@ -118,7 +118,7 @@ npm run electron:app:smoke:packaged
 npm run electron:sidecar:smoke:packaged
 ```
 
-The packaged app smoke launches the packaged Electron executable with `ELECTRON_RUN_AS_NODE=1`. The packaged sidecar smoke locates the bundled native backend and sends a `ping` command. Both scripts default to `apps/desktop/dist-electron`, but can be pointed at another build output with:
+The packaged app smoke launches the packaged Electron executable with `ELECTRON_RUN_AS_NODE=1`. The packaged sidecar smoke runs a deterministic ACP `initialize` / `session/new` / `session/prompt` code-mode turn, proves the packaged standalone host process executed the tool, verifies a missing host fails closed with a clear diagnostic, and sends a `ping` command to the bundled native backend. Both scripts default to `apps/desktop/dist-electron`, but can be pointed at another build output with:
 
 ```bash
 NEVERWRITE_ELECTRON_OUTPUT_DIR=/path/to/electron-dist

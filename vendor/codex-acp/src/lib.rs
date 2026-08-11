@@ -1,4 +1,5 @@
 //! Codex ACP - An Agent Client Protocol implementation for Codex.
+#![recursion_limit = "256"]
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 use agent_client_protocol::ByteStreams;

@@ -10,8 +10,11 @@ import {
     createCodexRuntimeBundlePlan,
     envSuffixForTarget,
     executableNameForTarget,
+    universalMacLipoVerifyArgs,
+    validateCodexRuntimeBundleArchitectures,
     validateCodexRuntimeBundleInputs,
 } from "./stage-electron-sidecar-helpers.mjs";
+import { resolveCodexV8CargoEnvironment } from "./codex-v8-artifacts.mjs";
 
 const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const workspaceRoot = path.resolve(appRoot, "..", "..");
@@ -59,10 +62,11 @@ function parseArgs(argv) {
     return args;
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, env = {}) {
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, {
             cwd,
+            env: { ...process.env, ...env },
             stdio: "inherit",
             shell: process.platform === "win32",
         });
@@ -93,6 +97,17 @@ async function pathExists(filePath) {
         return true;
     } catch {
         return false;
+    }
+}
+
+async function readExecutableHeader(filePath) {
+    const file = await fs.open(filePath, "r");
+    try {
+        const buffer = Buffer.alloc(64 * 1024);
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+        return buffer.subarray(0, bytesRead);
+    } finally {
+        await file.close();
     }
 }
 
@@ -508,7 +523,7 @@ async function verifyUniversalBinary(filePath, description) {
     try {
         await run(
             "lipo",
-            ["-verify_arch", "arm64", "x86_64", filePath],
+            universalMacLipoVerifyArgs(filePath),
             appRoot,
         );
     } catch (error) {
@@ -618,6 +633,9 @@ async function buildNativeBackendForTarget(targetTriple) {
 }
 
 async function buildCodexForTarget(targetTriple) {
+    const v8Environment = await resolveCodexV8CargoEnvironment({
+        targetTriple,
+    });
     await run(
         "cargo",
         [
@@ -632,6 +650,7 @@ async function buildCodexForTarget(targetTriple) {
             "--quiet",
         ],
         workspaceRoot,
+        v8Environment,
     );
 }
 
@@ -736,6 +755,11 @@ for (const buildTarget of codexRuntimePlan.buildTargets) {
 
 // Resolve and validate the complete pair before replacing the existing staging tree.
 await validateCodexRuntimeBundleInputs(codexRuntimePlan, pathExists);
+await validateCodexRuntimeBundleArchitectures(
+    codexRuntimePlan,
+    targetTriple,
+    readExecutableHeader,
+);
 if (isUniversalMac) {
     for (const binary of codexRuntimePlan.binaries) {
         if (binary.inputPaths.length === 1) {
@@ -775,6 +799,15 @@ for (const binary of stagingCodexRuntime) {
         await lipoCreate(binary.inputPaths, outputPath);
     } else {
         await fs.copyFile(binary.inputPaths[0], outputPath);
+    }
+}
+if (isUniversalMac) {
+    await verifyUniversalBinary(stagedPath, "Native backend");
+    for (const binary of stagingCodexRuntime) {
+        await verifyUniversalBinary(
+            path.join(binariesDir, binary.outputName),
+            binary.description,
+        );
     }
 }
 await fs.mkdir(embeddedDir, { recursive: true });

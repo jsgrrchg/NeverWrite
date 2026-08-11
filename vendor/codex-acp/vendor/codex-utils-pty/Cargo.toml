@@ -2,7 +2,7 @@
 edition = "2024"
 license = "Apache-2.0"
 name = "codex-utils-pty"
-version = "0.144.6"
+version = "0.147.0"
 
 [dependencies]
 anyhow = "1"
@@ -19,8 +19,11 @@ log = "0.4"
 shared_library = "0.1.9"
 winapi = { version = "0.3.9", features = [
     "handleapi",
+    "jobapi",
+    "jobapi2",
     "minwinbase",
     "processthreadsapi",
+    "std",
     "synchapi",
     "winbase",
     "wincon",
