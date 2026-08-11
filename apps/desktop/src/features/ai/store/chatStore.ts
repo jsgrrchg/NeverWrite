@@ -9593,6 +9593,12 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 contextHandoff: currentItem.contextHandoff,
                 userMessageId,
             });
+            const replacedRuntimeSessionId =
+                route.initialProviderChanged &&
+                isLiveRuntimeSession(session) &&
+                committedSession.sessionId !== activeSessionId
+                    ? activeSessionId
+                    : null;
             if (preflightOwnership) {
                 const releasedOwnership = releaseComposerPreflightOwnership(
                     activeSessionId,
@@ -9619,6 +9625,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     pendingEventRoute.token,
                 );
                 pendingEventRoute = null;
+            }
+            if (replacedRuntimeSessionId) {
+                await aiDeleteRuntimeSession(replacedRuntimeSessionId).catch(
+                    () => {},
+                );
             }
             logCanonicalConversationDiagnostic(
                 "canonical conversation turn accepted",

@@ -14941,6 +14941,15 @@ describe("chatStore", () => {
             runtimeId: "provider-b",
             runtimeSessionId: "provider-b-session-1",
         });
+        expect(
+            invokeMock.mock.calls
+                .filter(
+                    ([command]) => command === "ai_delete_runtime_session",
+                )
+                .map(([, args]) =>
+                    (args as { sessionId?: string }).sessionId,
+                ),
+        ).toEqual([sourceSessionId]);
         expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
             vaultPath: "/vault",
             history: expect.objectContaining({
@@ -14999,6 +15008,89 @@ describe("chatStore", () => {
                 ([command]) => command === "ai_start_conversation_turn",
             ),
         ).toHaveLength(1);
+    });
+
+    it("keeps the source runtime session when the initial provider turn fails", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const providerBSessionId = "provider-b-failed-session";
+        const providerBSession = {
+            ...sessionPayload,
+            session_id: providerBSessionId,
+            runtime_id: "provider-b",
+            model_id: "model-b",
+            models: [],
+            modes: [],
+            config_options: [],
+        };
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    ...readySetupStatusState,
+                    runtimeId: "provider-b",
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                const runtimeId = (
+                    args as { input?: { runtime_id?: string } } | undefined
+                )?.input?.runtime_id;
+                return runtimeId === "provider-b"
+                    ? providerBSession
+                    : sessionPayload;
+            }
+            if (command === "ai_start_conversation_turn") return null;
+            if (command === "ai_send_message") {
+                throw new Error("Provider B rejected the turn");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(
+                createTextParts("Try provider B"),
+                sourceSessionId,
+            );
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(
+            invokeMock.mock.calls
+                .filter(
+                    ([command]) => command === "ai_delete_runtime_session",
+                )
+                .map(([, args]) =>
+                    (args as { sessionId?: string }).sessionId,
+                ),
+        ).toEqual([providerBSessionId]);
+        expect(
+            useChatStore.getState().sessionsById[sourceSessionId],
+        ).toBeDefined();
     });
 
     it("rejects an unavailable requested option before sending", async () => {
