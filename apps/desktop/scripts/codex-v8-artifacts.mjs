@@ -76,6 +76,17 @@ export async function resolveV8Version(
     );
 }
 
+export function parseRustcHostTarget(versionOutput) {
+    const normalized = versionOutput.replace(/\r\n?/g, "\n");
+    const matches = [...normalized.matchAll(/^host:\s*(\S+)\s*$/gm)];
+    if (matches.length !== 1) {
+        throw new Error(
+            `Expected exactly one host target from rustc -vV, found ${matches.length}`,
+        );
+    }
+    return matches[0][1];
+}
+
 export function createV8ArtifactPlan({
     version,
     profile = CODEX_V8_ARTIFACT_PROFILE,
