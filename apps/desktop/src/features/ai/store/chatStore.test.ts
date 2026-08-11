@@ -17132,6 +17132,85 @@ describe("chatStore", () => {
         );
     });
 
+    it("starts a fresh ACP session when reopening a built-in runtime fork", async () => {
+        const runtimeId = "codex-acp";
+        const persistedSessionId = "persisted:built-in-fork";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Codex",
+                        description: "Built-in ACP runtime.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...createSessionWithTrackedFiles(persistedSessionId, []),
+                    historySessionId: "built-in-fork",
+                    runtimeId,
+                    runtimeSessionId: null,
+                    continuationStrategy: "new_session_only",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 1,
+                    loadedPersistedMessageStart: 0,
+                    messages: [
+                        {
+                            id: "user:source",
+                            role: "user",
+                            kind: "text",
+                            content: "Inspect this change",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                expect(args).toMatchObject({
+                    input: { runtime_id: runtimeId },
+                    vaultPath: "/vault",
+                });
+                return {
+                    ...sessionPayload,
+                    session_id: "fresh-built-in-runtime-session",
+                    runtime_session_id: "fresh-built-in-runtime-session",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await expect(
+            useChatStore.getState().resumeSession(persistedSessionId),
+        ).resolves.toBe("fresh-built-in-runtime-session");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_resume_runtime_session",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore.getState().sessionsById[
+                "fresh-built-in-runtime-session"
+            ],
+        ).toMatchObject({
+            historySessionId: "built-in-fork",
+            runtimeSessionId: "fresh-built-in-runtime-session",
+            resumeContextPending: true,
+        });
+    });
+
     it("starts a fresh ACP session when reopening a custom runtime fork", async () => {
         const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
         const persistedSessionId = "persisted:custom-fork";
@@ -17268,6 +17347,65 @@ describe("chatStore", () => {
             ],
         ).toMatchObject({
             historySessionId: "forked-custom-history",
+            runtimeSessionId: null,
+            continuationStrategy: "new_session_only",
+            runtimeState: "persisted_only",
+        });
+    });
+
+    it("forks built-in history without retaining the source ACP session", async () => {
+        const runtimeId = "codex-acp";
+        const sourceSessionId = "source-built-in-session";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Codex",
+                        description: "Built-in ACP runtime.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [sourceSessionId]: {
+                    ...createSessionWithTrackedFiles(sourceSessionId, []),
+                    historySessionId: "source-built-in-history",
+                    runtimeId,
+                    runtimeSessionId: "source-runtime-session",
+                    continuationStrategy: "resume",
+                    runtimeState: "live",
+                    persistedMessageCount: 1,
+                },
+            },
+            sessionOrder: [sourceSessionId],
+            activeSessionId: sourceSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_fork_session_history") {
+                expect(args).toEqual({
+                    vaultPath: "/vault",
+                    sourceSessionId: "source-built-in-history",
+                });
+                return "forked-built-in-history";
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().forkSession(sourceSessionId);
+
+        expect(
+            useChatStore.getState().sessionsById[
+                "persisted:forked-built-in-history"
+            ],
+        ).toMatchObject({
+            historySessionId: "forked-built-in-history",
             runtimeSessionId: null,
             continuationStrategy: "new_session_only",
             runtimeState: "persisted_only",

@@ -6155,9 +6155,8 @@ function needsFullResumeContextTranscript(session: AIChatSession) {
     );
 }
 
-function isCustomRuntimeTranscriptFork(session: AIChatSession) {
+function isTranscriptForkSession(session: AIChatSession) {
     return (
-        session.runtimeId.startsWith("custom:") &&
         session.continuationStrategy === "new_session_only" &&
         !session.runtimeSessionId?.trim()
     );
@@ -6880,10 +6879,11 @@ function getResumeRecoveryStrategy(
     runtimes: AIRuntimeDescriptor[],
     session: AIChatSession,
 ): ResumeRecoveryStrategy {
+    if (isTranscriptForkSession(session)) {
+        return "transcript_prompt_injection";
+    }
     if (session.runtimeId.startsWith("custom:")) {
-        return isCustomRuntimeTranscriptFork(session)
-            ? "transcript_prompt_injection"
-            : "custom_acp_continuation";
+        return "custom_acp_continuation";
     }
     return runtimeSupportsCapability(
         runtimes,
@@ -12398,13 +12398,15 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const vaultPath = useVaultStore.getState().vaultPath;
                 const isCustomRuntime =
                     currentSession.runtimeId.startsWith("custom:");
-                const customRuntimeTranscriptFork =
-                    isCustomRuntimeTranscriptFork(currentSession);
-                const supportsNativeResume = runtimeSupportsCapability(
-                    get().runtimes,
-                    currentSession.runtimeId,
-                    "resume_session",
-                );
+                const transcriptFork =
+                    isTranscriptForkSession(currentSession);
+                const supportsNativeResume =
+                    !transcriptFork &&
+                    runtimeSupportsCapability(
+                        get().runtimes,
+                        currentSession.runtimeId,
+                        "resume_session",
+                    );
                 resumeStrategy = getResumeRecoveryStrategy(
                     get().runtimes,
                     currentSession,
@@ -12413,13 +12415,13 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     getSessionRuntimeStateForLog(currentSession);
                 const transcriptLoaded =
                     supportsNativeResume ||
-                    (isCustomRuntime && !customRuntimeTranscriptFork)
+                    (isCustomRuntime && !transcriptFork)
                         ? await loadPersistedTranscript(sessionId, "latest")
                         : await loadPersistedTranscript(sessionId, "full");
                 if (!transcriptLoaded) {
                     throw new Error(
                         supportsNativeResume ||
-                            (isCustomRuntime && !customRuntimeTranscriptFork)
+                            (isCustomRuntime && !transcriptFork)
                             ? "Failed to load the latest saved transcript before resuming."
                             : "Failed to load the full saved transcript before resuming.",
                     );
@@ -12447,7 +12449,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 let resumedSession: AIChatSession;
                 let resumeContextPending = false;
 
-                if (isCustomRuntime && !customRuntimeTranscriptFork) {
+                if (isCustomRuntime && !transcriptFork) {
                     const continuationStrategy =
                         latestSession.continuationStrategy;
                     const launchFingerprint =
@@ -16104,12 +16106,8 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     ...session,
                     sessionId: forkedSessionId,
                     historySessionId: newHistoryId,
-                    runtimeSessionId: session.runtimeId.startsWith("custom:")
-                        ? null
-                        : session.runtimeSessionId,
-                    continuationStrategy: session.runtimeId.startsWith("custom:")
-                        ? "new_session_only"
-                        : session.continuationStrategy,
+                    runtimeSessionId: null,
+                    continuationStrategy: "new_session_only",
                     status: "idle",
                     isResumingSession: false,
                     isPersistedSession: true,

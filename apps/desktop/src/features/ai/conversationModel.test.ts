@@ -285,6 +285,8 @@ describe("canonical conversation model", () => {
         expect(forked.providerBindings[0]).toMatchObject({
             bindingId: "fork:fork-history:claude-acp",
             conversationId: "fork-history",
+            runtimeSessionId: null,
+            continuationStrategy: "new_session_only",
             contextCursor: null,
             contextGeneration: 5,
             createdAt: 30,

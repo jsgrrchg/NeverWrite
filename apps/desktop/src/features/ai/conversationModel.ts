@@ -264,20 +264,14 @@ export function forkConversationBindings(
         source.providerBindings.find(
             (binding) => binding.bindingId === source.activeBindingId,
         ) ?? source.providerBindings[0];
-    const providerBindings = sourceBinding
+    const providerBindings: AcpConversationBinding[] = sourceBinding
         ? [
               {
                   ...sourceBinding,
                   bindingId: `fork:${conversationId}:${sourceBinding.runtimeId}`,
                   conversationId,
-                  runtimeSessionId: sourceBinding.runtimeId.startsWith("custom:")
-                      ? null
-                      : sourceBinding.runtimeSessionId,
-                  continuationStrategy: sourceBinding.runtimeId.startsWith(
-                      "custom:",
-                  )
-                      ? "new_session_only"
-                      : sourceBinding.continuationStrategy,
+                  runtimeSessionId: null,
+                  continuationStrategy: "new_session_only",
                   contextCursor: null,
                   contextGeneration: sourceBinding.contextGeneration + 1,
                   createdAt: now,

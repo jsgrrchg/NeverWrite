@@ -29,7 +29,15 @@ function addSessionRef(
   conversationId: string,
 ) {
   const normalized = ref?.trim();
-  if (normalized) refs[normalized] = conversationId;
+  if (!normalized) return;
+  const existingConversationId = refs[normalized];
+  if (
+    existingConversationId &&
+    existingConversationId !== conversationId
+  ) {
+    return;
+  }
+  refs[normalized] = conversationId;
 }
 
 function orderedSessionIds(source: LegacyChatProjectionSource) {

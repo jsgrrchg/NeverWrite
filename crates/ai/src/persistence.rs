@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{custom_runtimes::is_custom_acp_runtime_id, domain::AcpContinuationStrategy};
+use crate::domain::AcpContinuationStrategy;
 
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_INDEX_FILE: &str = "index.json";
@@ -344,6 +344,16 @@ struct PersistedSessionMetadata {
     preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     forked_from: Option<String>,
+}
+
+fn normalize_fork_runtime_identity(
+    mut metadata: PersistedSessionMetadata,
+) -> PersistedSessionMetadata {
+    if metadata.forked_from.is_some() {
+        metadata.runtime_session_id = None;
+        metadata.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
+    }
+    metadata
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -856,6 +866,7 @@ fn load_session_metadata(
     session_id: &str,
 ) -> Result<PersistedSessionMetadata, String> {
     read_json_file(&storage_session_meta_file(storage_root, session_id))
+        .map(normalize_fork_runtime_identity)
 }
 
 fn load_session_index(
@@ -867,7 +878,7 @@ fn load_session_index(
 
 fn load_session_metadata_from_dir(session_dir: &Path) -> Result<PersistedSessionMetadata, String> {
     recover_incomplete_compaction(session_dir)?;
-    read_json_file(&session_meta_path(session_dir))
+    read_json_file(&session_meta_path(session_dir)).map(normalize_fork_runtime_identity)
 }
 
 fn load_session_index_from_dir(session_dir: &Path) -> Result<PersistedTranscriptIndex, String> {
@@ -2253,6 +2264,24 @@ fn synthesize_conversation_bindings(
     }
 }
 
+fn bindings_identify_fork(bindings: &PersistedConversationBindings) -> bool {
+    let prefix = format!("fork:{}:", bindings.conversation_id);
+    bindings
+        .provider_bindings
+        .iter()
+        .any(|binding| binding.binding_id.starts_with(&prefix))
+}
+
+fn normalize_fork_binding_runtime_identity(
+    mut bindings: PersistedConversationBindings,
+) -> PersistedConversationBindings {
+    for binding in &mut bindings.provider_bindings {
+        binding.runtime_session_id = None;
+        binding.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
+    }
+    bindings
+}
+
 fn validate_persisted_conversation_bindings(
     bindings: &PersistedConversationBindings,
 ) -> Result<(), String> {
@@ -2399,14 +2428,18 @@ fn load_conversation_bindings_from_dir(
 ) -> Result<PersistedConversationBindings, String> {
     let metadata = load_session_metadata_from_dir(session_dir)?;
     let index = load_session_index_from_dir(session_dir)?;
-    Ok(match read_conversation_bindings_file(session_dir) {
+    let mut bindings = match read_conversation_bindings_file(session_dir) {
         ConversationBindingsFileState::Supported(bindings) => {
             reconcile_conversation_bindings(*bindings, &metadata, &index)
         }
         ConversationBindingsFileState::Missing | ConversationBindingsFileState::Unusable => {
             synthesize_conversation_bindings(&metadata, &index)
         }
-    })
+    };
+    if metadata.forked_from.is_some() || bindings_identify_fork(&bindings) {
+        bindings = normalize_fork_binding_runtime_identity(bindings);
+    }
+    Ok(bindings)
 }
 
 fn project_active_binding_to_history(
@@ -2508,7 +2541,7 @@ pub fn load_all_session_histories_with_bindings(
 ) -> Result<Vec<PersistedSessionHistoryEnvelope>, String> {
     load_all_session_histories(storage_root, include_messages)?
         .into_iter()
-        .map(|history| {
+        .map(|mut history| {
             let session_dir = storage_session_dir(storage_root, &history.session_id);
             let conversation_bindings =
                 if storage_session_is_complete(storage_root, &history.session_id) {
@@ -2530,6 +2563,10 @@ pub fn load_all_session_histories_with_bindings(
                     };
                     synthesize_conversation_bindings(&metadata, &index)
                 };
+            if bindings_identify_fork(&conversation_bindings) {
+                history.runtime_session_id = None;
+                history.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
+            }
             Ok(PersistedSessionHistoryEnvelope {
                 history,
                 conversation_bindings,
@@ -3660,11 +3697,6 @@ pub fn fork_session_history(
         .custom_title
         .or(source_meta.title)
         .map(|t| format!("{t} (fork)"));
-    let is_custom_acp_runtime = source_meta
-        .runtime_id
-        .as_deref()
-        .is_some_and(is_custom_acp_runtime_id);
-
     let new_metadata = PersistedSessionMetadata {
         version: source_meta.version,
         session_id: new_session_id.clone(),
@@ -3675,18 +3707,10 @@ pub fn fork_session_history(
         runtime_revision: source_meta.runtime_revision,
         runtime_launch_fingerprint: source_meta.runtime_launch_fingerprint,
         // A transcript fork must not reconnect to the source runtime session.
-        // Custom ACP does not offer a native fork operation, so its fork starts
-        // a fresh session and sends the copied transcript as resume context.
-        runtime_session_id: if is_custom_acp_runtime {
-            None
-        } else {
-            source_meta.runtime_session_id
-        },
-        continuation_strategy: if is_custom_acp_runtime {
-            Some(AcpContinuationStrategy::NewSessionOnly)
-        } else {
-            source_meta.continuation_strategy
-        },
+        // Its next turn starts a fresh native session and receives the copied
+        // transcript as bounded resume context.
+        runtime_session_id: None,
+        continuation_strategy: Some(AcpContinuationStrategy::NewSessionOnly),
         model_id: source_meta.model_id,
         mode_id: source_meta.mode_id,
         models: source_meta.models,
@@ -3713,10 +3737,8 @@ pub fn fork_session_history(
         .map(|binding| {
             binding.binding_id = format!("fork:{new_session_id}:{}", binding.runtime_id);
             binding.conversation_id = new_session_id.clone();
-            if is_custom_acp_runtime_id(&binding.runtime_id) {
-                binding.runtime_session_id = None;
-                binding.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
-            }
+            binding.runtime_session_id = None;
+            binding.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
             binding.context_cursor = None;
             binding.context_generation = binding.context_generation.saturating_add(1);
             binding.created_at = Some(now_ms);
@@ -4641,6 +4663,79 @@ mod tests {
             summaries[0].continuation_strategy,
             Some(AcpContinuationStrategy::Load)
         );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn builtin_runtime_fork_discards_source_runtime_session_identity() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.runtime_session_id = Some("source-runtime-session".to_string());
+        history.continuation_strategy = Some(AcpContinuationStrategy::Resume);
+
+        save_session_history(&dir, &history).expect("history should persist");
+        let forked_session_id =
+            fork_session_history(&dir, &history.session_id).expect("history should fork");
+        let forked = load_all_session_histories(&dir, false)
+            .expect("forked history should load")
+            .into_iter()
+            .find(|candidate| candidate.session_id == forked_session_id)
+            .expect("forked history should be present");
+
+        assert_eq!(forked.runtime_session_id, None);
+        assert_eq!(
+            forked.continuation_strategy,
+            Some(AcpContinuationStrategy::NewSessionOnly)
+        );
+        let forked_bindings =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &forked_session_id))
+                .expect("forked bindings should load");
+        assert!(forked_bindings.provider_bindings.iter().all(|binding| {
+            binding.runtime_session_id.is_none()
+                && binding.continuation_strategy == Some(AcpContinuationStrategy::NewSessionOnly)
+        }));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_fork_sidecar_isolated_when_loaded() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.runtime_session_id = Some("shared-runtime-session".to_string());
+        history.continuation_strategy = Some(AcpContinuationStrategy::Resume);
+        save_session_history(&dir, &history).expect("history should persist");
+
+        let session_dir = storage_session_dir(&dir, &history.session_id);
+        let mut bindings =
+            load_conversation_bindings_from_dir(&session_dir).expect("bindings should synthesize");
+        let fork_binding_id = format!("fork:{}:codex-acp", history.session_id);
+        bindings.active_binding_id = Some(fork_binding_id.clone());
+        bindings.provider_bindings[0].binding_id = fork_binding_id;
+        write_json_atomic(&conversation_bindings_path(&session_dir), &bindings)
+            .expect("legacy fork sidecar should persist");
+
+        let restored = load_all_session_histories_with_bindings(&dir, false)
+            .expect("legacy fork should load")
+            .into_iter()
+            .find(|candidate| candidate.history.session_id == history.session_id)
+            .expect("legacy fork should be present");
+        assert_eq!(restored.history.runtime_session_id, None);
+        assert_eq!(
+            restored.history.continuation_strategy,
+            Some(AcpContinuationStrategy::NewSessionOnly)
+        );
+
+        assert!(restored
+            .conversation_bindings
+            .provider_bindings
+            .iter()
+            .all(|binding| {
+                binding.runtime_session_id.is_none()
+                    && binding.continuation_strategy
+                        == Some(AcpContinuationStrategy::NewSessionOnly)
+            }));
 
         fs::remove_dir_all(dir).ok();
     }

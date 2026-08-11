@@ -165,6 +165,34 @@ describe("canonical chat store projection", () => {
         ).toEqual({ "conversation-1": "live draft" });
     });
 
+    it("does not reassign a native runtime session to another conversation", () => {
+        const source = createSession({
+            sessionId: "source-session",
+            historySessionId: "source-conversation",
+            runtimeSessionId: "shared-native-session",
+        });
+        const fork = createSession({
+            sessionId: "fork-session",
+            historySessionId: "fork-conversation",
+            runtimeSessionId: "shared-native-session",
+        });
+        const projection = projectChatStoreToCanonical({
+            sessionsById: {
+                [fork.sessionId]: fork,
+                [source.sessionId]: source,
+            },
+            sessionOrder: [fork.sessionId, source.sessionId],
+            activeSessionId: source.sessionId,
+        });
+
+        expect(
+            resolveConversationId(projection, "shared-native-session"),
+        ).toBe("source-conversation");
+        expect(resolveConversationId(projection, fork.sessionId)).toBe(
+            "fork-conversation",
+        );
+    });
+
     it("drops bindings from the retired multi-provider flow", () => {
         const session = createSession();
         const bindingState = createConversationBindingsFromLegacySession(session);
