@@ -6,9 +6,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import type { ConversationProviderPickerOption } from "../conversationPickerModel";
 import type { AIConfigOption, AIModeOption, AIModelOption } from "../types";
 import { AIProviderModelPicker } from "./AIProviderModelPicker";
+import { useAnchoredChatMenuPosition } from "./useAnchoredChatMenuPosition";
 
 interface AIChatAgentControlsProps {
   disabled?: boolean;
@@ -155,6 +157,7 @@ function DropdownField({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const lastFocusedElementRef = useRef<HTMLElement | null>(null);
   const selected = options.find(
@@ -200,11 +203,17 @@ function DropdownField({
       );
     });
   }, [options, query, searchable]);
+  const menuPosition = useAnchoredChatMenuPosition(ref, menuRef, open);
 
   useEffect(() => {
     if (!open) return;
     const handleClick = (event: MouseEvent) => {
-      if (ref.current?.contains(event.target as Node)) return;
+      if (
+        ref.current?.contains(event.target as Node) ||
+        menuRef.current?.contains(event.target as Node)
+      ) {
+        return;
+      }
       closeDropdown();
     };
     document.addEventListener("mousedown", handleClick);
@@ -271,13 +280,17 @@ function DropdownField({
           <path d="M2.5 4L5 6.5L7.5 4" />
         </svg>
       </button>
-      {open && options.length > 0 && (
+      {open && options.length > 0
+        ? createPortal(
         <div
-          className="absolute bottom-full left-0 z-50 mb-1 min-w-35 overflow-hidden rounded-lg py-1"
+          ref={menuRef}
+          className="nw-chat-glass-menu fixed z-50 min-w-35 overflow-hidden rounded-lg py-1"
           style={{
-            backgroundColor: "var(--bg-secondary)",
             border: "1px solid var(--border)",
             boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+            left: menuPosition?.left ?? 8,
+            top: menuPosition?.top ?? 8,
+            visibility: menuPosition ? "visible" : "hidden",
             minWidth: menuMinWidth,
             maxHeight: searchable ? 320 : undefined,
             display: searchable ? "flex" : undefined,
@@ -463,8 +476,10 @@ function DropdownField({
               ))
             )}
           </div>
-        </div>
-      )}
+        </div>,
+        document.body,
+        )
+        : null}
     </div>
   );
 }

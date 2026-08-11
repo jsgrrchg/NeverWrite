@@ -92,6 +92,7 @@ export function ChatPromptOutlineMenu({
 
     return createPortal(
         <div
+            className="nw-chat-glass-menu"
             ref={menuRef}
             role="menu"
             aria-label="User prompts"
@@ -105,7 +106,6 @@ export function ChatPromptOutlineMenu({
                 overflowY: "auto",
                 padding: 4,
                 borderRadius: 8,
-                backgroundColor: "var(--bg-secondary)",
                 border: "1px solid var(--border)",
                 boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
             }}

@@ -5,6 +5,7 @@ import {
     useState,
     type KeyboardEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
     safeStorageGetItem,
     safeStorageSetItem,
@@ -12,6 +13,7 @@ import {
 } from "../../../app/utils/safeStorage";
 import type { ConversationProviderPickerOption } from "../conversationPickerModel";
 import { AIProviderIcon } from "./AIProviderIcon";
+import { useAnchoredChatMenuPosition } from "./useAnchoredChatMenuPosition";
 
 interface AIProviderModelPickerProps {
     disabled?: boolean;
@@ -152,6 +154,7 @@ export function AIProviderModelPicker({
     const [favorites, setFavorites] = useState(readFavoriteModels);
     const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
     const rootRef = useRef<HTMLDivElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const lastFocusedElementRef = useRef<HTMLElement | null>(null);
 
@@ -214,6 +217,7 @@ export function AIProviderModelPicker({
             (row) => row.runtimeId === runtimeId && row.modelId === modelId,
         ) ?? rows.find((row) => row.runtimeId === runtimeId);
     const triggerLabel = selectedRow?.modelLabel ?? (modelId || "Model");
+    const menuPosition = useAnchoredChatMenuPosition(rootRef, menuRef, open);
 
     const restoreFocus = () => {
         const target = lastFocusedElementRef.current;
@@ -239,7 +243,10 @@ export function AIProviderModelPicker({
     useEffect(() => {
         if (!open) return;
         const handlePointerDown = (event: MouseEvent) => {
-            if (!rootRef.current?.contains(event.target as Node)) {
+            if (
+                !rootRef.current?.contains(event.target as Node) &&
+                !menuRef.current?.contains(event.target as Node)
+            ) {
                 setOpen(false);
                 setQuery("");
                 setHighlightedKey(null);
@@ -363,16 +370,20 @@ export function AIProviderModelPicker({
                 <ChevronIcon open={open} />
             </button>
 
-            {open ? (
+            {open
+                ? createPortal(
                 <div
                     aria-label="Provider and model"
-                    className="absolute bottom-full left-0 z-50 mb-1 flex h-[346px] max-h-[min(346px,calc(100vh-32px))] w-[360px] max-w-[calc(100vw-32px)] overflow-hidden rounded-xl"
+                    className="nw-chat-glass-menu fixed z-50 flex h-[346px] max-h-[min(346px,calc(100vh-32px))] w-[360px] max-w-[calc(100vw-32px)] overflow-hidden rounded-xl"
+                    ref={menuRef}
                     role="dialog"
                     style={{
-                        backgroundColor: "var(--bg-secondary)",
                         border: "1px solid var(--border)",
                         boxShadow: "0 18px 42px rgba(0,0,0,0.24)",
                         color: "var(--text-primary)",
+                        left: menuPosition?.left ?? 8,
+                        top: menuPosition?.top ?? 8,
+                        visibility: menuPosition ? "visible" : "hidden",
                     }}
                 >
                     {!normalizedQuery ? (
@@ -581,8 +592,10 @@ export function AIProviderModelPicker({
                             )}
                         </div>
                     </div>
-                </div>
-            ) : null}
+                </div>,
+                document.body,
+                )
+                : null}
         </div>
     );
 }

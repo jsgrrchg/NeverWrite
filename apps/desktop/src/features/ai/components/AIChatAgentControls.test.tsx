@@ -59,6 +59,11 @@ describe("AIChatAgentControls", () => {
     );
 
     await user.click(screen.getByTitle("Provider and model"));
+    const modelMenu = screen.getByRole("dialog", {
+      name: "Provider and model",
+    });
+    expect(modelMenu).toHaveClass("nw-chat-glass-menu");
+    expect(modelMenu.parentElement).toBe(document.body);
     expect(screen.getByLabelText("Provider and model search")).toHaveFocus();
     await user.type(
       screen.getByLabelText("Provider and model search"),
@@ -450,6 +455,11 @@ describe("AIChatAgentControls", () => {
       screen.getByRole("button", { name: "Standard Default" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Flex" })).toBeInTheDocument();
+    const traitMenu = screen
+      .getByRole("button", { name: "Fast" })
+      .closest(".nw-chat-glass-menu");
+    expect(traitMenu).not.toBeNull();
+    expect(traitMenu?.parentElement).toBe(document.body);
 
     fireEvent.click(screen.getByRole("button", { name: "Fast" }));
 
