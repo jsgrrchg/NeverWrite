@@ -267,6 +267,91 @@ describe("AIChatSessionView", () => {
         });
     });
 
+    it("treats the staged provider as active while the first turn is pending", () => {
+        const sessionId = "session-a";
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [sessionId]: {
+                    ...createSession(sessionId, "Workspace chat"),
+                    messages: [],
+                    persistedMessageCount: 0,
+                },
+            },
+            activeSessionId: sessionId,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B ACP",
+                        description: "Second provider",
+                        capabilities: ["create_session"],
+                    },
+                    models: [
+                        {
+                            id: "model-b",
+                            runtimeId: "provider-b",
+                            name: "Model B",
+                            description: "Provider B model",
+                        },
+                    ],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    runtimeId: "provider-b",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+            },
+        }));
+        useChatStore.setState((state) => ({
+            conversationsById: {
+                ...state.conversationsById,
+                [sessionId]: {
+                    ...state.conversationsById[sessionId]!,
+                    status: "streaming",
+                    preferredSelection: {
+                        ...state.conversationsById[sessionId]!.preferredSelection,
+                        runtimeId: "provider-b",
+                        modelId: "model-b",
+                    },
+                },
+            },
+            preparedTurnCatalogByConversationId: {
+                ...state.preparedTurnCatalogByConversationId,
+                [sessionId]: {
+                    runtimeId: "provider-b",
+                    modelId: "model-b",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    effortsByModel: {},
+                },
+            },
+        }));
+        useEditorStore.getState().openChat(sessionId, {
+            title: "Workspace chat",
+            paneId: "primary",
+        });
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(agentControlsMockState.props?.runtimeId).toBe("provider-b");
+        expect(
+            agentControlsMockState.props?.providers?.find(
+                (provider) => provider.runtimeId === "provider-b",
+            )?.disabledReason,
+        ).toBeNull();
+    });
+
     it("renames the workspace chat from the local header title on double click", async () => {
         setupWorkspaceSession();
 

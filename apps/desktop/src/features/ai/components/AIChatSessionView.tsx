@@ -427,13 +427,13 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     ]);
     const providerOptions = useMemo(
         () =>
-            conversation && session
+            conversation && session && turnSelection
                 ? buildConversationProviderOptions({
                       runtimes,
                       setupStatusByRuntimeId,
                       conversation,
                       bindings: conversationBindings,
-                      activeRuntimeId: session.runtimeId,
+                      activeRuntimeId: turnSelection.runtimeId,
                       hasQueuedMessages:
                           queuedMessages.length > 0 ||
                           queuedMessageEdit != null,
@@ -447,6 +447,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             runtimes,
             session,
             setupStatusByRuntimeId,
+            turnSelection,
         ],
     );
 
