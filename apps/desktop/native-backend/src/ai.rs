@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Sender},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -78,6 +78,10 @@ const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
     "Grok login looks invalid or expired. Run Grok login again to reconnect.";
 const CLAUDE_LOGIN_INVALIDATED_MESSAGE: &str =
     "Claude login looks invalid or expired. Run Claude subscription login again to reconnect.";
+const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+const CLAUDE_AUTH_STATUS_CACHE_TTL: Duration = Duration::from_secs(5);
+const CLAUDE_AUTH_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CLAUDE_AUTH_STATUS_MAX_OUTPUT_BYTES: u64 = 64 * 1024;
 const GROK_STORED_XAI_API_KEY_INVALID_MESSAGE: &str =
     "Stored xAI API key looks invalid. Add a new xAI API key to reconnect Grok.";
 const GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE: &str =
@@ -8547,6 +8551,7 @@ fn inherited_auth_method_for_setup(runtime_id: &str, setup: &RuntimeSetupState) 
         runtime_id,
         !setup.suppress_persisted_auth,
         setup.auth_invalidated_at_ms,
+        setup,
     )
 }
 
@@ -8554,6 +8559,7 @@ fn inherited_auth_method(
     runtime_id: &str,
     include_persisted: bool,
     auth_invalidated_at_ms: Option<u64>,
+    setup: &RuntimeSetupState,
 ) -> Option<String> {
     match runtime_id {
         CODEX_RUNTIME_ID => env_secret_present("CODEX_API_KEY")
@@ -8564,6 +8570,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         CLAUDE_RUNTIME_ID => env_secret_present("ANTHROPIC_AUTH_TOKEN")
@@ -8581,6 +8588,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         GROK_RUNTIME_ID => env_secret_present("XAI_API_KEY")
@@ -8590,6 +8598,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         KILO_RUNTIME_ID => env_secret_present("KILO_API_KEY")
@@ -8599,6 +8608,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         OPENCODE_RUNTIME_ID => opencode_env_auth_present()
@@ -8608,6 +8618,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         _ => None,
@@ -8618,15 +8629,19 @@ fn inherited_persisted_auth_method(
     runtime_id: &str,
     include_persisted: bool,
     auth_invalidated_at_ms: Option<u64>,
+    setup: &RuntimeSetupState,
 ) -> Option<String> {
     include_persisted
-        .then(|| persisted_cli_auth_method_with_invalidated_at(runtime_id, auth_invalidated_at_ms))
+        .then(|| {
+            persisted_cli_auth_method_with_invalidated_at(runtime_id, auth_invalidated_at_ms, setup)
+        })
         .flatten()
 }
 
 fn persisted_cli_auth_method_with_invalidated_at(
     runtime_id: &str,
     auth_invalidated_at_ms: Option<u64>,
+    setup: &RuntimeSetupState,
 ) -> Option<String> {
     let home = home_dir()?;
     let method = persisted_cli_auth_method_for_home_with_invalidated_at(
@@ -8639,7 +8654,7 @@ fn persisted_cli_auth_method_with_invalidated_at(
         return method;
     }
 
-    match claude_cli_auth_ready() {
+    match claude_cli_auth_ready(setup) {
         Some(true) => method,
         Some(false) => None,
         None if auth_invalidated_at_ms.is_some() => None,
@@ -8654,19 +8669,165 @@ fn parse_claude_auth_status(raw: &[u8]) -> Option<bool> {
         .as_bool()
 }
 
-fn claude_cli_auth_ready() -> Option<bool> {
-    let mut resolved = resolve_base_acp_command(CLAUDE_RUNTIME_ID, &RuntimeSetupState::default());
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct ClaudeAuthProbeKey {
+    program: PathBuf,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    auth_invalidated_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct ClaudeAuthProbe {
+    key: ClaudeAuthProbeKey,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClaudeAuthProbeCacheEntry {
+    checked_at: Instant,
+    result: Option<bool>,
+}
+
+#[derive(Default)]
+struct ClaudeAuthProbeCache {
+    entries: HashMap<ClaudeAuthProbeKey, ClaudeAuthProbeCacheEntry>,
+}
+
+impl ClaudeAuthProbeCache {
+    fn get(&mut self, key: &ClaudeAuthProbeKey, ttl: Duration) -> Option<Option<bool>> {
+        self.entries
+            .retain(|_, entry| entry.checked_at.elapsed() < ttl);
+        self.entries.get(key).map(|entry| entry.result)
+    }
+
+    fn insert(&mut self, key: ClaudeAuthProbeKey, result: Option<bool>) {
+        self.entries.insert(
+            key,
+            ClaudeAuthProbeCacheEntry {
+                checked_at: Instant::now(),
+                result,
+            },
+        );
+    }
+}
+
+fn claude_auth_probe_cache() -> &'static Mutex<ClaudeAuthProbeCache> {
+    static CACHE: OnceLock<Mutex<ClaudeAuthProbeCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ClaudeAuthProbeCache::default()))
+}
+
+fn resolve_claude_auth_probe(setup: &RuntimeSetupState) -> Option<ClaudeAuthProbe> {
+    let mut resolved = resolve_base_acp_command(CLAUDE_RUNTIME_ID, setup);
     let program = resolved.program.take()?;
     resolved.args.extend([
         "--cli".to_string(),
         "auth".to_string(),
         "status".to_string(),
     ]);
-    let output = std::process::Command::new(program)
-        .args(resolved.args)
-        .output()
-        .ok()?;
-    parse_claude_auth_status(&output.stdout).or_else(|| parse_claude_auth_status(&output.stderr))
+    let mut env = setup
+        .env
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<Vec<_>>();
+    env.sort_unstable();
+    Some(ClaudeAuthProbe {
+        key: ClaudeAuthProbeKey {
+            program,
+            args: resolved.args,
+            env,
+            auth_invalidated_at_ms: setup.auth_invalidated_at_ms,
+        },
+    })
+}
+
+fn capture_child_output<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        let _ = reader
+            .by_ref()
+            .take(CLAUDE_AUTH_STATUS_MAX_OUTPUT_BYTES)
+            .read_to_end(&mut output);
+        output
+    })
+}
+
+fn terminate_auth_probe(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let process_group = -(child.id() as i32);
+        // The child starts in its own process group, so the negative PID cannot
+        // target NeverWrite or another unrelated group.
+        unsafe {
+            libc::kill(process_group, libc::SIGKILL);
+        }
+        let _ = child.kill();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+fn execute_claude_auth_probe(probe: &ClaudeAuthProbe, timeout: Duration) -> Option<bool> {
+    let mut command = std::process::Command::new(&probe.key.program);
+    command
+        .args(&probe.key.args)
+        .envs(probe.key.env.iter().map(|(key, value)| (key, value)))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn().ok()?;
+    let stdout = child.stdout.take().map(capture_child_output);
+    let stderr = child.stderr.take().map(capture_child_output);
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started_at.elapsed() < timeout => {
+                let remaining = timeout.saturating_sub(started_at.elapsed());
+                thread::sleep(CLAUDE_AUTH_STATUS_POLL_INTERVAL.min(remaining));
+            }
+            Ok(None) | Err(_) => {
+                terminate_auth_probe(&mut child);
+                // Dropping the handles detaches the readers so an inherited
+                // pipe held by a misbehaving descendant cannot extend the
+                // synchronous timeout seen by the caller.
+                drop(stdout);
+                drop(stderr);
+                return None;
+            }
+        }
+    }
+
+    let stdout = stdout
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    parse_claude_auth_status(&stdout).or_else(|| parse_claude_auth_status(&stderr))
+}
+
+fn claude_cli_auth_ready(setup: &RuntimeSetupState) -> Option<bool> {
+    let probe = resolve_claude_auth_probe(setup)?;
+    if let Ok(mut cache) = claude_auth_probe_cache().lock() {
+        if let Some(result) = cache.get(&probe.key, CLAUDE_AUTH_STATUS_CACHE_TTL) {
+            return result;
+        }
+    }
+
+    let result = execute_claude_auth_probe(&probe, CLAUDE_AUTH_STATUS_TIMEOUT);
+    if let Ok(mut cache) = claude_auth_probe_cache().lock() {
+        cache.insert(probe.key, result);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -18624,6 +18785,71 @@ mod tests {
         assert_eq!(parse_claude_auth_status(b"not-json"), None);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn claude_auth_probe_uses_the_effective_binary_and_caches_its_result() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("custom-claude-acp");
+        let marker = temp.path().join("probe-count");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf x >> \"$NEVERWRITE_AUTH_PROBE_MARKER\"\nprintf '{\"loggedIn\":%s}' \"$NEVERWRITE_AUTH_PROBE_RESULT\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut setup = RuntimeSetupState {
+            custom_binary_path: Some(executable.display().to_string()),
+            env: HashMap::from([
+                (
+                    "NEVERWRITE_AUTH_PROBE_MARKER".to_string(),
+                    marker.display().to_string(),
+                ),
+                (
+                    "NEVERWRITE_AUTH_PROBE_RESULT".to_string(),
+                    "true".to_string(),
+                ),
+            ]),
+            ..RuntimeSetupState::default()
+        };
+
+        assert_eq!(claude_cli_auth_ready(&setup), Some(true));
+        assert_eq!(claude_cli_auth_ready(&setup), Some(true));
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "x");
+
+        setup.env.insert(
+            "NEVERWRITE_AUTH_PROBE_RESULT".to_string(),
+            "false".to_string(),
+        );
+        assert_eq!(claude_cli_auth_ready(&setup), Some(false));
+        assert_eq!(claude_cli_auth_ready(&setup), Some(false));
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "xx");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_auth_probe_terminates_a_hung_process_group() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("hanging-claude-acp");
+        fs::write(&executable, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(executable.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+        let probe = resolve_claude_auth_probe(&setup).expect("custom probe should resolve");
+        let started_at = Instant::now();
+
+        assert_eq!(
+            execute_claude_auth_probe(&probe, Duration::from_millis(50)),
+            None
+        );
+        assert!(started_at.elapsed() < Duration::from_secs(2));
+    }
+
     #[test]
     fn claude_auth_error_detector_matches_expired_oauth() {
         for error in [
@@ -19749,7 +19975,7 @@ mod tests {
             .expect("Grok ACP process spec should resolve");
 
         assert_eq!(
-            inherited_auth_method(GROK_RUNTIME_ID, true, None),
+            inherited_auth_method(GROK_RUNTIME_ID, true, None, &setup),
             Some("xai-api-key".to_string())
         );
         assert_eq!(spec.env.get("XAI_API_KEY"), None);
