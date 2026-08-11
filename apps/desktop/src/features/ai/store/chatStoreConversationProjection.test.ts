@@ -157,12 +157,21 @@ describe("canonical chat store projection", () => {
         expect(
             projectSessionMapToConversations(
                 {
-                    [stale.sessionId]: "stale draft",
                     [live.sessionId]: "live draft",
+                    [stale.sessionId]: "stale draft",
                 },
                 projection,
             ),
         ).toEqual({ "conversation-1": "live draft" });
+        expect(
+            projectSessionMapToConversations(
+                {
+                    [live.runtimeSessionId as string]: "live usage",
+                    [stale.runtimeSessionId as string]: "stale usage",
+                },
+                projection,
+            ),
+        ).toEqual({ "conversation-1": "live usage" });
     });
 
     it("does not reassign a native runtime session to another conversation", () => {

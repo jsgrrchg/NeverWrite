@@ -186,6 +186,7 @@ import {
     updateConversationBindingsFromLegacySession,
 } from "../conversationModel";
 import {
+    createConversationScopedValueResolver,
     hasSameCanonicalSessionTopology,
     projectCanonicalConversationContentUpdate,
     projectChatStoreToCanonical,
@@ -8133,34 +8134,14 @@ function projectChangedSessionMapToConversations<T>(
     }
 
     let projected = previousValuesByConversationId;
+    const resolveValue = createConversationScopedValueResolver(
+        nextValuesBySessionId,
+        projection,
+    );
     for (const conversationId of affectedConversationIds) {
-        const sessionId = projection.sessionIdByConversationId[conversationId];
-        let hasNextValue = false;
-        let nextValue: T | undefined;
-        if (sessionId && Object.hasOwn(nextValuesBySessionId, sessionId)) {
-            hasNextValue = true;
-            nextValue = nextValuesBySessionId[sessionId];
-        } else if (Object.hasOwn(nextValuesBySessionId, conversationId)) {
-            hasNextValue = true;
-            nextValue = nextValuesBySessionId[conversationId];
-        } else {
-            // Legacy callers may temporarily key a value by a native session
-            // or binding id. Prefer the elected local session above, but keep
-            // compatible aliases visible until structural migration runs.
-            for (const [sessionRef, value] of Object.entries(
-                nextValuesBySessionId,
-            )) {
-                if (
-                    resolveConversationId(projection, sessionRef) ===
-                    conversationId
-                ) {
-                    hasNextValue = true;
-                    nextValue = value;
-                }
-            }
-        }
+        const resolved = resolveValue(conversationId);
         const hadValue = Object.hasOwn(projected, conversationId);
-        if (!hasNextValue) {
+        if (!resolved.hasValue) {
             if (!hadValue) continue;
             if (projected === previousValuesByConversationId) {
                 projected = { ...previousValuesByConversationId };
@@ -8168,11 +8149,11 @@ function projectChangedSessionMapToConversations<T>(
             delete projected[conversationId];
             continue;
         }
-        if (hadValue && projected[conversationId] === nextValue) continue;
+        if (hadValue && projected[conversationId] === resolved.value) continue;
         if (projected === previousValuesByConversationId) {
             projected = { ...previousValuesByConversationId };
         }
-        projected[conversationId] = nextValue as T;
+        projected[conversationId] = resolved.value;
     }
 
     return projected;

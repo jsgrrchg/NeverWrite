@@ -304,13 +304,77 @@ export function projectSessionMapToConversations<T>(
   valuesBySessionId: Readonly<Record<string, T>>,
   projection: Pick<
     CanonicalChatStoreProjection,
-    "conversationIdBySessionRef" | "conversationsById"
+    | "conversationIdBySessionRef"
+    | "conversationsById"
+    | "sessionIdByConversationId"
   >,
 ): Record<string, T> {
   const valuesByConversationId: Record<string, T> = {};
-  for (const [sessionRef, value] of Object.entries(valuesBySessionId)) {
-    const conversationId = resolveConversationId(projection, sessionRef);
-    if (conversationId) valuesByConversationId[conversationId] = value;
+  const resolveValue = createConversationScopedValueResolver(
+    valuesBySessionId,
+    projection,
+  );
+  for (const conversationId of Object.keys(projection.conversationsById)) {
+    const resolved = resolveValue(conversationId);
+    if (resolved.hasValue) {
+      valuesByConversationId[conversationId] = resolved.value;
+    }
   }
   return valuesByConversationId;
+}
+
+export function createConversationScopedValueResolver<T>(
+  valuesBySessionId: Readonly<Record<string, T>>,
+  projection: Pick<
+    CanonicalChatStoreProjection,
+    "conversationIdBySessionRef" | "sessionIdByConversationId"
+  >,
+): (
+  conversationId: string,
+) => { hasValue: false } | { hasValue: true; value: T } {
+  let aliasValuesByConversationId: Record<string, T> | null = null;
+
+  return (conversationId) => {
+    const canonicalSessionId =
+      projection.sessionIdByConversationId[conversationId];
+    if (
+      canonicalSessionId &&
+      Object.hasOwn(valuesBySessionId, canonicalSessionId)
+    ) {
+      return {
+        hasValue: true,
+        value: valuesBySessionId[canonicalSessionId],
+      };
+    }
+    if (Object.hasOwn(valuesBySessionId, conversationId)) {
+      return { hasValue: true, value: valuesBySessionId[conversationId] };
+    }
+
+    if (!aliasValuesByConversationId) {
+      aliasValuesByConversationId = {};
+      // Legacy values can still be keyed by a native session or binding id.
+      // Build fallbacks from the canonical ref index so precedence does not
+      // depend on insertion order in the session-scoped value map.
+      for (const [sessionRef, mappedConversationId] of Object.entries(
+        projection.conversationIdBySessionRef,
+      )) {
+        if (
+          !Object.hasOwn(
+            aliasValuesByConversationId,
+            mappedConversationId,
+          ) &&
+          Object.hasOwn(valuesBySessionId, sessionRef)
+        ) {
+          aliasValuesByConversationId[mappedConversationId] =
+            valuesBySessionId[sessionRef];
+        }
+      }
+    }
+    return Object.hasOwn(aliasValuesByConversationId, conversationId)
+      ? {
+          hasValue: true,
+          value: aliasValuesByConversationId[conversationId],
+        }
+      : { hasValue: false };
+  };
 }
