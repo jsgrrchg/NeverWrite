@@ -2161,7 +2161,7 @@ fn load_history_from_session_dir(
 
 enum ConversationBindingsFileState {
     Missing,
-    Supported(PersistedConversationBindings),
+    Supported(Box<PersistedConversationBindings>),
     Unusable,
 }
 
@@ -2295,7 +2295,7 @@ fn read_conversation_bindings_file(session_dir: &Path) -> ConversationBindingsFi
     if validate_persisted_conversation_bindings(&bindings).is_err() {
         return ConversationBindingsFileState::Unusable;
     }
-    ConversationBindingsFileState::Supported(bindings)
+    ConversationBindingsFileState::Supported(Box::new(bindings))
 }
 
 fn reconcile_conversation_bindings(
@@ -2369,7 +2369,7 @@ fn load_conversation_bindings_from_dir(
     let index = load_session_index_from_dir(session_dir)?;
     Ok(match read_conversation_bindings_file(session_dir) {
         ConversationBindingsFileState::Supported(bindings) => {
-            reconcile_conversation_bindings(bindings, &metadata, &index)
+            reconcile_conversation_bindings(*bindings, &metadata, &index)
         }
         ConversationBindingsFileState::Missing | ConversationBindingsFileState::Unusable => {
             synthesize_conversation_bindings(&metadata, &index)
@@ -2457,7 +2457,7 @@ pub fn save_session_history_with_bindings(
         return Err("Canonical bindings do not match the persisted history.".to_string());
     }
     let existing = match disk_state {
-        ConversationBindingsFileState::Supported(existing) => Some(existing),
+        ConversationBindingsFileState::Supported(existing) => Some(*existing),
         ConversationBindingsFileState::Missing => None,
         ConversationBindingsFileState::Unusable => unreachable!(),
     };
