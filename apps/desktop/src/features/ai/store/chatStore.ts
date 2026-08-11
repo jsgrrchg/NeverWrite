@@ -186,6 +186,8 @@ import {
     updateConversationBindingsFromLegacySession,
 } from "../conversationModel";
 import {
+    hasSameCanonicalSessionTopology,
+    projectCanonicalConversationContentUpdate,
     projectChatStoreToCanonical,
     projectSessionMapToConversations,
     resolveConversationId,
@@ -7056,11 +7058,44 @@ function getSetupStatusForRuntime(
 }
 
 function touchSessionOrder(sessionOrder: string[], sessionId: string) {
+    if (sessionOrder[0] === sessionId) {
+        return sessionOrder;
+    }
     if (!sessionOrder.includes(sessionId)) {
         return [sessionId, ...sessionOrder];
     }
 
     return [sessionId, ...sessionOrder.filter((id) => id !== sessionId)];
+}
+
+const _changedSessionIdsBySessionsMap = new WeakMap<
+    Record<string, AIChatSession>,
+    {
+        base: Record<string, AIChatSession>;
+        sessionIds: ReadonlySet<string>;
+    }
+>();
+
+function replaceSessionById(
+    sessionsById: Record<string, AIChatSession>,
+    sessionId: string,
+    nextSession: AIChatSession,
+) {
+    if (sessionsById[sessionId] === nextSession) return sessionsById;
+    const nextSessionsById = {
+        ...sessionsById,
+        [sessionId]: nextSession,
+    };
+    const pendingChanges = _changedSessionIdsBySessionsMap.get(sessionsById);
+    const changedSessionIds = new Set(
+        pendingChanges?.sessionIds,
+    );
+    changedSessionIds.add(sessionId);
+    _changedSessionIdsBySessionsMap.set(nextSessionsById, {
+        base: pendingChanges?.base ?? sessionsById,
+        sessionIds: changedSessionIds,
+    });
+    return nextSessionsById;
 }
 
 function updateSessionById(
@@ -7070,11 +7105,11 @@ function updateSessionById(
 ) {
     const session = state.sessionsById[sessionId];
     if (!session) return state.sessionsById;
-
-    return {
-        ...state.sessionsById,
-        [sessionId]: updater(session),
-    };
+    return replaceSessionById(
+        state.sessionsById,
+        sessionId,
+        updater(session),
+    );
 }
 
 function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
@@ -7708,10 +7743,11 @@ function flushDeltas() {
 
             if (nextSession === session) continue;
 
-            sessionsById = {
-                ...sessionsById,
-                [session_id]: nextSession,
-            };
+            sessionsById = replaceSessionById(
+                sessionsById,
+                session_id,
+                nextSession,
+            );
             changed = true;
         }
 
@@ -7738,10 +7774,11 @@ function flushDeltas() {
 
             if (!sessionChanged) continue;
 
-            sessionsById = {
-                ...sessionsById,
-                [sessionId]: nextSession,
-            };
+            sessionsById = replaceSessionById(
+                sessionsById,
+                sessionId,
+                nextSession,
+            );
             changed = true;
         }
 
@@ -8047,6 +8084,231 @@ function canonicalChatProjectionInputsEqual(
     );
 }
 
+function haveSameRecordKeys<T>(
+    previous: Readonly<Record<string, T>>,
+    next: Readonly<Record<string, T>>,
+) {
+    const previousKeys = Object.keys(previous);
+    const nextKeys = Object.keys(next);
+    return (
+        previousKeys.length === nextKeys.length &&
+        previousKeys.every((key) => Object.hasOwn(next, key))
+    );
+}
+
+function projectChangedSessionMapToConversations<T>(
+    previousValuesBySessionId: Readonly<Record<string, T>>,
+    nextValuesBySessionId: Readonly<Record<string, T>>,
+    previousValuesByConversationId: Record<string, T>,
+    projection: Pick<
+        ChatStore,
+        | "conversationIdBySessionRef"
+        | "conversationsById"
+        | "sessionIdByConversationId"
+    >,
+) {
+    if (previousValuesBySessionId === nextValuesBySessionId) {
+        return previousValuesByConversationId;
+    }
+
+    const affectedConversationIds = new Set<string>();
+    const sessionRefs = new Set([
+        ...Object.keys(previousValuesBySessionId),
+        ...Object.keys(nextValuesBySessionId),
+    ]);
+    for (const sessionRef of sessionRefs) {
+        if (
+            Object.hasOwn(previousValuesBySessionId, sessionRef) ===
+                Object.hasOwn(nextValuesBySessionId, sessionRef) &&
+            previousValuesBySessionId[sessionRef] ===
+                nextValuesBySessionId[sessionRef]
+        ) {
+            continue;
+        }
+        const conversationId = resolveConversationId(
+            projection,
+            sessionRef,
+        );
+        if (conversationId) affectedConversationIds.add(conversationId);
+    }
+
+    let projected = previousValuesByConversationId;
+    for (const conversationId of affectedConversationIds) {
+        const sessionId = projection.sessionIdByConversationId[conversationId];
+        let hasNextValue = false;
+        let nextValue: T | undefined;
+        if (sessionId && Object.hasOwn(nextValuesBySessionId, sessionId)) {
+            hasNextValue = true;
+            nextValue = nextValuesBySessionId[sessionId];
+        } else if (Object.hasOwn(nextValuesBySessionId, conversationId)) {
+            hasNextValue = true;
+            nextValue = nextValuesBySessionId[conversationId];
+        } else {
+            // Legacy callers may temporarily key a value by a native session
+            // or binding id. Prefer the elected local session above, but keep
+            // compatible aliases visible until structural migration runs.
+            for (const [sessionRef, value] of Object.entries(
+                nextValuesBySessionId,
+            )) {
+                if (
+                    resolveConversationId(projection, sessionRef) ===
+                    conversationId
+                ) {
+                    hasNextValue = true;
+                    nextValue = value;
+                }
+            }
+        }
+        const hadValue = Object.hasOwn(projected, conversationId);
+        if (!hasNextValue) {
+            if (!hadValue) continue;
+            if (projected === previousValuesByConversationId) {
+                projected = { ...previousValuesByConversationId };
+            }
+            delete projected[conversationId];
+            continue;
+        }
+        if (hadValue && projected[conversationId] === nextValue) continue;
+        if (projected === previousValuesByConversationId) {
+            projected = { ...previousValuesByConversationId };
+        }
+        projected[conversationId] = nextValue as T;
+    }
+
+    return projected;
+}
+
+function synchronizeCanonicalChatProjectionIncrementally(
+    previous: ChatStore,
+    next: ChatStore,
+): ChatStore | null {
+    const pendingChanges = _changedSessionIdsBySessionsMap.get(
+        next.sessionsById,
+    );
+    const changedSessionIds =
+        previous.sessionsById === next.sessionsById
+            ? new Set<string>()
+            : pendingChanges?.base === previous.sessionsById
+              ? pendingChanges.sessionIds
+              : undefined;
+    if (pendingChanges) {
+        // Hints belong to this Zustand transition only. Keeping them on the
+        // committed map would accumulate unrelated sessions across updates.
+        _changedSessionIdsBySessionsMap.delete(next.sessionsById);
+    }
+    if (
+        previous.sessionOrder !== next.sessionOrder ||
+        previous.activeSessionId !== next.activeSessionId ||
+        (!changedSessionIds &&
+            !haveSameRecordKeys(previous.sessionsById, next.sessionsById))
+    ) {
+        return null;
+    }
+
+    let conversationsById = next.conversationsById;
+    if (previous.sessionsById !== next.sessionsById) {
+        for (const sessionId of
+            changedSessionIds ?? Object.keys(next.sessionsById)) {
+            const previousSession = previous.sessionsById[sessionId];
+            const nextSession = next.sessionsById[sessionId];
+            if (previousSession === nextSession) continue;
+            if (
+                !previousSession ||
+                !nextSession ||
+                !hasSameCanonicalSessionTopology(
+                    previousSession,
+                    nextSession,
+                )
+            ) {
+                return null;
+            }
+
+            const conversationId = resolveConversationId(
+                next,
+                nextSession.sessionId,
+            );
+            if (!conversationId) return null;
+
+            // A stale compatibility session may share a durable conversation
+            // with the active session. Only the elected session owns content.
+            if (
+                next.sessionIdByConversationId[conversationId] !==
+                nextSession.sessionId
+            ) {
+                continue;
+            }
+
+            const previousConversation = conversationsById[conversationId];
+            if (!previousConversation) return null;
+            const nextConversation =
+                projectCanonicalConversationContentUpdate(
+                    previousConversation,
+                    nextSession,
+                );
+            if (nextConversation === previousConversation) continue;
+            if (conversationsById === next.conversationsById) {
+                conversationsById = { ...next.conversationsById };
+            }
+            conversationsById[conversationId] = nextConversation;
+        }
+    }
+
+    const projection = { ...next, conversationsById };
+    return {
+        ...next,
+        conversationsById,
+        composerPartsByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.composerPartsBySessionId,
+                next.composerPartsBySessionId,
+                next.composerPartsByConversationId,
+                projection,
+            ),
+        queuedMessagesByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.queuedMessagesBySessionId,
+                next.queuedMessagesBySessionId,
+                next.queuedMessagesByConversationId,
+                projection,
+            ),
+        queuedMessageEditByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.queuedMessageEditBySessionId,
+                next.queuedMessageEditBySessionId,
+                next.queuedMessageEditByConversationId,
+                projection,
+            ),
+        activeQueuedMessageByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.activeQueuedMessageBySessionId,
+                next.activeQueuedMessageBySessionId,
+                next.activeQueuedMessageByConversationId,
+                projection,
+            ),
+        pausedQueueByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.pausedQueueBySessionId,
+                next.pausedQueueBySessionId,
+                next.pausedQueueByConversationId,
+                projection,
+            ),
+        interruptedTurnStateByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.interruptedTurnStateBySessionId,
+                next.interruptedTurnStateBySessionId,
+                next.interruptedTurnStateByConversationId,
+                projection,
+            ),
+        tokenUsageByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.tokenUsageBySessionId,
+                next.tokenUsageBySessionId,
+                next.tokenUsageByConversationId,
+                projection,
+            ),
+    };
+}
+
 function withCanonicalChatProjection(
     configure: StateCreator<ChatStore>,
 ): StateCreator<ChatStore> {
@@ -8059,10 +8321,21 @@ function withCanonicalChatProjection(
                 const nextState = replace
                     ? (patch as ChatStore)
                     : ({ ...state, ...patch } as ChatStore);
-                return !replace &&
+                if (
+                    !replace &&
                     canonicalChatProjectionInputsEqual(state, nextState)
-                    ? nextState
-                    : synchronizeCanonicalChatProjection(nextState);
+                ) {
+                    return nextState;
+                }
+                if (!replace) {
+                    const incremental =
+                        synchronizeCanonicalChatProjectionIncrementally(
+                            state,
+                            nextState,
+                        );
+                    if (incremental) return incremental;
+                }
+                return synchronizeCanonicalChatProjection(nextState);
             };
 
             if (replace) {
@@ -11096,14 +11369,16 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 // Don't create the message yet — it will be created lazily
                 // on the first delta so it appears in chronological order
                 // (after thinking and tool messages).
+                const streamingSession = {
+                    ...nextSession,
+                    status: "streaming" as const,
+                };
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: {
-                            ...nextSession,
-                            status: "streaming",
-                        },
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        streamingSession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         session_id,
@@ -11127,10 +11402,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const nextSession = markSessionStreamingIfLive(session);
                 if (nextSession === session) return state;
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: nextSession,
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        nextSession,
+                    ),
                 };
             });
             bufferMessageDelta(session_id, message_id, delta, messageRole);
@@ -11162,10 +11438,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     );
                     if (nextSession === session) return state;
                     return {
-                        sessionsById: {
-                            ...state.sessionsById,
-                            [session_id]: nextSession,
-                        },
+                        sessionsById: replaceSessionById(
+                            state.sessionsById,
+                            session_id,
+                            nextSession,
+                        ),
                     };
                 });
                 persistCurrentSession(session_id);
@@ -11194,10 +11471,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: nextSession,
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        nextSession,
+                    ),
                     queuedMessagesBySessionId: activeQueuedMessage
                         ? cleanupQueuedMessagesBySessionId(
                               state.queuedMessagesBySessionId,
@@ -11244,26 +11522,28 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     nextSession.messageIndexById?.[message_id] != null;
                 if (exists) return state;
 
-                return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: appendSessionMessage(
-                            {
-                                ...nextSession,
-                                status: "streaming",
-                            },
-                            {
-                                id: message_id,
-                                role: "assistant",
-                                kind: "thinking",
-                                content: "",
-                                workCycleId: nextSession.activeWorkCycleId,
-                                title: "Thinking",
-                                timestamp: Date.now(),
-                                inProgress: true,
-                            },
-                        ),
+                const thinkingSession = appendSessionMessage(
+                    {
+                        ...nextSession,
+                        status: "streaming",
                     },
+                    {
+                        id: message_id,
+                        role: "assistant",
+                        kind: "thinking",
+                        content: "",
+                        workCycleId: nextSession.activeWorkCycleId,
+                        title: "Thinking",
+                        timestamp: Date.now(),
+                        inProgress: true,
+                    },
+                );
+                return {
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        thinkingSession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         session_id,
@@ -11283,10 +11563,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const nextSession = markSessionStreamingIfLive(session);
                 if (nextSession === session) return state;
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: nextSession,
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        nextSession,
+                    ),
                 };
             });
             bufferThinkingDelta(session_id, message_id, delta);
@@ -11302,15 +11583,17 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const session = state.sessionsById[session_id];
                 if (!session) return state;
 
+                const nextSession = setMessageInProgressState(
+                    session,
+                    message_id,
+                    false,
+                );
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: setMessageInProgressState(
-                            session,
-                            message_id,
-                            false,
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        nextSession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         session_id,
@@ -11407,14 +11690,17 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     },
                 };
 
+                const activitySession = upsertSessionActivityMessage(
+                    consolidated,
+                    nextMessage,
+                );
+
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionActivityMessage(
-                            consolidated,
-                            nextMessage,
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        activitySession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -11473,14 +11759,17 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const session = state.sessionsById[payload.session_id];
                 if (!session) return state;
 
+                const nextSession = upsertSessionStatusMessage(
+                    session,
+                    payload,
+                );
+
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionStatusMessage(
-                            session,
-                            payload,
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        nextSession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -11509,19 +11798,21 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     ...createImageGenerationMessage(payload),
                     workCycleId: nextSession.activeWorkCycleId,
                 };
+                const sessionWithImage = upsertSessionMessage(
+                    nextSession,
+                    nextMessage,
+                    {
+                        preserveTimestamp: true,
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            nextSession,
-                            nextMessage,
-                            {
-                                preserveTimestamp: true,
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithImage,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -11549,19 +11840,21 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     ...createPlanMessage(payload),
                     workCycleId: nextSession.activeWorkCycleId,
                 };
+                const sessionWithPlan = upsertSessionMessage(
+                    nextSession,
+                    nextMessage,
+                    {
+                        preserveTimestamp: true,
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            nextSession,
-                            nextMessage,
-                            {
-                                preserveTimestamp: true,
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithPlan,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -11663,21 +11956,23 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         target: payload.target ?? null,
                     },
                 };
+                const sessionWithPermission = upsertSessionMessage(
+                    {
+                        ...sessionWithBuffer,
+                        status: "waiting_permission",
+                    },
+                    nextMessage,
+                    {
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            {
-                                ...sessionWithBuffer,
-                                status: "waiting_permission",
-                            },
-                            nextMessage,
-                            {
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithPermission,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -11716,21 +12011,23 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         status: "pending",
                     },
                 };
+                const sessionWithUserInput = upsertSessionMessage(
+                    {
+                        ...nextSession,
+                        status: "waiting_user_input",
+                    },
+                    nextMessage,
+                    {
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            {
-                                ...nextSession,
-                                status: "waiting_user_input",
-                            },
-                            nextMessage,
-                            {
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithUserInput,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -11754,26 +12051,28 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const status = payload.status ?? "pending";
 
                 if (status === "completed") {
+                    const completedSession =
+                        updateUrlElicitationMessageState(
+                            {
+                                ...nextSession,
+                                status:
+                                    nextSession.status ===
+                                    "waiting_user_input"
+                                        ? "streaming"
+                                        : nextSession.status,
+                            },
+                            payload.request_id,
+                            {
+                                status: "completed",
+                                completedByRuntime: true,
+                            },
+                        );
                     return {
-                        sessionsById: {
-                            ...state.sessionsById,
-                            [payload.session_id]:
-                                updateUrlElicitationMessageState(
-                                    {
-                                        ...nextSession,
-                                        status:
-                                            nextSession.status ===
-                                            "waiting_user_input"
-                                                ? "streaming"
-                                                : nextSession.status,
-                                    },
-                                    payload.request_id,
-                                    {
-                                        status: "completed",
-                                        completedByRuntime: true,
-                                    },
-                                ),
-                        },
+                        sessionsById: replaceSessionById(
+                            state.sessionsById,
+                            payload.session_id,
+                            completedSession,
+                        ),
                         sessionOrder: touchSessionOrder(
                             state.sessionOrder,
                             payload.session_id,
@@ -11799,21 +12098,23 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         toolCallId: payload.tool_call_id ?? null,
                     },
                 };
+                const sessionWithUrlRequest = upsertSessionMessage(
+                    {
+                        ...nextSession,
+                        status: "waiting_user_input",
+                    },
+                    nextMessage,
+                    {
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            {
-                                ...nextSession,
-                                status: "waiting_user_input",
-                            },
-                            nextMessage,
-                            {
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithUrlRequest,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,

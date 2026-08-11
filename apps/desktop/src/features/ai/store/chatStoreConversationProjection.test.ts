@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createConversationBindingsFromLegacySession } from "../conversationModel";
 import type { AIChatSession } from "../types";
 import {
+    hasSameCanonicalSessionTopology,
+    projectCanonicalConversationContentUpdate,
     projectChatStoreToCanonical,
     projectSessionMapToConversations,
     resolveConversationId,
@@ -44,6 +46,83 @@ function createSession(overrides: Partial<AIChatSession> = {}): AIChatSession {
 }
 
 describe("canonical chat store projection", () => {
+    it("updates content while preserving canonical routing state", () => {
+        const session = createSession();
+        const projection = projectChatStoreToCanonical({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+        });
+        const previous = projection.conversationsById["conversation-1"];
+        const stagedSelection = {
+            ...previous.preferredSelection,
+            modelId: "opus",
+        };
+        const stagedConversation = {
+            ...previous,
+            parentConversationId: "normalized-parent",
+            preferredSelection: stagedSelection,
+        };
+        const messages = [
+            {
+                id: "assistant-1",
+                role: "assistant" as const,
+                kind: "text" as const,
+                content: "Hello",
+                timestamp: 1,
+            },
+        ];
+
+        const updated = projectCanonicalConversationContentUpdate(
+            stagedConversation,
+            {
+                ...session,
+                status: "streaming",
+                messages,
+            },
+        );
+
+        expect(updated).not.toBe(stagedConversation);
+        expect(updated.messages).toBe(messages);
+        expect(updated.status).toBe("streaming");
+        expect(updated.parentConversationId).toBe("normalized-parent");
+        expect(updated.preferredSelection).toBe(stagedSelection);
+        expect(updated.activeBindingId).toBe(
+            stagedConversation.activeBindingId,
+        );
+        expect(
+            projectCanonicalConversationContentUpdate(updated, {
+                ...session,
+                status: "streaming",
+                messages,
+            }),
+        ).toBe(updated);
+    });
+
+    it("classifies routing and binding changes as structural", () => {
+        const session = createSession();
+
+        expect(
+            hasSameCanonicalSessionTopology(session, {
+                ...session,
+                status: "streaming",
+                messages: [],
+            }),
+        ).toBe(true);
+        expect(
+            hasSameCanonicalSessionTopology(session, {
+                ...session,
+                runtimeSessionId: "native-replaced",
+            }),
+        ).toBe(false);
+        expect(
+            hasSameCanonicalSessionTopology(session, {
+                ...session,
+                modelId: "opus",
+            }),
+        ).toBe(false);
+    });
+
     it("deduplicates local and native session replacements by conversation", () => {
         const stale = createSession({
             sessionId: "persisted:conversation-1",

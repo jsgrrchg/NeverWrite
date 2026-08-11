@@ -66,6 +66,107 @@ function isProjectableSession(session: AIChatSession) {
 }
 
 /**
+ * Content-only session updates may be projected without rebuilding bindings
+ * or the session-ref indices. Any field that can change conversation identity,
+ * routing, or the provider binding belongs in this topology comparison.
+ */
+export function hasSameCanonicalSessionTopology(
+  previous: AIChatSession,
+  next: AIChatSession,
+) {
+  return (
+    previous.sessionId === next.sessionId &&
+    previous.historySessionId === next.historySessionId &&
+    previous.parentSessionId === next.parentSessionId &&
+    previous.vaultPath === next.vaultPath &&
+    previous.runtimeSessionId === next.runtimeSessionId &&
+    previous.runtimeId === next.runtimeId &&
+    previous.runtimeDisplayName === next.runtimeDisplayName &&
+    previous.runtimeRevision === next.runtimeRevision &&
+    previous.runtimeLaunchFingerprint === next.runtimeLaunchFingerprint &&
+    previous.continuationStrategy === next.continuationStrategy &&
+    previous.modelId === next.modelId &&
+    previous.modeId === next.modeId &&
+    previous.models === next.models &&
+    previous.modes === next.modes &&
+    previous.configOptions === next.configOptions &&
+    previous.availableCommands === next.availableCommands &&
+    previous.effortsByModel === next.effortsByModel &&
+    previous.runtimeState === next.runtimeState &&
+    previous.conversationBindings === next.conversationBindings
+  );
+}
+
+function hasSameCanonicalConversationContent(
+  previous: AIConversation,
+  next: AIConversation,
+) {
+  return (
+    previous.conversationId === next.conversationId &&
+    previous.parentConversationId === next.parentConversationId &&
+    previous.vaultPath === next.vaultPath &&
+    previous.closedAt === next.closedAt &&
+    previous.status === next.status &&
+    previous.activeWorkCycleId === next.activeWorkCycleId &&
+    previous.visibleWorkCycleId === next.visibleWorkCycleId &&
+    previous.actionLog === next.actionLog &&
+    previous.messages === next.messages &&
+    previous.attachments === next.attachments &&
+    previous.preferredSelection === next.preferredSelection &&
+    previous.activeBindingId === next.activeBindingId &&
+    previous.persistedCreatedAt === next.persistedCreatedAt &&
+    previous.persistedUpdatedAt === next.persistedUpdatedAt &&
+    previous.persistedTitle === next.persistedTitle &&
+    previous.customTitle === next.customTitle &&
+    previous.persistedPreview === next.persistedPreview &&
+    previous.persistedMessageCount === next.persistedMessageCount &&
+    previous.loadedPersistedMessageStart ===
+      next.loadedPersistedMessageStart &&
+    previous.isLoadingPersistedMessages ===
+      next.isLoadingPersistedMessages &&
+    previous.isPersistedSession === next.isPersistedSession &&
+    previous.isPendingSessionCreation === next.isPendingSessionCreation &&
+    previous.isResumingSession === next.isResumingSession
+  );
+}
+
+/**
+ * Refreshes the mutable conversation payload for one legacy session while
+ * preserving canonical identity, normalized parent refs, and staged routing.
+ */
+export function projectCanonicalConversationContentUpdate(
+  previous: AIConversation,
+  session: AIChatSession,
+) {
+  const next: AIConversation = {
+    ...previous,
+    closedAt: session.closedAt ?? null,
+    status: session.status,
+    activeWorkCycleId: session.activeWorkCycleId ?? null,
+    visibleWorkCycleId: session.visibleWorkCycleId ?? null,
+    actionLog: session.actionLog,
+    messages: session.messages,
+    attachments: session.attachments,
+    persistedCreatedAt: session.persistedCreatedAt ?? null,
+    persistedUpdatedAt: session.persistedUpdatedAt ?? null,
+    persistedTitle: session.persistedTitle ?? null,
+    customTitle: session.customTitle ?? null,
+    persistedPreview: session.persistedPreview ?? null,
+    persistedMessageCount: session.persistedMessageCount,
+    loadedPersistedMessageStart:
+      session.loadedPersistedMessageStart ?? null,
+    isLoadingPersistedMessages: session.isLoadingPersistedMessages,
+    isPersistedSession: session.isPersistedSession ?? false,
+    isPendingSessionCreation: session.isPendingSessionCreation ?? false,
+    isResumingSession: session.isResumingSession ?? false,
+  };
+
+  return hasSameCanonicalConversationContent(previous, next)
+    ? previous
+    : next;
+}
+
+/**
  * Builds the canonical store projection from the transitional session store.
  * One conversation is emitted per durable history id even if multiple local or
  * native session ids temporarily refer to it.

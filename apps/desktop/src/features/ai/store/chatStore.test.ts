@@ -707,6 +707,156 @@ describe("chatStore", () => {
         );
     });
 
+    it("updates only the active canonical conversation for timeline events", () => {
+        const background = createSessionWithTrackedFiles(
+            "background-session",
+            [],
+        );
+        background.historySessionId = "background-conversation";
+        const active = createSessionWithTrackedFiles("active-session", []);
+        active.historySessionId = "active-conversation";
+
+        useChatStore.getState().upsertSession(background, true);
+        useChatStore.getState().upsertSession(active, true);
+
+        const stagedSelection = {
+            ...useChatStore.getState().conversationsById[
+                "active-conversation"
+            ].preferredSelection,
+            modelId: "staged-model",
+        };
+        useChatStore.setState((state) => ({
+            conversationsById: {
+                ...state.conversationsById,
+                "active-conversation": {
+                    ...state.conversationsById["active-conversation"],
+                    preferredSelection: stagedSelection,
+                },
+            },
+        }));
+
+        const before = useChatStore.getState();
+        const backgroundConversation =
+            before.conversationsById["background-conversation"];
+        const bindingsById = before.bindingsById;
+        const conversationOrder = before.conversationOrder;
+        const sessionOrder = before.sessionOrder;
+        const conversationIdBySessionRef =
+            before.conversationIdBySessionRef;
+        const sessionIdByConversationId =
+            before.sessionIdByConversationId;
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: active.sessionId,
+            event_id: "status-1",
+            kind: "progress",
+            status: "in_progress",
+            title: "Working",
+            detail: "Inspecting files",
+            emphasis: "neutral",
+        });
+
+        const after = useChatStore.getState();
+        expect(after.conversationsById["active-conversation"]).not.toBe(
+            before.conversationsById["active-conversation"],
+        );
+        expect(after.conversationsById["background-conversation"]).toBe(
+            backgroundConversation,
+        );
+        expect(
+            after.conversationsById["active-conversation"].preferredSelection,
+        ).toBe(stagedSelection);
+        expect(after.bindingsById).toBe(bindingsById);
+        expect(after.conversationOrder).toBe(conversationOrder);
+        expect(after.sessionOrder).toBe(sessionOrder);
+        expect(after.conversationIdBySessionRef).toBe(
+            conversationIdBySessionRef,
+        );
+        expect(after.sessionIdByConversationId).toBe(
+            sessionIdByConversationId,
+        );
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: active.sessionId,
+            message_id: "assistant-1",
+            delta: "Streaming reply",
+            role: "assistant",
+        });
+        flushDeltasSync();
+
+        const afterDelta = useChatStore.getState();
+        expect(afterDelta.conversationsById["background-conversation"]).toBe(
+            backgroundConversation,
+        );
+        expect(afterDelta.bindingsById).toBe(bindingsById);
+        expect(
+            afterDelta.conversationsById["active-conversation"].messages.at(
+                -1,
+            )?.content,
+        ).toBe("Streaming reply");
+        expect(
+            afterDelta.conversationsById["active-conversation"]
+                .preferredSelection,
+        ).toBe(stagedSelection);
+    });
+
+    it("updates token usage without rebuilding conversations or other maps", () => {
+        const session = createSessionWithTrackedFiles("local-session", []);
+        session.historySessionId = "conversation-1";
+        useChatStore.getState().upsertSession(session, true);
+
+        const before = useChatStore.getState();
+        useChatStore.getState().applyTokenUsage({
+            session_id: session.sessionId,
+            used: 21,
+            size: 100,
+        });
+
+        const after = useChatStore.getState();
+        expect(after.conversationsById).toBe(before.conversationsById);
+        expect(after.bindingsById).toBe(before.bindingsById);
+        expect(after.composerPartsByConversationId).toBe(
+            before.composerPartsByConversationId,
+        );
+        expect(after.queuedMessagesByConversationId).toBe(
+            before.queuedMessagesByConversationId,
+        );
+        expect(after.tokenUsageByConversationId).not.toBe(
+            before.tokenUsageByConversationId,
+        );
+        expect(after.tokenUsageByConversationId["conversation-1"]).toMatchObject(
+            { used: 21, size: 100 },
+        );
+    });
+
+    it("falls back to full reconciliation when session routing changes", () => {
+        const session = createSessionWithTrackedFiles("local-session", []);
+        session.historySessionId = "conversation-1";
+        session.runtimeSessionId = "native-old";
+        useChatStore.getState().upsertSession(session, true);
+
+        const before = useChatStore.getState();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [session.sessionId]: {
+                    ...state.sessionsById[session.sessionId],
+                    runtimeSessionId: "native-new",
+                },
+            },
+        }));
+
+        const after = useChatStore.getState();
+        expect(after.bindingsById).not.toBe(before.bindingsById);
+        expect(after.conversationIdBySessionRef).not.toBe(
+            before.conversationIdBySessionRef,
+        );
+        expect(after.conversationIdBySessionRef["native-old"]).toBeUndefined();
+        expect(after.conversationIdBySessionRef["native-new"]).toBe(
+            "conversation-1",
+        );
+    });
+
     it("does not let an older storage refresh overwrite a newer snapshot", async () => {
         disposeChatStoreRuntime();
         useVaultStore.setState({ vaultPath: "/vault" });
