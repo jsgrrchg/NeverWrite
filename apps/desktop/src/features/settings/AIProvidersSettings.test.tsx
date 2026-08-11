@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../test/test-utils";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import type {
     AIAuthTerminalSessionSnapshot,
     AIRuntimeDescriptor,
@@ -32,8 +33,12 @@ const apiMocks = vi.hoisted(() => ({
     listenToAiAuthTerminalExited: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalError: vi.fn(async () => vi.fn()),
 }));
+const terminalMocks = vi.hoisted(() => ({
+    checkClaudeCodeInstalled: vi.fn(async () => false),
+}));
 
 vi.mock("../ai/api", () => apiMocks);
+vi.mock("../terminal/claudeCodeTerminal", () => terminalMocks);
 
 function createRuntimeDescriptor(
     id: string,
@@ -296,7 +301,25 @@ async function openProvider(providerName: string) {
 describe("AIProvidersSettings", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        terminalMocks.checkClaudeCodeInstalled.mockResolvedValue(false);
+        useSettingsStore.setState({ claudeCodeEnabled: false });
         mockProviders(createDefaultProviders());
+    });
+
+    it("enables Claude Code explicitly for the current vault", async () => {
+        terminalMocks.checkClaudeCodeInstalled.mockResolvedValue(true);
+
+        renderComponent(<AIProvidersSettings />);
+
+        const toggle = await screen.findByRole("switch", {
+            name: "Enable Claude Code for this vault",
+        });
+        expect(toggle).toHaveAttribute("aria-checked", "false");
+
+        fireEvent.click(toggle);
+
+        expect(useSettingsStore.getState().claudeCodeEnabled).toBe(true);
+        expect(toggle).toHaveAttribute("aria-checked", "true");
     });
 
     it("does not offer provider installs while runtime inventory is still loading", async () => {
@@ -342,7 +365,7 @@ describe("AIProvidersSettings", () => {
 
         renderComponent(<AIProvidersSettings />);
 
-        await screen.findByText("Default agent");
+        await screen.findByText("Default provider");
         expect(
             screen.queryByRole("option", { name: "Missing local" }),
         ).not.toBeInTheDocument();

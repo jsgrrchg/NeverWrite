@@ -13,10 +13,8 @@ import { LinksPanel } from "./features/notes/LinksPanel";
 import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
-import { createNewChatInWorkspace } from "./features/ai/chatPaneMovement";
 import { listChatWorkspaceHistoryReferences } from "./features/ai/chatWorkspaceRestoration";
-import { CLAUDE_TERMINAL_RUNTIME_ID } from "./features/ai/utils/runtimeMetadata";
-import { openClaudeCodeTerminalWithContext } from "./features/terminal/claudeCodeTerminal";
+import { createCanonicalAgent } from "./features/ai/newAgentCreation";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 import { migrateLegacyTerminalTabsToWorkspace } from "./features/terminal/legacyTerminalMigration";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
@@ -705,14 +703,7 @@ function useRegisterCommands(
             category: newAgentShortcut.category,
             when: hasVault,
             execute: () => {
-                if (
-                    useChatStore.getState().getDefaultNewChatRuntimeId() ===
-                    CLAUDE_TERMINAL_RUNTIME_ID
-                ) {
-                    void openClaudeCodeTerminalWithContext();
-                } else {
-                    void createNewChatInWorkspace();
-                }
+                void createCanonicalAgent();
             },
         });
 

@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { confirm } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { renderComponent } from "../../test/test-utils";
 import { AgentsSidebarPanel } from "./AgentsSidebarPanel";
@@ -108,6 +109,7 @@ describe("AgentsSidebarPanel", () => {
             collapsedFolderIds: [],
         });
         useEditorStore.getState().hydrateTabs([], null);
+        useSettingsStore.setState({ claudeCodeEnabled: false });
         vi.mocked(confirm).mockResolvedValue(true);
         useChatStore.setState({
             runtimes: [
@@ -161,18 +163,10 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
-    it("opens a provider menu from the plus button before creating a chat", async () => {
+    it("creates a canonical agent directly when Claude Code is disabled", async () => {
         renderComponent(<AgentsSidebarPanel />);
 
-        fireEvent.click(screen.getByRole("button", { name: "New chat" }));
-
-        expect(
-            chatPaneMovementMock.createNewChatInWorkspace,
-        ).not.toHaveBeenCalled();
-        expect(
-            await screen.findByRole("button", { name: "Codex" }),
-        ).toBeInTheDocument();
-        fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+        fireEvent.click(screen.getByRole("button", { name: "New agent" }));
 
         await waitFor(() => {
             expect(
@@ -181,10 +175,8 @@ describe("AgentsSidebarPanel", () => {
         });
         expect(
             chatPaneMovementMock.createNewChatInWorkspace,
-        ).toHaveBeenCalledWith("claude-acp");
-        expect(
-            screen.queryByRole("button", { name: "Add providers" }),
-        ).toBeNull();
+        ).toHaveBeenCalledWith();
+        expect(screen.queryByRole("button", { name: "Claude" })).toBeNull();
     });
 
     it("keeps existing chats unfiled until the user explicitly moves one", async () => {
@@ -335,6 +327,7 @@ describe("AgentsSidebarPanel", () => {
     });
 
     it("opens Claude Code from the plus menu as a terminal runtime", async () => {
+        useSettingsStore.setState({ claudeCodeEnabled: true });
         useChatStore.setState({
             runtimes: [
                 {
@@ -361,11 +354,24 @@ describe("AgentsSidebarPanel", () => {
                 },
             ],
             selectedRuntimeId: "codex-acp",
+            setupStatusByRuntimeId: {
+                [CLAUDE_TERMINAL_RUNTIME_ID]: {
+                    runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+                    binaryReady: true,
+                    binarySource: "env",
+                    authReady: true,
+                    onboardingRequired: false,
+                    authMethods: [],
+                },
+            },
         });
 
         renderComponent(<AgentsSidebarPanel />);
 
-        fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+        fireEvent.click(screen.getByRole("button", { name: "New agent" }));
+        expect(
+            await screen.findByRole("button", { name: "New Agent" }),
+        ).toBeInTheDocument();
         fireEvent.click(
             await screen.findByRole("button", { name: "Claude Code" }),
         );
@@ -378,9 +384,7 @@ describe("AgentsSidebarPanel", () => {
         expect(
             chatPaneMovementMock.createNewChatInWorkspace,
         ).not.toHaveBeenCalled();
-        expect(useChatStore.getState().selectedRuntimeId).toBe(
-            CLAUDE_TERMINAL_RUNTIME_ID,
-        );
+        expect(useChatStore.getState().selectedRuntimeId).toBe("codex-acp");
     });
 
     it("keeps open working agents in the order they became busy", async () => {

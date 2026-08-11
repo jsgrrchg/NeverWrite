@@ -1428,7 +1428,7 @@ describe("chatStore", () => {
         ).toBeUndefined();
     });
 
-    it("respects an explicit Claude Code default preference", async () => {
+    it("migrates a Claude Code default back to the automatic ACP provider", async () => {
         localStorage.setItem(
             AI_PREFS_KEY,
             JSON.stringify({
@@ -1448,15 +1448,13 @@ describe("chatStore", () => {
             .initialize({ createDefaultSession: false });
 
         const state = useChatStore.getState();
-        expect(state.defaultRuntimeId).toBe(CLAUDE_TERMINAL_RUNTIME_ID);
-        expect(state.selectedRuntimeId).toBe(CLAUDE_TERMINAL_RUNTIME_ID);
-        expect(state.getDefaultNewChatRuntimeId()).toBe(
-            CLAUDE_TERMINAL_RUNTIME_ID,
-        );
+        expect(state.defaultRuntimeId).toBeNull();
+        expect(state.selectedRuntimeId).toBe("codex-acp");
+        expect(state.getDefaultNewChatRuntimeId()).toBe("codex-acp");
         expect(
             JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}")
                 .defaultRuntimeId,
-        ).toBe(CLAUDE_TERMINAL_RUNTIME_ID);
+        ).toBeUndefined();
     });
 
     it("keeps Automatic when the default is cleared during initialization", async () => {

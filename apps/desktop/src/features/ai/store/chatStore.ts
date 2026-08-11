@@ -6791,7 +6791,7 @@ function getSelectableDefaultRuntimeId(
     runtimes: AIRuntimeDescriptor[],
     setupStatusByRuntimeId?: Record<string, AIRuntimeSetupStatus>,
 ) {
-    if (!runtimeId) return null;
+    if (!runtimeId || isClaudeTerminalRuntimeId(runtimeId)) return null;
     if (!runtimes.some((runtime) => runtime.runtime.id === runtimeId)) {
         return null;
     }
@@ -9617,12 +9617,17 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         },
 
         setDefaultRuntime: (runtimeId) => {
+            const nextRuntimeId = isClaudeTerminalRuntimeId(runtimeId)
+                ? null
+                : runtimeId;
             _defaultRuntimePreferenceVersion += 1;
             set((state) => ({
-                defaultRuntimeId: runtimeId,
-                selectedRuntimeId: runtimeId ?? state.selectedRuntimeId,
+                defaultRuntimeId: nextRuntimeId,
+                selectedRuntimeId: nextRuntimeId ?? state.selectedRuntimeId,
             }));
-            saveAiPreferences({ defaultRuntimeId: runtimeId ?? undefined });
+            saveAiPreferences({
+                defaultRuntimeId: nextRuntimeId ?? undefined,
+            });
         },
 
         getDefaultNewChatRuntimeId: () => {
@@ -9784,11 +9789,16 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 // still available and ready. Otherwise stay on ACP runtimes;
                 // Claude Code remains available but is not promoted to the
                 // default just because the binary exists in PATH.
+                const persistedDefaultRuntimeId =
+                    loadAiPreferences().defaultRuntimeId;
                 const persistedRuntimeId = getSelectableDefaultRuntimeId(
-                        loadAiPreferences().defaultRuntimeId,
-                        runtimes,
-                        setupStatusByRuntimeId,
-                    );
+                    persistedDefaultRuntimeId,
+                    runtimes,
+                    setupStatusByRuntimeId,
+                );
+                if (isClaudeTerminalRuntimeId(persistedDefaultRuntimeId)) {
+                    saveAiPreferences({ defaultRuntimeId: undefined });
+                }
 
                 // Prefer in-memory changes made while this initialize() was in
                 // flight. "Automatic" is stored as null, so we need the version
@@ -14925,7 +14935,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     runtimes,
                     get().setupStatusByRuntimeId,
                 ) ??
-                getDefaultRuntimeId(runtimes, get().setupStatusByRuntimeId);
+                getImplicitDefaultAcpRuntimeId(
+                    runtimes,
+                    get().setupStatusByRuntimeId,
+                );
             if (!nextRuntimeId) return null;
 
             const markPendingSessionError = (message: string) => {
@@ -15276,7 +15289,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     state.runtimes,
                     state.setupStatusByRuntimeId,
                 ) ??
-                getDefaultRuntimeId(
+                getImplicitDefaultAcpRuntimeId(
                     state.runtimes,
                     state.setupStatusByRuntimeId,
                 );
