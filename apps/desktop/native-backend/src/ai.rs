@@ -13980,11 +13980,13 @@ mod tests {
     fn setup_accepts_local_http_claude_gateway_urls() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
+        let runtime = std::env::current_exe().expect("test executable should resolve");
 
         let status = ai
             .update_setup(&json!({
                 "runtimeId": CLAUDE_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": runtime,
                     "anthropic_base_url": "http://localhost:3000",
                     "anthropic_auth_token": { "action": "set", "value": "test-token" }
                 }
@@ -14076,11 +14078,13 @@ mod tests {
     fn setup_accepts_anthropic_api_key_auth() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
+        let runtime = std::env::current_exe().expect("test executable should resolve");
 
         let status = ai
             .update_setup(&json!({
                 "runtimeId": CLAUDE_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": runtime,
                     "anthropic_api_key": { "action": "set", "value": "test-key" }
                 }
             }))
@@ -14223,10 +14227,12 @@ mod tests {
     fn claude_provider_routing_validates_and_normalizes_explicit_setup() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
+        let runtime = std::env::current_exe().expect("test executable should resolve");
 
         ai.update_setup(&json!({
             "runtimeId": CLAUDE_RUNTIME_ID,
             "input": {
+                "custom_binary_path": runtime,
                 "anthropic_api_key": {
                     "action": "set",
                     "value": "existing-anthropic-secret"
