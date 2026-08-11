@@ -6,7 +6,6 @@ import {
     projectSessionMapToConversations,
     resolveConversationId,
     resolveLegacySessionId,
-    selectLegacySessionForConversation,
 } from "./chatStoreConversationProjection";
 
 function createSession(overrides: Partial<AIChatSession> = {}): AIChatSession {
@@ -87,7 +86,7 @@ describe("canonical chat store projection", () => {
         ).toEqual({ "conversation-1": "live draft" });
     });
 
-    it("indexes every persisted binding and projects the active one for legacy UI", () => {
+    it("drops bindings from the retired multi-provider flow", () => {
         const session = createSession();
         const bindingState = createConversationBindingsFromLegacySession(session);
         const activeBinding = bindingState.providerBindings[0];
@@ -115,30 +114,10 @@ describe("canonical chat store projection", () => {
             activeSessionId: session.sessionId,
         });
 
-        expect(projection.bindingsById["binding:codex"]).toMatchObject({
-            runtimeId: "codex-acp",
-            runtimeSessionId: "codex-native",
-        });
-        expect(resolveConversationId(projection, "binding:codex")).toBe(
-            "conversation-1",
-        );
-        expect(resolveConversationId(projection, "codex-native")).toBe(
-            "conversation-1",
-        );
-
-        const legacy = selectLegacySessionForConversation(
-            {
-                ...projection,
-                sessionsById: { [session.sessionId]: withBindings },
-            },
-            "conversation-1",
-        );
-        expect(legacy).toMatchObject({
-            sessionId: "local-session",
-            historySessionId: "conversation-1",
-            runtimeId: "claude-acp",
-            runtimeSessionId: "native-session",
-        });
+        expect(projection.bindingsById["binding:codex"]).toBeUndefined();
+        expect(resolveConversationId(projection, "binding:codex")).toBeNull();
+        expect(resolveConversationId(projection, "codex-native")).toBeNull();
+        expect(Object.values(projection.bindingsById)).toHaveLength(1);
     });
 
     it("keeps an active provider model staged for the next turn", () => {

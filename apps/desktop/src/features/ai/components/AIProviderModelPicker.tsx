@@ -19,7 +19,6 @@ interface AIProviderModelPickerProps {
     disabled?: boolean;
     runtimeId: string;
     modelId: string;
-    providerSwitchLocked?: boolean;
     providers: ConversationProviderPickerOption[];
     onChange: (runtimeId: string, modelId: string) => void;
 }
@@ -36,6 +35,7 @@ interface PickerModel {
     modelId: string;
     modelLabel: string;
     description: string;
+    providerDisabledReason: string | null;
     disabledReason: string | null;
 }
 
@@ -146,7 +146,6 @@ export function AIProviderModelPicker({
     disabled = false,
     runtimeId,
     modelId,
-    providerSwitchLocked = false,
     providers,
     onChange,
 }: AIProviderModelPickerProps) {
@@ -173,6 +172,7 @@ export function AIProviderModelPicker({
                     modelId: model.modelId,
                     modelLabel: model.label,
                     description: model.description ?? provider.description,
+                    providerDisabledReason: provider.disabledReason,
                     disabledReason:
                         provider.disabledReason ?? model.disabledReason ?? null,
                 })),
@@ -222,11 +222,10 @@ export function AIProviderModelPicker({
             (row) => row.runtimeId === runtimeId && row.modelId === modelId,
         ) ?? rows.find((row) => row.runtimeId === runtimeId);
     const triggerLabel = selectedRow?.modelLabel ?? (modelId || "Model");
-    const activeProvider = providers.find(
-        (provider) => provider.runtimeId === runtimeId,
-    );
     const blockedProvider = providers.find(
-        (provider) => provider.runtimeId === blockedProviderId,
+        (provider) =>
+            provider.runtimeId === blockedProviderId &&
+            provider.disabledReason != null,
     );
     const menuPosition = useAnchoredChatMenuPosition(rootRef, menuRef, open);
 
@@ -306,11 +305,11 @@ export function AIProviderModelPicker({
     };
 
     const selectRow = (row: PickerModel) => {
-        if (row.disabledReason) return;
-        if (providerSwitchLocked && row.runtimeId !== runtimeId) {
+        if (row.providerDisabledReason) {
             setBlockedProviderId(row.runtimeId);
             return;
         }
+        if (row.disabledReason) return;
         onChange(row.runtimeId, row.modelId);
         closePicker(true);
     };
@@ -443,8 +442,8 @@ export function AIProviderModelPicker({
                                 const selected =
                                     selectedProviderId === provider.runtimeId;
                                 const providerLocked =
-                                    providerSwitchLocked &&
-                                    provider.runtimeId !== runtimeId;
+                                    provider.runtimeId !== runtimeId &&
+                                    provider.disabledReason != null;
                                 return (
                                     <button
                                         aria-disabled={providerLocked || undefined}
@@ -456,10 +455,7 @@ export function AIProviderModelPicker({
                                         }
                                         key={provider.runtimeId}
                                         onClick={() => {
-                                            if (
-                                                providerSwitchLocked &&
-                                                provider.runtimeId !== runtimeId
-                                            ) {
+                                            if (providerLocked) {
                                                 setBlockedProviderId(
                                                     provider.runtimeId,
                                                 );
@@ -486,7 +482,7 @@ export function AIProviderModelPicker({
                                         }}
                                         title={
                                             providerLocked
-                                                ? "Start a new chat to switch providers."
+                                                ? provider.disabledReason ?? provider.label
                                                 : provider.label
                                         }
                                         type="button"
@@ -549,11 +545,10 @@ export function AIProviderModelPicker({
                                         const highlighted =
                                             row.key === highlightedKey;
                                         const providerLocked =
-                                            providerSwitchLocked &&
-                                            row.runtimeId !== runtimeId;
-                                        const rowTitle = providerLocked
-                                            ? "Start a new chat to switch providers."
-                                            : (row.disabledReason ?? row.description);
+                                            row.runtimeId !== runtimeId &&
+                                            row.providerDisabledReason != null;
+                                        const rowTitle =
+                                            row.disabledReason ?? row.description;
                                         return (
                                             <div
                                                 className="group flex min-w-0 items-center rounded-lg px-1"
@@ -577,11 +572,14 @@ export function AIProviderModelPicker({
                                             >
                                                 <button
                                                     aria-disabled={
-                                                        providerLocked || undefined
+                                                        row.disabledReason != null || undefined
                                                     }
                                                     aria-label={`${row.providerLabel} · ${row.modelLabel}`}
                                                     className={`min-w-0 flex-1 px-1.5 py-2 text-left ${providerLocked ? "cursor-not-allowed" : ""}`}
-                                                    disabled={row.disabledReason != null}
+                                                    disabled={
+                                                        row.disabledReason != null &&
+                                                        row.providerDisabledReason == null
+                                                    }
                                                     onClick={() => selectRow(row)}
                                                     style={{
                                                         backgroundColor: "transparent",
@@ -645,7 +643,7 @@ export function AIProviderModelPicker({
                         <div
                             aria-live="polite"
                             className="pointer-events-none absolute bottom-2 left-12 z-20 max-w-64 rounded-md px-2.5 py-2 text-xs leading-snug"
-                            data-testid="provider-switch-blocked-popover"
+                            data-testid="provider-selection-blocked-popover"
                             role="status"
                             style={{
                                 backgroundColor: "var(--bg-primary)",
@@ -663,7 +661,7 @@ export function AIProviderModelPicker({
                                     borderLeft: "1px solid var(--border)",
                                 }}
                             />
-                            This chat is locked to {activeProvider?.label ?? "its original provider"}. Start a new chat to use {blockedProvider.label}.
+                            {blockedProvider.disabledReason}
                         </div>
                     ) : null}
                 </div>,

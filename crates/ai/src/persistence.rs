@@ -1515,7 +1515,9 @@ fn inspect_session_directory(
         relative_path: relative_dir.clone(),
     });
     let parsed_bindings = if let Some(artifact) = &bindings_bytes {
-        match serde_json::from_slice::<PersistedConversationBindings>(&artifact.bytes) {
+        match serde_json::from_slice::<PersistedConversationBindings>(&artifact.bytes)
+            .map(normalize_single_provider_binding)
+        {
             Ok(bindings)
                 if bindings.version == FORMAT_VERSION
                     && bindings.conversation_id == metadata.session_id =>
@@ -2263,6 +2265,9 @@ fn validate_persisted_conversation_bindings(
     if bindings.conversation_id.trim().is_empty() {
         return Err("Conversation bindings contain an empty conversation ID.".to_string());
     }
+    if bindings.provider_bindings.len() > 1 {
+        return Err("A conversation cannot contain bindings for multiple providers.".to_string());
+    }
     let mut ids = HashSet::new();
     for binding in &bindings.provider_bindings {
         if binding.binding_id.trim().is_empty() || !ids.insert(binding.binding_id.as_str()) {
@@ -2284,12 +2289,45 @@ fn validate_persisted_conversation_bindings(
     Ok(())
 }
 
+fn normalize_single_provider_binding(
+    mut bindings: PersistedConversationBindings,
+) -> PersistedConversationBindings {
+    if bindings.provider_bindings.len() <= 1 {
+        return bindings;
+    }
+
+    let active_index = bindings
+        .active_binding_id
+        .as_ref()
+        .and_then(|active_id| {
+            bindings
+                .provider_bindings
+                .iter()
+                .position(|binding| &binding.binding_id == active_id)
+        })
+        .unwrap_or(0);
+    let active = bindings.provider_bindings.remove(active_index);
+    bindings.active_binding_id = Some(active.binding_id.clone());
+    if bindings.transcript_observation.message_count > 0 {
+        bindings.preferred_selection = PersistedConversationSelection {
+            runtime_id: active.runtime_id.clone(),
+            model_id: active.model_id.clone(),
+            mode_id: active.mode_id.clone(),
+            options: active.options.clone(),
+        };
+    }
+    bindings.provider_bindings = vec![active];
+    bindings
+}
+
 fn read_conversation_bindings_file(session_dir: &Path) -> ConversationBindingsFileState {
     let path = conversation_bindings_path(session_dir);
     if !path.exists() {
         return ConversationBindingsFileState::Missing;
     }
-    let Ok(bindings) = read_json_file::<PersistedConversationBindings>(&path) else {
+    let Ok(bindings) = read_json_file::<PersistedConversationBindings>(&path)
+        .map(normalize_single_provider_binding)
+    else {
         return ConversationBindingsFileState::Unusable;
     };
     if validate_persisted_conversation_bindings(&bindings).is_err() {
@@ -2322,29 +2360,23 @@ fn reconcile_conversation_bindings(
             != Some(current_fingerprint.as_str());
 
     if legacy_changed {
-        for binding in &mut bindings.provider_bindings {
-            binding.context_cursor = None;
-            binding.context_generation = binding.context_generation.saturating_add(1);
-        }
         let runtime_id = metadata.runtime_id.clone().unwrap_or_default();
-        let position = bindings
+        let previous = bindings
             .provider_bindings
             .iter()
-            .position(|binding| binding.runtime_id == runtime_id);
-        let binding_id = position
-            .map(|index| bindings.provider_bindings[index].binding_id.clone())
+            .find(|binding| binding.runtime_id == runtime_id);
+        let binding_id = previous
+            .map(|binding| binding.binding_id.clone())
             .unwrap_or_else(|| legacy_binding_id(&metadata.session_id, &runtime_id));
         let mut projected = binding_from_metadata(metadata, binding_id.clone());
-        if let Some(index) = position {
-            let previous = &bindings.provider_bindings[index];
+        if let Some(previous) = previous {
             projected.capabilities = previous.capabilities.clone();
-            projected.context_generation = previous.context_generation;
+            projected.context_generation = previous.context_generation.saturating_add(1);
             projected.created_at = previous.created_at.or(projected.created_at);
-            bindings.provider_bindings[index] = projected;
         } else {
             projected.context_generation = 1;
-            bindings.provider_bindings.push(projected);
         }
+        bindings.provider_bindings = vec![projected];
         bindings.active_binding_id = Some(binding_id);
         bindings.preferred_selection = PersistedConversationSelection {
             runtime_id,
@@ -2421,15 +2453,6 @@ fn merge_conversation_bindings(
     mut incoming: PersistedConversationBindings,
 ) -> PersistedConversationBindings {
     if let Some(existing) = existing {
-        let mut merged = existing
-            .provider_bindings
-            .into_iter()
-            .map(|binding| (binding.binding_id.clone(), binding))
-            .collect::<BTreeMap<_, _>>();
-        for binding in incoming.provider_bindings {
-            merged.insert(binding.binding_id.clone(), binding);
-        }
-        incoming.provider_bindings = merged.into_values().collect();
         incoming.context_summary = incoming.context_summary.or(existing.context_summary);
         incoming.revision = incoming.revision.max(existing.revision).saturating_add(1);
     } else {
@@ -3682,26 +3705,24 @@ pub fn fork_session_history(
     write_json_atomic(&session_meta_path(&dest_dir), &new_metadata)?;
 
     let mut forked_bindings = source_bindings;
-    let source_active_binding_id = forked_bindings.active_binding_id.clone();
-    let mut next_active_binding_id = None;
     forked_bindings.conversation_id = new_session_id.clone();
     forked_bindings.revision = forked_bindings.revision.saturating_add(1);
-    for (index, binding) in forked_bindings.provider_bindings.iter_mut().enumerate() {
-        let was_active = source_active_binding_id.as_deref() == Some(binding.binding_id.as_str());
-        binding.binding_id = format!("fork:{new_session_id}:{}:{index}", binding.runtime_id);
-        binding.conversation_id = new_session_id.clone();
-        if is_custom_acp_runtime_id(&binding.runtime_id) {
-            binding.runtime_session_id = None;
-            binding.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
-        }
-        binding.context_cursor = None;
-        binding.context_generation = binding.context_generation.saturating_add(1);
-        binding.created_at = Some(now_ms);
-        binding.updated_at = Some(now_ms);
-        if was_active {
-            next_active_binding_id = Some(binding.binding_id.clone());
-        }
-    }
+    let next_active_binding_id = forked_bindings
+        .provider_bindings
+        .first_mut()
+        .map(|binding| {
+            binding.binding_id = format!("fork:{new_session_id}:{}", binding.runtime_id);
+            binding.conversation_id = new_session_id.clone();
+            if is_custom_acp_runtime_id(&binding.runtime_id) {
+                binding.runtime_session_id = None;
+                binding.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
+            }
+            binding.context_cursor = None;
+            binding.context_generation = binding.context_generation.saturating_add(1);
+            binding.created_at = Some(now_ms);
+            binding.updated_at = Some(now_ms);
+            binding.binding_id.clone()
+        });
     forked_bindings.active_binding_id = next_active_binding_id;
     let dest_index = load_session_index_from_dir(&dest_dir)?;
     forked_bindings.transcript_observation = PersistedTranscriptObservation {
@@ -5407,7 +5428,39 @@ mod tests {
     }
 
     #[test]
-    fn downgrade_write_reconciles_without_losing_existing_bindings() {
+    fn legacy_multi_provider_sidecar_normalizes_to_the_active_binding() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let session_dir = storage_session_dir(&dir, &history.session_id);
+        let mut bindings = load_conversation_bindings_from_dir(&session_dir)
+            .expect("legacy projection should synthesize");
+        let active_id = bindings.active_binding_id.clone().unwrap();
+        let mut stale = bindings.provider_bindings[0].clone();
+        stale.binding_id = "stale-provider-binding".to_string();
+        stale.runtime_id = "gemini-acp".to_string();
+        bindings.provider_bindings.push(stale);
+        write_json_atomic(&conversation_bindings_path(&session_dir), &bindings)
+            .expect("legacy sidecar should persist");
+
+        let normalized = load_conversation_bindings_from_dir(&session_dir)
+            .expect("legacy sidecar should normalize");
+        assert_eq!(
+            normalized.active_binding_id.as_deref(),
+            Some(active_id.as_str())
+        );
+        assert_eq!(normalized.provider_bindings.len(), 1);
+        assert_eq!(normalized.provider_bindings[0].binding_id, active_id);
+        assert!(inspect_history_storage(&dir)
+            .histories
+            .corrupt_artifacts
+            .is_empty());
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_write_rebinds_the_conversation_to_one_provider() {
         let dir = make_temp_dir();
         let history = sample_history();
         save_session_history(&dir, &history).expect("base history should persist");
@@ -5458,7 +5511,7 @@ mod tests {
                 .iter()
                 .map(|binding| binding.runtime_id.as_str())
                 .collect::<HashSet<_>>(),
-            HashSet::from(["codex-acp", "gemini-acp"])
+            HashSet::from(["gemini-acp"])
         );
         assert!(envelope
             .conversation_bindings
@@ -5477,7 +5530,7 @@ mod tests {
         )
         .expect("sidecar should load");
         assert_eq!(persisted.revision, 2);
-        assert_eq!(persisted.provider_bindings.len(), 2);
+        assert_eq!(persisted.provider_bindings.len(), 1);
 
         fs::remove_dir_all(dir).ok();
     }

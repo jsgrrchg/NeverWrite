@@ -539,12 +539,6 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         ) &&
         ((session?.messages.length ?? 0) > 0 ||
             (session?.persistedMessageCount ?? 0) > 0);
-    const providerSwitchLocked =
-        Math.max(
-            session?.messages.length ?? 0,
-            session?.persistedMessageCount ?? 0,
-        ) > 0;
-
     const updateTurnSelection = useCallback(
         (selection: ConversationSelection) => {
             if (!conversationId) return;
@@ -557,7 +551,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     );
 
     const handleProviderModelChange = useCallback(
-        async (runtimeId: string, modelId: string) => {
+        (runtimeId: string, modelId: string) => {
             if (!session || !turnSelection) {
                 return;
             }
@@ -585,13 +579,8 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             );
             if (!option || option.disabledReason || !runtime) return;
 
-            if (providerSwitchLocked) {
-                return;
-            }
-
             let nextSelection = getDefaultConversationSelection({
                 runtime,
-                bindings: conversationBindings,
             });
             if (modelId && modelId !== nextSelection.modelId) {
                 const targetCatalog = getConversationTurnCatalog({
@@ -612,7 +601,6 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             agentCatalog.configOptions,
             conversationBindings,
             providerOptions,
-            providerSwitchLocked,
             runtimes,
             session,
             turnSelection,
@@ -1442,9 +1430,6 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                                             runtimeId={turnSelection?.runtimeId}
                                             lockIncompatibleModelSwitches={
                                                 lockIncompatibleModelSwitches
-                                            }
-                                            providerSwitchLocked={
-                                                providerSwitchLocked
                                             }
                                             modelId={turnSelection?.modelId ?? ""}
                                             modeId={turnSelection?.modeId ?? ""}

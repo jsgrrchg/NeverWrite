@@ -180,7 +180,8 @@ import {
     deserializeConversationBindings,
     forkConversationBindings,
     getConversationSelection,
-    getConversationSwitchBlocker,
+    getConversationProviderSelectionBlocker,
+    hasConversationHistory,
     serializeConversationBindings,
     updateConversationBindingsFromLegacySession,
 } from "../conversationModel";
@@ -2804,15 +2805,6 @@ function sanitizePersistedDisplayText(value?: string | null) {
         : value;
 }
 
-function sessionHasConversationHistory(session: AIChatSession) {
-    return (
-        Math.max(
-            getSessionTranscriptLength(session),
-            session.persistedMessageCount ?? 0,
-        ) > 0
-    );
-}
-
 function buildPromptWithContextHandoff(
     session: AIChatSession,
     prompt: string,
@@ -2932,21 +2924,12 @@ function commitAcceptedConversationTurn(input: {
         contextCursor,
         updatedAt: Date.now(),
     };
-    const providerBindings = bindings.providerBindings.some(
-        (binding) => binding.bindingId === targetBinding.bindingId,
-    )
-        ? bindings.providerBindings.map((binding) =>
-              binding.bindingId === targetBinding.bindingId
-                  ? targetBinding
-                  : binding,
-          )
-        : [...bindings.providerBindings, targetBinding];
     const conversationBindings = {
         ...bindings,
         revision: bindings.revision + 1,
         preferredSelection: acceptedSelection,
         activeBindingId: targetBinding.bindingId,
-        providerBindings,
+        providerBindings: [targetBinding],
     };
     const provenance = createConversationTurnProvenance(
         targetBinding,
@@ -8661,7 +8644,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             });
             if (!approved) {
                 const cancelled = new Error(
-                    "Conversation provider switch cancelled.",
+                    "Custom provider continuation cancelled.",
                 );
                 cancelled.name = "ConversationTurnCancelledError";
                 throw cancelled;
@@ -8845,24 +8828,24 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         }
 
         const requestedRuntimeId = currentItem.runtimeId ?? session.runtimeId;
-        const providerSwitchRequested =
+        const initialProviderChangeRequested =
             requestedRuntimeId !== session.runtimeId;
         if (
-            providerSwitchRequested &&
-            sessionHasConversationHistory(session)
+            initialProviderChangeRequested &&
+            hasConversationHistory(session)
         ) {
             throw new Error(
-                "This conversation cannot switch ACP providers. Start a new chat to use another provider.",
+                "This conversation is already bound to an ACP provider. Start a new chat to use another provider.",
             );
         }
-        if (providerSwitchRequested) {
+        if (initialProviderChangeRequested) {
             const state = get();
             const conversationId =
                 resolveConversationId(state, activeSessionId) ??
                 session.historySessionId;
             const conversation = state.conversationsById[conversationId];
             const blocker = conversation
-                ? getConversationSwitchBlocker(conversation, {
+                ? getConversationProviderSelectionBlocker(conversation, {
                       hasQueuedMessages:
                           (state.queuedMessagesBySessionId[activeSessionId]
                               ?.length ?? 0) > 0 ||
@@ -8906,7 +8889,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
 
         clearInterruptedTurnState(activeSessionId);
 
-        if (!providerSwitchRequested && !isLiveRuntimeSession(session)) {
+        if (!initialProviderChangeRequested && !isLiveRuntimeSession(session)) {
                 const resumedSessionId =
                     await get().resumeSession(activeSessionId);
             if (!resumedSessionId) {
@@ -8968,7 +8951,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         }
 
         try {
-            if (!providerSwitchRequested && source === "immediate") {
+            if (!initialProviderChangeRequested && source === "immediate") {
                 const replacementSessionId =
                     await replaceEmptySessionForAdditionalRoots(
                         activeSessionId,
@@ -8994,7 +8977,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 }
             }
 
-            if (!providerSwitchRequested) {
+            if (!initialProviderChangeRequested) {
                 session =
                     (await syncQueuedMessageConfig(
                         activeSessionId,
@@ -9034,7 +9017,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 hasTranscript:
                     getSessionTranscriptMessages(session).length > 0,
             });
-            if (session.resumeContextPending && !route.providerChanged) {
+            if (session.resumeContextPending && !route.initialProviderChanged) {
                 route = { ...route, startReason: "transcript_handoff" };
             }
             plannedRoute = route;
@@ -9051,7 +9034,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     start_reason: route.startReason,
                     source_runtime_id: session.runtimeId,
                     target_runtime_id: connected.runtimeSession.runtimeId,
-                    provider_changed: route.providerChanged,
+                    initial_provider_changed: route.initialProviderChanged,
                     reused_binding: route.targetBinding != null,
                     created_session: connected.created,
                 },
@@ -9176,7 +9159,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     return;
                 }
 
-                if (preflightOwnership && !route.providerChanged) {
+                if (preflightOwnership && !route.initialProviderChanged) {
                     const releasedOwnership =
                         releaseComposerPreflightOwnership(
                             activeSessionId,
@@ -9190,7 +9173,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 cleanupPromotedDrafts(promotedDrafts.promotions);
 
             const afterSend = get().sessionsById[activeSessionId];
-            if (afterSend && !route.providerChanged) {
+            if (afterSend && !route.initialProviderChanged) {
                 void persistSession(afterSend);
             }
 
@@ -9205,7 +9188,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 };
             }
 
-            if (route.providerChanged) {
+            if (route.initialProviderChanged) {
                 await aiStartConversationTurn({
                     conversationId: bindings.conversationId,
                     bindingId: connected.targetBinding.bindingId,
@@ -9278,7 +9261,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     start_reason: route.startReason,
                     source_runtime_id: session.runtimeId,
                     target_runtime_id: committedSession.runtimeId,
-                    provider_changed: route.providerChanged,
+                    initial_provider_changed: route.initialProviderChanged,
                     reused_binding: route.targetBinding != null,
                     created_session: connected.created,
                     handoff_truncated:
@@ -9318,7 +9301,8 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         source_runtime_id: session.runtimeId,
                         target_runtime_id:
                             plannedRoute.selection.runtimeId,
-                        provider_changed: plannedRoute.providerChanged,
+                        initial_provider_changed:
+                            plannedRoute.initialProviderChanged,
                         reused_binding:
                             plannedRoute.targetBinding != null,
                         created_session: preparedTurn?.created ?? false,
@@ -9331,7 +9315,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             }
             shouldRecoverPromptForRetry =
                 source === "immediate" &&
-                (providerSwitchRequested ||
+                (initialProviderChangeRequested ||
                     isRuntimeSessionDisconnectedErrorMessage(message));
             const failedOptimisticMessageId = shouldRecoverPromptForRetry
                 ? optimisticMessageId
@@ -12746,7 +12730,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             }
             if (
                 selection.runtimeId !== sourceSession.runtimeId &&
-                sessionHasConversationHistory(sourceSession)
+                hasConversationHistory(sourceSession)
             ) {
                 return;
             }
@@ -12891,15 +12875,16 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     : null;
                 const activeRuntimeId =
                     activeBinding?.runtimeId ?? session.runtimeId;
-                const providerChanged =
+                const initialProviderChanged =
                     activeRuntimeId !== selection.runtimeId;
                 const setupStatus =
                     currentState.setupStatusByRuntimeId[selection.runtimeId];
                 if (
                     isClaudeTerminalRuntimeId(selection.runtimeId) ||
-                    (providerChanged &&
-                        (sessionHasConversationHistory(session) ||
-                            getConversationSwitchBlocker(conversation, {
+                    (initialProviderChanged &&
+                        (getConversationProviderSelectionBlocker(
+                            conversation,
+                            {
                                 hasQueuedMessages:
                                     (currentState.queuedMessagesBySessionId[
                                         sessionId
@@ -12907,7 +12892,8 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                     currentState.activeQueuedMessageBySessionId[
                                         sessionId
                                     ] != null,
-                            }) != null ||
+                            },
+                        ) != null ||
                             (setupStatus != null &&
                                 !isRuntimeSetupReady(setupStatus))))
                 ) {
@@ -13200,18 +13186,19 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 : null;
             const activeRuntimeId =
                 activeBinding?.runtimeId ?? session.runtimeId;
-            const providerChanged =
+            const initialProviderChanged =
                 activeRuntimeId !== selection.runtimeId;
-            if (providerChanged) {
-                if (sessionHasConversationHistory(session)) {
-                    return;
-                }
-                const blocker = getConversationSwitchBlocker(conversation, {
-                    hasQueuedMessages:
-                        (state.queuedMessagesBySessionId[sessionId]?.length ??
-                            0) > 0 ||
-                        state.activeQueuedMessageBySessionId[sessionId] != null,
-                });
+            if (initialProviderChanged) {
+                const blocker = getConversationProviderSelectionBlocker(
+                    conversation,
+                    {
+                        hasQueuedMessages:
+                            (state.queuedMessagesBySessionId[sessionId]
+                                ?.length ?? 0) > 0 ||
+                            state.activeQueuedMessageBySessionId[sessionId] !=
+                                null,
+                    },
+                );
                 const runtime = state.runtimes.find(
                     (candidate) =>
                         candidate.runtime.id === selection.runtimeId,
@@ -13273,14 +13260,16 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     .preferredSelection;
             const selection =
                 requestedSelection.runtimeId !== session.runtimeId &&
-                sessionHasConversationHistory(session)
+                hasConversationHistory(session)
                     ? getConversationSelection(session)
                     : requestedSelection;
-            const providerChanged = selection.runtimeId !== session.runtimeId;
+            const initialProviderChanged =
+                selection.runtimeId !== session.runtimeId;
 
             if (
-                (!providerChanged && !isLiveRuntimeSession(session)) ||
-                (!providerChanged && needsFullResumeContextTranscript(session))
+                (!initialProviderChanged && !isLiveRuntimeSession(session)) ||
+                (!initialProviderChanged &&
+                    needsFullResumeContextTranscript(session))
             ) {
                 const preparedSessionId =
                     await prepareSessionForPromptBuild(resolvedSessionId);

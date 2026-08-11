@@ -47,40 +47,12 @@ describe("canonical conversation turn routing", () => {
         ).toMatchObject({
             strategy: "continue",
             startReason: "normal",
-            providerChanged: false,
+            initialProviderChanged: false,
             targetBinding: { runtimeId: "provider-a" },
         });
     });
 
-    it("resumes a prior provider binding when switching back", () => {
-        const current = session();
-        const bindings = createConversationBindingsFromLegacySession(current);
-        bindings.providerBindings.push({
-            ...bindings.providerBindings[0],
-            bindingId: "binding-b",
-            runtimeId: "provider-b",
-            runtimeSessionId: "native-b",
-            continuationStrategy: "resume",
-            updatedAt: 20,
-        });
-
-        expect(
-            planConversationTurnRoute({
-                session: current,
-                bindings,
-                selection: selection("provider-b"),
-                runtimeCapabilities: ["create_session", "resume_session"],
-                hasTranscript: true,
-            }),
-        ).toMatchObject({
-            strategy: "resume",
-            startReason: "provider_switch",
-            providerChanged: true,
-            targetBinding: { bindingId: "binding-b" },
-        });
-    });
-
-    it("creates an isolated binding when the provider cannot continue", () => {
+    it("creates the selected provider session before the first turn", () => {
         const current = session();
         const bindings = createConversationBindingsFromLegacySession(current);
 
@@ -90,62 +62,72 @@ describe("canonical conversation turn routing", () => {
                 bindings,
                 selection: selection("provider-b"),
                 runtimeCapabilities: ["create_session"],
-                hasTranscript: true,
+                hasTranscript: false,
             }),
         ).toMatchObject({
             strategy: "create",
-            startReason: "provider_switch",
-            providerChanged: true,
+            startReason: "normal",
+            initialProviderChanged: true,
             targetBinding: null,
         });
     });
 
-    it("creates a fresh session when a prior binding is not resumable", () => {
+    it("rejects provider changes after the conversation starts", () => {
         const current = session();
         const bindings = createConversationBindingsFromLegacySession(current);
-        bindings.providerBindings.push({
-            ...bindings.providerBindings[0],
-            bindingId: "binding-b",
-            runtimeId: "provider-b",
-            runtimeSessionId: "native-b",
-            continuationStrategy: "new_session_only",
-        });
+
+        expect(
+            () =>
+                planConversationTurnRoute({
+                    session: current,
+                    bindings,
+                    selection: selection("provider-b"),
+                    runtimeCapabilities: ["create_session"],
+                    hasTranscript: true,
+                }),
+        ).toThrow("Cannot change the provider after the conversation has started");
+    });
+
+    it("creates a fresh same-provider session with transcript handoff", () => {
+        const current = session();
+        current.runtimeState = "persisted_only";
+        const bindings = createConversationBindingsFromLegacySession(current);
+        bindings.providerBindings[0].runtimeSessionId = null;
 
         expect(
             planConversationTurnRoute({
                 session: current,
                 bindings,
-                selection: selection("provider-b"),
+                selection: selection("provider-a"),
                 runtimeCapabilities: ["create_session"],
                 hasTranscript: true,
             }),
         ).toMatchObject({
             strategy: "create",
-            startReason: "provider_switch",
-            providerChanged: true,
-            targetBinding: { bindingId: "binding-b" },
+            startReason: "transcript_handoff",
+            initialProviderChanged: false,
+            targetBinding: { runtimeId: "provider-a" },
         });
     });
 
-    it("uses load for bindings that explicitly require it", () => {
+    it("uses load to restore the fixed provider binding", () => {
         const current = session();
+        current.runtimeState = "persisted_only";
         const bindings = createConversationBindingsFromLegacySession(current);
-        bindings.providerBindings.push({
-            ...bindings.providerBindings[0],
-            bindingId: "binding-b",
-            runtimeId: "provider-b",
-            runtimeSessionId: "native-b",
-            continuationStrategy: "load",
-        });
+        bindings.providerBindings[0].continuationStrategy = "load";
 
         expect(
             planConversationTurnRoute({
                 session: current,
                 bindings,
-                selection: selection("provider-b"),
+                selection: selection("provider-a"),
                 runtimeCapabilities: ["create_session"],
                 hasTranscript: true,
-            }).strategy,
-        ).toBe("load");
+            }),
+        ).toMatchObject({
+            strategy: "load",
+            startReason: "native_resume",
+            initialProviderChanged: false,
+        });
     });
 });

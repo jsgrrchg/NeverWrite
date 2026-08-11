@@ -1,4 +1,4 @@
-import { getConversationSwitchBlocker } from "./conversationModel";
+import { getConversationProviderSelectionBlocker } from "./conversationModel";
 import type {
   AcpConversationBinding,
   AIChatSession,
@@ -46,50 +46,32 @@ function isRuntimeReady(status?: AIRuntimeSetupStatus | null) {
   return status?.authReady === true && !status.onboardingRequired;
 }
 
-function switchBlockerLabel(
-  blocker: ReturnType<typeof getConversationSwitchBlocker>,
+function providerSelectionBlockerLabel(
+  blocker: ReturnType<typeof getConversationProviderSelectionBlocker>,
 ) {
   switch (blocker) {
+    case "conversation_started":
+      return "Start a new chat to use another provider.";
     case "conversation_not_idle":
-      return "Finish the current turn before switching providers.";
+      return "Finish the current turn before choosing another provider.";
     case "session_transition_pending":
       return "Wait for the current session transition to finish.";
     case "queued_messages_pending":
-      return "Send or remove queued messages before switching providers.";
+      return "Send or remove queued messages before choosing another provider.";
     default:
       return null;
   }
 }
 
-function canStartRuntime(
-  runtime: AIRuntimeDescriptor,
-  binding: AcpConversationBinding | null,
-) {
-  if (runtime.runtime.capabilities.includes("create_session")) return true;
-  if (!binding?.runtimeSessionId) return false;
-  if (
-    binding.continuationStrategy === "load" ||
-    binding.continuationStrategy === "resume"
-  ) {
-    return true;
-  }
-  return (
-    runtime.runtime.capabilities.includes("load_session") ||
-    runtime.runtime.capabilities.includes("resume_session")
-  );
+function canStartRuntime(runtime: AIRuntimeDescriptor) {
+  return runtime.runtime.capabilities.includes("create_session");
 }
 
-function latestBindingForRuntime(
+function bindingForRuntime(
   bindings: readonly AcpConversationBinding[],
   runtimeId: string,
 ) {
-  return (
-    bindings
-      .filter((binding) => binding.runtimeId === runtimeId)
-      .sort(
-        (left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0),
-      )[0] ?? null
-  );
+  return bindings.find((binding) => binding.runtimeId === runtimeId) ?? null;
 }
 
 function providerModelOptions(
@@ -157,10 +139,19 @@ export function buildConversationProviderOptions(input: {
   activeRuntimeId: string;
   hasQueuedMessages: boolean;
 }) {
-  const blocker = getConversationSwitchBlocker(input.conversation, {
-    hasQueuedMessages: input.hasQueuedMessages,
-  });
-  const blockerDescription = switchBlockerLabel(blocker);
+  const blocker = getConversationProviderSelectionBlocker(
+    input.conversation,
+    {
+      hasQueuedMessages: input.hasQueuedMessages,
+    },
+  );
+  const blockerDescription = providerSelectionBlockerLabel(blocker);
+  const activeBinding = input.conversation.activeBindingId
+    ? input.bindings.find(
+        (binding) =>
+          binding.bindingId === input.conversation.activeBindingId,
+      ) ?? null
+    : null;
 
   return input.runtimes
     .filter(
@@ -172,7 +163,10 @@ export function buildConversationProviderOptions(input: {
     .map((runtime): ConversationProviderPickerOption => {
       const runtimeId = runtime.runtime.id;
       const isActive = runtimeId === input.activeRuntimeId;
-      const binding = latestBindingForRuntime(input.bindings, runtimeId);
+      const binding =
+        isActive && activeBinding?.runtimeId === runtimeId
+          ? activeBinding
+          : null;
       const modelOptions = providerModelOptions(
         runtime,
         binding,
@@ -189,7 +183,7 @@ export function buildConversationProviderOptions(input: {
         !isRuntimeReady(input.setupStatusByRuntimeId[runtimeId])
       ) {
         disabledReason = "Finish provider setup before using it in this chat.";
-      } else if (!isActive && !canStartRuntime(runtime, binding)) {
+      } else if (!isActive && !canStartRuntime(runtime)) {
         disabledReason =
           "This provider cannot create or continue an ACP session.";
       }
@@ -244,7 +238,7 @@ export function getConversationTurnCatalog(input: {
   const runtime = input.runtimes.find(
     (candidate) => candidate.runtime.id === input.selection.runtimeId,
   );
-  const binding = latestBindingForRuntime(
+  const binding = bindingForRuntime(
     input.bindings,
     input.selection.runtimeId,
   );
@@ -292,21 +286,7 @@ export function getConversationTurnCatalog(input: {
 
 export function getDefaultConversationSelection(input: {
   runtime: AIRuntimeDescriptor;
-  bindings: readonly AcpConversationBinding[];
 }): ConversationSelection {
-  const binding = latestBindingForRuntime(
-    input.bindings,
-    input.runtime.runtime.id,
-  );
-  if (binding) {
-    return {
-      runtimeId: binding.runtimeId,
-      modelId: binding.modelId,
-      modeId: binding.modeId,
-      options: { ...binding.options },
-    };
-  }
-
   const modelOption = input.runtime.configOptions.find(
     (option) => option.category === "model",
   );

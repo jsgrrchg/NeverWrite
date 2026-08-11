@@ -189,16 +189,6 @@ describe("ACP context handoff", () => {
         );
     });
 
-    it("labels cross-provider handoffs without claiming native memory", () => {
-        const result = buildAcpContextHandoff({
-            messages: [message("m1", "user", "Prior provider context")],
-            newUserMessage: "Continue",
-            reason: "provider_switch",
-        });
-        expect(result.prompt).toContain("another ACP provider");
-        expect(result.metadata.reason).toBe("provider_switch");
-    });
-
     it("keeps compact handoffs identifiable when only the user message fits", () => {
         const result = buildAcpContextHandoff({
             messages: [

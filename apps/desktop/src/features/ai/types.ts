@@ -37,7 +37,6 @@ export interface ConversationSelection {
 
 export type ConversationTurnStartReason =
     | "normal"
-    | "provider_switch"
     | "native_resume"
     | "transcript_handoff";
 

@@ -25,7 +25,6 @@ const composerMockState = vi.hoisted(() => ({
 const agentControlsMockState = vi.hoisted(() => ({
     props: null as null | {
         runtimeId?: string;
-        providerSwitchLocked?: boolean;
         providers?: Array<{
             runtimeId: string;
             disabledReason: string | null;
@@ -247,8 +246,10 @@ describe("AIChatSessionView", () => {
             ),
         ).toContain("provider-b");
         expect(
-            agentControlsMockState.props?.providerSwitchLocked,
-        ).toBe(true);
+            agentControlsMockState.props?.providers?.find(
+                (provider) => provider.runtimeId === "provider-b",
+            )?.disabledReason,
+        ).toBe("Start a new chat to use another provider.");
 
         act(() => {
             agentControlsMockState.props?.onProviderModelChange?.(

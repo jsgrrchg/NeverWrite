@@ -1875,8 +1875,9 @@ export function AIProvidersSettings({
                                 <strong style={{ color: "var(--text-primary)" }}>
                                     Add to chat
                                 </strong>{" "}
-                                from the file tree. You can switch providers from
-                                inside the agent at any time.
+                                from the file tree. You can choose another
+                                provider until the new chat sends its first
+                                message.
                             </p>
                             <select
                                 value={defaultRuntimeId ?? ""}

@@ -15,18 +15,31 @@ export interface CanonicalConversationProjection {
 
 export type ConversationInvariantViolation =
     | "missing_conversation_id"
+    | "multiple_provider_bindings"
     | "duplicate_binding_id"
     | "binding_conversation_mismatch"
     | "binding_runtime_mismatch"
     | "missing_active_binding";
 
-export type ConversationSwitchBlocker =
+export type ConversationProviderSelectionBlocker =
+    | "conversation_started"
     | "conversation_not_idle"
     | "session_transition_pending"
     | "queued_messages_pending";
 
-export interface ConversationSwitchContext {
+export interface ConversationProviderSelectionContext {
     hasQueuedMessages?: boolean;
+}
+
+export function hasConversationHistory(
+    conversation: Pick<AIConversation, "messages" | "persistedMessageCount">,
+) {
+    return (
+        Math.max(
+            conversation.messages.length,
+            conversation.persistedMessageCount ?? 0,
+        ) > 0
+    );
 }
 
 function nonEmpty(value: string | null | undefined) {
@@ -38,16 +51,6 @@ function selectionOptions(configOptions: readonly AIConfigOption[]) {
     return Object.fromEntries(
         configOptions.map((option) => [option.id, option.value]),
     );
-}
-
-function applySelectionOptions(
-    configOptions: readonly AIConfigOption[],
-    options: Readonly<Record<string, string>>,
-) {
-    return configOptions.map((option) => ({
-        ...option,
-        value: options[option.id] ?? option.value,
-    }));
 }
 
 function selectionMatchesBinding(
@@ -195,7 +198,9 @@ export function updateConversationBindingsFromLegacySession(
         createConversationBindingsFromLegacySession(session);
     const projectedBinding = projected.bindings[0];
     const activeBinding = current.providerBindings.find(
-        (binding) => binding.bindingId === current.activeBindingId,
+        (binding) =>
+            binding.bindingId === current.activeBindingId &&
+            binding.runtimeId === projectedBinding.runtimeId,
     );
     const nextBinding: AcpConversationBinding = activeBinding
         ? {
@@ -219,16 +224,14 @@ export function updateConversationBindingsFromLegacySession(
               updatedAt: projectedBinding.updatedAt,
           }
         : projectedBinding;
-    const providerBindings = activeBinding
-        ? current.providerBindings.map((binding) =>
-              binding.bindingId === activeBinding.bindingId
-                  ? nextBinding
-                  : binding,
-          )
-        : [...current.providerBindings, nextBinding];
+    // A conversation is bound to exactly one provider after its first turn.
+    // Drop stale bindings created by the former mid-conversation switching flow.
+    const providerBindings = [nextBinding];
     const preferredSelectionTracksActiveBinding =
         activeBinding != null &&
         selectionMatchesBinding(current.preferredSelection, activeBinding);
+    const preferredProviderMatchesActiveBinding =
+        current.preferredSelection.runtimeId === projectedBinding.runtimeId;
 
     return {
         ...current,
@@ -237,46 +240,52 @@ export function updateConversationBindingsFromLegacySession(
         // next-turn selection. Preserve it until that turn is accepted. Only
         // follow the live legacy session when the preference still describes
         // the binding we are replacing.
-        preferredSelection: preferredSelectionTracksActiveBinding
-            ? projected.conversation.preferredSelection
-            : current.preferredSelection,
+        preferredSelection:
+            (hasConversationHistory(session) &&
+                !preferredProviderMatchesActiveBinding) ||
+            preferredSelectionTracksActiveBinding
+                ? projected.conversation.preferredSelection
+                : current.preferredSelection,
         activeBindingId: nextBinding.bindingId,
         providerBindings,
     };
 }
 
 /**
- * A transcript fork owns fresh binding identities and must replay context to
- * every provider independently from the beginning of the copied transcript.
+ * A transcript fork owns a fresh binding identity and must replay context to
+ * its fixed provider from the beginning of the copied transcript.
  */
 export function forkConversationBindings(
     source: ConversationBindingsState,
     conversationId: string,
     now: number,
 ): ConversationBindingsState {
-    let activeBindingId: string | null = null;
-    const providerBindings = source.providerBindings.map((binding, index) => {
-        const bindingId = `fork:${conversationId}:${binding.runtimeId}:${index}`;
-        if (binding.bindingId === source.activeBindingId) {
-            activeBindingId = bindingId;
-        }
-        const isCustomRuntime = binding.runtimeId.startsWith("custom:");
-        return {
-            ...binding,
-            bindingId,
-            conversationId,
-            runtimeSessionId: isCustomRuntime
-                ? null
-                : binding.runtimeSessionId,
-            continuationStrategy: isCustomRuntime
-                ? "new_session_only"
-                : binding.continuationStrategy,
-            contextCursor: null,
-            contextGeneration: binding.contextGeneration + 1,
-            createdAt: now,
-            updatedAt: now,
-        };
-    });
+    const sourceBinding =
+        source.providerBindings.find(
+            (binding) => binding.bindingId === source.activeBindingId,
+        ) ?? source.providerBindings[0];
+    const providerBindings = sourceBinding
+        ? [
+              {
+                  ...sourceBinding,
+                  bindingId: `fork:${conversationId}:${sourceBinding.runtimeId}`,
+                  conversationId,
+                  runtimeSessionId: sourceBinding.runtimeId.startsWith("custom:")
+                      ? null
+                      : sourceBinding.runtimeSessionId,
+                  continuationStrategy: sourceBinding.runtimeId.startsWith(
+                      "custom:",
+                  )
+                      ? "new_session_only"
+                      : sourceBinding.continuationStrategy,
+                  contextCursor: null,
+                  contextGeneration: sourceBinding.contextGeneration + 1,
+                  createdAt: now,
+                  updatedAt: now,
+              },
+          ]
+        : [];
+    const activeBindingId = providerBindings[0]?.bindingId ?? null;
 
     return {
         ...source,
@@ -294,6 +303,10 @@ export function forkConversationBindings(
 export function serializeConversationBindings(
     state: ConversationBindingsState,
 ): PersistedConversationBindings {
+    const activeBinding =
+        state.providerBindings.find(
+            (binding) => binding.bindingId === state.activeBindingId,
+        ) ?? state.providerBindings[0];
     return {
         version: state.version,
         revision: state.revision,
@@ -304,56 +317,58 @@ export function serializeConversationBindings(
             mode_id: state.preferredSelection.modeId,
             options: state.preferredSelection.options,
         },
-        active_binding_id: state.activeBindingId,
-        provider_bindings: state.providerBindings.map((binding) => ({
-            binding_id: binding.bindingId,
-            conversation_id: binding.conversationId,
-            runtime_id: binding.runtimeId,
-            runtime_display_name: binding.runtimeDisplayName,
-            runtime_revision: binding.runtimeRevision,
-            runtime_launch_fingerprint: binding.runtimeLaunchFingerprint,
-            runtime_session_id: binding.runtimeSessionId,
-            continuation_strategy: binding.continuationStrategy,
-            capabilities: binding.capabilities,
-            model_id: binding.modelId,
-            mode_id: binding.modeId,
-            options: binding.options,
-            models: binding.models.map((model) => ({
-                id: model.id,
-                runtime_id: model.runtimeId,
-                name: model.name,
-                description: model.description,
-                agent_type: model.agentType,
-            })),
-            modes: binding.modes.map((mode) => ({
-                id: mode.id,
-                runtime_id: mode.runtimeId,
-                name: mode.name,
-                description: mode.description,
-                disabled: mode.disabled ?? false,
-            })),
-            config_options: binding.configOptions.map((option) => ({
-                id: option.id,
-                runtime_id: option.runtimeId,
-                category: option.category,
-                label: option.label,
-                description: option.description,
-                type: option.type,
-                value: option.value,
-                options: option.options.map((item) => ({
-                    value: item.value,
-                    label: item.label,
-                    description: item.description,
-                    agent_type: item.agentType,
+        active_binding_id: activeBinding?.bindingId ?? null,
+        provider_bindings: (activeBinding ? [activeBinding] : []).map(
+            (binding) => ({
+                binding_id: binding.bindingId,
+                conversation_id: binding.conversationId,
+                runtime_id: binding.runtimeId,
+                runtime_display_name: binding.runtimeDisplayName,
+                runtime_revision: binding.runtimeRevision,
+                runtime_launch_fingerprint: binding.runtimeLaunchFingerprint,
+                runtime_session_id: binding.runtimeSessionId,
+                continuation_strategy: binding.continuationStrategy,
+                capabilities: binding.capabilities,
+                model_id: binding.modelId,
+                mode_id: binding.modeId,
+                options: binding.options,
+                models: binding.models.map((model) => ({
+                    id: model.id,
+                    runtime_id: model.runtimeId,
+                    name: model.name,
+                    description: model.description,
+                    agent_type: model.agentType,
                 })),
-            })),
-            efforts_by_model: binding.effortsByModel,
-            runtime_state: binding.runtimeState,
-            context_cursor: binding.contextCursor,
-            context_generation: binding.contextGeneration,
-            created_at: binding.createdAt,
-            updated_at: binding.updatedAt,
-        })),
+                modes: binding.modes.map((mode) => ({
+                    id: mode.id,
+                    runtime_id: mode.runtimeId,
+                    name: mode.name,
+                    description: mode.description,
+                    disabled: mode.disabled ?? false,
+                })),
+                config_options: binding.configOptions.map((option) => ({
+                    id: option.id,
+                    runtime_id: option.runtimeId,
+                    category: option.category,
+                    label: option.label,
+                    description: option.description,
+                    type: option.type,
+                    value: option.value,
+                    options: option.options.map((item) => ({
+                        value: item.value,
+                        label: item.label,
+                        description: item.description,
+                        agent_type: item.agentType,
+                    })),
+                })),
+                efforts_by_model: binding.effortsByModel,
+                runtime_state: binding.runtimeState,
+                context_cursor: binding.contextCursor,
+                context_generation: binding.contextGeneration,
+                created_at: binding.createdAt,
+                updated_at: binding.updatedAt,
+            }),
+        ),
         context_summary: state.contextSummary,
         transcript_observation: {
             message_count: state.transcriptObservation.messageCount,
@@ -367,66 +382,80 @@ export function serializeConversationBindings(
 export function deserializeConversationBindings(
     persisted: PersistedConversationBindings,
 ): ConversationBindingsState {
+    const deserializedBindings = persisted.provider_bindings.map((binding) => ({
+        bindingId: binding.binding_id,
+        conversationId: binding.conversation_id,
+        runtimeId: binding.runtime_id,
+        runtimeDisplayName: binding.runtime_display_name,
+        runtimeRevision: binding.runtime_revision,
+        runtimeLaunchFingerprint: binding.runtime_launch_fingerprint,
+        runtimeSessionId: binding.runtime_session_id,
+        continuationStrategy: binding.continuation_strategy,
+        capabilities: binding.capabilities,
+        modelId: binding.model_id,
+        modeId: binding.mode_id,
+        options: binding.options,
+        models: (binding.models ?? []).map((model) => ({
+            id: model.id,
+            runtimeId: model.runtime_id,
+            name: model.name,
+            description: model.description,
+            agentType: model.agent_type ?? undefined,
+        })),
+        modes: (binding.modes ?? []).map((mode) => ({
+            id: mode.id,
+            runtimeId: mode.runtime_id,
+            name: mode.name,
+            description: mode.description,
+            disabled: mode.disabled,
+        })),
+        configOptions: (binding.config_options ?? []).map((option) => ({
+            id: option.id,
+            runtimeId: option.runtime_id,
+            category: option.category,
+            label: option.label,
+            description: option.description ?? undefined,
+            type: option.type,
+            value: option.value,
+            options: option.options.map((item) => ({
+                value: item.value,
+                label: item.label,
+                description: item.description ?? undefined,
+                agentType: item.agent_type ?? undefined,
+            })),
+        })),
+        effortsByModel: binding.efforts_by_model ?? {},
+        runtimeState: binding.runtime_state,
+        contextCursor: binding.context_cursor,
+        contextGeneration: binding.context_generation,
+        createdAt: binding.created_at,
+        updatedAt: binding.updated_at,
+    }));
+    const activeBinding =
+        deserializedBindings.find(
+            (binding) => binding.bindingId === persisted.active_binding_id,
+        ) ?? deserializedBindings[0];
+    const preferredSelection =
+        persisted.transcript_observation.message_count > 0 && activeBinding
+            ? {
+                  runtimeId: activeBinding.runtimeId,
+                  modelId: activeBinding.modelId,
+                  modeId: activeBinding.modeId,
+                  options: { ...activeBinding.options },
+              }
+            : {
+                  runtimeId: persisted.preferred_selection.runtime_id,
+                  modelId: persisted.preferred_selection.model_id,
+                  modeId: persisted.preferred_selection.mode_id,
+                  options: persisted.preferred_selection.options,
+              };
     return {
         version: persisted.version,
         revision: persisted.revision,
         conversationId: persisted.conversation_id,
-        preferredSelection: {
-            runtimeId: persisted.preferred_selection.runtime_id,
-            modelId: persisted.preferred_selection.model_id,
-            modeId: persisted.preferred_selection.mode_id,
-            options: persisted.preferred_selection.options,
-        },
-        activeBindingId: persisted.active_binding_id,
-        providerBindings: persisted.provider_bindings.map((binding) => ({
-            bindingId: binding.binding_id,
-            conversationId: binding.conversation_id,
-            runtimeId: binding.runtime_id,
-            runtimeDisplayName: binding.runtime_display_name,
-            runtimeRevision: binding.runtime_revision,
-            runtimeLaunchFingerprint: binding.runtime_launch_fingerprint,
-            runtimeSessionId: binding.runtime_session_id,
-            continuationStrategy: binding.continuation_strategy,
-            capabilities: binding.capabilities,
-            modelId: binding.model_id,
-            modeId: binding.mode_id,
-            options: binding.options,
-            models: (binding.models ?? []).map((model) => ({
-                id: model.id,
-                runtimeId: model.runtime_id,
-                name: model.name,
-                description: model.description,
-                agentType: model.agent_type ?? undefined,
-            })),
-            modes: (binding.modes ?? []).map((mode) => ({
-                id: mode.id,
-                runtimeId: mode.runtime_id,
-                name: mode.name,
-                description: mode.description,
-                disabled: mode.disabled,
-            })),
-            configOptions: (binding.config_options ?? []).map((option) => ({
-                id: option.id,
-                runtimeId: option.runtime_id,
-                category: option.category,
-                label: option.label,
-                description: option.description ?? undefined,
-                type: option.type,
-                value: option.value,
-                options: option.options.map((item) => ({
-                    value: item.value,
-                    label: item.label,
-                    description: item.description ?? undefined,
-                    agentType: item.agent_type ?? undefined,
-                })),
-            })),
-            effortsByModel: binding.efforts_by_model ?? {},
-            runtimeState: binding.runtime_state,
-            contextCursor: binding.context_cursor,
-            contextGeneration: binding.context_generation,
-            createdAt: binding.created_at,
-            updatedAt: binding.updated_at,
-        })),
+        preferredSelection,
+        activeBindingId: activeBinding?.bindingId ?? null,
+        providerBindings: activeBinding ? [activeBinding] : [],
         contextSummary: persisted.context_summary,
         transcriptObservation: {
             messageCount: persisted.transcript_observation.message_count,
@@ -434,67 +463,6 @@ export function deserializeConversationBindings(
             transcriptFingerprint:
                 persisted.transcript_observation.transcript_fingerprint,
         },
-    };
-}
-
-/**
- * Compatibility adapter for legacy consumers. The active binding, not the
- * preferred next-turn selection, remains the projected runtime until routing
- * moves to canonical conversations in a later commit.
- */
-export function projectCanonicalConversationToLegacy(
-    conversation: AIConversation,
-    binding: AcpConversationBinding,
-    template: AIChatSession,
-): AIChatSession {
-    if (binding.conversationId !== conversation.conversationId) {
-        throw new Error("Cannot project a binding owned by another conversation");
-    }
-    if (conversation.activeBindingId !== binding.bindingId) {
-        throw new Error("Cannot project a binding that is not active");
-    }
-
-    return {
-        ...template,
-        historySessionId: conversation.conversationId,
-        parentSessionId: conversation.parentConversationId,
-        vaultPath: conversation.vaultPath,
-        closedAt: conversation.closedAt,
-        status: conversation.status,
-        activeWorkCycleId: conversation.activeWorkCycleId,
-        visibleWorkCycleId: conversation.visibleWorkCycleId,
-        actionLog: conversation.actionLog,
-        messages: conversation.messages,
-        attachments: conversation.attachments,
-        persistedCreatedAt: conversation.persistedCreatedAt,
-        persistedUpdatedAt: conversation.persistedUpdatedAt,
-        persistedTitle: conversation.persistedTitle,
-        customTitle: conversation.customTitle,
-        persistedPreview: conversation.persistedPreview,
-        persistedMessageCount: conversation.persistedMessageCount,
-        loadedPersistedMessageStart:
-            conversation.loadedPersistedMessageStart,
-        isLoadingPersistedMessages: conversation.isLoadingPersistedMessages,
-        isPersistedSession: conversation.isPersistedSession,
-        isPendingSessionCreation: conversation.isPendingSessionCreation,
-        isResumingSession: conversation.isResumingSession,
-        runtimeId: binding.runtimeId,
-        runtimeDisplayName: binding.runtimeDisplayName,
-        runtimeRevision: binding.runtimeRevision,
-        runtimeLaunchFingerprint: binding.runtimeLaunchFingerprint,
-        runtimeSessionId: binding.runtimeSessionId,
-        continuationStrategy: binding.continuationStrategy,
-        modelId: binding.modelId,
-        modeId: binding.modeId,
-        models: binding.models,
-        modes: binding.modes,
-        configOptions: applySelectionOptions(
-            binding.configOptions,
-            binding.options,
-        ),
-        availableCommands: binding.availableCommands,
-        effortsByModel: binding.effortsByModel,
-        runtimeState: binding.runtimeState,
     };
 }
 
@@ -508,6 +476,9 @@ export function validateCanonicalConversation(
     }
 
     const seenBindingIds = new Set<string>();
+    if (bindings.length > 1) {
+        violations.add("multiple_provider_bindings");
+    }
     for (const binding of bindings) {
         if (seenBindingIds.has(binding.bindingId)) {
             violations.add("duplicate_binding_id");
@@ -541,16 +512,19 @@ export function validateCanonicalConversation(
     return [...violations];
 }
 
-/** Provider changes are only valid between turns and without queued work. */
-export function getConversationSwitchBlocker(
+/** A provider can be chosen only before the conversation has any history. */
+export function getConversationProviderSelectionBlocker(
     conversation: Pick<
         AIConversation,
         | "status"
+        | "messages"
+        | "persistedMessageCount"
         | "isPendingSessionCreation"
         | "isResumingSession"
     >,
-    context: ConversationSwitchContext = {},
-): ConversationSwitchBlocker | null {
+    context: ConversationProviderSelectionContext = {},
+): ConversationProviderSelectionBlocker | null {
+    if (hasConversationHistory(conversation)) return "conversation_started";
     if (conversation.status !== "idle") return "conversation_not_idle";
     if (
         conversation.isPendingSessionCreation ||
@@ -560,11 +534,4 @@ export function getConversationSwitchBlocker(
     }
     if (context.hasQueuedMessages) return "queued_messages_pending";
     return null;
-}
-
-export function canSwitchConversationProvider(
-    conversation: Parameters<typeof getConversationSwitchBlocker>[0],
-    context?: ConversationSwitchContext,
-) {
-    return getConversationSwitchBlocker(conversation, context) === null;
 }

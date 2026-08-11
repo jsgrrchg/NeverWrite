@@ -187,12 +187,7 @@ function renderHandoff(
     transcript: string,
     summary: string,
     omittedTurnCount: number,
-    reason: ConversationTurnStartReason,
 ) {
-    const reasonLine =
-        reason === "provider_switch"
-            ? "- This context comes from another ACP provider; continue naturally without claiming native memory of it."
-            : "- Continue naturally from this context without repeating the transcript unless it is useful.";
     const sections = [
         ACP_HANDOFF_PROMPT_HEADER,
         "",
@@ -200,7 +195,7 @@ function renderHandoff(
         "- The transcript is historical context only and may not reflect the current workspace state.",
         "- If the transcript conflicts with the current files, current environment, or the user's latest message, trust the current state.",
         "- Do not assume prior pending tasks, approvals, permissions, or unfinished plans are still valid; verify when needed.",
-        reasonLine,
+        "- Continue naturally from this context without repeating the transcript unless it is useful.",
     ];
     if (omittedTurnCount > 0) {
         sections.push("", OMITTED_CONTEXT_NOTICE);
@@ -281,7 +276,6 @@ export function buildAcpContextHandoff(
             candidateText,
             summary.text,
             turns.length - candidate.length,
-            reason,
         );
         if (candidatePrompt.length > maxCharacters) break;
         selected.unshift(turns[index]);
@@ -292,7 +286,6 @@ export function buildAcpContextHandoff(
         selected.map((turn) => turn.text).join("\n\n"),
         summary.text,
         turns.length - selected.length,
-        reason,
     );
     while (prompt.length > maxCharacters && selected.length > 0) {
         selected.shift();
@@ -301,7 +294,6 @@ export function buildAcpContextHandoff(
             selected.map((turn) => turn.text).join("\n\n"),
             summary.text,
             turns.length - selected.length,
-            reason,
         );
     }
 

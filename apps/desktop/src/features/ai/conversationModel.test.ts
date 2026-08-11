@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-    canSwitchConversationProvider,
     createConversationBindingsFromLegacySession,
     createLegacyBindingId,
     deserializeConversationBindings,
     forkConversationBindings,
-    getConversationSwitchBlocker,
+    getConversationProviderSelectionBlocker,
     getLegacyConversationId,
-    projectCanonicalConversationToLegacy,
     projectLegacySessionToCanonical,
     serializeConversationBindings,
     updateConversationBindingsFromLegacySession,
@@ -124,49 +122,6 @@ describe("canonical conversation model", () => {
         );
     });
 
-    it("projects the active binding back for legacy consumers", () => {
-        const legacy = createLegacySession();
-        const { conversation, bindings } =
-            projectLegacySessionToCanonical(legacy);
-        const binding = {
-            ...bindings[0],
-            runtimeId: "codex-acp",
-            runtimeDisplayName: "Codex",
-            runtimeSessionId: "codex-native",
-            modelId: "gpt-5",
-            modeId: "agent",
-            options: { reasoning: "medium" },
-            models: [],
-            modes: [],
-            configOptions: legacy.configOptions.map((option) => ({
-                ...option,
-                runtimeId: "codex-acp",
-            })),
-        };
-        const changedConversation = {
-            ...conversation,
-            preferredSelection: {
-                runtimeId: "future-provider",
-                modelId: "future-model",
-                modeId: "default",
-                options: {},
-            },
-        };
-
-        const projected = projectCanonicalConversationToLegacy(
-            changedConversation,
-            binding,
-            legacy,
-        );
-
-        expect(projected.sessionId).toBe("local-session");
-        expect(projected.historySessionId).toBe("history-session");
-        expect(projected.runtimeId).toBe("codex-acp");
-        expect(projected.runtimeSessionId).toBe("codex-native");
-        expect(projected.modelId).toBe("gpt-5");
-        expect(projected.configOptions[0]?.value).toBe("medium");
-    });
-
     it("reports ownership, identity and active-binding violations", () => {
         const { conversation, bindings } = projectLegacySessionToCanonical(
             createLegacySession(),
@@ -182,35 +137,45 @@ describe("canonical conversation model", () => {
                 [invalidBinding, invalidBinding],
             ),
         ).toEqual([
+            "multiple_provider_bindings",
             "binding_conversation_mismatch",
             "duplicate_binding_id",
             "missing_active_binding",
         ]);
     });
 
-    it("allows provider switches only between turns without pending work", () => {
+    it("allows provider selection only while the conversation is empty", () => {
         const { conversation } = projectLegacySessionToCanonical(
-            createLegacySession(),
+            createLegacySession({
+                messages: [],
+                persistedMessageCount: 0,
+            }),
         );
 
-        expect(canSwitchConversationProvider(conversation)).toBe(true);
+        expect(getConversationProviderSelectionBlocker(conversation)).toBeNull();
         expect(
-            getConversationSwitchBlocker({
+            getConversationProviderSelectionBlocker({
                 ...conversation,
                 status: "streaming",
             }),
         ).toBe("conversation_not_idle");
         expect(
-            getConversationSwitchBlocker({
+            getConversationProviderSelectionBlocker({
                 ...conversation,
                 isResumingSession: true,
             }),
         ).toBe("session_transition_pending");
         expect(
-            getConversationSwitchBlocker(conversation, {
+            getConversationProviderSelectionBlocker(conversation, {
                 hasQueuedMessages: true,
             }),
         ).toBe("queued_messages_pending");
+        expect(
+            getConversationProviderSelectionBlocker({
+                ...conversation,
+                messages: createLegacySession().messages,
+            }),
+        ).toBe("conversation_started");
     });
 
     it("roundtrips the versioned provider bindings sidecar", () => {
@@ -221,6 +186,7 @@ describe("canonical conversation model", () => {
         state.providerBindings[0].contextCursor = "message-1";
         state.providerBindings[0].contextGeneration = 2;
         state.providerBindings[0].options.fast = "on";
+        state.preferredSelection.options.fast = "on";
         state.providerBindings[0].configOptions.push({
             id: "fast",
             runtimeId: "claude-acp",
@@ -246,7 +212,7 @@ describe("canonical conversation model", () => {
         );
     });
 
-    it("updates the active legacy projection without dropping prior bindings", () => {
+    it("drops bindings from the retired mid-conversation switching flow", () => {
         const legacy = createLegacySession();
         const state = createConversationBindingsFromLegacySession(legacy);
         state.providerBindings.push({
@@ -262,14 +228,12 @@ describe("canonical conversation model", () => {
             conversationBindings: state,
         });
 
-        expect(updated.providerBindings).toHaveLength(2);
+        expect(updated.providerBindings).toHaveLength(1);
         expect(updated.providerBindings[0].modelId).toBe("opus");
-        expect(updated.providerBindings[1].runtimeSessionId).toBe(
-            "codex-native",
-        );
+        expect(updated.providerBindings[0].runtimeId).toBe("claude-acp");
     });
 
-    it("preserves a different provider selected for the next turn", () => {
+    it("discards a staged provider after the conversation has started", () => {
         const legacy = createLegacySession();
         const state = createConversationBindingsFromLegacySession(legacy);
         state.preferredSelection = {
@@ -284,7 +248,7 @@ describe("canonical conversation model", () => {
             conversationBindings: state,
         });
 
-        expect(updated.preferredSelection).toEqual(state.preferredSelection);
+        expect(updated.preferredSelection.runtimeId).toBe("claude-acp");
     });
 
     it("preserves a different model selected for the next turn on the active provider", () => {
@@ -316,10 +280,10 @@ describe("canonical conversation model", () => {
         expect(forked).toMatchObject({
             conversationId: "fork-history",
             revision: source.revision + 1,
-            activeBindingId: "fork:fork-history:claude-acp:0",
+            activeBindingId: "fork:fork-history:claude-acp",
         });
         expect(forked.providerBindings[0]).toMatchObject({
-            bindingId: "fork:fork-history:claude-acp:0",
+            bindingId: "fork:fork-history:claude-acp",
             conversationId: "fork-history",
             contextCursor: null,
             contextGeneration: 5,

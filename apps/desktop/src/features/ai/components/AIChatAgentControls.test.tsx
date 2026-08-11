@@ -40,7 +40,7 @@ describe("AIChatAgentControls", () => {
             label: "Claude",
             description: "Claude provider",
             disabledReason:
-              "Finish the current turn before switching providers.",
+              "Finish the current turn before choosing another provider.",
             defaultModelId: "claude-sonnet",
             models: [
               {
@@ -72,10 +72,10 @@ describe("AIChatAgentControls", () => {
     const disabledClaude = screen.getByRole("button", {
       name: "Claude · Claude Sonnet",
     });
-    expect(disabledClaude).toBeDisabled();
+    expect(disabledClaude).toHaveAttribute("aria-disabled", "true");
     expect(disabledClaude).toHaveAttribute(
       "title",
-      "Finish the current turn before switching providers.",
+      "Finish the current turn before choosing another provider.",
     );
     await user.clear(screen.getByLabelText("Provider and model search"));
     const codexOption = screen
@@ -92,7 +92,6 @@ describe("AIChatAgentControls", () => {
     renderComponent(
       <AIChatAgentControls
         runtimeId="codex-acp"
-        providerSwitchLocked
         modelId="gpt-5"
         modeId="default"
         models={[]}
@@ -117,7 +116,7 @@ describe("AIChatAgentControls", () => {
             runtimeId: "claude-acp",
             label: "Claude",
             description: "Claude provider",
-            disabledReason: null,
+            disabledReason: "Start a new chat to use another provider.",
             defaultModelId: "claude-sonnet",
             models: [
               {
@@ -141,10 +140,8 @@ describe("AIChatAgentControls", () => {
     await user.click(claudeRail);
 
     expect(
-      screen.getByTestId("provider-switch-blocked-popover"),
-    ).toHaveTextContent(
-      "This chat is locked to Codex. Start a new chat to use Claude.",
-    );
+      screen.getByTestId("provider-selection-blocked-popover"),
+    ).toHaveTextContent("Start a new chat to use another provider.");
     expect(
       screen.getByRole("button", { name: "Codex · GPT 5" }),
     ).toBeInTheDocument();

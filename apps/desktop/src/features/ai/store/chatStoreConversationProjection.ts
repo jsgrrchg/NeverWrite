@@ -1,5 +1,4 @@
 import {
-  projectCanonicalConversationToLegacy,
   projectLegacySessionToCanonical,
   updateConversationBindingsFromLegacySession,
 } from "../conversationModel";
@@ -205,21 +204,4 @@ export function projectSessionMapToConversations<T>(
     if (conversationId) valuesByConversationId[conversationId] = value;
   }
   return valuesByConversationId;
-}
-
-/** Returns the temporary AIChatSession view used by legacy UI consumers. */
-export function selectLegacySessionForConversation(
-  state: CanonicalChatStoreProjection & {
-    sessionsById: Record<string, AIChatSession>;
-  },
-  conversationId: string,
-) {
-  const conversation = state.conversationsById[conversationId];
-  const sessionId = state.sessionIdByConversationId[conversationId];
-  const template = sessionId ? state.sessionsById[sessionId] : null;
-  const binding = conversation?.activeBindingId
-    ? state.bindingsById[conversation.activeBindingId]
-    : null;
-  if (!conversation || !template || !binding) return null;
-  return projectCanonicalConversationToLegacy(conversation, binding, template);
 }

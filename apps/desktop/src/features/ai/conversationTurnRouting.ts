@@ -17,24 +17,14 @@ export interface ConversationTurnRoute {
     targetBinding: AcpConversationBinding | null;
     strategy: ConversationTurnConnectionStrategy;
     startReason: ConversationTurnStartReason;
-    providerChanged: boolean;
+    initialProviderChanged: boolean;
 }
 
-function selectReusableBinding(
-    bindings: ConversationBindingsState,
-    runtimeId: string,
-) {
-    const candidates = bindings.providerBindings.filter(
-        (binding) => binding.runtimeId === runtimeId,
-    );
+function selectActiveBinding(bindings: ConversationBindingsState) {
     return (
-        candidates.find(
+        bindings.providerBindings.find(
             (binding) => binding.bindingId === bindings.activeBindingId,
-        ) ??
-        candidates.sort(
-            (left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0),
-        )[0] ??
-        null
+        ) ?? null
     );
 }
 
@@ -75,25 +65,23 @@ export function planConversationTurnRoute(input: {
     runtimeCapabilities: readonly string[];
     hasTranscript: boolean;
 }): ConversationTurnRoute {
-    const activeBinding = input.bindings.providerBindings.find(
-        (binding) => binding.bindingId === input.bindings.activeBindingId,
-    );
-    const targetBinding = selectReusableBinding(
-        input.bindings,
-        input.selection.runtimeId,
-    );
-    const providerChanged =
-        activeBinding != null &&
-        activeBinding.runtimeId !== input.selection.runtimeId;
+    const activeBinding = selectActiveBinding(input.bindings);
+    const initialProviderChanged =
+        input.session.runtimeId !== input.selection.runtimeId;
+    if (initialProviderChanged && input.hasTranscript) {
+        throw new Error(
+            "Cannot change the provider after the conversation has started.",
+        );
+    }
+    const targetBinding = initialProviderChanged ? null : activeBinding;
     const strategy = connectionStrategy(
         input.session,
         input.bindings,
         targetBinding,
         input.runtimeCapabilities,
     );
-    const startReason: ConversationTurnStartReason = providerChanged
-        ? "provider_switch"
-        : strategy === "load" || strategy === "resume"
+    const startReason: ConversationTurnStartReason =
+        strategy === "load" || strategy === "resume"
           ? "native_resume"
           : strategy === "create" && input.hasTranscript
             ? "transcript_handoff"
@@ -107,6 +95,6 @@ export function planConversationTurnRoute(input: {
         targetBinding,
         strategy,
         startReason,
-        providerChanged,
+        initialProviderChanged,
     };
 }

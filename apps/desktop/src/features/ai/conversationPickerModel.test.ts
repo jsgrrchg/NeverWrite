@@ -187,6 +187,56 @@ describe("conversation provider picker model", () => {
     expect(options[1].disabledReason).toBeNull();
   });
 
+  it("locks the provider after the first conversation message", () => {
+    const current = session();
+    current.messages = [
+      {
+        id: "user-1",
+        role: "user",
+        kind: "text",
+        content: "Start",
+        timestamp: 1,
+      },
+    ];
+    const bindings = createConversationBindingsFromLegacySession(current);
+    const conversation = {
+      ...current,
+      conversationId: bindings.conversationId,
+      parentConversationId: null,
+      vaultPath: null,
+      closedAt: null,
+      activeWorkCycleId: null,
+      visibleWorkCycleId: null,
+      preferredSelection: bindings.preferredSelection,
+      activeBindingId: bindings.activeBindingId,
+      persistedCreatedAt: null,
+      persistedUpdatedAt: null,
+      persistedTitle: null,
+      customTitle: null,
+      persistedPreview: null,
+      isPersistedSession: false,
+      isPendingSessionCreation: false,
+      isResumingSession: false,
+    };
+
+    const options = buildConversationProviderOptions({
+      runtimes: [runtime("provider-a"), runtime("provider-b")],
+      setupStatusByRuntimeId: {
+        "provider-a": ready("provider-a"),
+        "provider-b": ready("provider-b"),
+      },
+      conversation,
+      bindings: bindings.providerBindings,
+      activeRuntimeId: "provider-a",
+      hasQueuedMessages: false,
+    });
+
+    expect(options[0].disabledReason).toBeNull();
+    expect(options[1].disabledReason).toBe(
+      "Start a new chat to use another provider.",
+    );
+  });
+
   it("projects the selected provider catalog and updates its model option", () => {
     const current = session();
     const providerB = runtime("provider-b");
@@ -236,26 +286,6 @@ describe("conversation provider picker model", () => {
     const current = session();
     const bindings = createConversationBindingsFromLegacySession(current);
     const codex = runtime("codex-acp");
-    bindings.providerBindings.push({
-      ...bindings.providerBindings[0],
-      bindingId: "binding-codex",
-      runtimeId: "codex-acp",
-      modelId: "gpt-5.6-sol",
-      configOptions: [
-        {
-          id: "service_tier",
-          runtimeId: "codex-acp",
-          category: "service_tier",
-          label: "Fast Mode",
-          type: "select",
-          value: "off",
-          options: [
-            { value: "off", label: "Off" },
-            { value: "fast", label: "Fast" },
-          ],
-        },
-      ],
-    });
 
     const catalog = getConversationTurnCatalog({
       selection: {
