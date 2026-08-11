@@ -87,11 +87,72 @@ describe("AIChatAgentControls", () => {
       .getAllByRole("button", { name: "Codex · GPT-5" })
       .find((button) => button.getAttribute("title") === "Codex provider");
     expect(codexOption).toBeDefined();
+    expect(codexOption).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: "Codex" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Claude" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
     expect(
       screen.getByRole("button", { name: "Codex · Fallback model" }),
     ).toBeInTheDocument();
     await user.click(codexOption!);
     expect(onProviderChange).toHaveBeenCalledWith("codex-acp", "gpt-5");
+  });
+
+  it("leaves Escape available to the global agent shortcut", async () => {
+    const user = userEvent.setup();
+    renderComponent(
+      <AIChatAgentControls
+        runtimeId="codex-acp"
+        modelId="gpt-5"
+        modeId="default"
+        models={[]}
+        modes={[]}
+        configOptions={[]}
+        providers={[
+          {
+            runtimeId: "codex-acp",
+            label: "Codex",
+            description: "Codex provider",
+            disabledReason: null,
+            defaultModelId: "gpt-5",
+            models: [
+              {
+                modelId: "gpt-5",
+                label: "GPT-5",
+                disabledReason: null,
+              },
+            ],
+          },
+        ]}
+        onProviderModelChange={() => {}}
+        onModelChange={() => {}}
+        onModeChange={() => {}}
+        onConfigOptionChange={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByTitle("Provider and model"));
+    const searchInput = screen.getByLabelText("Provider and model search");
+    const escapeDefaultState = vi.fn((event: KeyboardEvent) =>
+      event.defaultPrevented,
+    );
+    window.addEventListener("keydown", escapeDefaultState);
+
+    try {
+      fireEvent.keyDown(searchInput, { key: "Escape" });
+
+      expect(escapeDefaultState).toHaveReturnedWith(false);
+      expect(
+        screen.getByRole("dialog", { name: "Provider and model" }),
+      ).toBeInTheDocument();
+    } finally {
+      window.removeEventListener("keydown", escapeDefaultState);
+    }
   });
 
   it("keeps the original provider selected and explains the lock inline", async () => {
@@ -218,6 +279,10 @@ describe("AIChatAgentControls", () => {
     expect(screen.getByRole("button", { name: "Favorites" })).toHaveStyle({
       backgroundColor: "var(--bg-primary)",
     });
+    expect(screen.getByRole("button", { name: "Favorites" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(
       screen.getByRole("button", { name: "Codex · GPT-5 Mini" }),
     ).toBeInTheDocument();

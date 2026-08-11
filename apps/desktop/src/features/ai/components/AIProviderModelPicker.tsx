@@ -315,11 +315,6 @@ export function AIProviderModelPicker({
     };
 
     const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-        if (event.key === "Escape") {
-            event.preventDefault();
-            closePicker(true);
-            return;
-        }
         if (event.key === "Enter") {
             const highlighted = selectableRows.find(
                 (row) => row.key === highlightedKey,
@@ -414,6 +409,9 @@ export function AIProviderModelPicker({
                         >
                             <button
                                 aria-label="Favorites"
+                                aria-pressed={
+                                    selectedProviderId === FAVORITES_PROVIDER_ID
+                                }
                                 className="relative flex aspect-square w-full items-center justify-center rounded-md"
                                 onClick={() => {
                                     setSelectedProviderId(FAVORITES_PROVIDER_ID);
@@ -448,6 +446,7 @@ export function AIProviderModelPicker({
                                     <button
                                         aria-disabled={providerLocked || undefined}
                                         aria-label={provider.label}
+                                        aria-pressed={selected}
                                         className={`relative flex aspect-square w-full items-center justify-center rounded-md ${providerLocked ? "cursor-not-allowed" : ""}`}
                                         disabled={
                                             provider.models.length === 0 &&
@@ -573,6 +572,9 @@ export function AIProviderModelPicker({
                                                 <button
                                                     aria-disabled={
                                                         row.disabledReason != null || undefined
+                                                    }
+                                                    aria-current={
+                                                        selected ? "true" : undefined
                                                     }
                                                     aria-label={`${row.providerLabel} · ${row.modelLabel}`}
                                                     className={`min-w-0 flex-1 px-1.5 py-2 text-left ${providerLocked ? "cursor-not-allowed" : ""}`}
