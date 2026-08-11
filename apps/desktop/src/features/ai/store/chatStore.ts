@@ -8943,6 +8943,36 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 value,
             );
         }
+
+        const appliedSelection = getConversationSelection(session);
+        if (appliedSelection.runtimeId !== selection.runtimeId) {
+            throw new Error("The selected ACP provider was not applied.");
+        }
+        if (appliedSelection.modelId !== selection.modelId) {
+            throw new Error(
+                `The selected model is unavailable: ${selection.modelId}`,
+            );
+        }
+        if (appliedSelection.modeId !== selection.modeId) {
+            throw new Error(
+                `The selected mode is unavailable: ${selection.modeId}`,
+            );
+        }
+        for (const [optionId, value] of Object.entries(selection.options)) {
+            const option = session.configOptions.find(
+                (candidate) => candidate.id === optionId,
+            );
+            if (!option) {
+                throw new Error(
+                    `The selected ACP option is unavailable: ${optionId}`,
+                );
+            }
+            if (option.value !== value) {
+                throw new Error(
+                    `The selected ACP option was not applied: ${optionId}`,
+                );
+            }
+        }
         return session;
     }
 
@@ -9367,6 +9397,13 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 attachments: currentItem.attachments,
             });
             preparedTurn = { ...connected, route };
+            await aiStartConversationTurn({
+                conversationId: bindings.conversationId,
+                bindingId: connected.targetBinding.bindingId,
+                runtimeId: connected.runtimeSession.runtimeId,
+                sessionId: connected.runtimeSession.sessionId,
+                selection: route.selection,
+            });
             logCanonicalConversationDiagnostic(
                 "canonical conversation turn connected",
                 {
@@ -9528,17 +9565,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 };
             }
 
-            if (route.initialProviderChanged) {
-                await aiStartConversationTurn({
-                    conversationId: bindings.conversationId,
-                    bindingId: connected.targetBinding.bindingId,
-                    runtimeId: connected.runtimeSession.runtimeId,
-                    sessionId: connected.runtimeSession.sessionId,
-                    selection: getConversationSelection(
-                        connected.runtimeSession,
-                    ),
-                });
-            }
             const nextSession = await aiSendMessage(
                 connected.runtimeSession.sessionId,
                 currentItem.prompt,

@@ -941,10 +941,18 @@ struct ManagedAiSession {
     active_turn_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationTurnBindingOwner {
+    conversation_id: String,
+    runtime_id: String,
+    session_id: String,
+}
+
 #[derive(Default)]
 struct NativeAiInner {
     sessions: HashMap<String, ManagedAiSession>,
     session_order: Vec<String>,
+    conversation_turn_bindings: HashMap<String, ConversationTurnBindingOwner>,
     setup: HashMap<String, RuntimeSetupState>,
     setup_load_error: Option<String>,
 }
@@ -1576,33 +1584,38 @@ impl NativeAi {
             );
         }
 
-        let state = self
+        let mut state = self
             .inner
             .lock()
             .map_err(|error| format!("Internal AI state error: {error}"))?;
-        let session = state
-            .sessions
-            .get(&input.session_id)
-            .map(|managed| &managed.session)
-            .ok_or_else(|| format!("AI session not found: {}", input.session_id))?;
-        if session.runtime_id != input.runtime_id {
-            return Err(
-                "Refusing to start a conversation turn on another provider's session.".to_string(),
-            );
-        }
-        if session.model_id != input.selection.model_id
-            || session.mode_id != input.selection.mode_id
         {
-            return Err(
-                "Conversation turn selection was not applied to the target session.".to_string(),
-            );
-        }
-        for (option_id, expected_value) in &input.selection.options {
-            if let Some(option) = session
-                .config_options
-                .iter()
-                .find(|option| option.id == *option_id)
+            let session = state
+                .sessions
+                .get(&input.session_id)
+                .map(|managed| &managed.session)
+                .ok_or_else(|| format!("AI session not found: {}", input.session_id))?;
+            if session.runtime_id != input.runtime_id {
+                return Err(
+                    "Refusing to start a conversation turn on another provider's session."
+                        .to_string(),
+                );
+            }
+            if session.model_id != input.selection.model_id
+                || session.mode_id != input.selection.mode_id
             {
+                return Err(
+                    "Conversation turn selection was not applied to the target session."
+                        .to_string(),
+                );
+            }
+            for (option_id, expected_value) in &input.selection.options {
+                let option = session
+                    .config_options
+                    .iter()
+                    .find(|option| option.id == *option_id)
+                    .ok_or_else(|| {
+                        format!("Conversation turn option is unavailable: {option_id}")
+                    })?;
                 if option.value != *expected_value {
                     return Err(format!(
                         "Conversation turn option was not applied: {option_id}"
@@ -1610,6 +1623,45 @@ impl NativeAi {
                 }
             }
         }
+
+        if let Some(owner) = state.conversation_turn_bindings.get(&input.binding_id) {
+            if owner.conversation_id != input.conversation_id
+                || owner.runtime_id != input.runtime_id
+                || owner.session_id != input.session_id
+            {
+                return Err(
+                    "Conversation binding is already associated with another conversation or session."
+                        .to_string(),
+                );
+            }
+            return Ok(json!(null));
+        }
+        if state
+            .conversation_turn_bindings
+            .iter()
+            .any(|(binding_id, owner)| {
+                binding_id != &input.binding_id && owner.conversation_id == input.conversation_id
+            })
+        {
+            return Err("Conversation is already associated with another binding.".to_string());
+        }
+        if state
+            .conversation_turn_bindings
+            .iter()
+            .any(|(binding_id, owner)| {
+                binding_id != &input.binding_id && owner.session_id == input.session_id
+            })
+        {
+            return Err("Runtime session is already associated with another binding.".to_string());
+        }
+        state.conversation_turn_bindings.insert(
+            input.binding_id,
+            ConversationTurnBindingOwner {
+                conversation_id: input.conversation_id,
+                runtime_id: input.runtime_id,
+                session_id: input.session_id,
+            },
+        );
         Ok(json!(null))
     }
 
@@ -2226,6 +2278,9 @@ impl NativeAi {
             .remove(&session_id)
             .ok_or_else(|| format!("AI session not found: {session_id}"))?;
         state.session_order.retain(|id| id != &session_id);
+        state
+            .conversation_turn_bindings
+            .retain(|_, owner| owner.session_id != session_id);
         let shutdown_handle = removed.runtime_handle.filter(|handle| {
             !state.sessions.values().any(|managed| {
                 managed
@@ -2266,6 +2321,9 @@ impl NativeAi {
                 }
             }
             state.session_order.retain(|id| id != &session_id);
+            state
+                .conversation_turn_bindings
+                .retain(|_, owner| owner.session_id != session_id);
             self.tool_diffs.clear_session(&session_id);
         }
         drop(state);
@@ -11218,6 +11276,49 @@ mod tests {
     }
 
     #[test]
+    fn conversation_turn_rejects_unknown_requested_options() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, "session-1");
+        let mut input =
+            test_conversation_turn_input(&ai, "conversation-1", "binding-1", "session-1");
+        input["input"]["selection"]["options"]["unknown-option"] = json!("value");
+
+        let error = ai
+            .start_conversation_turn(&input)
+            .expect_err("unknown requested options must be rejected");
+
+        assert!(error.contains("option is unavailable: unknown-option"));
+    }
+
+    #[test]
+    fn conversation_turn_binds_canonical_identity_to_one_runtime_session() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, "session-1");
+        let input = test_conversation_turn_input(&ai, "conversation-1", "binding-1", "session-1");
+
+        ai.start_conversation_turn(&input)
+            .expect("the initial canonical association should succeed");
+        ai.start_conversation_turn(&input)
+            .expect("reusing the same canonical association should succeed");
+
+        let conflicting =
+            test_conversation_turn_input(&ai, "conversation-2", "binding-1", "session-1");
+        let error = ai
+            .start_conversation_turn(&conflicting)
+            .expect_err("a binding cannot move to another conversation");
+        assert!(error.contains("already associated with another conversation or session"));
+
+        let conflicting =
+            test_conversation_turn_input(&ai, "conversation-2", "binding-2", "session-1");
+        let error = ai
+            .start_conversation_turn(&conflicting)
+            .expect_err("a runtime session cannot belong to another binding");
+        assert!(error.contains("Runtime session is already associated"));
+    }
+
+    #[test]
     fn normalize_additional_roots_keeps_existing_directory() {
         let temp = tempfile::tempdir().unwrap();
         let raw = temp.path().to_string_lossy().to_string();
@@ -11862,6 +11963,39 @@ mod tests {
                 active_turn_id: None,
             },
         );
+    }
+
+    fn test_conversation_turn_input(
+        ai: &NativeAi,
+        conversation_id: &str,
+        binding_id: &str,
+        session_id: &str,
+    ) -> Value {
+        let state = ai.inner.lock().unwrap();
+        let session = &state
+            .sessions
+            .get(session_id)
+            .expect("test session should exist")
+            .session;
+        let options = session
+            .config_options
+            .iter()
+            .map(|option| (option.id.clone(), option.value.clone()))
+            .collect::<HashMap<_, _>>();
+        json!({
+            "input": {
+                "conversation_id": conversation_id,
+                "binding_id": binding_id,
+                "runtime_id": session.runtime_id,
+                "session_id": session_id,
+                "selection": {
+                    "runtime_id": session.runtime_id,
+                    "model_id": session.model_id,
+                    "mode_id": session.mode_id,
+                    "options": options,
+                }
+            }
+        })
     }
 
     fn mark_test_session_as_child(

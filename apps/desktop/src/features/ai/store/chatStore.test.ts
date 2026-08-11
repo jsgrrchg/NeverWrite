@@ -10,7 +10,10 @@ import {
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { serializeComposerParts } from "../composerParts";
-import { updateConversationBindingsFromLegacySession } from "../conversationModel";
+import {
+    getConversationSelection,
+    updateConversationBindingsFromLegacySession,
+} from "../conversationModel";
 import type {
     AIChatAttachment,
     AIChatMessage,
@@ -14887,6 +14890,22 @@ describe("chatStore", () => {
                 );
                 return { ...providerBSession, status: "streaming" };
             }
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: "provider-b",
+                        session_id: "provider-b-session-1",
+                        selection: {
+                            runtime_id: "provider-b",
+                            model_id: "model-b",
+                            mode_id: "default",
+                            options: {},
+                        },
+                    },
+                });
+                return null;
+            }
             return defaultInvokeImplementation(command, args);
         });
 
@@ -14937,6 +14956,88 @@ describe("chatStore", () => {
                     ],
                 }),
             }),
+        });
+    });
+
+    it("validates the requested selection before every conversation turn", async () => {
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const session = useChatStore.getState().sessionsById[sessionId]!;
+        const requestedSelection = getConversationSelection(session);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: session.runtimeId,
+                        session_id: sessionId,
+                        selection: {
+                            runtime_id: requestedSelection.runtimeId,
+                            model_id: requestedSelection.modelId,
+                            mode_id: requestedSelection.modeId,
+                            options: requestedSelection.options,
+                        },
+                    },
+                });
+                return null;
+            }
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Continue normally"), sessionId);
+        await useChatStore.getState().sendMessage(sessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_start_conversation_turn",
+            ),
+        ).toHaveLength(1);
+    });
+
+    it("rejects an unavailable requested option before sending", async () => {
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const session = useChatStore.getState().sessionsById[sessionId]!;
+        const selection = getConversationSelection(session);
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            ...selection,
+            options: {
+                ...selection.options,
+                unavailable_option: "requested-value",
+            },
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Do not send this"), sessionId);
+        invokeMock.mockClear();
+
+        await useChatStore.getState().sendMessage(sessionId);
+
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_start_conversation_turn",
+            ),
+        ).toBe(false);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore.getState().sessionsById[sessionId]?.messages.at(-1),
+        ).toMatchObject({
+            kind: "error",
+            content:
+                "The selected ACP option is unavailable: unavailable_option",
         });
     });
 
