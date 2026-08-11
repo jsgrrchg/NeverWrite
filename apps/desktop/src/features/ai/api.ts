@@ -176,7 +176,7 @@ export function normalizeBackendSession(
         sessionId: session.session_id,
         historySessionId: session.session_id,
         parentSessionId: session.parent_session_id ?? null,
-        runtimeSessionId: session.runtime_session_id ?? null,
+        runtimeSessionId: session.runtime_session_id ?? session.session_id,
         closedAt: session.closed_at ?? null,
         // Backend titles come from the runtime/persisted session state. Manual
         // renames live only in customTitle on the renderer side.

@@ -14833,6 +14833,113 @@ describe("chatStore", () => {
         ).toBe("provider-b");
     });
 
+    it("persists the selected provider native session before the first message", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const providerBSession = {
+            ...sessionPayload,
+            session_id: "provider-b-session-1",
+            runtime_id: "provider-b",
+            model_id: "model-b",
+            models: [],
+            modes: [],
+            config_options: [],
+        };
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    ...readySetupStatusState,
+                    runtimeId: "provider-b",
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                const runtimeId = (
+                    args as { input?: { runtime_id?: string } } | undefined
+                )?.input?.runtime_id;
+                return runtimeId === "provider-b"
+                    ? providerBSession
+                    : sessionPayload;
+            }
+            if (command === "ai_send_message") {
+                expect((args as { sessionId?: string }).sessionId).toBe(
+                    "provider-b-session-1",
+                );
+                return { ...providerBSession, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(
+                createTextParts("Start with provider B"),
+                sourceSessionId,
+            );
+        await useChatStore.getState().sendMessage(sourceSessionId);
+        await Promise.resolve();
+
+        const acceptedSession =
+            useChatStore.getState().sessionsById["provider-b-session-1"]!;
+        const activeBinding =
+            acceptedSession.conversationBindings?.providerBindings.find(
+                (binding) =>
+                    binding.bindingId ===
+                    acceptedSession.conversationBindings?.activeBindingId,
+            );
+        expect(acceptedSession).toMatchObject({
+            historySessionId: sourceSessionId,
+            runtimeId: "provider-b",
+            runtimeSessionId: "provider-b-session-1",
+        });
+        expect(activeBinding).toMatchObject({
+            runtimeId: "provider-b",
+            runtimeSessionId: "provider-b-session-1",
+        });
+        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+            vaultPath: "/vault",
+            history: expect.objectContaining({
+                session_id: sourceSessionId,
+                runtime_id: "provider-b",
+                runtime_session_id: "provider-b-session-1",
+                conversation_bindings: expect.objectContaining({
+                    provider_bindings: [
+                        expect.objectContaining({
+                            runtime_id: "provider-b",
+                            runtime_session_id: "provider-b-session-1",
+                        }),
+                    ],
+                }),
+            }),
+        });
+    });
+
     it("keeps a started conversation bound to its active provider", async () => {
         await useChatStore.getState().initialize();
 
@@ -15892,6 +15999,87 @@ describe("chatStore", () => {
                     command === "ai_resume_runtime_session" &&
                     (args as { input?: { session_id?: string } }).input
                         ?.session_id === "persisted:history-1",
+            ),
+        ).toBe(false);
+    });
+
+    it("resumes a saved chat with the active binding native session id", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        const persistedSessionId = "persisted:history-provider-b";
+        const historySessionId = "history-provider-b";
+        const nativeSessionId = "provider-b-native-session";
+        const persistedSession = {
+            ...createSessionWithTrackedFiles(persistedSessionId, []),
+            historySessionId,
+            runtimeId: "provider-b",
+            runtimeSessionId: null,
+            runtimeState: "persisted_only" as const,
+            isPersistedSession: true,
+            persistedMessageCount: 0,
+            loadedPersistedMessageStart: 0,
+        };
+        const conversationBindings =
+            updateConversationBindingsFromLegacySession(persistedSession);
+        conversationBindings.providerBindings[0] = {
+            ...conversationBindings.providerBindings[0],
+            runtimeSessionId: nativeSessionId,
+        };
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...persistedSession,
+                    conversationBindings,
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+            selectedRuntimeId: "provider-b",
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_resume_runtime_session") {
+                expect(args).toMatchObject({
+                    input: {
+                        runtime_id: "provider-b",
+                        session_id: nativeSessionId,
+                    },
+                    vaultPath: "/vault",
+                });
+                return {
+                    ...sessionPayload,
+                    session_id: nativeSessionId,
+                    runtime_id: "provider-b",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const resumedSessionId = await useChatStore
+            .getState()
+            .resumeSession(persistedSessionId);
+
+        expect(resumedSessionId).toBe(nativeSessionId);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command, args]) =>
+                    command === "ai_resume_runtime_session" &&
+                    (args as { input?: { session_id?: string } }).input
+                        ?.session_id === historySessionId,
             ),
         ).toBe(false);
     });

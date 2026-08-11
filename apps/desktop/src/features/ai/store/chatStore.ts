@@ -721,6 +721,24 @@ function getRuntimeHistorySessionId(session: AIChatSession) {
     );
 }
 
+function getLiveRuntimeSessionId(session: AIChatSession) {
+    return session.runtimeSessionId?.trim() || session.sessionId;
+}
+
+function getRuntimeResumeSessionId(session: AIChatSession) {
+    const bindings = session.conversationBindings;
+    const activeBinding = bindings?.providerBindings.find(
+        (binding) => binding.bindingId === bindings.activeBindingId,
+    );
+    return (
+        (activeBinding?.runtimeId === session.runtimeId
+            ? activeBinding.runtimeSessionId?.trim()
+            : null) ||
+        session.runtimeSessionId?.trim() ||
+        getRuntimeHistorySessionId(session)
+    );
+}
+
 function isLiveRuntimeSession(session: AIChatSession) {
     return (
         session.runtimeState === "live" &&
@@ -2918,7 +2936,7 @@ function createTurnBinding(
         runtimeRevision: runtimeSession.runtimeRevision ?? null,
         runtimeLaunchFingerprint:
             runtimeSession.runtimeLaunchFingerprint ?? null,
-        runtimeSessionId: runtimeSession.runtimeSessionId ?? null,
+        runtimeSessionId: getLiveRuntimeSessionId(runtimeSession),
         continuationStrategy: runtimeSession.continuationStrategy ?? null,
         capabilities: [...capabilities],
         modelId: selection.modelId,
@@ -3015,6 +3033,9 @@ function commitAcceptedConversationTurn(input: {
             ...attributedSource,
             ...input.acceptedRuntimeSession,
             historySessionId: attributedSource.historySessionId,
+            runtimeSessionId: getLiveRuntimeSessionId(
+                input.acceptedRuntimeSession,
+            ),
             parentSessionId: attributedSource.parentSessionId ?? null,
             vaultPath: attributedSource.vaultPath ?? null,
             customTitle: attributedSource.customTitle ?? null,
@@ -12412,6 +12433,8 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     get().sessionsById[sessionId] ?? currentSession;
                 const historySessionId =
                     getRuntimeHistorySessionId(latestSession);
+                const runtimeResumeSessionId =
+                    getRuntimeResumeSessionId(latestSession);
                 let latestCatalog = getRuntimeCatalogSnapshot(latestSession);
                 logResumeRecovery("started", {
                     resume_strategy: resumeStrategy,
@@ -12435,9 +12458,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         latestSession.continuationStrategy;
                     const launchFingerprint =
                         latestSession.runtimeLaunchFingerprint?.trim();
-                    const runtimeSessionId =
-                        latestSession.runtimeSessionId?.trim() ||
-                        historySessionId;
+                    const runtimeSessionId = runtimeResumeSessionId;
                     if (!continuationStrategy || !launchFingerprint) {
                         set((state) => {
                             const current = state.sessionsById[sessionId];
@@ -12557,7 +12578,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     try {
                         resumedSession = await aiResumeRuntimeSession(
                             latestSession.runtimeId,
-                            historySessionId,
+                            runtimeResumeSessionId,
                             vaultPath,
                             latestSession.additionalRoots ?? null,
                         );
