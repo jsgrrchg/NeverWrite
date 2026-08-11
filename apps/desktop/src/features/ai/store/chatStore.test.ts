@@ -16122,10 +16122,24 @@ describe("chatStore", () => {
         };
         const conversationBindings =
             updateConversationBindingsFromLegacySession(persistedSession);
+        conversationBindings.revision = 7;
+        conversationBindings.contextSummary = "Preserved canonical summary";
+        conversationBindings.transcriptObservation = {
+            messageCount: 12,
+            updatedAt: 345,
+            transcriptFingerprint: "canonical-fingerprint",
+        };
         conversationBindings.providerBindings[0] = {
             ...conversationBindings.providerBindings[0],
+            bindingId: "binding-provider-b",
             runtimeSessionId: nativeSessionId,
+            capabilities: ["resume_session", "permissions"],
+            contextCursor: "message-cursor-9",
+            contextGeneration: 4,
+            createdAt: 100,
+            updatedAt: 345,
         };
+        conversationBindings.activeBindingId = "binding-provider-b";
 
         useChatStore.setState((state) => ({
             ...state,
@@ -16175,6 +16189,10 @@ describe("chatStore", () => {
             .resumeSession(persistedSessionId);
 
         expect(resumedSessionId).toBe(nativeSessionId);
+        expect(
+            useChatStore.getState().sessionsById[nativeSessionId]
+                ?.conversationBindings,
+        ).toEqual(conversationBindings);
         expect(
             invokeMock.mock.calls.some(
                 ([command, args]) =>

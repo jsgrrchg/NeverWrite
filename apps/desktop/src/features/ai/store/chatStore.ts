@@ -12695,6 +12695,8 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         {
                             ...resumedSession,
                             historySessionId,
+                            conversationBindings:
+                                latestSession.conversationBindings,
                             parentSessionId:
                                 resumedSession.parentSessionId ??
                                 latestSession.parentSessionId ??
