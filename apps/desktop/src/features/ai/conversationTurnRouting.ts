@@ -42,7 +42,12 @@ function connectionStrategy(
     ) {
         return "continue";
     }
-    if (!targetBinding?.runtimeSessionId) return "create";
+    if (
+        !targetBinding?.runtimeSessionId ||
+        targetBinding.continuationStrategy === "new_session_only"
+    ) {
+        return "create";
+    }
     if (
         targetBinding.continuationStrategy === "load" ||
         capabilities.includes("load_session")

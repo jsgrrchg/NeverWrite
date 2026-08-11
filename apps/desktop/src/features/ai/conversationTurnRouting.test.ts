@@ -110,6 +110,31 @@ describe("canonical conversation turn routing", () => {
         });
     });
 
+    it("honors new-session-only before runtime continuation capabilities", () => {
+        const current = session();
+        current.runtimeState = "persisted_only";
+        const bindings = createConversationBindingsFromLegacySession(current);
+        bindings.providerBindings[0].continuationStrategy = "new_session_only";
+
+        expect(
+            planConversationTurnRoute({
+                session: current,
+                bindings,
+                selection: selection("provider-a"),
+                runtimeCapabilities: [
+                    "create_session",
+                    "load_session",
+                    "resume_session",
+                ],
+                hasTranscript: true,
+            }),
+        ).toMatchObject({
+            strategy: "create",
+            startReason: "transcript_handoff",
+            initialProviderChanged: false,
+        });
+    });
+
     it("uses load to restore the fixed provider binding", () => {
         const current = session();
         current.runtimeState = "persisted_only";
