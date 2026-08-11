@@ -361,18 +361,3 @@ export function updateConversationSelection(
 
   return { ...selection, modelId, modeId, options };
 }
-
-export function requiresFirstProviderHandoffConfirmation(input: {
-  activeRuntimeId: string;
-  targetRuntimeId: string;
-  bindings: readonly AcpConversationBinding[];
-  messageCount: number;
-}) {
-  return (
-    input.activeRuntimeId !== input.targetRuntimeId &&
-    input.messageCount > 0 &&
-    !input.bindings.some(
-      (binding) => binding.runtimeId === input.targetRuntimeId,
-    )
-  );
-}

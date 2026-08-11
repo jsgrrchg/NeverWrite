@@ -86,6 +86,83 @@ describe("AIChatAgentControls", () => {
     expect(onProviderChange).toHaveBeenCalledWith("codex-acp", "gpt-5");
   });
 
+  it("keeps the original provider selected and explains the lock inline", async () => {
+    const user = userEvent.setup();
+    const onProviderChange = vi.fn();
+    renderComponent(
+      <AIChatAgentControls
+        runtimeId="codex-acp"
+        providerSwitchLocked
+        modelId="gpt-5"
+        modeId="default"
+        models={[]}
+        modes={[]}
+        configOptions={[]}
+        providers={[
+          {
+            runtimeId: "codex-acp",
+            label: "Codex",
+            description: "Codex provider",
+            disabledReason: null,
+            defaultModelId: "gpt-5",
+            models: [
+              {
+                modelId: "gpt-5",
+                label: "GPT-5",
+                disabledReason: null,
+              },
+            ],
+          },
+          {
+            runtimeId: "claude-acp",
+            label: "Claude",
+            description: "Claude provider",
+            disabledReason: null,
+            defaultModelId: "claude-sonnet",
+            models: [
+              {
+                modelId: "claude-sonnet",
+                label: "Claude Sonnet",
+                disabledReason: null,
+              },
+            ],
+          },
+        ]}
+        onProviderModelChange={onProviderChange}
+        onModelChange={() => {}}
+        onModeChange={() => {}}
+        onConfigOptionChange={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByTitle("Provider and model"));
+    const claudeRail = screen.getByRole("button", { name: "Claude" });
+    expect(claudeRail).toHaveAttribute("aria-disabled", "true");
+    await user.click(claudeRail);
+
+    expect(
+      screen.getByTestId("provider-switch-blocked-popover"),
+    ).toHaveTextContent(
+      "This chat is locked to Codex. Start a new chat to use Claude.",
+    );
+    expect(
+      screen.getByRole("button", { name: "Codex · GPT 5" }),
+    ).toBeInTheDocument();
+    expect(onProviderChange).not.toHaveBeenCalled();
+
+    await user.type(
+      screen.getByLabelText("Provider and model search"),
+      "claude",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Claude · Claude Sonnet" }),
+    );
+    expect(onProviderChange).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("dialog", { name: "Provider and model" }),
+    ).toBeInTheDocument();
+  });
+
   it("persists favorite models and opens the favorites rail first", async () => {
     const user = userEvent.setup();
     renderComponent(

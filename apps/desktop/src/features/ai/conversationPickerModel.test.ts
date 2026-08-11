@@ -3,7 +3,6 @@ import { createConversationBindingsFromLegacySession } from "./conversationModel
 import {
   buildConversationProviderOptions,
   getConversationTurnCatalog,
-  requiresFirstProviderHandoffConfirmation,
   updateConversationSelection,
 } from "./conversationPickerModel";
 import type {
@@ -297,30 +296,4 @@ describe("conversation provider picker model", () => {
     ]);
   });
 
-  it("confirms only the first transcript handoff to a provider", () => {
-    const current = session();
-    const bindings = createConversationBindingsFromLegacySession(current);
-    expect(
-      requiresFirstProviderHandoffConfirmation({
-        activeRuntimeId: "provider-a",
-        targetRuntimeId: "provider-b",
-        bindings: bindings.providerBindings,
-        messageCount: 2,
-      }),
-    ).toBe(true);
-
-    bindings.providerBindings.push({
-      ...bindings.providerBindings[0],
-      bindingId: "binding-b",
-      runtimeId: "provider-b",
-    });
-    expect(
-      requiresFirstProviderHandoffConfirmation({
-        activeRuntimeId: "provider-a",
-        targetRuntimeId: "provider-b",
-        bindings: bindings.providerBindings,
-        messageCount: 2,
-      }),
-    ).toBe(false);
-  });
 });

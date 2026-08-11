@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { confirm, invoke } from "@neverwrite/runtime";
+import { invoke } from "@neverwrite/runtime";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
@@ -25,6 +25,7 @@ const composerMockState = vi.hoisted(() => ({
 const agentControlsMockState = vi.hoisted(() => ({
     props: null as null | {
         runtimeId?: string;
+        providerSwitchLocked?: boolean;
         providers?: Array<{
             runtimeId: string;
             disabledReason: string | null;
@@ -203,7 +204,7 @@ describe("AIChatSessionView", () => {
         });
     });
 
-    it("confirms the first provider handoff and selects it for the next turn", async () => {
+    it("locks provider changes after the conversation starts", () => {
         setupWorkspaceSession();
         useChatStore.setState((state) => ({
             runtimes: [
@@ -239,16 +240,15 @@ describe("AIChatSessionView", () => {
                 },
             },
         }));
-        const startConversationTurn = vi
-            .spyOn(useChatStore.getState(), "startConversationTurn")
-            .mockResolvedValue();
-
         renderComponent(<AIChatSessionView paneId="primary" />);
         expect(
             agentControlsMockState.props?.providers?.map(
                 (provider) => provider.runtimeId,
             ),
         ).toContain("provider-b");
+        expect(
+            agentControlsMockState.props?.providerSwitchLocked,
+        ).toBe(true);
 
         act(() => {
             agentControlsMockState.props?.onProviderModelChange?.(
@@ -257,30 +257,13 @@ describe("AIChatSessionView", () => {
             );
         });
 
-        await waitFor(() => {
-            expect(confirm).toHaveBeenCalledWith(
-                expect.stringContaining("bounded transcript handoff"),
-                expect.objectContaining({ title: "Switch ACP provider" }),
-            );
-            expect(
-                useChatStore.getState().conversationsById["session-a"]
-                    ?.preferredSelection,
-            ).toMatchObject({
-                runtimeId: "provider-b",
-                modelId: "model-b",
-            });
+        expect(
+            useChatStore.getState().conversationsById["session-a"]
+                ?.preferredSelection,
+        ).toMatchObject({
+            runtimeId: "codex-acp",
+            modelId: "test-model",
         });
-
-        act(() => {
-            composerMockState.onSubmit?.();
-        });
-        expect(startConversationTurn).toHaveBeenCalledWith(
-            "session-a",
-            expect.objectContaining({
-                runtimeId: "provider-b",
-                modelId: "model-b",
-            }),
-        );
     });
 
     it("renames the workspace chat from the local header title on double click", async () => {

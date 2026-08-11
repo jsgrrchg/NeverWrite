@@ -2804,6 +2804,15 @@ function sanitizePersistedDisplayText(value?: string | null) {
         : value;
 }
 
+function sessionHasConversationHistory(session: AIChatSession) {
+    return (
+        Math.max(
+            getSessionTranscriptLength(session),
+            session.persistedMessageCount ?? 0,
+        ) > 0
+    );
+}
+
 function buildPromptWithContextHandoff(
     session: AIChatSession,
     prompt: string,
@@ -8838,6 +8847,14 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         const requestedRuntimeId = currentItem.runtimeId ?? session.runtimeId;
         const providerSwitchRequested =
             requestedRuntimeId !== session.runtimeId;
+        if (
+            providerSwitchRequested &&
+            sessionHasConversationHistory(session)
+        ) {
+            throw new Error(
+                "This conversation cannot switch ACP providers. Start a new chat to use another provider.",
+            );
+        }
         if (providerSwitchRequested) {
             const state = get();
             const conversationId =
@@ -9044,8 +9061,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 currentItem.prompt,
                 connected.targetBinding,
                 route.startReason,
-                route.providerChanged ||
-                    session.resumeContextPending === true,
+                session.resumeContextPending === true,
             );
             currentItem = {
                 ...currentItem,
@@ -12728,6 +12744,12 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             if (!sourceSession) {
                 return;
             }
+            if (
+                selection.runtimeId !== sourceSession.runtimeId &&
+                sessionHasConversationHistory(sourceSession)
+            ) {
+                return;
+            }
 
             _pendingTurnCatalogKeyByConversationId.set(
                 conversationId,
@@ -12867,23 +12889,25 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const activeBinding = conversation.activeBindingId
                     ? currentState.bindingsById[conversation.activeBindingId]
                     : null;
+                const activeRuntimeId =
+                    activeBinding?.runtimeId ?? session.runtimeId;
                 const providerChanged =
-                    activeBinding != null &&
-                    activeBinding.runtimeId !== selection.runtimeId;
+                    activeRuntimeId !== selection.runtimeId;
                 const setupStatus =
                     currentState.setupStatusByRuntimeId[selection.runtimeId];
                 if (
                     isClaudeTerminalRuntimeId(selection.runtimeId) ||
                     (providerChanged &&
-                        (getConversationSwitchBlocker(conversation, {
-                            hasQueuedMessages:
-                                (currentState.queuedMessagesBySessionId[
-                                    sessionId
-                                ]?.length ?? 0) > 0 ||
-                                currentState.activeQueuedMessageBySessionId[
-                                    sessionId
-                                ] != null,
-                        }) != null ||
+                        (sessionHasConversationHistory(session) ||
+                            getConversationSwitchBlocker(conversation, {
+                                hasQueuedMessages:
+                                    (currentState.queuedMessagesBySessionId[
+                                        sessionId
+                                    ]?.length ?? 0) > 0 ||
+                                    currentState.activeQueuedMessageBySessionId[
+                                        sessionId
+                                    ] != null,
+                            }) != null ||
                             (setupStatus != null &&
                                 !isRuntimeSetupReady(setupStatus))))
                 ) {
@@ -13174,10 +13198,14 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             const activeBinding = conversation.activeBindingId
                 ? state.bindingsById[conversation.activeBindingId]
                 : null;
+            const activeRuntimeId =
+                activeBinding?.runtimeId ?? session.runtimeId;
             const providerChanged =
-                activeBinding != null &&
-                activeBinding.runtimeId !== selection.runtimeId;
+                activeRuntimeId !== selection.runtimeId;
             if (providerChanged) {
+                if (sessionHasConversationHistory(session)) {
+                    return;
+                }
                 const blocker = getConversationSwitchBlocker(conversation, {
                     hasQueuedMessages:
                         (state.queuedMessagesBySessionId[sessionId]?.length ??
@@ -13239,10 +13267,15 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             const conversationId =
                 resolveConversationId(get(), resolvedSessionId) ??
                 session.historySessionId;
-            const selection =
+            const requestedSelection =
                 _pendingTurnSelectionByConversationId.get(conversationId) ??
                 updateConversationBindingsFromLegacySession(session)
                     .preferredSelection;
+            const selection =
+                requestedSelection.runtimeId !== session.runtimeId &&
+                sessionHasConversationHistory(session)
+                    ? getConversationSelection(session)
+                    : requestedSelection;
             const providerChanged = selection.runtimeId !== session.runtimeId;
 
             if (

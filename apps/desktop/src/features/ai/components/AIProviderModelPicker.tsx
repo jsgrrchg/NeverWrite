@@ -19,6 +19,7 @@ interface AIProviderModelPickerProps {
     disabled?: boolean;
     runtimeId: string;
     modelId: string;
+    providerSwitchLocked?: boolean;
     providers: ConversationProviderPickerOption[];
     onChange: (runtimeId: string, modelId: string) => void;
 }
@@ -145,6 +146,7 @@ export function AIProviderModelPicker({
     disabled = false,
     runtimeId,
     modelId,
+    providerSwitchLocked = false,
     providers,
     onChange,
 }: AIProviderModelPickerProps) {
@@ -153,6 +155,9 @@ export function AIProviderModelPicker({
     const [selectedProviderId, setSelectedProviderId] = useState(runtimeId);
     const [favorites, setFavorites] = useState(readFavoriteModels);
     const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
+    const [blockedProviderId, setBlockedProviderId] = useState<string | null>(
+        null,
+    );
     const rootRef = useRef<HTMLDivElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -217,6 +222,12 @@ export function AIProviderModelPicker({
             (row) => row.runtimeId === runtimeId && row.modelId === modelId,
         ) ?? rows.find((row) => row.runtimeId === runtimeId);
     const triggerLabel = selectedRow?.modelLabel ?? (modelId || "Model");
+    const activeProvider = providers.find(
+        (provider) => provider.runtimeId === runtimeId,
+    );
+    const blockedProvider = providers.find(
+        (provider) => provider.runtimeId === blockedProviderId,
+    );
     const menuPosition = useAnchoredChatMenuPosition(rootRef, menuRef, open);
 
     const restoreFocus = () => {
@@ -227,6 +238,7 @@ export function AIProviderModelPicker({
         setOpen(false);
         setQuery("");
         setHighlightedKey(null);
+        setBlockedProviderId(null);
         if (shouldRestoreFocus) {
             window.requestAnimationFrame(restoreFocus);
         }
@@ -250,6 +262,7 @@ export function AIProviderModelPicker({
                 setOpen(false);
                 setQuery("");
                 setHighlightedKey(null);
+                setBlockedProviderId(null);
             }
         };
         document.addEventListener("mousedown", handlePointerDown);
@@ -294,6 +307,10 @@ export function AIProviderModelPicker({
 
     const selectRow = (row: PickerModel) => {
         if (row.disabledReason) return;
+        if (providerSwitchLocked && row.runtimeId !== runtimeId) {
+            setBlockedProviderId(row.runtimeId);
+            return;
+        }
         onChange(row.runtimeId, row.modelId);
         closePicker(true);
     };
@@ -401,6 +418,7 @@ export function AIProviderModelPicker({
                                 className="relative flex aspect-square w-full items-center justify-center rounded-md"
                                 onClick={() => {
                                     setSelectedProviderId(FAVORITES_PROVIDER_ID);
+                                    setBlockedProviderId(null);
                                     searchInputRef.current?.focus();
                                 }}
                                 style={{
@@ -424,17 +442,32 @@ export function AIProviderModelPicker({
                             {providers.map((provider) => {
                                 const selected =
                                     selectedProviderId === provider.runtimeId;
+                                const providerLocked =
+                                    providerSwitchLocked &&
+                                    provider.runtimeId !== runtimeId;
                                 return (
                                     <button
+                                        aria-disabled={providerLocked || undefined}
                                         aria-label={provider.label}
-                                        className="relative flex aspect-square w-full items-center justify-center rounded-md"
+                                        className={`relative flex aspect-square w-full items-center justify-center rounded-md ${providerLocked ? "cursor-not-allowed" : ""}`}
                                         disabled={
                                             provider.models.length === 0 &&
                                             !provider.defaultModelId
                                         }
                                         key={provider.runtimeId}
                                         onClick={() => {
+                                            if (
+                                                providerSwitchLocked &&
+                                                provider.runtimeId !== runtimeId
+                                            ) {
+                                                setBlockedProviderId(
+                                                    provider.runtimeId,
+                                                );
+                                                searchInputRef.current?.focus();
+                                                return;
+                                            }
                                             setSelectedProviderId(provider.runtimeId);
+                                            setBlockedProviderId(null);
                                             searchInputRef.current?.focus();
                                         }}
                                         style={{
@@ -447,9 +480,15 @@ export function AIProviderModelPicker({
                                                 provider.models.length === 0 &&
                                                 !provider.defaultModelId
                                                     ? 0.4
-                                                    : 1,
+                                                    : providerLocked
+                                                      ? 0.45
+                                                      : 1,
                                         }}
-                                        title={provider.label}
+                                        title={
+                                            providerLocked
+                                                ? "Start a new chat to switch providers."
+                                                : provider.label
+                                        }
                                         type="button"
                                     >
                                         <AIProviderIcon
@@ -509,6 +548,12 @@ export function AIProviderModelPicker({
                                             row.modelId === modelId;
                                         const highlighted =
                                             row.key === highlightedKey;
+                                        const providerLocked =
+                                            providerSwitchLocked &&
+                                            row.runtimeId !== runtimeId;
+                                        const rowTitle = providerLocked
+                                            ? "Start a new chat to switch providers."
+                                            : (row.disabledReason ?? row.description);
                                         return (
                                             <div
                                                 className="group flex min-w-0 items-center rounded-lg px-1"
@@ -522,15 +567,20 @@ export function AIProviderModelPicker({
                                                         highlighted || selected
                                                             ? "var(--bg-tertiary)"
                                                             : "transparent",
-                                                    opacity: row.disabledReason ? 0.45 : 1,
+                                                    opacity:
+                                                        row.disabledReason ||
+                                                        providerLocked
+                                                            ? 0.45
+                                                            : 1,
                                                 }}
-                                                title={
-                                                    row.disabledReason ?? row.description
-                                                }
+                                                title={rowTitle}
                                             >
                                                 <button
+                                                    aria-disabled={
+                                                        providerLocked || undefined
+                                                    }
                                                     aria-label={`${row.providerLabel} · ${row.modelLabel}`}
-                                                    className="min-w-0 flex-1 px-1.5 py-2 text-left"
+                                                    className={`min-w-0 flex-1 px-1.5 py-2 text-left ${providerLocked ? "cursor-not-allowed" : ""}`}
                                                     disabled={row.disabledReason != null}
                                                     onClick={() => selectRow(row)}
                                                     style={{
@@ -538,9 +588,7 @@ export function AIProviderModelPicker({
                                                         border: "none",
                                                         color: "var(--text-primary)",
                                                     }}
-                                                    title={
-                                                        row.disabledReason ?? row.description
-                                                    }
+                                                    title={rowTitle}
                                                     type="button"
                                                 >
                                                     <span className="block truncate text-xs font-medium">
@@ -592,6 +640,32 @@ export function AIProviderModelPicker({
                             )}
                         </div>
                     </div>
+
+                    {blockedProvider ? (
+                        <div
+                            aria-live="polite"
+                            className="pointer-events-none absolute bottom-2 left-12 z-20 max-w-64 rounded-md px-2.5 py-2 text-xs leading-snug"
+                            data-testid="provider-switch-blocked-popover"
+                            role="status"
+                            style={{
+                                backgroundColor: "var(--bg-primary)",
+                                border: "1px solid var(--border)",
+                                boxShadow: "0 8px 24px rgba(0,0,0,0.28)",
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            <span
+                                aria-hidden="true"
+                                className="absolute top-1/2 -left-1 size-2 -translate-y-1/2 rotate-45"
+                                style={{
+                                    backgroundColor: "var(--bg-primary)",
+                                    borderBottom: "1px solid var(--border)",
+                                    borderLeft: "1px solid var(--border)",
+                                }}
+                            />
+                            This chat is locked to {activeProvider?.label ?? "its original provider"}. Start a new chat to use {blockedProvider.label}.
+                        </div>
+                    ) : null}
                 </div>,
                 document.body,
                 )

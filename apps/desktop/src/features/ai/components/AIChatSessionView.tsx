@@ -18,7 +18,7 @@ import {
     useState,
     type ReactNode,
 } from "react";
-import { confirm, open as runtimeOpen } from "@neverwrite/runtime";
+import { open as runtimeOpen } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
 import {
     isChatTab,
@@ -90,7 +90,6 @@ import {
     buildConversationProviderOptions,
     getConversationTurnCatalog,
     getDefaultConversationSelection,
-    requiresFirstProviderHandoffConfirmation,
     updateConversationSelection,
 } from "../conversationPickerModel";
 import { getConversationSelection } from "../conversationModel";
@@ -540,6 +539,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         ) &&
         ((session?.messages.length ?? 0) > 0 ||
             (session?.persistedMessageCount ?? 0) > 0);
+    const providerSwitchLocked =
+        Math.max(
+            session?.messages.length ?? 0,
+            session?.persistedMessageCount ?? 0,
+        ) > 0;
 
     const updateTurnSelection = useCallback(
         (selection: ConversationSelection) => {
@@ -557,11 +561,15 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             if (!session || !turnSelection) {
                 return;
             }
-            if (runtimeId === turnSelection.runtimeId) {
-                if (modelId && modelId !== turnSelection.modelId) {
+            if (runtimeId === session.runtimeId) {
+                const currentSelection =
+                    turnSelection.runtimeId === runtimeId
+                        ? turnSelection
+                        : getConversationSelection(session);
+                if (modelId && modelId !== currentSelection.modelId) {
                     updateTurnSelection(
                         updateConversationSelection(
-                            turnSelection,
+                            currentSelection,
                             agentCatalog.configOptions,
                             { kind: "model", value: modelId },
                         ),
@@ -577,27 +585,8 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             );
             if (!option || option.disabledReason || !runtime) return;
 
-            if (
-                requiresFirstProviderHandoffConfirmation({
-                    activeRuntimeId: session.runtimeId,
-                    targetRuntimeId: runtimeId,
-                    bindings: conversationBindings,
-                    messageCount: Math.max(
-                        session.messages.length,
-                        session.persistedMessageCount ?? 0,
-                    ),
-                })
-            ) {
-                const approved = await confirm(
-                    `The next message will continue this conversation with ${option.label}. A bounded transcript handoff will be sent to the new provider.`,
-                    {
-                        title: "Switch ACP provider",
-                        kind: "warning",
-                        okLabel: "Switch provider",
-                        cancelLabel: "Cancel",
-                    },
-                );
-                if (!approved) return;
+            if (providerSwitchLocked) {
+                return;
             }
 
             let nextSelection = getDefaultConversationSelection({
@@ -623,6 +612,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             agentCatalog.configOptions,
             conversationBindings,
             providerOptions,
+            providerSwitchLocked,
             runtimes,
             session,
             turnSelection,
@@ -1452,6 +1442,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                                             runtimeId={turnSelection?.runtimeId}
                                             lockIncompatibleModelSwitches={
                                                 lockIncompatibleModelSwitches
+                                            }
+                                            providerSwitchLocked={
+                                                providerSwitchLocked
                                             }
                                             modelId={turnSelection?.modelId ?? ""}
                                             modeId={turnSelection?.modeId ?? ""}
