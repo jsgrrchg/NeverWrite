@@ -140,6 +140,10 @@ function formatFallbackLabel(value: string) {
     .join(" ");
 }
 
+function modelDisplayLabel(label: string, modelId: string) {
+  return label.trim() || formatFallbackLabel(modelId);
+}
+
 function DropdownField({
   disabled = false,
   label,
@@ -707,7 +711,7 @@ export function AIChatAgentControls({
         ? mapConfigOption(modelConfig)
         : models.map((model) => ({
             value: model.id,
-            label: formatFallbackLabel(model.name),
+            label: modelDisplayLabel(model.name, model.id),
             description: model.description,
             agentType: model.agentType,
           })),
@@ -732,7 +736,7 @@ export function AIChatAgentControls({
           provider.runtimeId === runtimeId && lockedModelOptions.length > 0
             ? lockedModelOptions.map((model) => ({
                 modelId: model.value,
-                label: model.label,
+                label: modelDisplayLabel(model.label, model.value),
                 description: model.description,
                 disabledReason: model.disabled
                   ? (model.description ?? "This model is unavailable.")
@@ -740,7 +744,7 @@ export function AIChatAgentControls({
               }))
             : provider.models.map((model) => ({
                 ...model,
-                label: formatFallbackLabel(model.label),
+                label: modelDisplayLabel(model.label, model.modelId),
               })),
       })),
     [lockedModelOptions, providers, runtimeId],

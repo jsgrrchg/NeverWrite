@@ -33,6 +33,11 @@ describe("AIChatAgentControls", () => {
                 label: "GPT-5",
                 disabledReason: null,
               },
+              {
+                modelId: "fallback_model",
+                label: "",
+                disabledReason: null,
+              },
             ],
           },
           {
@@ -79,9 +84,12 @@ describe("AIChatAgentControls", () => {
     );
     await user.clear(screen.getByLabelText("Provider and model search"));
     const codexOption = screen
-      .getAllByRole("button", { name: "Codex · GPT 5" })
+      .getAllByRole("button", { name: "Codex · GPT-5" })
       .find((button) => button.getAttribute("title") === "Codex provider");
     expect(codexOption).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "Codex · Fallback model" }),
+    ).toBeInTheDocument();
     await user.click(codexOption!);
     expect(onProviderChange).toHaveBeenCalledWith("codex-acp", "gpt-5");
   });
@@ -143,7 +151,7 @@ describe("AIChatAgentControls", () => {
       screen.getByTestId("provider-selection-blocked-popover"),
     ).toHaveTextContent("Start a new chat to use another provider.");
     expect(
-      screen.getByRole("button", { name: "Codex · GPT 5" }),
+      screen.getByRole("button", { name: "Codex · GPT-5" }),
     ).toBeInTheDocument();
     expect(onProviderChange).not.toHaveBeenCalled();
 
