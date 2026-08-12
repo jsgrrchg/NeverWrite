@@ -8922,6 +8922,9 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         selection: ConversationSelection,
     ) {
         let session = initialSession;
+        const initiallyAvailableOptionIds = new Set(
+            initialSession.configOptions.map((option) => option.id),
+        );
         if (
             selection.modelId &&
             selection.modelId !==
@@ -8947,8 +8950,29 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             session = await aiSetMode(session.sessionId, selection.modeId);
         }
 
+        const effectiveSelection = {
+            ...selection,
+            options: Object.fromEntries(
+                Object.entries(selection.options).filter(([optionId]) => {
+                    const isAvailable = session.configOptions.some(
+                        (option) => option.id === optionId,
+                    );
+                    // ACP option catalogs may change after selecting a model.
+                    // An option that was valid for the session's initial model
+                    // is no longer part of the requested selection when the
+                    // target model removes it. Truly unknown option ids remain
+                    // strict and are rejected by the validation below.
+                    return (
+                        isAvailable ||
+                        !initiallyAvailableOptionIds.has(optionId)
+                    );
+                }),
+            ),
+        };
         const modelOptionId = getModelConfigOption(session)?.id ?? null;
-        for (const [optionId, value] of Object.entries(selection.options)) {
+        for (const [optionId, value] of Object.entries(
+            effectiveSelection.options,
+        )) {
             const option = session.configOptions.find(
                 (candidate) => candidate.id === optionId,
             );
@@ -8968,21 +8992,23 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             );
         }
 
-        const appliedSelection = getConversationSelection(session);
-        if (appliedSelection.runtimeId !== selection.runtimeId) {
+        const actualSelection = getConversationSelection(session);
+        if (actualSelection.runtimeId !== effectiveSelection.runtimeId) {
             throw new Error("The selected ACP provider was not applied.");
         }
-        if (appliedSelection.modelId !== selection.modelId) {
+        if (actualSelection.modelId !== effectiveSelection.modelId) {
             throw new Error(
-                `The selected model is unavailable: ${selection.modelId}`,
+                `The selected model is unavailable: ${effectiveSelection.modelId}`,
             );
         }
-        if (appliedSelection.modeId !== selection.modeId) {
+        if (actualSelection.modeId !== effectiveSelection.modeId) {
             throw new Error(
-                `The selected mode is unavailable: ${selection.modeId}`,
+                `The selected mode is unavailable: ${effectiveSelection.modeId}`,
             );
         }
-        for (const [optionId, value] of Object.entries(selection.options)) {
+        for (const [optionId, value] of Object.entries(
+            effectiveSelection.options,
+        )) {
             const option = session.configOptions.find(
                 (candidate) => candidate.id === optionId,
             );
@@ -8997,7 +9023,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 );
             }
         }
-        return session;
+        return { session, selection: effectiveSelection };
     }
 
     function sessionCanApplyConversationSelection(
@@ -9044,21 +9070,47 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         runtime: AIRuntimeDescriptor,
         session: AIChatSession,
         requestedSelection: ConversationSelection,
+        sourceSession: AIChatSession,
     ) {
+        const targetOptionIds = new Set(
+            session.configOptions.map((option) => option.id),
+        );
+        const knownCatalogOptionIds = new Set([
+            ...runtime.configOptions.map((option) => option.id),
+            ...sourceSession.configOptions.map((option) => option.id),
+        ]);
+        const normalizedSelection = {
+            ...requestedSelection,
+            options: Object.fromEntries(
+                Object.entries(requestedSelection.options).filter(
+                    ([optionId]) =>
+                        targetOptionIds.has(optionId) ||
+                        !knownCatalogOptionIds.has(optionId),
+                ),
+            ),
+        };
         if (
             sessionCanApplyConversationSelection(
                 session,
-                requestedSelection,
+                normalizedSelection,
             )
         ) {
-            return requestedSelection;
+            return normalizedSelection;
         }
 
         const descriptorDefault = getDefaultConversationSelection({ runtime });
+        const liveDescriptorDefault = {
+            ...descriptorDefault,
+            options: Object.fromEntries(
+                Object.entries(descriptorDefault.options).filter(
+                    ([optionId]) => targetOptionIds.has(optionId),
+                ),
+            ),
+        };
         if (
             conversationSelectionsEqual(
-                requestedSelection,
-                descriptorDefault,
+                normalizedSelection,
+                liveDescriptorDefault,
             )
         ) {
             // Runtime descriptors are only bootstrap metadata. In particular,
@@ -9070,7 +9122,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
 
         // Explicit user selections remain strict. The normal configuration
         // path below will report which requested value is unavailable.
-        return requestedSelection;
+        return normalizedSelection;
     }
 
     async function connectCustomConversationBinding(
@@ -9201,19 +9253,22 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             created = true;
         }
 
-        const resolvedSelection = created
+        let resolvedSelection = created
             ? resolveDiscoveredConversationSelection(
                   runtime,
                   runtimeSession,
                   input.route.selection,
+                  input.sourceSession,
               )
             : input.route.selection;
 
         try {
-            runtimeSession = await configureConversationTurnSession(
+            const configured = await configureConversationTurnSession(
                 runtimeSession,
                 resolvedSelection,
             );
+            runtimeSession = configured.session;
+            resolvedSelection = configured.selection;
         } catch (error) {
             if (created) {
                 await aiDeleteRuntimeSession(runtimeSession.sessionId).catch(
@@ -13284,22 +13339,24 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 );
                 probeSessionId = probeSession.sessionId;
                 _turnCatalogProbeSessionIds.add(probeSessionId);
-                const resolvedSelection =
+                const discoveredSelection =
                     resolveDiscoveredConversationSelection(
                         runtime,
                         probeSession,
                         selection,
+                        sourceSession,
                     );
                 // Configure the probe exactly like the eventual turn. Several
                 // ACPs reveal reasoning and service-tier options only after the
                 // target model has been selected. Bootstrap descriptor values
                 // are resolved from the live catalog first, so a synthetic
                 // `auto` model cannot prevent discovery from completing.
-                const configuredSession =
-                    await configureConversationTurnSession(
-                        probeSession,
-                        resolvedSelection,
-                    );
+                const configured = await configureConversationTurnSession(
+                    probeSession,
+                    discoveredSelection,
+                );
+                const configuredSession = configured.session;
+                const resolvedSelection = configured.selection;
 
                 if (
                     _pendingTurnCatalogKeyByConversationId.get(
