@@ -9493,14 +9493,23 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         currentItem,
                     )) ?? session;
                 if (!session) return;
-            } else if (!hasFullPersistedTranscriptLoaded(session)) {
+            }
+
+            const transcriptIsPersistedButUnloaded =
+                (session.persistedMessageCount ?? 0) > 0 &&
+                getSessionTranscriptMessages(session).length === 0;
+            if (
+                transcriptIsPersistedButUnloaded ||
+                (initialProviderChangeRequested &&
+                    !hasFullPersistedTranscriptLoaded(session))
+            ) {
                 const loaded = await loadPersistedTranscript(
                     activeSessionId,
                     "full",
                 );
                 if (!loaded) {
                     throw new Error(
-                        "Failed to load the canonical transcript before changing ACP provider.",
+                        "Failed to load the canonical transcript before routing the conversation turn.",
                     );
                 }
                 session = get().sessionsById[activeSessionId] ?? session;
@@ -9575,7 +9584,8 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 currentItem.prompt,
                 connected.targetBinding,
                 route.startReason,
-                session.resumeContextPending === true,
+                session.resumeContextPending === true ||
+                    route.startReason === "transcript_handoff",
             );
             currentItem = {
                 ...currentItem,

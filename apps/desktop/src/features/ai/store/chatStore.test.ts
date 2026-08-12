@@ -14654,6 +14654,112 @@ describe("chatStore", () => {
         expect(sentContent).toContain("New user message: Continue from there");
     });
 
+    it("loads unloaded saved history before planning same-provider session creation", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        const sourceSessionId = "live-history-shell";
+        const historySessionId = "history-live-shell";
+        const replacementSessionId = "codex-session-replacement";
+        let sentContent = "";
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [sourceSessionId]: {
+                    ...createSessionWithTrackedFiles(sourceSessionId, []),
+                    historySessionId,
+                    runtimeId: "codex-acp",
+                    runtimeState: "live",
+                    runtimeSessionId: null,
+                    continuationStrategy: "new_session_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 2,
+                    loadedPersistedMessageStart: null,
+                    messages: [],
+                },
+            },
+            sessionOrder: [sourceSessionId],
+            activeSessionId: sourceSessionId,
+            selectedRuntimeId: "codex-acp",
+            composerPartsBySessionId: {
+                [sourceSessionId]: [],
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    sessionId: historySessionId,
+                    vaultPath: "/vault",
+                    startIndex: 0,
+                    limit: 2,
+                });
+                return {
+                    session_id: historySessionId,
+                    total_messages: 2,
+                    start_index: 0,
+                    end_index: 2,
+                    messages: [
+                        {
+                            id: "saved-user",
+                            role: "user",
+                            kind: "text",
+                            content: "Keep the saved constraint",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "saved-assistant",
+                            role: "assistant",
+                            kind: "text",
+                            content: "The constraint is retained.",
+                            timestamp: 20,
+                        },
+                    ],
+                };
+            }
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: replacementSessionId,
+                };
+            }
+            if (command === "ai_start_conversation_turn") return null;
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: replacementSessionId,
+                    status: "streaming",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Continue safely"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_load_session_history_page",
+            expect.objectContaining({ sessionId: historySessionId }),
+        );
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain("User: Keep the saved constraint");
+        expect(sentContent).toContain("New user message: Continue safely");
+    });
+
     it("includes saved transcript context for live Codex sessions with pending recovery", async () => {
         await useChatStore.getState().initialize();
 

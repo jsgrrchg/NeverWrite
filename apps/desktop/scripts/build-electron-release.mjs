@@ -1,5 +1,11 @@
 import { spawn } from "node:child_process";
 
+import {
+    createCommandExitError,
+    electronBuilderRetryAttempts,
+    runWithRetry,
+} from "./electron-release-retry.mjs";
+
 const DEFAULT_ELECTRON_OUTPUT_DIR = "dist-electron";
 
 function parseArgs(argv) {
@@ -126,40 +132,9 @@ function run(command, args, env = {}) {
                 resolve();
                 return;
             }
-            reject(
-                new Error(
-                    signal
-                        ? `${command} ${args.join(" ")} terminated with ${signal}`
-                        : `${command} ${args.join(" ")} exited with ${code}`,
-                ),
-            );
+            reject(createCommandExitError(command, args, code, signal));
         });
     });
-}
-
-function wait(milliseconds) {
-    return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function runWithRetry(command, args, env = {}, options = {}) {
-    const attempts = options.attempts ?? 3;
-    const retryDelayMs = options.retryDelayMs ?? 5000;
-
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        try {
-            await run(command, args, env);
-            return;
-        } catch (error) {
-            if (attempt === attempts) {
-                throw error;
-            }
-
-            console.warn(
-                `Command failed on attempt ${attempt}/${attempts}; retrying in ${retryDelayMs}ms: ${command} ${args.join(" ")}`,
-            );
-            await wait(retryDelayMs);
-        }
-    }
 }
 
 function buildElectronBuilderArgs(args) {
@@ -214,15 +189,19 @@ await run("npm", [
     "--target",
     rustTarget,
 ]);
-await runWithRetry(
-    "npx",
-    buildElectronBuilderArgs({
-        ...args,
-        platform: normalizedPlatform,
-        arch: normalizedArch,
-    }),
-    builderEnv,
-);
+const electronBuilderArgs = buildElectronBuilderArgs({
+    ...args,
+    platform: normalizedPlatform,
+    arch: normalizedArch,
+});
+await runWithRetry(() => run("npx", electronBuilderArgs, builderEnv), {
+    attempts: electronBuilderRetryAttempts(args.publish),
+    onRetry: ({ attempt, attempts, retryDelayMs }) => {
+        console.warn(
+            `Command failed on attempt ${attempt}/${attempts}; retrying in ${retryDelayMs}ms: npx ${electronBuilderArgs.join(" ")}`,
+        );
+    },
+});
 
 if (normalizedPlatform === "mac" && !args.dir) {
     const postprocessArgs = [
