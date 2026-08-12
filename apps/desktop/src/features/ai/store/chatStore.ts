@@ -175,7 +175,10 @@ import {
     planConversationTurnRoute,
     type ConversationTurnRoute,
 } from "../conversationTurnRouting";
-import type { PreparedConversationTurnCatalog } from "../conversationPickerModel";
+import {
+    getDefaultConversationSelection,
+    type PreparedConversationTurnCatalog,
+} from "../conversationPickerModel";
 import {
     deserializeConversationBindings,
     forkConversationBindings,
@@ -7329,6 +7332,27 @@ function getPreparedTurnCatalogKey(
     return `${selection.runtimeId}\u0000${selection.modelId}`;
 }
 
+function conversationSelectionsEqual(
+    left: ConversationSelection,
+    right: ConversationSelection,
+) {
+    if (
+        left.runtimeId !== right.runtimeId ||
+        left.modelId !== right.modelId ||
+        left.modeId !== right.modeId
+    ) {
+        return false;
+    }
+
+    const optionIds = new Set([
+        ...Object.keys(left.options),
+        ...Object.keys(right.options),
+    ]);
+    return [...optionIds].every(
+        (optionId) => left.options[optionId] === right.options[optionId],
+    );
+}
+
 async function persistSessionNow(session: AIChatSession) {
     const vaultPath = getSessionVaultPath(session);
     if (!vaultPath) return;
@@ -8976,6 +9000,79 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         return session;
     }
 
+    function sessionCanApplyConversationSelection(
+        session: AIChatSession,
+        selection: ConversationSelection,
+    ) {
+        if (session.runtimeId !== selection.runtimeId) {
+            return false;
+        }
+        const selectedModelId =
+            getModelConfigOption(session)?.value ?? session.modelId;
+        if (
+            selection.modelId !== selectedModelId &&
+            !supportsModelSelection(session, selection.modelId)
+        ) {
+            return false;
+        }
+        if (
+            selection.modeId !== session.modeId &&
+            !session.modes.some(
+                (mode) => mode.id === selection.modeId && !mode.disabled,
+            )
+        ) {
+            return false;
+        }
+
+        return Object.entries(selection.options).every(
+            ([optionId, value]) => {
+                const option = session.configOptions.find(
+                    (candidate) => candidate.id === optionId,
+                );
+                return (
+                    option != null &&
+                    (option.value === value ||
+                        option.options.some(
+                            (candidate) => candidate.value === value,
+                        ))
+                );
+            },
+        );
+    }
+
+    function resolveDiscoveredConversationSelection(
+        runtime: AIRuntimeDescriptor,
+        session: AIChatSession,
+        requestedSelection: ConversationSelection,
+    ) {
+        if (
+            sessionCanApplyConversationSelection(
+                session,
+                requestedSelection,
+            )
+        ) {
+            return requestedSelection;
+        }
+
+        const descriptorDefault = getDefaultConversationSelection({ runtime });
+        if (
+            conversationSelectionsEqual(
+                requestedSelection,
+                descriptorDefault,
+            )
+        ) {
+            // Runtime descriptors are only bootstrap metadata. In particular,
+            // most built-ins advertise a synthetic `auto` model before their
+            // ACP has connected. Discovery must adopt the live session's real
+            // default instead of rejecting the catalog we just loaded.
+            return getConversationSelection(session);
+        }
+
+        // Explicit user selections remain strict. The normal configuration
+        // path below will report which requested value is unavailable.
+        return requestedSelection;
+    }
+
     async function connectCustomConversationBinding(
         binding: AcpConversationBinding,
         vaultPath: string | null,
@@ -9104,10 +9201,18 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             created = true;
         }
 
+        const resolvedSelection = created
+            ? resolveDiscoveredConversationSelection(
+                  runtime,
+                  runtimeSession,
+                  input.route.selection,
+              )
+            : input.route.selection;
+
         try {
             runtimeSession = await configureConversationTurnSession(
                 runtimeSession,
-                input.route.selection,
+                resolvedSelection,
             );
         } catch (error) {
             if (created) {
@@ -9128,7 +9233,12 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 : input.route.targetBinding,
             runtime.runtime.capabilities,
         );
-        return { runtimeSession, targetBinding, created };
+        return {
+            runtimeSession,
+            targetBinding,
+            created,
+            selection: resolvedSelection,
+        };
     }
 
     async function ensureRuntimeVisibleAfterOnboarding(runtimeId: string) {
@@ -9396,6 +9506,21 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 route,
                 attachments: currentItem.attachments,
             });
+            if (
+                !conversationSelectionsEqual(
+                    route.selection,
+                    connected.selection,
+                )
+            ) {
+                route = {
+                    ...route,
+                    selection: connected.selection,
+                };
+                get().setConversationTurnSelection(
+                    bindings.conversationId,
+                    connected.selection,
+                );
+            }
             preparedTurn = { ...connected, route };
             await aiStartConversationTurn({
                 conversationId: bindings.conversationId,
@@ -13159,13 +13284,21 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 );
                 probeSessionId = probeSession.sessionId;
                 _turnCatalogProbeSessionIds.add(probeSessionId);
+                const resolvedSelection =
+                    resolveDiscoveredConversationSelection(
+                        runtime,
+                        probeSession,
+                        selection,
+                    );
                 // Configure the probe exactly like the eventual turn. Several
                 // ACPs reveal reasoning and service-tier options only after the
-                // target model has been selected.
+                // target model has been selected. Bootstrap descriptor values
+                // are resolved from the live catalog first, so a synthetic
+                // `auto` model cannot prevent discovery from completing.
                 const configuredSession =
                     await configureConversationTurnSession(
                         probeSession,
-                        selection,
+                        resolvedSelection,
                     );
 
                 if (
@@ -13177,7 +13310,14 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     // options from the superseded probe.
                     return;
                 }
-                const currentConversation =
+                set((currentState) => ({
+                    runtimes: hydrateRuntimesFromSessions(
+                        currentState.runtimes,
+                        [configuredSession],
+                    ),
+                }));
+
+                let currentConversation =
                     get().conversationsById[conversationId];
                 if (
                     !currentConversation ||
@@ -13185,15 +13325,40 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         currentConversation.preferredSelection,
                     ) !== requestKey
                 ) {
+                    // Provider previews still warm the shared runtime catalog,
+                    // but must not change this conversation's staged choice.
                     return;
+                }
+
+                if (
+                    !conversationSelectionsEqual(
+                        selection,
+                        resolvedSelection,
+                    )
+                ) {
+                    get().setConversationTurnSelection(
+                        conversationId,
+                        resolvedSelection,
+                    );
+                    currentConversation =
+                        get().conversationsById[conversationId];
+                    if (
+                        !currentConversation ||
+                        !conversationSelectionsEqual(
+                            currentConversation.preferredSelection,
+                            resolvedSelection,
+                        )
+                    ) {
+                        return;
+                    }
                 }
 
                 set((currentState) => ({
                     preparedTurnCatalogByConversationId: {
                         ...currentState.preparedTurnCatalogByConversationId,
                         [conversationId]: {
-                            runtimeId: selection.runtimeId,
-                            modelId: selection.modelId,
+                            runtimeId: resolvedSelection.runtimeId,
+                            modelId: resolvedSelection.modelId,
                             models: configuredSession.models,
                             modes: configuredSession.modes,
                             configOptions: configuredSession.configOptions,

@@ -155,6 +155,66 @@ describe("AIChatAgentControls", () => {
     }
   });
 
+  it("loads a provider catalog when its rail item is activated", async () => {
+    const user = userEvent.setup();
+    let finishDiscovery!: () => void;
+    const onProviderActivate = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDiscovery = resolve;
+        }),
+    );
+    renderComponent(
+      <AIChatAgentControls
+        runtimeId="codex-acp"
+        modelId="gpt-5"
+        modeId="default"
+        models={[]}
+        modes={[]}
+        configOptions={[]}
+        providers={[
+          {
+            runtimeId: "codex-acp",
+            label: "Codex",
+            description: "Codex provider",
+            disabledReason: null,
+            defaultModelId: "gpt-5",
+            models: [
+              {
+                modelId: "gpt-5",
+                label: "GPT-5",
+                disabledReason: null,
+              },
+            ],
+          },
+          {
+            runtimeId: "claude-acp",
+            label: "Claude",
+            description: "Claude provider",
+            disabledReason: null,
+            defaultModelId: "",
+            models: [],
+          },
+        ]}
+        onProviderActivate={onProviderActivate}
+        onProviderModelChange={() => {}}
+        onModelChange={() => {}}
+        onModeChange={() => {}}
+        onConfigOptionChange={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByTitle("Provider and model"));
+    await user.click(screen.getByRole("button", { name: "Claude" }));
+
+    expect(onProviderActivate).toHaveBeenCalledWith("claude-acp");
+    expect(
+      screen.getByRole("button", { name: "Claude · Loading models…" }),
+    ).toBeDisabled();
+
+    finishDiscovery();
+  });
+
   it("keeps the original provider selected and explains the lock inline", async () => {
     const user = userEvent.setup();
     const onProviderChange = vi.fn();

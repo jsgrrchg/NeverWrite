@@ -40,6 +40,7 @@ import {
     type AIComposerPart,
     type AIChatMessage,
     type AIRuntimeConnectionState,
+    type AIRuntimeDescriptor,
     type ConversationSelection,
     type DraftAttachmentId,
     type QueuedChatMessage,
@@ -96,6 +97,19 @@ import { getConversationSelection } from "../conversationModel";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_CONVERSATION_BINDINGS: AcpConversationBinding[] = [];
+
+function runtimeNeedsModelDiscovery(runtime: AIRuntimeDescriptor) {
+    const modelConfig = runtime.configOptions.find(
+        (option) => option.category === "model",
+    );
+    const modelIds = modelConfig
+        ? modelConfig.options.map((option) => option.value)
+        : runtime.models.map((model) => model.id);
+    return (
+        modelIds.length === 0 ||
+        (modelIds.length === 1 && modelIds[0] === "auto")
+    );
+}
 
 function managedAttachmentIds(parts: AIComposerPart[]) {
     return new Set(
@@ -606,6 +620,40 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             session,
             turnSelection,
             updateTurnSelection,
+        ],
+    );
+    const handleProviderActivate = useCallback(
+        async (runtimeId: string) => {
+            if (!conversationId || !session) return;
+            const option = providerOptions.find(
+                (candidate) => candidate.runtimeId === runtimeId,
+            );
+            const runtime = runtimes.find(
+                (candidate) => candidate.runtime.id === runtimeId,
+            );
+            if (
+                !option ||
+                option.disabledReason ||
+                !runtime ||
+                !runtimeNeedsModelDiscovery(runtime)
+            ) {
+                return;
+            }
+
+            // Provider navigation warms the shared catalog without changing
+            // the conversation selection. The concrete model is committed
+            // only when the user chooses one from the discovered list.
+            await chatActions.prepareConversationTurnCatalog(
+                conversationId,
+                getDefaultConversationSelection({ runtime }),
+            );
+        },
+        [
+            chatActions,
+            conversationId,
+            providerOptions,
+            runtimes,
+            session,
         ],
     );
 
@@ -1441,6 +1489,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                                             modes={agentCatalog.modes}
                                             configOptions={agentCatalog.configOptions}
                                             providers={providerOptions}
+                                            onProviderActivate={
+                                                handleProviderActivate
+                                            }
                                             onProviderModelChange={(
                                                 runtimeId,
                                                 modelId,

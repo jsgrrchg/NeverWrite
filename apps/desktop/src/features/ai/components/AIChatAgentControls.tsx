@@ -24,6 +24,7 @@ interface AIChatAgentControlsProps {
   configOptions: AIConfigOption[];
   providers?: ConversationProviderPickerOption[];
   onProviderModelChange?: (runtimeId: string, modelId: string) => void;
+  onProviderActivate?: (runtimeId: string) => void | Promise<void>;
   onModelChange: (modelId: string) => void;
   onModeChange: (modeId: string) => void;
   onConfigOptionChange: (optionId: string, value: string) => void;
@@ -697,6 +698,7 @@ export function AIChatAgentControls({
   configOptions,
   providers = [],
   onProviderModelChange,
+  onProviderActivate,
   onModelChange,
   onModeChange,
   onConfigOptionChange,
@@ -918,6 +920,7 @@ export function AIChatAgentControls({
           modelId={selectedModelId}
           providers={providerPickerOptions}
           onChange={onProviderModelChange}
+          onProviderActivate={onProviderActivate}
         />
       ) : null}
       {showLegacyModelPicker ? (

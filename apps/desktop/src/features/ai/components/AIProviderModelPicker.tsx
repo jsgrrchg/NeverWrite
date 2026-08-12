@@ -21,6 +21,7 @@ interface AIProviderModelPickerProps {
     modelId: string;
     providers: ConversationProviderPickerOption[];
     onChange: (runtimeId: string, modelId: string) => void;
+    onProviderActivate?: (runtimeId: string) => void | Promise<void>;
 }
 
 interface FavoriteModel {
@@ -130,8 +131,31 @@ function ChevronIcon({ open }: { open: boolean }) {
     );
 }
 
-function fallbackModels(provider: ConversationProviderPickerOption) {
+function fallbackModels(
+    provider: ConversationProviderPickerOption,
+    loadingProviderId: string | null,
+) {
+    if (provider.runtimeId === loadingProviderId) {
+        return [
+            {
+                modelId: "__loading__",
+                label: "Loading models…",
+                description: `Connecting to ${provider.label} to discover its available models.`,
+                disabledReason: "Models are still loading.",
+            },
+        ];
+    }
     if (provider.models.length > 0) return provider.models;
+    if (!provider.defaultModelId) {
+        return [
+            {
+                modelId: "__discover__",
+                label: "Load available models",
+                description: `Connect to ${provider.label} to discover its available models.`,
+                disabledReason: "Select the provider icon to load its models.",
+            },
+        ];
+    }
     return [
         {
             modelId: provider.defaultModelId,
@@ -148,6 +172,7 @@ export function AIProviderModelPicker({
     modelId,
     providers,
     onChange,
+    onProviderActivate,
 }: AIProviderModelPickerProps) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
@@ -155,6 +180,9 @@ export function AIProviderModelPicker({
     const [favorites, setFavorites] = useState(readFavoriteModels);
     const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
     const [blockedProviderId, setBlockedProviderId] = useState<string | null>(
+        null,
+    );
+    const [loadingProviderId, setLoadingProviderId] = useState<string | null>(
         null,
     );
     const rootRef = useRef<HTMLDivElement>(null);
@@ -165,7 +193,7 @@ export function AIProviderModelPicker({
     const rows = useMemo<PickerModel[]>(
         () =>
             providers.flatMap((provider) =>
-                fallbackModels(provider).map((model) => ({
+                fallbackModels(provider, loadingProviderId).map((model) => ({
                     key: modelKey(provider.runtimeId, model.modelId),
                     runtimeId: provider.runtimeId,
                     providerLabel: provider.label,
@@ -177,8 +205,24 @@ export function AIProviderModelPicker({
                         provider.disabledReason ?? model.disabledReason ?? null,
                 })),
             ),
-        [providers],
+        [loadingProviderId, providers],
     );
+
+    const activateProvider = (provider: ConversationProviderPickerOption) => {
+        setSelectedProviderId(provider.runtimeId);
+        setBlockedProviderId(null);
+        searchInputRef.current?.focus();
+        if (!onProviderActivate) return;
+
+        setLoadingProviderId(provider.runtimeId);
+        void Promise.resolve(onProviderActivate(provider.runtimeId)).finally(
+            () => {
+                setLoadingProviderId((current) =>
+                    current === provider.runtimeId ? null : current,
+                );
+            },
+        );
+    };
     const favoriteKeys = useMemo(
         () =>
             new Set(
@@ -442,6 +486,10 @@ export function AIProviderModelPicker({
                                 const providerLocked =
                                     provider.runtimeId !== runtimeId &&
                                     provider.disabledReason != null;
+                                const providerCanDiscoverModels =
+                                    onProviderActivate != null &&
+                                    provider.models.length === 0 &&
+                                    !provider.defaultModelId;
                                 return (
                                     <button
                                         aria-disabled={providerLocked || undefined}
@@ -450,7 +498,8 @@ export function AIProviderModelPicker({
                                         className={`relative flex aspect-square w-full items-center justify-center rounded-md ${providerLocked ? "cursor-not-allowed" : ""}`}
                                         disabled={
                                             provider.models.length === 0 &&
-                                            !provider.defaultModelId
+                                            !provider.defaultModelId &&
+                                            !providerCanDiscoverModels
                                         }
                                         key={provider.runtimeId}
                                         onClick={() => {
@@ -461,9 +510,7 @@ export function AIProviderModelPicker({
                                                 searchInputRef.current?.focus();
                                                 return;
                                             }
-                                            setSelectedProviderId(provider.runtimeId);
-                                            setBlockedProviderId(null);
-                                            searchInputRef.current?.focus();
+                                            activateProvider(provider);
                                         }}
                                         style={{
                                             backgroundColor: selected
@@ -473,7 +520,8 @@ export function AIProviderModelPicker({
                                             color: "var(--text-primary)",
                                             opacity:
                                                 provider.models.length === 0 &&
-                                                !provider.defaultModelId
+                                                !provider.defaultModelId &&
+                                                !providerCanDiscoverModels
                                                     ? 0.4
                                                     : providerLocked
                                                       ? 0.45

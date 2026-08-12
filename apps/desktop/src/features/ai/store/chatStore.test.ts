@@ -14836,6 +14836,261 @@ describe("chatStore", () => {
         ).toBe("provider-b");
     });
 
+    it("replaces a bootstrap Auto selection with the discovered ACP default", async () => {
+        await useChatStore.getState().initialize();
+
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const bootstrapRuntime = {
+            runtime: {
+                id: "claude-acp",
+                name: "Claude ACP",
+                description: "Claude ACP provider.",
+                capabilities: ["create_session"],
+            },
+            models: [
+                {
+                    id: "auto",
+                    runtimeId: "claude-acp",
+                    name: "Auto",
+                    description: "Use the runtime default model.",
+                },
+            ],
+            modes: [
+                {
+                    id: "default",
+                    runtimeId: "claude-acp",
+                    name: "Default",
+                    description: "Default mode.",
+                    disabled: false,
+                },
+            ],
+            configOptions: [
+                {
+                    id: "model",
+                    runtimeId: "claude-acp",
+                    category: "model" as const,
+                    label: "Model",
+                    type: "select" as const,
+                    value: "auto",
+                    options: [{ value: "auto", label: "Auto" }],
+                },
+            ],
+        };
+        const claudeSession = {
+            session_id: "claude-probe-session",
+            runtime_id: "claude-acp",
+            model_id: "claude-sonnet",
+            mode_id: "default",
+            status: "idle" as const,
+            models: [
+                {
+                    id: "claude-sonnet",
+                    runtime_id: "claude-acp",
+                    name: "Claude Sonnet",
+                    description: "Claude Sonnet model.",
+                },
+            ],
+            modes: [
+                {
+                    id: "default",
+                    runtime_id: "claude-acp",
+                    name: "Default",
+                    description: "Default mode.",
+                    disabled: false,
+                },
+            ],
+            config_options: [
+                {
+                    id: "model",
+                    runtime_id: "claude-acp",
+                    category: "model" as const,
+                    label: "Model",
+                    type: "select" as const,
+                    value: "claude-sonnet",
+                    options: [
+                        {
+                            value: "claude-sonnet",
+                            label: "Claude Sonnet",
+                        },
+                        {
+                            value: "claude-opus",
+                            label: "Claude Opus",
+                        },
+                    ],
+                },
+            ],
+        };
+        useChatStore.setState((state) => ({
+            runtimes: [...state.runtimes, bootstrapRuntime],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "claude-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "claude-acp",
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                const runtimeId = (
+                    args as { input?: { runtime_id?: string } } | undefined
+                )?.input?.runtime_id;
+                return runtimeId === "claude-acp"
+                    ? claudeSession
+                    : sessionPayload;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const bootstrapSelection = {
+            runtimeId: "claude-acp",
+            modelId: "auto",
+            modeId: "default",
+            options: { model: "auto" },
+        };
+        useChatStore
+            .getState()
+            .setConversationTurnSelection(
+                conversationId,
+                bootstrapSelection,
+            );
+        await useChatStore
+            .getState()
+            .prepareConversationTurnCatalog(
+                conversationId,
+                bootstrapSelection,
+            );
+
+        expect(
+            useChatStore.getState().conversationsById[conversationId]
+                ?.preferredSelection,
+        ).toMatchObject({
+            runtimeId: "claude-acp",
+            modelId: "claude-sonnet",
+            options: { model: "claude-sonnet" },
+        });
+        expect(
+            useChatStore.getState().preparedTurnCatalogByConversationId[
+                conversationId
+            ],
+        ).toMatchObject({
+            runtimeId: "claude-acp",
+            modelId: "claude-sonnet",
+            models: [expect.objectContaining({ id: "claude-sonnet" })],
+        });
+        expect(
+            useChatStore
+                .getState()
+                .runtimes.find(
+                    (runtime) => runtime.runtime.id === "claude-acp",
+                )?.models,
+        ).toEqual([
+            expect.objectContaining({ id: "claude-sonnet" }),
+        ]);
+    });
+
+    it("starts the first turn with the live default when discovery has not finished", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const runtimeId = "provider-with-live-default";
+        const liveSession = {
+            session_id: "provider-live-session",
+            runtime_id: runtimeId,
+            model_id: "live-default-model",
+            mode_id: "",
+            status: "idle" as const,
+            models: [
+                {
+                    id: "live-default-model",
+                    runtime_id: runtimeId,
+                    name: "Live Default Model",
+                    description: "The default reported by the ACP.",
+                },
+            ],
+            modes: [],
+            config_options: [],
+        };
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Live Default Provider",
+                        description: "Provider with a runtime-owned default.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [
+                        {
+                            id: "auto",
+                            runtimeId,
+                            name: "Auto",
+                            description: "Bootstrap default.",
+                        },
+                    ],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                [runtimeId]: {
+                    ...readySetupStatusState,
+                    runtimeId,
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                const requestedRuntimeId = (
+                    args as { input?: { runtime_id?: string } } | undefined
+                )?.input?.runtime_id;
+                return requestedRuntimeId === runtimeId
+                    ? liveSession
+                    : sessionPayload;
+            }
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: runtimeId,
+                        session_id: liveSession.session_id,
+                        selection: {
+                            runtime_id: runtimeId,
+                            model_id: "live-default-model",
+                            mode_id: "",
+                            options: {},
+                        },
+                    },
+                });
+                return null;
+            }
+            if (command === "ai_send_message") {
+                return { ...liveSession, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId,
+            modelId: "auto",
+            modeId: "",
+            options: {},
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Start immediately"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_start_conversation_turn",
+            ),
+        ).toHaveLength(1);
+    });
+
     it("persists the selected provider native session before the first message", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
