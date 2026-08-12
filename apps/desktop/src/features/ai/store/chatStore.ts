@@ -9070,47 +9070,21 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         runtime: AIRuntimeDescriptor,
         session: AIChatSession,
         requestedSelection: ConversationSelection,
-        sourceSession: AIChatSession,
     ) {
-        const targetOptionIds = new Set(
-            session.configOptions.map((option) => option.id),
-        );
-        const knownCatalogOptionIds = new Set([
-            ...runtime.configOptions.map((option) => option.id),
-            ...sourceSession.configOptions.map((option) => option.id),
-        ]);
-        const normalizedSelection = {
-            ...requestedSelection,
-            options: Object.fromEntries(
-                Object.entries(requestedSelection.options).filter(
-                    ([optionId]) =>
-                        targetOptionIds.has(optionId) ||
-                        !knownCatalogOptionIds.has(optionId),
-                ),
-            ),
-        };
         if (
             sessionCanApplyConversationSelection(
                 session,
-                normalizedSelection,
+                requestedSelection,
             )
         ) {
-            return normalizedSelection;
+            return requestedSelection;
         }
 
         const descriptorDefault = getDefaultConversationSelection({ runtime });
-        const liveDescriptorDefault = {
-            ...descriptorDefault,
-            options: Object.fromEntries(
-                Object.entries(descriptorDefault.options).filter(
-                    ([optionId]) => targetOptionIds.has(optionId),
-                ),
-            ),
-        };
         if (
             conversationSelectionsEqual(
-                normalizedSelection,
-                liveDescriptorDefault,
+                requestedSelection,
+                descriptorDefault,
             )
         ) {
             // Runtime descriptors are only bootstrap metadata. In particular,
@@ -9121,8 +9095,9 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         }
 
         // Explicit user selections remain strict. The normal configuration
-        // path below will report which requested value is unavailable.
-        return normalizedSelection;
+        // path applies the model first, then reconciles options against the
+        // model-specific catalog returned by the ACP.
+        return requestedSelection;
     }
 
     async function connectCustomConversationBinding(
@@ -9258,7 +9233,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                   runtime,
                   runtimeSession,
                   input.route.selection,
-                  input.sourceSession,
               )
             : input.route.selection;
 
@@ -13344,7 +13318,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         runtime,
                         probeSession,
                         selection,
-                        sourceSession,
                     );
                 // Configure the probe exactly like the eventual turn. Several
                 // ACPs reveal reasoning and service-tier options only after the

@@ -15244,6 +15244,171 @@ describe("chatStore", () => {
         ).toHaveLength(1);
     });
 
+    it("applies an ACP option exposed only after selecting the target model", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const runtimeId = "provider-with-late-model-options";
+        const modelOption = {
+            id: "model",
+            runtime_id: runtimeId,
+            category: "model" as const,
+            label: "Model",
+            type: "select" as const,
+            value: "haiku",
+            options: [
+                { value: "haiku", label: "Haiku" },
+                { value: "opus", label: "Opus" },
+            ],
+        };
+        const effortOption = {
+            id: "effort",
+            runtime_id: runtimeId,
+            category: "reasoning" as const,
+            label: "Effort",
+            type: "select" as const,
+            value: "medium",
+            options: [
+                { value: "medium", label: "Medium" },
+                { value: "high", label: "High" },
+            ],
+        };
+        const models = [
+            {
+                id: "haiku",
+                runtime_id: runtimeId,
+                name: "Haiku",
+                description: "Does not expose effort.",
+            },
+            {
+                id: "opus",
+                runtime_id: runtimeId,
+                name: "Opus",
+                description: "Exposes effort after selection.",
+            },
+        ];
+        const initialSession = {
+            session_id: "late-options-session",
+            runtime_id: runtimeId,
+            model_id: "haiku",
+            mode_id: "",
+            status: "idle" as const,
+            models,
+            modes: [],
+            config_options: [modelOption],
+        };
+        const opusSession = {
+            ...initialSession,
+            model_id: "opus",
+            config_options: [
+                { ...modelOption, value: "opus" },
+                effortOption,
+            ],
+        };
+        const configuredSession = {
+            ...opusSession,
+            config_options: [
+                { ...modelOption, value: "opus" },
+                { ...effortOption, value: "high" },
+            ],
+        };
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Late Options Provider",
+                        description: "Provider with model-specific options.",
+                        capabilities: ["create_session"],
+                    },
+                    models: models.map((model) => ({
+                        id: model.id,
+                        runtimeId,
+                        name: model.name,
+                        description: model.description,
+                    })),
+                    modes: [],
+                    configOptions: [{ ...modelOption, runtimeId }],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                [runtimeId]: {
+                    ...readySetupStatusState,
+                    runtimeId,
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") return initialSession;
+            if (command === "ai_set_config_option") {
+                const input = (args as {
+                    input?: { option_id?: string; value?: string };
+                }).input;
+                if (input?.option_id === "model") return opusSession;
+                if (input?.option_id === "effort") return configuredSession;
+            }
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: runtimeId,
+                        session_id: initialSession.session_id,
+                        selection: {
+                            runtime_id: runtimeId,
+                            model_id: "opus",
+                            mode_id: "",
+                            options: { model: "opus", effort: "high" },
+                        },
+                    },
+                });
+                return null;
+            }
+            if (command === "ai_send_message") {
+                return { ...configuredSession, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId,
+            modelId: "opus",
+            modeId: "",
+            options: { model: "opus", effort: "high" },
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Use high effort"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_set_config_option",
+            ),
+        ).toEqual([
+            [
+                "ai_set_config_option",
+                expect.objectContaining({
+                    input: expect.objectContaining({
+                        option_id: "model",
+                        value: "opus",
+                    }),
+                }),
+            ],
+            [
+                "ai_set_config_option",
+                expect.objectContaining({
+                    input: expect.objectContaining({
+                        option_id: "effort",
+                        value: "high",
+                    }),
+                }),
+            ],
+        ]);
+    });
+
     it("persists the selected provider native session before the first message", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
