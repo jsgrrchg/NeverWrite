@@ -178,8 +178,7 @@ async function main() {
             "--locked",
             "--manifest-path",
             "../../vendor/codex-acp/Cargo.toml",
-            "--bin",
-            "codex-acp",
+            "--bins",
         ],
         codexV8Environment,
     );
