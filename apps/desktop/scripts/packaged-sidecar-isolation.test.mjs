@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { isolateExecutableForSmoke } from "./packaged-sidecar-isolation.mjs";
+import {
+    isolateExecutableForSmoke,
+    removeSmokeTempDirectory,
+} from "./packaged-sidecar-isolation.mjs";
 
 function fileSystemDouble() {
     return {
@@ -62,5 +65,20 @@ describe("packaged sidecar smoke isolation", () => {
 
         expect(fileSystem.copyFile).toHaveBeenCalled();
         expect(fileSystem.chmod).not.toHaveBeenCalled();
+    });
+
+    it("retries temporary directory cleanup for locked Windows files", async () => {
+        const fileSystem = {
+            rm: vi.fn().mockResolvedValue(undefined),
+        };
+
+        await removeSmokeTempDirectory("smoke-temp", { fileSystem });
+
+        expect(fileSystem.rm).toHaveBeenCalledWith("smoke-temp", {
+            recursive: true,
+            force: true,
+            maxRetries: 20,
+            retryDelay: 500,
+        });
     });
 });

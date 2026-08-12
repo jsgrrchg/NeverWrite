@@ -137,6 +137,31 @@ function run(command, args, env = {}) {
     });
 }
 
+function wait(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function runWithRetry(command, args, env = {}, options = {}) {
+    const attempts = options.attempts ?? 3;
+    const retryDelayMs = options.retryDelayMs ?? 5000;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        try {
+            await run(command, args, env);
+            return;
+        } catch (error) {
+            if (attempt === attempts) {
+                throw error;
+            }
+
+            console.warn(
+                `Command failed on attempt ${attempt}/${attempts}; retrying in ${retryDelayMs}ms: ${command} ${args.join(" ")}`,
+            );
+            await wait(retryDelayMs);
+        }
+    }
+}
+
 function buildElectronBuilderArgs(args) {
     const result = ["electron-builder", "--config", "electron-builder.config.mjs"];
 
@@ -189,7 +214,7 @@ await run("npm", [
     "--target",
     rustTarget,
 ]);
-await run(
+await runWithRetry(
     "npx",
     buildElectronBuilderArgs({
         ...args,
