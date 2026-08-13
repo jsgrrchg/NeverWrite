@@ -698,25 +698,15 @@ export function AIProviderModelPicker({
                     {blockedProvider ? (
                         <div
                             aria-live="polite"
-                            className="pointer-events-none absolute bottom-2 left-12 z-20 max-w-64 rounded-md px-2.5 py-2 text-xs leading-snug"
-                            data-testid="provider-selection-blocked-popover"
+                            className="nw-chat-glass-menu pointer-events-none absolute right-2 bottom-2 left-[52px] z-20 rounded-lg px-3 py-2 text-xs leading-snug"
+                            data-testid="provider-selection-blocked-notice"
                             role="status"
                             style={{
-                                backgroundColor: "var(--bg-primary)",
                                 border: "1px solid var(--border)",
-                                boxShadow: "0 8px 24px rgba(0,0,0,0.28)",
+                                boxShadow: "0 8px 24px rgba(0,0,0,0.22)",
                                 color: "var(--text-primary)",
                             }}
                         >
-                            <span
-                                aria-hidden="true"
-                                className="absolute top-1/2 -left-1 size-2 -translate-y-1/2 rotate-45"
-                                style={{
-                                    backgroundColor: "var(--bg-primary)",
-                                    borderBottom: "1px solid var(--border)",
-                                    borderLeft: "1px solid var(--border)",
-                                }}
-                            />
                             {blockedProvider.disabledReason}
                         </div>
                     ) : null}

@@ -269,7 +269,7 @@ describe("AIChatAgentControls", () => {
     await user.click(claudeRail);
 
     expect(
-      screen.getByTestId("provider-selection-blocked-popover"),
+      screen.getByTestId("provider-selection-blocked-notice"),
     ).toHaveTextContent("Start a new chat to use another provider.");
     expect(
       screen.getByRole("button", { name: "Codex · GPT-5" }),
