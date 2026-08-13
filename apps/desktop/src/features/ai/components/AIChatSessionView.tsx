@@ -547,13 +547,15 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         isRemovedGeminiAcpSession ||
         isPendingSessionCreation ||
         Boolean(session.isResumingSession);
+    const conversationStarted =
+        (session?.messages.length ?? 0) > 0 ||
+        (session?.persistedMessageCount ?? 0) > 0;
     const lockIncompatibleModelSwitches =
         turnSelection?.runtimeId === "grok-acp" &&
         conversationBindings.some(
             (binding) => binding.runtimeId === "grok-acp",
         ) &&
-        ((session?.messages.length ?? 0) > 0 ||
-            (session?.persistedMessageCount ?? 0) > 0);
+        conversationStarted;
     const updateTurnSelection = useCallback(
         (selection: ConversationSelection) => {
             if (!conversationId) return;
@@ -1476,6 +1478,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                                     {!isPendingSessionCreation && (
                                         <AIChatAgentControls
                                             disabled={agentControlsDisabled}
+                                            conversationStarted={conversationStarted}
                                             runtimeId={turnSelection?.runtimeId}
                                             lockIncompatibleModelSwitches={
                                                 lockIncompatibleModelSwitches

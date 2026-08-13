@@ -14,6 +14,7 @@ import { useAnchoredChatMenuPosition } from "./useAnchoredChatMenuPosition";
 
 interface AIChatAgentControlsProps {
   disabled?: boolean;
+  conversationStarted?: boolean;
   runtimeId?: string;
   lockIncompatibleModelSwitches?: boolean;
   modelId: string;
@@ -689,6 +690,7 @@ function claudeModelSupportsFastMode(modelId: string) {
 
 export function AIChatAgentControls({
   disabled = false,
+  conversationStarted = false,
   runtimeId,
   lockIncompatibleModelSwitches = false,
   modelId,
@@ -916,6 +918,7 @@ export function AIChatAgentControls({
       {showProviderPicker && runtimeId && onProviderModelChange ? (
         <AIProviderModelPicker
           disabled={disabled}
+          conversationStarted={conversationStarted}
           runtimeId={runtimeId}
           modelId={selectedModelId}
           providers={providerPickerOptions}

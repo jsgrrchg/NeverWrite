@@ -17,6 +17,7 @@ import { useAnchoredChatMenuPosition } from "./useAnchoredChatMenuPosition";
 
 interface AIProviderModelPickerProps {
     disabled?: boolean;
+    conversationStarted?: boolean;
     runtimeId: string;
     modelId: string;
     providers: ConversationProviderPickerOption[];
@@ -168,6 +169,7 @@ function fallbackModels(
 
 export function AIProviderModelPicker({
     disabled = false,
+    conversationStarted = false,
     runtimeId,
     modelId,
     providers,
@@ -404,7 +406,11 @@ export function AIProviderModelPicker({
                         lastFocusedElementRef.current = activeElement;
                     }
                     setSelectedProviderId(
-                        favorites.length > 0 ? FAVORITES_PROVIDER_ID : runtimeId,
+                        conversationStarted
+                            ? runtimeId
+                            : favorites.length > 0
+                              ? FAVORITES_PROVIDER_ID
+                              : runtimeId,
                     );
                     setOpen(true);
                 }}

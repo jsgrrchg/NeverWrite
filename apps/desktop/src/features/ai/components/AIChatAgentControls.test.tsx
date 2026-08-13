@@ -289,7 +289,7 @@ describe("AIChatAgentControls", () => {
     ).toBeInTheDocument();
   });
 
-  it("persists favorite models and opens the favorites rail first", async () => {
+  it("persists favorite models and opens favorites for a new conversation", async () => {
     const user = userEvent.setup();
     renderComponent(
       <AIChatAgentControls
@@ -355,6 +355,72 @@ describe("AIChatAgentControls", () => {
       runtimeId: "codex-acp",
       modelId: "gpt-5-mini",
     });
+  });
+
+  it("opens the active provider for a started conversation", async () => {
+    localStorage.setItem(
+      "neverwrite.ai.provider-model-picker-favorites",
+      JSON.stringify([{ runtimeId: "claude-acp", modelId: "claude-sonnet" }]),
+    );
+    const user = userEvent.setup();
+    renderComponent(
+      <AIChatAgentControls
+        conversationStarted
+        runtimeId="codex-acp"
+        modelId="gpt-5"
+        modeId="default"
+        models={[]}
+        modes={[]}
+        configOptions={[]}
+        providers={[
+          {
+            runtimeId: "codex-acp",
+            label: "Codex",
+            description: "Codex provider",
+            disabledReason: null,
+            defaultModelId: "gpt-5",
+            models: [
+              {
+                modelId: "gpt-5",
+                label: "GPT-5",
+                disabledReason: null,
+              },
+            ],
+          },
+          {
+            runtimeId: "claude-acp",
+            label: "Claude",
+            description: "Claude provider",
+            disabledReason: null,
+            defaultModelId: "claude-sonnet",
+            models: [
+              {
+                modelId: "claude-sonnet",
+                label: "Claude Sonnet",
+                disabledReason: null,
+              },
+            ],
+          },
+        ]}
+        onProviderModelChange={() => {}}
+        onModelChange={() => {}}
+        onModeChange={() => {}}
+        onConfigOptionChange={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByTitle("Provider and model"));
+
+    expect(screen.getByRole("button", { name: "Codex" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: "Codex · GPT-5" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Claude · Claude Sonnet" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows contextual safety help only for Codex Full Access", () => {
