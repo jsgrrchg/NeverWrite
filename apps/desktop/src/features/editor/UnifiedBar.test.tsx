@@ -864,7 +864,7 @@ describe("UnifiedBar tab strip drop", () => {
         });
     });
 
-    it("opens the New Agent submenu and creates a chat for the selected provider", async () => {
+    it("creates a canonical agent directly from the new-tab menu", async () => {
         const user = userEvent.setup();
         type NewSessionFn = ReturnType<typeof useChatStore.getState>["newSession"];
         setEditorTabs([
@@ -919,8 +919,7 @@ describe("UnifiedBar tab strip drop", () => {
         const newAgentButton = await screen.findByRole("button", {
             name: "New Agent",
         });
-        fireEvent.mouseEnter(newAgentButton);
-        await user.click(await screen.findByRole("button", { name: "Claude" }));
+        await user.click(newAgentButton);
 
         await waitFor(() => {
             expect(
@@ -942,7 +941,7 @@ describe("UnifiedBar tab strip drop", () => {
             expect(
                 useChatStore.getState().sessionsById[chatSessionId.sessionId]
                     ?.runtimeId,
-            ).toBe("claude-acp");
+            ).toBe("codex-acp");
         }
     });
 

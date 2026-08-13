@@ -47,6 +47,7 @@ export interface Settings {
     // Terminal
     terminalFontFamily: string;
     terminalFontSize: number; // 8–24
+    claudeCodeEnabled: boolean;
     claudeCodeOptimized: boolean;
     claudeCodeSkipPermissions: boolean;
     claudeCodeModel: string; // "" = Claude Code default
@@ -218,6 +219,7 @@ const defaults: Settings = {
     tabOpenBehavior: "history",
     terminalFontFamily: "",
     terminalFontSize: 13,
+    claudeCodeEnabled: false,
     claudeCodeOptimized: false,
     claudeCodeSkipPermissions: false,
     claudeCodeModel: "",
@@ -565,6 +567,8 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 8,
                 24,
             ),
+            claudeCodeEnabled:
+                parsed.state.claudeCodeEnabled ?? defaults.claudeCodeEnabled,
             claudeCodeOptimized:
                 parsed.state.claudeCodeOptimized ??
                 defaults.claudeCodeOptimized,
@@ -662,6 +666,7 @@ function pickSettings(state: SettingsStore): Settings {
         tabOpenBehavior: state.tabOpenBehavior,
         terminalFontFamily: state.terminalFontFamily,
         terminalFontSize: state.terminalFontSize,
+        claudeCodeEnabled: state.claudeCodeEnabled,
         claudeCodeOptimized: state.claudeCodeOptimized,
         claudeCodeSkipPermissions: state.claudeCodeSkipPermissions,
         claudeCodeModel: state.claudeCodeModel,

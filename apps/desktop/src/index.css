@@ -1631,6 +1631,18 @@ body.dragging-tab * {
     backdrop-filter: blur(12px) saturate(120%);
 }
 
+/* Chat popovers use the same material as the composer dock. Keeping this in a
+   separate class lets portalled menus and controls outside the dock share the
+   tint without inheriting the dock's layout or shadow. */
+.nw-chat-glass-menu {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-secondary) 80%,
+        transparent
+    );
+    backdrop-filter: blur(12px) saturate(120%);
+}
+
 /* The tight negative-spread shadow separates the compact dock without painting
    a false panel above it. The expanded surface already has pane edges. */
 .nw-chat-bottom-dock {
@@ -1639,13 +1651,15 @@ body.dragging-tab * {
 }
 
 @supports not (backdrop-filter: blur(1px)) {
-    .nw-chat-translucent-surface {
+    .nw-chat-translucent-surface,
+    .nw-chat-glass-menu {
         background-color: var(--bg-secondary);
     }
 }
 
 @media (prefers-reduced-transparency: reduce) {
-    .nw-chat-translucent-surface {
+    .nw-chat-translucent-surface,
+    .nw-chat-glass-menu {
         background-color: var(--bg-secondary);
         backdrop-filter: none;
     }

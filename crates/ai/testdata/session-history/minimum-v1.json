@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "session_id": "fixture-minimum-v1",
+  "model_id": "legacy-model",
+  "mode_id": "default",
+  "created_at": 10,
+  "updated_at": 10,
+  "messages": [
+    {
+      "id": "user:legacy",
+      "role": "user",
+      "kind": "text",
+      "content": "Legacy chat",
+      "timestamp": 10
+    }
+  ]
+}

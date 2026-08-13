@@ -25,6 +25,7 @@ pub enum AiConfigOptionCategory {
     Mode,
     Model,
     Reasoning,
+    ServiceTier,
     Other,
 }
 

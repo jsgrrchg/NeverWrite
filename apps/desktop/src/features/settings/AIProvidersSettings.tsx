@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { openUrl } from "@neverwrite/runtime";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import {
     aiGetEnvironmentDiagnostics,
     aiGetSetupStatus,
@@ -69,6 +70,57 @@ function getErrorMessage(error: unknown, fallback: string): string {
     if (error instanceof Error && error.message.trim()) return error.message;
     if (typeof error === "string" && error.trim()) return error;
     return fallback;
+}
+
+function SettingsToggle({
+    value,
+    onChange,
+    disabled = false,
+    label,
+}: {
+    value: boolean;
+    onChange: (value: boolean) => void;
+    disabled?: boolean;
+    label: string;
+}) {
+    return (
+        <button
+            type="button"
+            role="switch"
+            aria-label={label}
+            aria-checked={value}
+            disabled={disabled}
+            onClick={() => onChange(!value)}
+            className="nw-settings-toggle"
+            style={{
+                width: 36,
+                height: 20,
+                borderRadius: 10,
+                border: "none",
+                cursor: disabled ? "not-allowed" : "pointer",
+                backgroundColor: value
+                    ? "var(--accent)"
+                    : "var(--bg-tertiary)",
+                position: "relative",
+                flexShrink: 0,
+                opacity: disabled ? 0.4 : 1,
+            }}
+        >
+            <span
+                style={{
+                    position: "absolute",
+                    top: 2,
+                    left: value ? 18 : 2,
+                    width: 16,
+                    height: 16,
+                    borderRadius: "50%",
+                    backgroundColor: "#fff",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                    transition: "left 0.15s ease",
+                }}
+            />
+        </button>
+    );
 }
 
 function isApiKeyMethod(id?: string) {
@@ -1248,6 +1300,10 @@ export function AIProvidersSettings({
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const defaultRuntimeId = useChatStore((s) => s.defaultRuntimeId);
     const setDefaultRuntime = useChatStore((s) => s.setDefaultRuntime);
+    const claudeCodeEnabled = useSettingsStore(
+        (s) => s.claudeCodeEnabled,
+    );
+    const setSetting = useSettingsStore((s) => s.setSetting);
     const refreshRuntimeCatalog = useChatStore(
         (s) => s.refreshRuntimeCatalog,
     );
@@ -1669,6 +1725,7 @@ export function AIProvidersSettings({
     // Providers available to be set as default and ready to start a session.
     const selectableProviders = runtimes
         .filter((runtime) =>
+            runtime.runtime.id !== CLAUDE_TERMINAL_RUNTIME_ID &&
             setupStatusMap[runtime.runtime.id]?.authReady === true &&
             !setupStatusMap[runtime.runtime.id]?.onboardingRequired,
         )
@@ -1681,12 +1738,22 @@ export function AIProvidersSettings({
         selectableProviders.length > 0 &&
         matchesSettingsSearch(
             searchQuery,
-            "Default agent",
+            "Default provider",
             "Default",
             "Agent",
             "Provider",
-            "Claude Code",
             ...selectableProviders.flatMap((p) => [p.name, p.id]),
+        );
+    const claudeCodeInstalled =
+        setupStatusMap[CLAUDE_TERMINAL_RUNTIME_ID]?.authReady === true;
+    const showClaudeCodeIntegration =
+        !isLoading &&
+        matchesSettingsSearch(
+            searchQuery,
+            "Claude Code integration",
+            "Enable Claude Code for this vault",
+            "Terminal",
+            "Agent menu",
         );
 
     const handleCustomCatalogChanged = useCallback(async () => {
@@ -1696,7 +1763,77 @@ export function AIProvidersSettings({
 
     return (
         <>
-            {/* ── Default agent ── */}
+            {showClaudeCodeIntegration && (
+                <>
+                    <div
+                        style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            color: "var(--text-secondary)",
+                            paddingBottom: 6,
+                        }}
+                    >
+                        Claude Code integration
+                    </div>
+                    <div
+                        style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                            overflow: "hidden",
+                            marginBottom: 24,
+                            backgroundColor: "var(--bg-secondary)",
+                        }}
+                    >
+                        <div
+                            style={{
+                                padding: 14,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 16,
+                            }}
+                        >
+                            <div style={{ minWidth: 0 }}>
+                                <div
+                                    style={{
+                                        fontSize: 12,
+                                        fontWeight: 600,
+                                        color: "var(--text-primary)",
+                                    }}
+                                >
+                                    Enable Claude Code for this vault
+                                </div>
+                                <div
+                                    style={{
+                                        marginTop: 4,
+                                        fontSize: 11,
+                                        lineHeight: 1.45,
+                                        color: "var(--text-secondary)",
+                                    }}
+                                >
+                                    {claudeCodeInstalled
+                                        ? "Adds Claude Code as an explicit option when creating an agent."
+                                        : "Install Claude Code to enable this integration."}
+                                </div>
+                            </div>
+                            <SettingsToggle
+                                label="Enable Claude Code for this vault"
+                                value={claudeCodeEnabled}
+                                disabled={
+                                    !claudeCodeInstalled && !claudeCodeEnabled
+                                }
+                                onChange={(value) =>
+                                    setSetting("claudeCodeEnabled", value)
+                                }
+                            />
+                        </div>
+                    </div>
+                </>
+            )}
+
+            {/* ── Default provider ── */}
             {showDefaultSection && (
                 <>
                     <div
@@ -1709,7 +1846,7 @@ export function AIProvidersSettings({
                             paddingBottom: 6,
                         }}
                     >
-                        Default agent
+                        Default provider
                     </div>
                     <div
                         style={{
@@ -1733,17 +1870,14 @@ export function AIProvidersSettings({
                                     lineHeight: 1.5,
                                 }}
                             >
-                                The default agent opens when you start a new chat
-                                or use{" "}
+                                The default provider opens when you create a new
+                                agent or use{" "}
                                 <strong style={{ color: "var(--text-primary)" }}>
                                     Add to chat
                                 </strong>{" "}
-                                from the file tree. Select{" "}
-                                <strong style={{ color: "var(--text-primary)" }}>
-                                    Claude Code
-                                </strong>{" "}
-                                to route notes and files directly into a terminal
-                                session — no API key required.
+                                from the file tree. You can choose another
+                                provider until the new chat sends its first
+                                message.
                             </p>
                             <select
                                 value={defaultRuntimeId ?? ""}
@@ -1771,26 +1905,9 @@ export function AIProvidersSettings({
                                 {selectableProviders.map((p) => (
                                     <option key={p.id} value={p.id}>
                                         {p.name}
-                                        {p.id === CLAUDE_TERMINAL_RUNTIME_ID
-                                            ? " — terminal (no API key)"
-                                            : ""}
                                     </option>
                                 ))}
                             </select>
-                            {defaultRuntimeId === CLAUDE_TERMINAL_RUNTIME_ID && (
-                                <p
-                                    style={{
-                                        fontSize: 11,
-                                        color: "var(--text-secondary)",
-                                        margin: "8px 0 0",
-                                        lineHeight: 1.4,
-                                    }}
-                                >
-                                    Claude Code will open in a new terminal tab.
-                                    Attached files appear as @mentions in the
-                                    input — add your question and press Enter.
-                                </p>
-                            )}
                         </div>
                     </div>
                 </>
@@ -2030,49 +2147,6 @@ export function AIProvidersSettings({
                                             )}
 
                                             {/* Expanded content — not shown for terminal runtime */}
-                                            {!isTerminalRuntime &&
-                                                isExpanded &&
-                                                provider.id === "claude-acp" && (
-                                                    <div
-                                                        style={{
-                                                            padding:
-                                                                "10px 14px",
-                                                            fontSize: 11,
-                                                            color: "var(--text-secondary)",
-                                                            borderTop:
-                                                                "1px solid var(--border)",
-                                                            lineHeight: 1.5,
-                                                        }}
-                                                    >
-                                                        <strong
-                                                            style={{
-                                                                color: "var(--text-primary)",
-                                                            }}
-                                                        >
-                                                            Claude subscription
-                                                        </strong>{" "}
-                                                        authentication only
-                                                        works with{" "}
-                                                        <strong
-                                                            style={{
-                                                                color: "var(--text-primary)",
-                                                            }}
-                                                        >
-                                                            Claude Code
-                                                        </strong>{" "}
-                                                        in the terminal. To use
-                                                        this provider, configure
-                                                        an{" "}
-                                                        <strong
-                                                            style={{
-                                                                color: "var(--text-primary)",
-                                                            }}
-                                                        >
-                                                            Anthropic API key
-                                                        </strong>{" "}
-                                                        below.
-                                                    </div>
-                                                )}
                                             {!isTerminalRuntime && isExpanded &&
                                                 (provider.setupStatus ? (
                                                     <ProviderExpandedPanel

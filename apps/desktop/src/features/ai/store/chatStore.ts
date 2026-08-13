@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { create, type StateCreator } from "zustand";
 import { confirm, openUrl } from "@neverwrite/runtime";
 import {
     normalizeEditorFontFamily,
@@ -20,6 +20,7 @@ import {
     aiListSessions,
     aiListRuntimes,
     aiResumeRuntimeSession,
+    aiLoadRuntimeSession,
     aiLoadSession,
     aiLoadSessionHistoryPage,
     aiLoadSessionHistories,
@@ -31,6 +32,7 @@ import {
     aiSaveSessionHistory,
     aiSendMessage,
     aiStartAuth,
+    aiStartConversationTurn,
     aiSetConfigOption,
     aiSetMode,
     aiSetModel,
@@ -131,6 +133,9 @@ import {
     type AIChatNoteSummary,
     type AIChatRole,
     type AIChatSession,
+    type AIConversation,
+    type AcpConversationBinding,
+    type AcpContextHandoffMetadata,
     type AIClaudeProviderRouting,
     type AIComposerPart,
     type DraftAttachmentId,
@@ -156,8 +161,42 @@ import {
     type ManagedAttachmentId,
     type QueuedChatMessage,
     type QueuedChatMessageStatus,
+    type ConversationSelection,
+    type ConversationTurnProvenance,
 } from "../types";
+import {
+    ACP_HANDOFF_PROMPT_HEADER,
+    buildAcpContextHandoff,
+    extractAcpContextHandoffUserMessage,
+    isAcpContextHandoffPrompt,
+} from "../contextHandoff";
 import { isCancellableChatTurnStatus } from "../chatTurnStatus";
+import {
+    planConversationTurnRoute,
+    type ConversationTurnRoute,
+} from "../conversationTurnRouting";
+import {
+    getDefaultConversationSelection,
+    type PreparedConversationTurnCatalog,
+} from "../conversationPickerModel";
+import {
+    deserializeConversationBindings,
+    forkConversationBindings,
+    getConversationSelection,
+    getConversationProviderSelectionBlocker,
+    hasConversationHistory,
+    serializeConversationBindings,
+    updateConversationBindingsFromLegacySession,
+} from "../conversationModel";
+import {
+    createConversationScopedValueResolver,
+    hasSameCanonicalSessionTopology,
+    projectCanonicalConversationContentUpdate,
+    projectChatStoreToCanonical,
+    projectSessionMapToConversations,
+    resolveConversationId,
+    resolveLegacySessionId,
+} from "./chatStoreConversationProjection";
 import {
     getLastTranscriptMessage,
     getSessionTranscriptLength,
@@ -682,6 +721,24 @@ function getRuntimeHistorySessionId(session: AIChatSession) {
         session.historySessionId ||
         getPersistedHistorySessionId(session.sessionId) ||
         session.sessionId
+    );
+}
+
+function getLiveRuntimeSessionId(session: AIChatSession) {
+    return session.runtimeSessionId?.trim() || session.sessionId;
+}
+
+function getRuntimeResumeSessionId(session: AIChatSession) {
+    const bindings = session.conversationBindings;
+    const activeBinding = bindings?.providerBindings.find(
+        (binding) => binding.bindingId === bindings.activeBindingId,
+    );
+    return (
+        (activeBinding?.runtimeId === session.runtimeId
+            ? activeBinding.runtimeSessionId?.trim()
+            : null) ||
+        session.runtimeSessionId?.trim() ||
+        getRuntimeHistorySessionId(session)
     );
 }
 
@@ -1550,6 +1607,17 @@ interface ChatStore {
     runtimeConnectionByRuntimeId: Record<string, AIRuntimeConnectionState>;
     setupStatusByRuntimeId: Record<string, AIRuntimeSetupStatus>;
     runtimes: AIRuntimeDescriptor[];
+    preparedTurnCatalogByConversationId: Record<
+        string,
+        PreparedConversationTurnCatalog
+    >;
+    /** Canonical chat authority. AIChatSession below is a compatibility view. */
+    conversationsById: Record<string, AIConversation>;
+    bindingsById: Record<string, AcpConversationBinding>;
+    conversationOrder: string[];
+    activeConversationId: string | null;
+    conversationIdBySessionRef: Record<string, string>;
+    sessionIdByConversationId: Record<string, string>;
     sessionsById: Record<string, AIChatSession>;
     sessionOrder: string[];
     pendingAvailableCommandsBySessionId: Record<
@@ -1577,12 +1645,25 @@ interface ChatStore {
     screenshotRetentionSeconds: number;
     toolActivityDisplayMode: ActivityDisplayMode;
     composerPartsBySessionId: Record<string, AIComposerPart[]>;
+    composerPartsByConversationId: Record<string, AIComposerPart[]>;
     queuedMessagesBySessionId: Record<string, QueuedChatMessage[]>;
+    queuedMessagesByConversationId: Record<string, QueuedChatMessage[]>;
     queuedMessageEditBySessionId: Record<string, QueuedMessageEditState>;
+    queuedMessageEditByConversationId: Record<string, QueuedMessageEditState>;
     activeQueuedMessageBySessionId: Record<string, DeferredQueuedMessage>;
+    activeQueuedMessageByConversationId: Record<
+        string,
+        DeferredQueuedMessage
+    >;
     pausedQueueBySessionId: Record<string, PausedQueueState>;
+    pausedQueueByConversationId: Record<string, PausedQueueState>;
     interruptedTurnStateBySessionId: Record<string, InterruptedTurnState>;
+    interruptedTurnStateByConversationId: Record<
+        string,
+        InterruptedTurnState
+    >;
     tokenUsageBySessionId: Record<string, AITokenUsage>;
+    tokenUsageByConversationId: Record<string, AITokenUsage>;
     initialize: (options?: {
         createDefaultSession?: boolean;
     }) => Promise<ChatInitializationResult>;
@@ -1710,6 +1791,18 @@ interface ChatStore {
         sessionId?: string,
     ) => Promise<void>;
     setComposerParts: (parts: AIComposerPart[], sessionId?: string) => void;
+    setConversationTurnSelection: (
+        conversationId: string,
+        selection: ConversationSelection,
+    ) => void;
+    prepareConversationTurnCatalog: (
+        conversationId: string,
+        selection: ConversationSelection,
+    ) => Promise<void>;
+    startConversationTurn: (
+        conversationId: string,
+        selection: ConversationSelection,
+    ) => Promise<void>;
     sendMessage: (sessionId?: string) => Promise<void>;
     enqueueMessage: (sessionId: string, item: QueuedChatMessage) => void;
     removeQueuedMessage: (sessionId: string, messageId: string) => void;
@@ -2132,28 +2225,37 @@ function appendSessionMessage(session: AIChatSession, message: AIChatMessage) {
     const normalized = ensurePersistedTranscriptWindowAnchor(
         normalizeSessionTranscript(session),
     );
-    const nextMessages = [...normalized.messages, message];
+    const attributedMessage =
+        message.turnProvenance || !normalized.activeTurnProvenance
+            ? message
+            : {
+                  ...message,
+                  turnProvenance: normalized.activeTurnProvenance,
+              };
+    const nextMessages = [...normalized.messages, attributedMessage];
 
     return {
         ...normalized,
         messages: nextMessages,
-        messageOrder: [...normalized.messageOrder!, message.id],
+        messageOrder: [...normalized.messageOrder!, attributedMessage.id],
         messagesById: {
             ...normalized.messagesById!,
-            [message.id]: message,
+            [attributedMessage.id]: attributedMessage,
         },
         messageIndexById: {
             ...normalized.messageIndexById!,
-            [message.id]: nextMessages.length - 1,
+            [attributedMessage.id]: nextMessages.length - 1,
         },
-        lastAssistantMessageId: isAssistantTextMessage(message)
-            ? message.id
+        lastAssistantMessageId: isAssistantTextMessage(attributedMessage)
+            ? attributedMessage.id
             : (normalized.lastAssistantMessageId ?? null),
-        lastTurnStartedMessageId: isTurnStartedStatusMessage(message)
-            ? message.id
+        lastTurnStartedMessageId: isTurnStartedStatusMessage(
+            attributedMessage,
+        )
+            ? attributedMessage.id
             : (normalized.lastTurnStartedMessageId ?? null),
-        activePlanMessageId: isIncompletePlanMessage(message)
-            ? message.id
+        activePlanMessageId: isIncompletePlanMessage(attributedMessage)
+            ? attributedMessage.id
             : (normalized.activePlanMessageId ?? null),
     };
 }
@@ -2750,18 +2852,11 @@ function findMostRecentSessionIdForRuntime(
     );
 }
 
-const RESUME_CONTEXT_PROMPT_HEADER =
-    "Use the saved transcript below as prior conversation context for this session.";
-const SAVED_TRANSCRIPT_MARKER = "Saved transcript:";
-const NEW_USER_MESSAGE_MARKER = "New user message:";
+const RESUME_CONTEXT_PROMPT_HEADER = ACP_HANDOFF_PROMPT_HEADER;
 const ATTACHED_SELECTION_OPEN_TAG = "<attached_selection";
 
 function isResumeContextPromptText(text: string) {
-    return (
-        text.includes(RESUME_CONTEXT_PROMPT_HEADER) &&
-        text.includes(SAVED_TRANSCRIPT_MARKER) &&
-        text.includes(NEW_USER_MESSAGE_MARKER)
-    );
+    return isAcpContextHandoffPrompt(text);
 }
 
 function isPotentialResumeContextPromptText(text: string) {
@@ -2773,9 +2868,7 @@ function isPotentialResumeContextPromptText(text: string) {
 }
 
 function extractResumeContextNewUserMessage(text: string) {
-    const index = text.lastIndexOf(NEW_USER_MESSAGE_MARKER);
-    if (index < 0) return null;
-    return text.slice(index + NEW_USER_MESSAGE_MARKER.length).trim();
+    return extractAcpContextHandoffUserMessage(text);
 }
 
 function hasAttachedSelectionMarkup(text: string) {
@@ -2801,56 +2894,287 @@ function sanitizePersistedDisplayText(value?: string | null) {
         : value;
 }
 
-function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
-    if (!session.resumeContextPending) {
-        return prompt;
+function buildPromptWithContextHandoff(
+    session: AIChatSession,
+    prompt: string,
+    binding: AcpConversationBinding | null,
+    reason: ConversationTurnRoute["startReason"],
+    required: boolean,
+) {
+    if (!required) {
+        return { prompt, contextHandoff: undefined };
     }
 
-    const history = getSessionTranscriptMessages(session)
-        .filter((message) => !message.inProgress)
-        .filter(
-            (message) =>
-                message.kind !== "permission" &&
-                message.kind !== "plan" &&
-                message.kind !== "user_input_request" &&
-                message.kind !== "url_elicitation_request" &&
-                message.kind !== "status",
-        )
-        .filter((message) => !isInternalRuntimeUserEchoMessage(message))
-        .map((message) => {
-            const role =
-                message.role === "assistant"
-                    ? "Assistant"
-                    : message.role === "system"
-                      ? "System"
-                      : "User";
-            const label =
-                message.kind === "text"
-                    ? role
-                    : `${role} (${message.kind.replaceAll("_", " ")})`;
-            return `${label}: ${message.content}`.trim();
-        })
-        .filter(Boolean)
-        .join("\n\n");
+    const bindings = updateConversationBindingsFromLegacySession(session);
+    const result = buildAcpContextHandoff({
+        messages: getSessionTranscriptMessages(session),
+        newUserMessage: prompt,
+        bindingId: binding?.bindingId ?? null,
+        contextCursor: binding?.contextCursor ?? null,
+        contextSummary: bindings.contextSummary,
+        reason,
+    });
 
-    if (!history) {
-        return prompt;
+    return {
+        prompt: result.prompt,
+        contextHandoff: result.hasHandoff ? result.metadata : undefined,
+    };
+}
+
+function createTurnBinding(
+    conversationId: string,
+    runtimeSession: AIChatSession,
+    existing: AcpConversationBinding | null,
+    capabilities: readonly string[],
+) {
+    const now = Date.now();
+    const selection = getConversationSelection(runtimeSession);
+    return {
+        bindingId:
+            existing?.bindingId ??
+            `binding:${encodeURIComponent(conversationId)}:${encodeURIComponent(runtimeSession.runtimeId)}:${crypto.randomUUID()}`,
+        conversationId,
+        runtimeId: runtimeSession.runtimeId,
+        runtimeDisplayName: runtimeSession.runtimeDisplayName ?? null,
+        runtimeRevision: runtimeSession.runtimeRevision ?? null,
+        runtimeLaunchFingerprint:
+            runtimeSession.runtimeLaunchFingerprint ?? null,
+        runtimeSessionId: getLiveRuntimeSessionId(runtimeSession),
+        continuationStrategy: runtimeSession.continuationStrategy ?? null,
+        capabilities: [...capabilities],
+        modelId: selection.modelId,
+        modeId: selection.modeId,
+        options: { ...selection.options },
+        models: runtimeSession.models,
+        modes: runtimeSession.modes,
+        configOptions: runtimeSession.configOptions,
+        availableCommands: runtimeSession.availableCommands,
+        effortsByModel: runtimeSession.effortsByModel ?? {},
+        runtimeState: runtimeSession.runtimeState ?? "live",
+        contextCursor: existing?.contextCursor ?? null,
+        contextGeneration: existing?.contextGeneration ?? 0,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+    } satisfies AcpConversationBinding;
+}
+
+function commitAcceptedConversationTurn(input: {
+    sourceSession: AIChatSession;
+    acceptedRuntimeSession: AIChatSession;
+    route: ConversationTurnRoute;
+    targetBinding: AcpConversationBinding;
+    contextHandoff?: AcpContextHandoffMetadata;
+    userMessageId: string;
+}) {
+    const bindings = updateConversationBindingsFromLegacySession(
+        input.sourceSession,
+    );
+    const acceptedSelection = getConversationSelection(
+        input.acceptedRuntimeSession,
+    );
+    const completedEventCursor = findCompletedConversationTurnCursor(
+        input.sourceSession,
+        input.userMessageId,
+    );
+    const contextCursor =
+        completedEventCursor ??
+        (input.contextHandoff?.bindingId === input.targetBinding.bindingId
+            ? (input.contextHandoff.nextCursor ??
+              input.targetBinding.contextCursor)
+            : input.targetBinding.contextCursor);
+    const targetBinding: AcpConversationBinding = {
+        ...input.targetBinding,
+        runtimeDisplayName:
+            input.acceptedRuntimeSession.runtimeDisplayName ??
+            input.targetBinding.runtimeDisplayName,
+        runtimeRevision:
+            input.acceptedRuntimeSession.runtimeRevision ??
+            input.targetBinding.runtimeRevision,
+        runtimeLaunchFingerprint:
+            input.acceptedRuntimeSession.runtimeLaunchFingerprint ??
+            input.targetBinding.runtimeLaunchFingerprint,
+        runtimeSessionId:
+            input.acceptedRuntimeSession.runtimeSessionId ??
+            input.targetBinding.runtimeSessionId,
+        continuationStrategy:
+            input.acceptedRuntimeSession.continuationStrategy ??
+            input.targetBinding.continuationStrategy,
+        modelId: acceptedSelection.modelId,
+        modeId: acceptedSelection.modeId,
+        options: { ...acceptedSelection.options },
+        models: input.acceptedRuntimeSession.models,
+        modes: input.acceptedRuntimeSession.modes,
+        configOptions: input.acceptedRuntimeSession.configOptions,
+        availableCommands: input.acceptedRuntimeSession.availableCommands,
+        effortsByModel:
+            input.acceptedRuntimeSession.effortsByModel ??
+            input.targetBinding.effortsByModel,
+        runtimeState: "live",
+        contextCursor,
+        updatedAt: Date.now(),
+    };
+    const conversationBindings = {
+        ...bindings,
+        revision: bindings.revision + 1,
+        preferredSelection: acceptedSelection,
+        activeBindingId: targetBinding.bindingId,
+        providerBindings: [targetBinding],
+    };
+    const provenance = createConversationTurnProvenance(
+        targetBinding,
+        input.route,
+        input.contextHandoff,
+    );
+    const attributedSource = attributeConversationTurnMessages(
+        input.sourceSession,
+        input.userMessageId,
+        provenance,
+    );
+
+    return replaceSessionTranscript(
+        {
+            ...attributedSource,
+            ...input.acceptedRuntimeSession,
+            historySessionId: attributedSource.historySessionId,
+            runtimeSessionId: getLiveRuntimeSessionId(
+                input.acceptedRuntimeSession,
+            ),
+            parentSessionId: attributedSource.parentSessionId ?? null,
+            vaultPath: attributedSource.vaultPath ?? null,
+            customTitle: attributedSource.customTitle ?? null,
+            persistedTitle: attributedSource.persistedTitle ?? null,
+            persistedPreview: attributedSource.persistedPreview ?? null,
+            persistedCreatedAt: attributedSource.persistedCreatedAt ?? null,
+            persistedUpdatedAt: attributedSource.persistedUpdatedAt ?? null,
+            persistedMessageCount:
+                attributedSource.persistedMessageCount ??
+                getSessionTranscriptLength(attributedSource),
+            loadedPersistedMessageStart:
+                attributedSource.loadedPersistedMessageStart ?? 0,
+            attachments: attributedSource.attachments,
+            activeWorkCycleId: attributedSource.activeWorkCycleId ?? null,
+            visibleWorkCycleId: attributedSource.visibleWorkCycleId ?? null,
+            actionLog: attributedSource.actionLog,
+            isPersistedSession: false,
+            isResumingSession: false,
+            resumeContextPending: false,
+            runtimeState: "live",
+            status:
+                completedEventCursor != null
+                    ? "idle"
+                    : input.acceptedRuntimeSession.status,
+            conversationBindings,
+            activeTurnProvenance:
+                completedEventCursor != null ? null : provenance,
+        },
+        getSessionTranscriptMessages(attributedSource),
+    );
+}
+
+function createConversationTurnProvenance(
+    binding: AcpConversationBinding,
+    route: ConversationTurnRoute,
+    contextHandoff?: AcpContextHandoffMetadata,
+): ConversationTurnProvenance {
+    return {
+        bindingId: binding.bindingId,
+        runtimeId: binding.runtimeId,
+        runtimeSessionId: binding.runtimeSessionId,
+        modelId: binding.modelId,
+        modeId: binding.modeId,
+        options: { ...binding.options },
+        startReason: route.startReason,
+        handoffTruncated: contextHandoff?.truncated ?? false,
+        handoffOmittedTurnCount: contextHandoff?.omittedTurnCount ?? 0,
+    };
+}
+
+function findCompletedConversationTurnCursor(
+    session: AIChatSession,
+    userMessageId: string,
+) {
+    const messages = getSessionTranscriptMessages(session);
+    const turnStartIndex = messages.findIndex(
+        (message) => message.id === userMessageId,
+    );
+    if (turnStartIndex < 0) return null;
+    return (
+        messages
+            .slice(turnStartIndex + 1)
+            .reverse()
+            .find(
+                (message) =>
+                    message.role === "assistant" &&
+                    message.kind === "text" &&
+                    message.inProgress === false,
+            )?.id ?? null
+    );
+}
+
+function attributeConversationTurnMessages(
+    session: AIChatSession,
+    userMessageId: string,
+    provenance: ConversationTurnProvenance,
+) {
+    let reachedTurn = false;
+    const messages = getSessionTranscriptMessages(session).map((message) => {
+        if (message.id === userMessageId) reachedTurn = true;
+        return reachedTurn && !message.turnProvenance
+            ? { ...message, turnProvenance: provenance }
+            : message;
+    });
+    return replaceSessionTranscript(session, messages);
+}
+
+function removeConversationTurnMessages(
+    session: AIChatSession,
+    userMessageId: string,
+) {
+    const messages = getSessionTranscriptMessages(session);
+    const turnStartIndex = messages.findIndex(
+        (message) => message.id === userMessageId,
+    );
+    return turnStartIndex < 0
+        ? session
+        : replaceSessionTranscript(session, messages.slice(0, turnStartIndex));
+}
+
+function completeActiveBindingTurn(
+    session: AIChatSession,
+    messageId: string,
+) {
+    const bindings = updateConversationBindingsFromLegacySession(session);
+    const activeBindingId =
+        session.activeTurnProvenance?.bindingId ?? bindings.activeBindingId;
+    if (!activeBindingId) {
+        return { ...session, activeTurnProvenance: null };
     }
-
-    return [
-        "Use the saved transcript below as prior conversation context for this session.",
-        "",
-        "Important:",
-        "- The transcript is historical context only and may not reflect the current workspace state.",
-        "- If the transcript conflicts with the current files, current environment, or the user's latest message, trust the current state.",
-        "- Do not assume prior pending tasks, approvals, permissions, or unfinished plans are still valid; verify when needed.",
-        "- Continue naturally from this context without repeating the transcript unless it is useful.",
-        "",
-        "Saved transcript:",
-        history,
-        "",
-        `New user message: ${prompt}`,
-    ].join("\n");
+    let changed = false;
+    const providerBindings = bindings.providerBindings.map((binding) => {
+        if (
+            binding.bindingId !== activeBindingId ||
+            binding.contextCursor === messageId
+        ) {
+            return binding;
+        }
+        changed = true;
+        return {
+            ...binding,
+            contextCursor: messageId,
+            updatedAt: Date.now(),
+        };
+    });
+    return {
+        ...session,
+        activeTurnProvenance: null,
+        conversationBindings: changed
+            ? {
+                  ...bindings,
+                  revision: bindings.revision + 1,
+                  providerBindings,
+              }
+            : bindings,
+    };
 }
 
 function cloneAttachment(attachment: AIChatAttachment): AIChatAttachment {
@@ -3217,6 +3541,17 @@ function migrateSessionLocalState(
     return true;
 }
 
+function normalizeResumedSessionWorkCycle(
+    session: AIChatSession,
+    visibleWorkCycleId: string | null | undefined,
+): AIChatSession {
+    return {
+        ...session,
+        activeWorkCycleId: null,
+        visibleWorkCycleId: visibleWorkCycleId ?? null,
+    };
+}
+
 function registerOpenEditorBaselines(sessionId: string) {
     const session = useChatStore.getState().sessionsById[sessionId];
     if (!session || !isLiveRuntimeSession(session)) {
@@ -3245,6 +3580,7 @@ function registerOpenEditorBaselines(sessionId: string) {
 function buildQueuedMessage(
     session: AIChatSession,
     composerParts: AIComposerPart[],
+    selection: ConversationSelection,
 ): QueuedChatMessage | null {
     const composerPartsSnapshot = cloneComposerParts(composerParts);
     const content = serializeComposerParts(composerParts).trim();
@@ -3296,16 +3632,15 @@ function buildQueuedMessage(
     return {
         id: crypto.randomUUID(),
         content,
-        prompt: buildPromptWithResumeContext(session, prompt),
+        prompt,
         composerParts: composerPartsSnapshot,
         attachments,
         createdAt: Date.now(),
         status: "queued",
-        modelId: session.modelId ?? null,
-        modeId: session.modeId ?? null,
-        optionsSnapshot: Object.fromEntries(
-            session.configOptions.map((option) => [option.id, option.value]),
-        ),
+        runtimeId: selection.runtimeId,
+        modelId: selection.modelId ?? null,
+        modeId: selection.modeId ?? null,
+        optionsSnapshot: { ...selection.options },
     };
 }
 
@@ -5845,9 +6180,8 @@ function needsFullResumeContextTranscript(session: AIChatSession) {
     );
 }
 
-function isCustomRuntimeTranscriptFork(session: AIChatSession) {
+function isTranscriptForkSession(session: AIChatSession) {
     return (
-        session.runtimeId.startsWith("custom:") &&
         session.continuationStrategy === "new_session_only" &&
         !session.runtimeSessionId?.trim()
     );
@@ -5977,6 +6311,11 @@ function applyPersistedHistoryMetadata(
             persistedPreview: sanitizePersistedDisplayText(history.preview),
             persistedMessageCount,
             loadedPersistedMessageStart,
+            conversationBindings: history.conversation_bindings
+                ? deserializeConversationBindings(
+                      history.conversation_bindings,
+                  )
+                : nextSession.conversationBindings,
         },
         persistedCatalog,
     );
@@ -6137,6 +6476,11 @@ function createPersistedSession(
                         )
                       : null,
             isLoadingPersistedMessages: false,
+            conversationBindings: history.conversation_bindings
+                ? deserializeConversationBindings(
+                      history.conversation_bindings,
+                  )
+                : undefined,
         },
         runtime,
     );
@@ -6530,7 +6874,7 @@ function getSelectableDefaultRuntimeId(
     runtimes: AIRuntimeDescriptor[],
     setupStatusByRuntimeId?: Record<string, AIRuntimeSetupStatus>,
 ) {
-    if (!runtimeId) return null;
+    if (!runtimeId || isClaudeTerminalRuntimeId(runtimeId)) return null;
     if (!runtimes.some((runtime) => runtime.runtime.id === runtimeId)) {
         return null;
     }
@@ -6560,10 +6904,11 @@ function getResumeRecoveryStrategy(
     runtimes: AIRuntimeDescriptor[],
     session: AIChatSession,
 ): ResumeRecoveryStrategy {
+    if (isTranscriptForkSession(session)) {
+        return "transcript_prompt_injection";
+    }
     if (session.runtimeId.startsWith("custom:")) {
-        return isCustomRuntimeTranscriptFork(session)
-            ? "transcript_prompt_injection"
-            : "custom_acp_continuation";
+        return "custom_acp_continuation";
     }
     return runtimeSupportsCapability(
         runtimes,
@@ -6585,17 +6930,93 @@ function logResumeRecovery(
     event: "started" | "succeeded" | "failed",
     payload: {
         resume_strategy: ResumeRecoveryStrategy;
-        history_session_id: string;
         runtime_id: string;
         persisted_message_count: number;
         loaded_persisted_message_start: number | null;
         resume_context_pending: boolean;
         runtime_state_before: string;
         runtime_state_after: string;
-        error_message?: string;
+        error_code?: CanonicalConversationErrorCode;
     },
 ) {
-    logDebug("chat-store", `saved chat recovery ${event}`, payload);
+    logCanonicalConversationDiagnostic(`saved chat recovery ${event}`, payload);
+}
+
+type CanonicalConversationErrorCode =
+    | "authentication_required"
+    | "provider_unavailable"
+    | "runtime_configuration_invalid"
+    | "runtime_disconnected"
+    | "transcript_unavailable"
+    | "turn_rejected"
+    | "unexpected";
+
+function getCanonicalConversationErrorCode(
+    message: string,
+    runtimeId?: string | null,
+): CanonicalConversationErrorCode {
+    if (isRuntimeSessionDisconnectedErrorMessage(message)) {
+        return "runtime_disconnected";
+    }
+    if (isAuthenticationErrorMessage(message, runtimeId)) {
+        return "authentication_required";
+    }
+    const normalized = message.toLowerCase();
+    if (normalized.includes("configuration is invalid")) {
+        return "runtime_configuration_invalid";
+    }
+    if (
+        normalized.includes("transcript") &&
+        (normalized.includes("failed to load") ||
+            normalized.includes("unavailable"))
+    ) {
+        return "transcript_unavailable";
+    }
+    if (
+        normalized.includes("provider is unavailable") ||
+        normalized.includes("runtime is no longer available")
+    ) {
+        return "provider_unavailable";
+    }
+    if (normalized.includes("rejected")) {
+        return "turn_rejected";
+    }
+    return "unexpected";
+}
+
+function logCanonicalConversationDiagnostic(
+    message: string,
+    detail: Record<string, unknown>,
+) {
+    _canonicalConversationLogSequence += 1;
+    logDebug("chat-store", message, detail, {
+        onceKey: `canonical-conversation:${_canonicalConversationLogSequence}`,
+    });
+}
+
+function registerPendingConversationTurnEventRoute(
+    sourceSessionId: string,
+    targetSessionId: string,
+) {
+    if (sourceSessionId === targetSessionId) return null;
+    const token = crypto.randomUUID();
+    _pendingConversationTurnEventRouteBySessionId.set(targetSessionId, {
+        sourceSessionId,
+        token,
+    });
+    return token;
+}
+
+function clearPendingConversationTurnEventRoute(
+    targetSessionId: string,
+    token: string,
+) {
+    if (
+        _pendingConversationTurnEventRouteBySessionId.get(targetSessionId)
+            ?.token === token
+    ) {
+        _pendingConversationTurnEventRouteBySessionId.delete(targetSessionId);
+    }
 }
 
 function getRuntimeReadyButDisabledMessage(
@@ -6662,11 +7083,44 @@ function getSetupStatusForRuntime(
 }
 
 function touchSessionOrder(sessionOrder: string[], sessionId: string) {
+    if (sessionOrder[0] === sessionId) {
+        return sessionOrder;
+    }
     if (!sessionOrder.includes(sessionId)) {
         return [sessionId, ...sessionOrder];
     }
 
     return [sessionId, ...sessionOrder.filter((id) => id !== sessionId)];
+}
+
+const _changedSessionIdsBySessionsMap = new WeakMap<
+    Record<string, AIChatSession>,
+    {
+        base: Record<string, AIChatSession>;
+        sessionIds: ReadonlySet<string>;
+    }
+>();
+
+function replaceSessionById(
+    sessionsById: Record<string, AIChatSession>,
+    sessionId: string,
+    nextSession: AIChatSession,
+) {
+    if (sessionsById[sessionId] === nextSession) return sessionsById;
+    const nextSessionsById = {
+        ...sessionsById,
+        [sessionId]: nextSession,
+    };
+    const pendingChanges = _changedSessionIdsBySessionsMap.get(sessionsById);
+    const changedSessionIds = new Set(
+        pendingChanges?.sessionIds,
+    );
+    changedSessionIds.add(sessionId);
+    _changedSessionIdsBySessionsMap.set(nextSessionsById, {
+        base: pendingChanges?.base ?? sessionsById,
+        sessionIds: changedSessionIds,
+    });
+    return nextSessionsById;
 }
 
 function updateSessionById(
@@ -6676,11 +7130,11 @@ function updateSessionById(
 ) {
     const session = state.sessionsById[sessionId];
     if (!session) return state.sessionsById;
-
-    return {
-        ...state.sessionsById,
-        [sessionId]: updater(session),
-    };
+    return replaceSessionById(
+        state.sessionsById,
+        sessionId,
+        updater(session),
+    );
 }
 
 function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
@@ -6714,6 +7168,31 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             plan_entries: m.planEntries,
             plan_detail: m.planDetail,
             tool_action: m.toolAction,
+            turn_provenance: m.turnProvenance
+                ? {
+                      binding_id: m.turnProvenance.bindingId,
+                      runtime_id: m.turnProvenance.runtimeId,
+                      runtime_session_id:
+                          m.turnProvenance.runtimeSessionId,
+                      model_id: m.turnProvenance.modelId,
+                      mode_id: m.turnProvenance.modeId,
+                      options: m.turnProvenance.options,
+                      start_reason: m.turnProvenance.startReason,
+                      ...(m.turnProvenance.handoffTruncated !== undefined
+                          ? {
+                                handoff_truncated:
+                                    m.turnProvenance.handoffTruncated,
+                            }
+                          : {}),
+                      ...(m.turnProvenance.handoffOmittedTurnCount !== undefined
+                          ? {
+                                handoff_omitted_turn_count:
+                                    m.turnProvenance
+                                        .handoffOmittedTurnCount,
+                            }
+                          : {}),
+                  }
+                : undefined,
         }));
 
     const timestamps = messages.map((m) => m.timestamp);
@@ -6726,6 +7205,17 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         timestamps.length > 0
             ? Math.max(session.persistedUpdatedAt ?? 0, ...timestamps)
             : (session.persistedUpdatedAt ?? Date.now());
+
+    const conversationBindings = updateConversationBindingsFromLegacySession({
+        ...session,
+        persistedMessageCount: messageCount,
+        persistedUpdatedAt: updatedAt,
+    });
+    conversationBindings.transcriptObservation = {
+        ...conversationBindings.transcriptObservation,
+        messageCount,
+        updatedAt,
+    };
 
     return {
         version: 1,
@@ -6785,6 +7275,8 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         custom_title: session.customTitle ?? undefined,
         preview: getSessionPreview(session),
         messages,
+        conversation_bindings:
+            serializeConversationBindings(conversationBindings),
     };
 }
 
@@ -6800,11 +7292,65 @@ const _composerPreflightOwnershipBySessionId = new Map<
 >();
 const _pendingStopBySessionId = new Map<string, Promise<void>>();
 const _pendingSessionPersistence = new Map<string, AIChatSession>();
+const _pendingTurnSelectionByConversationId = new Map<
+    string,
+    ConversationSelection
+>();
+const _pendingTurnCatalogKeyByConversationId = new Map<string, string>();
+// Keep probe ids on globalThis so Vite HMR cannot forget them while an async
+// ACP probe is running. Session-created/list events must never project these
+// implementation-detail sessions as user-visible conversations.
+const turnCatalogProbeGlobal = globalThis as typeof globalThis & {
+    __neverwriteTurnCatalogProbeSessionIds?: Set<string>;
+};
+const _turnCatalogProbeSessionIds =
+    turnCatalogProbeGlobal.__neverwriteTurnCatalogProbeSessionIds ??
+    new Set<string>();
+turnCatalogProbeGlobal.__neverwriteTurnCatalogProbeSessionIds =
+    _turnCatalogProbeSessionIds;
+type PendingConversationTurnEventRoute = {
+    sourceSessionId: string;
+    token: string;
+};
+const _pendingConversationTurnEventRouteBySessionId = new Map<
+    string,
+    PendingConversationTurnEventRoute
+>();
+let _canonicalConversationLogSequence = 0;
 let _sessionPersistenceFlushScheduled = false;
 let _sessionPersistenceEpoch = 0;
 
 function getSessionPersistenceKey(session: AIChatSession) {
     return session.historySessionId || session.sessionId;
+}
+
+function getPreparedTurnCatalogKey(
+    selection: Pick<ConversationSelection, "runtimeId" | "modelId">,
+) {
+    // ACP options can change with the model, so a runtime-only cache key would
+    // incorrectly reuse reasoning or service-tier choices across models.
+    return `${selection.runtimeId}\u0000${selection.modelId}`;
+}
+
+function conversationSelectionsEqual(
+    left: ConversationSelection,
+    right: ConversationSelection,
+) {
+    if (
+        left.runtimeId !== right.runtimeId ||
+        left.modelId !== right.modelId ||
+        left.modeId !== right.modeId
+    ) {
+        return false;
+    }
+
+    const optionIds = new Set([
+        ...Object.keys(left.options),
+        ...Object.keys(right.options),
+    ]);
+    return [...optionIds].every(
+        (optionId) => left.options[optionId] === right.options[optionId],
+    );
 }
 
 async function persistSessionNow(session: AIChatSession) {
@@ -7243,10 +7789,11 @@ function flushDeltas() {
 
             if (nextSession === session) continue;
 
-            sessionsById = {
-                ...sessionsById,
-                [session_id]: nextSession,
-            };
+            sessionsById = replaceSessionById(
+                sessionsById,
+                session_id,
+                nextSession,
+            );
             changed = true;
         }
 
@@ -7273,10 +7820,11 @@ function flushDeltas() {
 
             if (!sessionChanged) continue;
 
-            sessionsById = {
-                ...sessionsById,
-                [sessionId]: nextSession,
-            };
+            sessionsById = replaceSessionById(
+                sessionsById,
+                sessionId,
+                nextSession,
+            );
             changed = true;
         }
 
@@ -7425,12 +7973,445 @@ function restoreMessagesFromHistory(
                 planEntries: m.plan_entries,
                 planDetail: m.plan_detail,
                 toolAction: m.tool_action,
+                turnProvenance: m.turn_provenance
+                    ? {
+                          bindingId: m.turn_provenance.binding_id,
+                          runtimeId: m.turn_provenance.runtime_id,
+                          runtimeSessionId:
+                              m.turn_provenance.runtime_session_id,
+                          modelId: m.turn_provenance.model_id,
+                          modeId: m.turn_provenance.mode_id,
+                          options: m.turn_provenance.options,
+                          startReason: m.turn_provenance.start_reason,
+                          handoffTruncated:
+                              m.turn_provenance.handoff_truncated,
+                          handoffOmittedTurnCount:
+                              m.turn_provenance
+                                  .handoff_omitted_turn_count,
+                      }
+                    : undefined,
             }),
         )
         .filter((message) => !isInternalRuntimeUserEchoMessage(message));
 }
 
-export const useChatStore = create<ChatStore>((set, get) => {
+function migrateConversationScopedSessionMap<T>(
+    valuesBySessionId: Record<string, T>,
+    valuesByConversationId: Record<string, T>,
+    previousSessionIdByConversationId: Record<string, string>,
+    nextSessionIdByConversationId: Record<string, string>,
+) {
+    let next = valuesBySessionId;
+    for (const [conversationId, nextSessionId] of Object.entries(
+        nextSessionIdByConversationId,
+    )) {
+        const previousSessionId =
+            previousSessionIdByConversationId[conversationId];
+        if (!previousSessionId || previousSessionId === nextSessionId) {
+            continue;
+        }
+        const value =
+            valuesByConversationId[conversationId] ??
+            valuesBySessionId[previousSessionId];
+        if (value === undefined) continue;
+        if (next === valuesBySessionId) next = { ...valuesBySessionId };
+        delete next[previousSessionId];
+        next[nextSessionId] = value;
+    }
+    return next;
+}
+
+function synchronizeCanonicalChatProjection(state: ChatStore): ChatStore {
+    const projection = projectChatStoreToCanonical(state);
+    const composerPartsBySessionId = migrateConversationScopedSessionMap(
+        state.composerPartsBySessionId,
+        state.composerPartsByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    const queuedMessagesBySessionId = migrateConversationScopedSessionMap(
+        state.queuedMessagesBySessionId,
+        state.queuedMessagesByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    const queuedMessageEditBySessionId = migrateConversationScopedSessionMap(
+        state.queuedMessageEditBySessionId,
+        state.queuedMessageEditByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    const activeQueuedMessageBySessionId =
+        migrateConversationScopedSessionMap(
+            state.activeQueuedMessageBySessionId,
+            state.activeQueuedMessageByConversationId,
+            state.sessionIdByConversationId,
+            projection.sessionIdByConversationId,
+        );
+    const pausedQueueBySessionId = migrateConversationScopedSessionMap(
+        state.pausedQueueBySessionId,
+        state.pausedQueueByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    const interruptedTurnStateBySessionId =
+        migrateConversationScopedSessionMap(
+            state.interruptedTurnStateBySessionId,
+            state.interruptedTurnStateByConversationId,
+            state.sessionIdByConversationId,
+            projection.sessionIdByConversationId,
+        );
+    const tokenUsageBySessionId = migrateConversationScopedSessionMap(
+        state.tokenUsageBySessionId,
+        state.tokenUsageByConversationId,
+        state.sessionIdByConversationId,
+        projection.sessionIdByConversationId,
+    );
+    return {
+        ...state,
+        ...projection,
+        composerPartsBySessionId,
+        queuedMessagesBySessionId,
+        queuedMessageEditBySessionId,
+        activeQueuedMessageBySessionId,
+        pausedQueueBySessionId,
+        interruptedTurnStateBySessionId,
+        tokenUsageBySessionId,
+        composerPartsByConversationId: projectSessionMapToConversations(
+            composerPartsBySessionId,
+            projection,
+        ),
+        queuedMessagesByConversationId: projectSessionMapToConversations(
+            queuedMessagesBySessionId,
+            projection,
+        ),
+        queuedMessageEditByConversationId: projectSessionMapToConversations(
+            queuedMessageEditBySessionId,
+            projection,
+        ),
+        activeQueuedMessageByConversationId: projectSessionMapToConversations(
+            activeQueuedMessageBySessionId,
+            projection,
+        ),
+        pausedQueueByConversationId: projectSessionMapToConversations(
+            pausedQueueBySessionId,
+            projection,
+        ),
+        interruptedTurnStateByConversationId:
+            projectSessionMapToConversations(
+                interruptedTurnStateBySessionId,
+                projection,
+            ),
+        tokenUsageByConversationId: projectSessionMapToConversations(
+            tokenUsageBySessionId,
+            projection,
+        ),
+    };
+}
+
+function canonicalChatProjectionInputsEqual(
+    left: ChatStore,
+    right: ChatStore,
+) {
+    return (
+        left.sessionsById === right.sessionsById &&
+        left.sessionOrder === right.sessionOrder &&
+        left.activeSessionId === right.activeSessionId &&
+        left.composerPartsBySessionId === right.composerPartsBySessionId &&
+        left.queuedMessagesBySessionId === right.queuedMessagesBySessionId &&
+        left.queuedMessageEditBySessionId ===
+            right.queuedMessageEditBySessionId &&
+        left.activeQueuedMessageBySessionId ===
+            right.activeQueuedMessageBySessionId &&
+        left.pausedQueueBySessionId === right.pausedQueueBySessionId &&
+        left.interruptedTurnStateBySessionId ===
+            right.interruptedTurnStateBySessionId &&
+        left.tokenUsageBySessionId === right.tokenUsageBySessionId
+    );
+}
+
+function haveSameRecordKeys<T>(
+    previous: Readonly<Record<string, T>>,
+    next: Readonly<Record<string, T>>,
+) {
+    const previousKeys = Object.keys(previous);
+    const nextKeys = Object.keys(next);
+    return (
+        previousKeys.length === nextKeys.length &&
+        previousKeys.every((key) => Object.hasOwn(next, key))
+    );
+}
+
+function projectChangedSessionMapToConversations<T>(
+    previousValuesBySessionId: Readonly<Record<string, T>>,
+    nextValuesBySessionId: Readonly<Record<string, T>>,
+    previousValuesByConversationId: Record<string, T>,
+    projection: Pick<
+        ChatStore,
+        | "conversationIdBySessionRef"
+        | "conversationsById"
+        | "sessionIdByConversationId"
+    >,
+) {
+    if (previousValuesBySessionId === nextValuesBySessionId) {
+        return previousValuesByConversationId;
+    }
+
+    const affectedConversationIds = new Set<string>();
+    const sessionRefs = new Set([
+        ...Object.keys(previousValuesBySessionId),
+        ...Object.keys(nextValuesBySessionId),
+    ]);
+    for (const sessionRef of sessionRefs) {
+        if (
+            Object.hasOwn(previousValuesBySessionId, sessionRef) ===
+                Object.hasOwn(nextValuesBySessionId, sessionRef) &&
+            previousValuesBySessionId[sessionRef] ===
+                nextValuesBySessionId[sessionRef]
+        ) {
+            continue;
+        }
+        const conversationId = resolveConversationId(
+            projection,
+            sessionRef,
+        );
+        if (conversationId) affectedConversationIds.add(conversationId);
+    }
+
+    let projected = previousValuesByConversationId;
+    const resolveValue = createConversationScopedValueResolver(
+        nextValuesBySessionId,
+        projection,
+    );
+    for (const conversationId of affectedConversationIds) {
+        const resolved = resolveValue(conversationId);
+        const hadValue = Object.hasOwn(projected, conversationId);
+        if (!resolved.hasValue) {
+            if (!hadValue) continue;
+            if (projected === previousValuesByConversationId) {
+                projected = { ...previousValuesByConversationId };
+            }
+            delete projected[conversationId];
+            continue;
+        }
+        if (hadValue && projected[conversationId] === resolved.value) continue;
+        if (projected === previousValuesByConversationId) {
+            projected = { ...previousValuesByConversationId };
+        }
+        projected[conversationId] = resolved.value;
+    }
+
+    return projected;
+}
+
+function synchronizeCanonicalChatProjectionIncrementally(
+    previous: ChatStore,
+    next: ChatStore,
+): ChatStore | null {
+    const pendingChanges = _changedSessionIdsBySessionsMap.get(
+        next.sessionsById,
+    );
+    const changedSessionIds =
+        previous.sessionsById === next.sessionsById
+            ? new Set<string>()
+            : pendingChanges?.base === previous.sessionsById
+              ? pendingChanges.sessionIds
+              : undefined;
+    if (pendingChanges) {
+        // Hints belong to this Zustand transition only. Keeping them on the
+        // committed map would accumulate unrelated sessions across updates.
+        _changedSessionIdsBySessionsMap.delete(next.sessionsById);
+    }
+    if (
+        previous.sessionOrder !== next.sessionOrder ||
+        previous.activeSessionId !== next.activeSessionId ||
+        (!changedSessionIds &&
+            !haveSameRecordKeys(previous.sessionsById, next.sessionsById))
+    ) {
+        return null;
+    }
+
+    let conversationsById = next.conversationsById;
+    if (previous.sessionsById !== next.sessionsById) {
+        for (const sessionId of
+            changedSessionIds ?? Object.keys(next.sessionsById)) {
+            const previousSession = previous.sessionsById[sessionId];
+            const nextSession = next.sessionsById[sessionId];
+            if (previousSession === nextSession) continue;
+            if (
+                !previousSession ||
+                !nextSession ||
+                !hasSameCanonicalSessionTopology(
+                    previousSession,
+                    nextSession,
+                )
+            ) {
+                return null;
+            }
+
+            const conversationId = resolveConversationId(
+                next,
+                nextSession.sessionId,
+            );
+            if (!conversationId) return null;
+
+            // A stale compatibility session may share a durable conversation
+            // with the active session. Only the elected session owns content.
+            if (
+                next.sessionIdByConversationId[conversationId] !==
+                nextSession.sessionId
+            ) {
+                continue;
+            }
+
+            const previousConversation = conversationsById[conversationId];
+            if (!previousConversation) return null;
+            const nextConversation =
+                projectCanonicalConversationContentUpdate(
+                    previousConversation,
+                    nextSession,
+                );
+            if (nextConversation === previousConversation) continue;
+            if (conversationsById === next.conversationsById) {
+                conversationsById = { ...next.conversationsById };
+            }
+            conversationsById[conversationId] = nextConversation;
+        }
+    }
+
+    const projection = { ...next, conversationsById };
+    return {
+        ...next,
+        conversationsById,
+        composerPartsByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.composerPartsBySessionId,
+                next.composerPartsBySessionId,
+                next.composerPartsByConversationId,
+                projection,
+            ),
+        queuedMessagesByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.queuedMessagesBySessionId,
+                next.queuedMessagesBySessionId,
+                next.queuedMessagesByConversationId,
+                projection,
+            ),
+        queuedMessageEditByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.queuedMessageEditBySessionId,
+                next.queuedMessageEditBySessionId,
+                next.queuedMessageEditByConversationId,
+                projection,
+            ),
+        activeQueuedMessageByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.activeQueuedMessageBySessionId,
+                next.activeQueuedMessageBySessionId,
+                next.activeQueuedMessageByConversationId,
+                projection,
+            ),
+        pausedQueueByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.pausedQueueBySessionId,
+                next.pausedQueueBySessionId,
+                next.pausedQueueByConversationId,
+                projection,
+            ),
+        interruptedTurnStateByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.interruptedTurnStateBySessionId,
+                next.interruptedTurnStateBySessionId,
+                next.interruptedTurnStateByConversationId,
+                projection,
+            ),
+        tokenUsageByConversationId:
+            projectChangedSessionMapToConversations(
+                previous.tokenUsageBySessionId,
+                next.tokenUsageBySessionId,
+                next.tokenUsageByConversationId,
+                projection,
+            ),
+    };
+}
+
+function withCanonicalChatProjection(
+    configure: StateCreator<ChatStore>,
+): StateCreator<ChatStore> {
+    return (set, get, api) => {
+        const projectedSet = ((partial, replace) => {
+            const update = (state: ChatStore) => {
+                const patch =
+                    typeof partial === "function" ? partial(state) : partial;
+                if (!replace && patch === state) return state;
+                const nextState = replace
+                    ? (patch as ChatStore)
+                    : ({ ...state, ...patch } as ChatStore);
+                if (
+                    !replace &&
+                    canonicalChatProjectionInputsEqual(state, nextState)
+                ) {
+                    return nextState;
+                }
+                if (!replace) {
+                    const incremental =
+                        synchronizeCanonicalChatProjectionIncrementally(
+                            state,
+                            nextState,
+                        );
+                    if (incremental) return incremental;
+                }
+                return synchronizeCanonicalChatProjection(nextState);
+            };
+
+            if (replace) {
+                set(update, true);
+            } else {
+                set(update);
+            }
+        }) as typeof set;
+
+        api.setState = projectedSet;
+        return synchronizeCanonicalChatProjection(
+            configure(projectedSet, get, api),
+        );
+    };
+}
+
+export function resolveChatConversationId(
+    state: Pick<
+        ChatStore,
+        "conversationIdBySessionRef" | "conversationsById"
+    >,
+    ref: string | null | undefined,
+) {
+    return resolveConversationId(state, ref);
+}
+
+export function resolveChatSessionId(
+    state: Pick<
+        ChatStore,
+        | "conversationIdBySessionRef"
+        | "conversationsById"
+        | "sessionIdByConversationId"
+        | "sessionsById"
+    >,
+    ref: string | null | undefined,
+) {
+    if (ref) {
+        const pendingRoute =
+            _pendingConversationTurnEventRouteBySessionId.get(ref);
+        if (
+            pendingRoute &&
+            state.sessionsById[pendingRoute.sourceSessionId]
+        ) {
+            return pendingRoute.sourceSessionId;
+        }
+    }
+    return resolveLegacySessionId(state, ref);
+}
+
+const createChatStore: StateCreator<ChatStore> = (set, get) => {
     async function loadPersistedTranscript(
         sessionId: string,
         mode: "latest" | "full" | "older",
@@ -7936,6 +8917,359 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return session;
     }
 
+    async function configureConversationTurnSession(
+        initialSession: AIChatSession,
+        selection: ConversationSelection,
+    ) {
+        let session = initialSession;
+        const initiallyAvailableOptionIds = new Set(
+            initialSession.configOptions.map((option) => option.id),
+        );
+        if (
+            selection.modelId &&
+            selection.modelId !==
+                (getModelConfigOption(session)?.value ?? session.modelId) &&
+            supportsModelSelection(session, selection.modelId)
+        ) {
+            const modelConfig = getModelConfigOption(session);
+            session = modelConfig
+                ? await aiSetConfigOption(
+                      session.sessionId,
+                      modelConfig.id,
+                      selection.modelId,
+                  )
+                : await aiSetModel(session.sessionId, selection.modelId);
+        }
+        if (
+            selection.modeId &&
+            selection.modeId !== session.modeId &&
+            session.modes.some(
+                (mode) => mode.id === selection.modeId && !mode.disabled,
+            )
+        ) {
+            session = await aiSetMode(session.sessionId, selection.modeId);
+        }
+
+        const effectiveSelection = {
+            ...selection,
+            options: Object.fromEntries(
+                Object.entries(selection.options).filter(([optionId]) => {
+                    const isAvailable = session.configOptions.some(
+                        (option) => option.id === optionId,
+                    );
+                    // ACP option catalogs may change after selecting a model.
+                    // An option that was valid for the session's initial model
+                    // is no longer part of the requested selection when the
+                    // target model removes it. Truly unknown option ids remain
+                    // strict and are rejected by the validation below.
+                    return (
+                        isAvailable ||
+                        !initiallyAvailableOptionIds.has(optionId)
+                    );
+                }),
+            ),
+        };
+        const modelOptionId = getModelConfigOption(session)?.id ?? null;
+        for (const [optionId, value] of Object.entries(
+            effectiveSelection.options,
+        )) {
+            const option = session.configOptions.find(
+                (candidate) => candidate.id === optionId,
+            );
+            if (
+                !option ||
+                option.category === "mode" ||
+                option.id === modelOptionId ||
+                option.value === value ||
+                !option.options.some((candidate) => candidate.value === value)
+            ) {
+                continue;
+            }
+            session = await aiSetConfigOption(
+                session.sessionId,
+                option.id,
+                value,
+            );
+        }
+
+        const actualSelection = getConversationSelection(session);
+        if (actualSelection.runtimeId !== effectiveSelection.runtimeId) {
+            throw new Error("The selected ACP provider was not applied.");
+        }
+        if (actualSelection.modelId !== effectiveSelection.modelId) {
+            throw new Error(
+                `The selected model is unavailable: ${effectiveSelection.modelId}`,
+            );
+        }
+        if (actualSelection.modeId !== effectiveSelection.modeId) {
+            throw new Error(
+                `The selected mode is unavailable: ${effectiveSelection.modeId}`,
+            );
+        }
+        for (const [optionId, value] of Object.entries(
+            effectiveSelection.options,
+        )) {
+            const option = session.configOptions.find(
+                (candidate) => candidate.id === optionId,
+            );
+            if (!option) {
+                throw new Error(
+                    `The selected ACP option is unavailable: ${optionId}`,
+                );
+            }
+            if (option.value !== value) {
+                throw new Error(
+                    `The selected ACP option was not applied: ${optionId}`,
+                );
+            }
+        }
+        return { session, selection: effectiveSelection };
+    }
+
+    function sessionCanApplyConversationSelection(
+        session: AIChatSession,
+        selection: ConversationSelection,
+    ) {
+        if (session.runtimeId !== selection.runtimeId) {
+            return false;
+        }
+        const selectedModelId =
+            getModelConfigOption(session)?.value ?? session.modelId;
+        if (
+            selection.modelId !== selectedModelId &&
+            !supportsModelSelection(session, selection.modelId)
+        ) {
+            return false;
+        }
+        if (
+            selection.modeId !== session.modeId &&
+            !session.modes.some(
+                (mode) => mode.id === selection.modeId && !mode.disabled,
+            )
+        ) {
+            return false;
+        }
+
+        return Object.entries(selection.options).every(
+            ([optionId, value]) => {
+                const option = session.configOptions.find(
+                    (candidate) => candidate.id === optionId,
+                );
+                return (
+                    option != null &&
+                    (option.value === value ||
+                        option.options.some(
+                            (candidate) => candidate.value === value,
+                        ))
+                );
+            },
+        );
+    }
+
+    function resolveDiscoveredConversationSelection(
+        runtime: AIRuntimeDescriptor,
+        session: AIChatSession,
+        requestedSelection: ConversationSelection,
+    ) {
+        if (
+            sessionCanApplyConversationSelection(
+                session,
+                requestedSelection,
+            )
+        ) {
+            return requestedSelection;
+        }
+
+        const descriptorDefault = getDefaultConversationSelection({ runtime });
+        if (
+            conversationSelectionsEqual(
+                requestedSelection,
+                descriptorDefault,
+            )
+        ) {
+            // Runtime descriptors are only bootstrap metadata. In particular,
+            // most built-ins advertise a synthetic `auto` model before their
+            // ACP has connected. Discovery must adopt the live session's real
+            // default instead of rejecting the catalog we just loaded.
+            return getConversationSelection(session);
+        }
+
+        // Explicit user selections remain strict. The normal configuration
+        // path applies the model first, then reconciles options against the
+        // model-specific catalog returned by the ACP.
+        return requestedSelection;
+    }
+
+    async function connectCustomConversationBinding(
+        binding: AcpConversationBinding,
+        vaultPath: string | null,
+        additionalRoots: string[],
+    ) {
+        const runtimeSessionId = binding.runtimeSessionId?.trim();
+        const launchFingerprint = binding.runtimeLaunchFingerprint?.trim();
+        const continuationStrategy = binding.continuationStrategy;
+        if (
+            !runtimeSessionId ||
+            !launchFingerprint ||
+            !continuationStrategy ||
+            continuationStrategy === "new_session_only"
+        ) {
+            throw new Error(
+                "The selected custom ACP binding cannot be continued.",
+            );
+        }
+
+        let confirmedLaunchFingerprint: string | null = null;
+        let result = await aiContinueCustomRuntimeSession({
+            runtimeId: binding.runtimeId,
+            runtimeSessionId,
+            runtimeLaunchFingerprint: launchFingerprint,
+            continuationStrategy,
+            confirmedLaunchFingerprint,
+            vaultPath,
+            additionalRoots,
+        });
+        while (result.status === "confirmation_required") {
+            const approved = await confirm(result.message, {
+                title: "Custom ACP runtime changed",
+                kind: "warning",
+                okLabel: "Continue",
+                cancelLabel: "Cancel",
+            });
+            if (!approved) {
+                const cancelled = new Error(
+                    "Custom provider continuation cancelled.",
+                );
+                cancelled.name = "ConversationTurnCancelledError";
+                throw cancelled;
+            }
+            confirmedLaunchFingerprint = result.launchFingerprint;
+            result = await aiContinueCustomRuntimeSession({
+                runtimeId: binding.runtimeId,
+                runtimeSessionId,
+                runtimeLaunchFingerprint: launchFingerprint,
+                continuationStrategy,
+                confirmedLaunchFingerprint,
+                vaultPath,
+                additionalRoots,
+            });
+        }
+        if (result.status !== "connected") {
+            throw new Error(result.message);
+        }
+        return result.session;
+    }
+
+    async function connectConversationTurn(input: {
+        sourceSession: AIChatSession;
+        route: ConversationTurnRoute;
+        attachments: AIChatAttachment[];
+    }) {
+        const runtime = get().runtimes.find(
+            (candidate) =>
+                candidate.runtime.id === input.route.selection.runtimeId,
+        );
+        if (!runtime) {
+            throw new Error("The selected ACP provider is unavailable.");
+        }
+        const vaultPath =
+            input.sourceSession.vaultPath ??
+            useVaultStore.getState().vaultPath;
+        const additionalRoots = Array.from(
+            new Set([
+                ...(input.sourceSession.additionalRoots ?? []),
+                ...collectExternalAdditionalRoots(
+                    input.attachments,
+                    vaultPath ?? null,
+                ),
+            ]),
+        );
+        let runtimeSession: AIChatSession;
+        let created = false;
+
+        if (input.route.strategy === "continue") {
+            runtimeSession = input.sourceSession;
+        } else if (
+            input.route.targetBinding?.runtimeId.startsWith("custom:") &&
+            (input.route.strategy === "load" ||
+                input.route.strategy === "resume")
+        ) {
+            runtimeSession = await connectCustomConversationBinding(
+                input.route.targetBinding,
+                vaultPath ?? null,
+                additionalRoots,
+            );
+        } else if (
+            input.route.strategy === "load" &&
+            input.route.targetBinding?.runtimeSessionId
+        ) {
+            runtimeSession = await aiLoadRuntimeSession(
+                input.route.selection.runtimeId,
+                input.route.targetBinding.runtimeSessionId,
+                vaultPath ?? null,
+                additionalRoots,
+            );
+        } else if (
+            input.route.strategy === "resume" &&
+            input.route.targetBinding?.runtimeSessionId
+        ) {
+            runtimeSession = await aiResumeRuntimeSession(
+                input.route.selection.runtimeId,
+                input.route.targetBinding.runtimeSessionId,
+                vaultPath ?? null,
+                additionalRoots,
+            );
+        } else {
+            runtimeSession = await aiCreateSession(
+                input.route.selection.runtimeId,
+                vaultPath ?? null,
+                additionalRoots,
+            );
+            created = true;
+        }
+
+        let resolvedSelection = created
+            ? resolveDiscoveredConversationSelection(
+                  runtime,
+                  runtimeSession,
+                  input.route.selection,
+              )
+            : input.route.selection;
+
+        try {
+            const configured = await configureConversationTurnSession(
+                runtimeSession,
+                resolvedSelection,
+            );
+            runtimeSession = configured.session;
+            resolvedSelection = configured.selection;
+        } catch (error) {
+            if (created) {
+                await aiDeleteRuntimeSession(runtimeSession.sessionId).catch(
+                    () => {},
+                );
+            }
+            throw error;
+        }
+
+        const targetBinding = createTurnBinding(
+            updateConversationBindingsFromLegacySession(
+                input.sourceSession,
+            ).conversationId,
+            runtimeSession,
+            input.route.strategy === "create"
+                ? null
+                : input.route.targetBinding,
+            runtime.runtime.capabilities,
+        );
+        return {
+            runtimeSession,
+            targetBinding,
+            created,
+            selection: resolvedSelection,
+        };
+    }
+
     async function ensureRuntimeVisibleAfterOnboarding(runtimeId: string) {
         const state = get();
         const activeRuntimeId = state.activeSessionId
@@ -7982,11 +9316,67 @@ export const useChatStore = create<ChatStore>((set, get) => {
         let optimisticMessageInserted = false;
         let optimisticMessageId: string | null = null;
         let shouldRecoverPromptForRetry = false;
+        let preparedTurn:
+            | {
+                  runtimeSession: AIChatSession;
+                  targetBinding: AcpConversationBinding;
+                  route: ConversationTurnRoute;
+                  created: boolean;
+              }
+            | null = null;
+        let plannedRoute: ConversationTurnRoute | null = null;
+        let pendingEventRoute:
+            | { targetSessionId: string; token: string }
+            | null = null;
+        let turnAccepted = false;
         let preflightOwnership = options?.preflightOwnership ?? null;
         let session = get().sessionsById[activeSessionId];
         try {
         if (!session || session.isResumingSession) {
             return;
+        }
+
+        const requestedRuntimeId = currentItem.runtimeId ?? session.runtimeId;
+        const initialProviderChangeRequested =
+            requestedRuntimeId !== session.runtimeId;
+        if (
+            initialProviderChangeRequested &&
+            hasConversationHistory(session)
+        ) {
+            throw new Error(
+                "This conversation is already bound to an ACP provider. Start a new chat to use another provider.",
+            );
+        }
+        if (initialProviderChangeRequested) {
+            const state = get();
+            const conversationId =
+                resolveConversationId(state, activeSessionId) ??
+                session.historySessionId;
+            const conversation = state.conversationsById[conversationId];
+            const blocker = conversation
+                ? getConversationProviderSelectionBlocker(conversation, {
+                      hasQueuedMessages:
+                          (state.queuedMessagesBySessionId[activeSessionId]
+                              ?.length ?? 0) > 0 ||
+                          state.activeQueuedMessageBySessionId[
+                              activeSessionId
+                          ] != null,
+                  })
+                : "session_transition_pending";
+            const runtime = state.runtimes.find(
+                (candidate) =>
+                    candidate.runtime.id === requestedRuntimeId,
+            );
+            const setupStatus =
+                state.setupStatusByRuntimeId[requestedRuntimeId];
+            if (
+                blocker ||
+                !runtime ||
+                isClaudeTerminalRuntimeId(requestedRuntimeId) ||
+                (setupStatus != null && !isRuntimeSetupReady(setupStatus))
+            ) {
+                return;
+            }
         }
 
             if (!preflightOwnership) {
@@ -8008,7 +9398,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         clearInterruptedTurnState(activeSessionId);
 
-        if (!isLiveRuntimeSession(session)) {
+        if (!initialProviderChangeRequested && !isLiveRuntimeSession(session)) {
                 const resumedSessionId =
                     await get().resumeSession(activeSessionId);
             if (!resumedSessionId) {
@@ -8070,7 +9460,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         try {
-            if (source === "immediate") {
+            if (!initialProviderChangeRequested && source === "immediate") {
                 const replacementSessionId =
                     await replaceEmptySessionForAdditionalRoots(
                         activeSessionId,
@@ -8096,12 +9486,112 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
             }
 
-            session =
+            if (!initialProviderChangeRequested) {
+                session =
                     (await syncQueuedMessageConfig(
                         activeSessionId,
                         currentItem,
                     )) ?? session;
-            if (!session) return;
+                if (!session) return;
+            }
+
+            const transcriptIsPersistedButUnloaded =
+                (session.persistedMessageCount ?? 0) > 0 &&
+                getSessionTranscriptMessages(session).length === 0;
+            if (
+                transcriptIsPersistedButUnloaded ||
+                (initialProviderChangeRequested &&
+                    !hasFullPersistedTranscriptLoaded(session))
+            ) {
+                const loaded = await loadPersistedTranscript(
+                    activeSessionId,
+                    "full",
+                );
+                if (!loaded) {
+                    throw new Error(
+                        "Failed to load the canonical transcript before routing the conversation turn.",
+                    );
+                }
+                session = get().sessionsById[activeSessionId] ?? session;
+            }
+
+            const bindings =
+                updateConversationBindingsFromLegacySession(session);
+            const selection: ConversationSelection = {
+                runtimeId: requestedRuntimeId,
+                modelId: currentItem.modelId ?? session.modelId,
+                modeId: currentItem.modeId ?? session.modeId,
+                options: { ...currentItem.optionsSnapshot },
+            };
+            let route = planConversationTurnRoute({
+                session,
+                bindings,
+                selection,
+                runtimeCapabilities:
+                    get().runtimes.find(
+                        (runtime) =>
+                            runtime.runtime.id === requestedRuntimeId,
+                    )?.runtime.capabilities ?? [],
+                hasTranscript:
+                    getSessionTranscriptMessages(session).length > 0,
+            });
+            if (session.resumeContextPending && !route.initialProviderChanged) {
+                route = { ...route, startReason: "transcript_handoff" };
+            }
+            plannedRoute = route;
+            const connected = await connectConversationTurn({
+                sourceSession: session,
+                route,
+                attachments: currentItem.attachments,
+            });
+            if (
+                !conversationSelectionsEqual(
+                    route.selection,
+                    connected.selection,
+                )
+            ) {
+                route = {
+                    ...route,
+                    selection: connected.selection,
+                };
+                get().setConversationTurnSelection(
+                    bindings.conversationId,
+                    connected.selection,
+                );
+            }
+            preparedTurn = { ...connected, route };
+            await aiStartConversationTurn({
+                conversationId: bindings.conversationId,
+                bindingId: connected.targetBinding.bindingId,
+                runtimeId: connected.runtimeSession.runtimeId,
+                sessionId: connected.runtimeSession.sessionId,
+                selection: route.selection,
+            });
+            logCanonicalConversationDiagnostic(
+                "canonical conversation turn connected",
+                {
+                    strategy: route.strategy,
+                    start_reason: route.startReason,
+                    source_runtime_id: session.runtimeId,
+                    target_runtime_id: connected.runtimeSession.runtimeId,
+                    initial_provider_changed: route.initialProviderChanged,
+                    reused_binding: route.targetBinding != null,
+                    created_session: connected.created,
+                },
+            );
+            const preparedPrompt = buildPromptWithContextHandoff(
+                session,
+                currentItem.prompt,
+                connected.targetBinding,
+                route.startReason,
+                session.resumeContextPending === true ||
+                    route.startReason === "transcript_handoff",
+            );
+            currentItem = {
+                ...currentItem,
+                prompt: preparedPrompt.prompt,
+                contextHandoff: preparedPrompt.contextHandoff,
+            };
 
                 const promotedDrafts =
                     await promoteQueuedMessageDrafts(currentItem);
@@ -8116,6 +9606,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const userMessageId =
                 currentItem.optimisticMessageId ?? crypto.randomUUID();
             optimisticMessageId = userMessageId;
+            const turnProvenance = createConversationTurnProvenance(
+                connected.targetBinding,
+                route,
+                currentItem.contextHandoff,
+            );
             if (
                 source === "queue" &&
                 currentItem.optimisticMessageId !== userMessageId
@@ -8141,7 +9636,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const targetSession = state.sessionsById[activeSessionId];
                 if (!targetSession) return state;
                     didInsertOptimisticMessage = true;
-                const nextSession = startNewWorkCycle(targetSession);
+                const nextSession = startNewWorkCycle({
+                    ...targetSession,
+                    activeTurnProvenance: turnProvenance,
+                });
                 const userMessage: AIChatMessage = {
                     ...createTextMessage("user", currentItem.content),
                     id: userMessageId,
@@ -8202,12 +9700,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return;
                 }
 
-                if (preflightOwnership) {
+                if (preflightOwnership && !route.initialProviderChanged) {
                     const releasedOwnership =
                         releaseComposerPreflightOwnership(
-                        activeSessionId,
-                        preflightOwnership.token,
-                    );
+                            activeSessionId,
+                            preflightOwnership.token,
+                        );
                     if (releasedOwnership) {
                         preflightOwnership = null;
                     }
@@ -8216,53 +9714,176 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 cleanupPromotedDrafts(promotedDrafts.promotions);
 
             const afterSend = get().sessionsById[activeSessionId];
-            if (afterSend) {
+            if (afterSend && !route.initialProviderChanged) {
                 void persistSession(afterSend);
             }
 
-            const nextSession = await aiSendMessage(
+            const eventRouteToken = registerPendingConversationTurnEventRoute(
                 activeSessionId,
+                connected.runtimeSession.sessionId,
+            );
+            if (eventRouteToken) {
+                pendingEventRoute = {
+                    targetSessionId: connected.runtimeSession.sessionId,
+                    token: eventRouteToken,
+                };
+            }
+
+            const nextSession = await aiSendMessage(
+                connected.runtimeSession.sessionId,
                 currentItem.prompt,
                 currentItem.attachments,
             );
-            set((state) => ({
-                sessionsById: updateSessionById(
-                    state,
-                    activeSessionId,
-                    (current) => ({
-                        ...current,
-                        resumeContextPending: false,
-                    }),
-                ),
-            }));
-            get().upsertSession({
-                ...nextSession,
-                historySessionId: session.historySessionId,
-                resumeContextPending: false,
+            turnAccepted = true;
+            // Runtime deltas can arrive before the send IPC resolves. Materialize
+            // them on the source projection before its local session id migrates.
+            flushDeltasSync();
+            const sourceAfterSend =
+                get().sessionsById[activeSessionId] ?? session;
+            const acceptedBinding = createTurnBinding(
+                bindings.conversationId,
+                nextSession,
+                connected.targetBinding,
+                get().runtimes.find(
+                    (runtime) =>
+                        runtime.runtime.id === nextSession.runtimeId,
+                )?.runtime.capabilities ?? [],
+            );
+            const committedSession = commitAcceptedConversationTurn({
+                sourceSession: sourceAfterSend,
+                acceptedRuntimeSession: nextSession,
+                route,
+                targetBinding: acceptedBinding,
+                contextHandoff: currentItem.contextHandoff,
+                userMessageId,
             });
+            const replacedRuntimeSessionId =
+                route.initialProviderChanged &&
+                isLiveRuntimeSession(session) &&
+                committedSession.sessionId !== activeSessionId
+                    ? activeSessionId
+                    : null;
+            if (preflightOwnership) {
+                const releasedOwnership = releaseComposerPreflightOwnership(
+                    activeSessionId,
+                    preflightOwnership.token,
+                );
+                if (releasedOwnership) {
+                    preflightOwnership = null;
+                }
+            }
+            if (committedSession.sessionId === activeSessionId) {
+                set((state) => ({
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [activeSessionId]: committedSession,
+                    },
+                }));
+            } else {
+                migrateSessionLocalState(activeSessionId, committedSession);
+                activeSessionId = committedSession.sessionId;
+            }
+            if (pendingEventRoute) {
+                clearPendingConversationTurnEventRoute(
+                    pendingEventRoute.targetSessionId,
+                    pendingEventRoute.token,
+                );
+                pendingEventRoute = null;
+            }
+            if (replacedRuntimeSessionId) {
+                await aiDeleteRuntimeSession(replacedRuntimeSessionId).catch(
+                    () => {},
+                );
+            }
+            logCanonicalConversationDiagnostic(
+                "canonical conversation turn accepted",
+                {
+                    strategy: route.strategy,
+                    start_reason: route.startReason,
+                    source_runtime_id: session.runtimeId,
+                    target_runtime_id: committedSession.runtimeId,
+                    initial_provider_changed: route.initialProviderChanged,
+                    reused_binding: route.targetBinding != null,
+                    created_session: connected.created,
+                    handoff_truncated:
+                        currentItem.contextHandoff?.truncated ?? false,
+                    handoff_omitted_turn_count:
+                        currentItem.contextHandoff?.omittedTurnCount ?? 0,
+                },
+            );
+            persistCurrentSession(activeSessionId);
         } catch (error) {
+            if (pendingEventRoute) {
+                clearPendingConversationTurnEventRoute(
+                    pendingEventRoute.targetSessionId,
+                    pendingEventRoute.token,
+                );
+                pendingEventRoute = null;
+            }
+            if (preparedTurn?.created && !turnAccepted) {
+                await aiDeleteRuntimeSession(
+                    preparedTurn.runtimeSession.sessionId,
+                ).catch(() => {});
+            }
+            const cancelled =
+                error instanceof Error &&
+                error.name === "ConversationTurnCancelledError";
             const message = getAiErrorMessage(
                 error,
                 "Failed to send the message.",
-                session.runtimeId,
+                currentItem.runtimeId ?? session.runtimeId,
             );
+            if (plannedRoute) {
+                logCanonicalConversationDiagnostic(
+                    "canonical conversation turn failed",
+                    {
+                        strategy: plannedRoute.strategy,
+                        start_reason: plannedRoute.startReason,
+                        source_runtime_id: session.runtimeId,
+                        target_runtime_id:
+                            plannedRoute.selection.runtimeId,
+                        initial_provider_changed:
+                            plannedRoute.initialProviderChanged,
+                        reused_binding:
+                            plannedRoute.targetBinding != null,
+                        created_session: preparedTurn?.created ?? false,
+                        error_code: getCanonicalConversationErrorCode(
+                            message,
+                            plannedRoute.selection.runtimeId,
+                        ),
+                    },
+                );
+            }
             shouldRecoverPromptForRetry =
                 source === "immediate" &&
-                isRuntimeSessionDisconnectedErrorMessage(message);
+                (initialProviderChangeRequested ||
+                    isRuntimeSessionDisconnectedErrorMessage(message));
             const failedOptimisticMessageId = shouldRecoverPromptForRetry
                 ? optimisticMessageId
                 : null;
-            if (failedOptimisticMessageId) {
+            if (failedOptimisticMessageId || preparedTurn) {
                 set((state) => {
                     const targetSession = state.sessionsById[activeSessionId];
                     if (!targetSession) return state;
+                    const recoveredSession = failedOptimisticMessageId
+                        ? removeConversationTurnMessages(
+                              targetSession,
+                              failedOptimisticMessageId,
+                          )
+                        : targetSession;
+                    const shouldClearProvenance =
+                        preparedTurn != null &&
+                        recoveredSession.activeTurnProvenance?.bindingId ===
+                            preparedTurn.targetBinding.bindingId;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
-                            [activeSessionId]: removeSessionMessage(
-                                targetSession,
-                                failedOptimisticMessageId,
-                            ),
+                            [activeSessionId]: shouldClearProvenance
+                                ? {
+                                      ...recoveredSession,
+                                      activeTurnProvenance: null,
+                                  }
+                                : recoveredSession,
                         },
                     };
                 });
@@ -8273,15 +9894,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     status: "failed",
                 }));
             }
-            get().applySessionError({
-                session_id: activeSessionId,
-                message,
-            });
+            if (!cancelled) {
+                get().applySessionError({
+                    session_id: activeSessionId,
+                    message,
+                });
+            }
             if (shouldRecoverPromptForRetry) {
                 persistCurrentSession(activeSessionId);
             }
-            if (isAuthenticationErrorMessage(message, session.runtimeId)) {
-                await get().refreshSetupStatus(session.runtimeId);
+            const failedRuntimeId = currentItem.runtimeId ?? session.runtimeId;
+            if (
+                !cancelled &&
+                isAuthenticationErrorMessage(message, failedRuntimeId)
+            ) {
+                await get().refreshSetupStatus(failedRuntimeId);
             }
         }
         } finally {
@@ -8421,9 +10048,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     return {
+        conversationsById: {},
+        bindingsById: {},
+        conversationOrder: [],
+        activeConversationId: null,
+        conversationIdBySessionRef: {},
+        sessionIdByConversationId: {},
         runtimeConnectionByRuntimeId: {},
         setupStatusByRuntimeId: {},
         runtimes: [],
+        preparedTurnCatalogByConversationId: {},
         sessionsById: {},
         sessionOrder: [],
         pendingAvailableCommandsBySessionId: {},
@@ -8449,12 +10083,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
             DEFAULT_AI_PREFERENCES.screenshotRetentionSeconds,
         toolActivityDisplayMode: DEFAULT_AI_PREFERENCES.toolActivityDisplayMode,
         composerPartsBySessionId: {},
+        composerPartsByConversationId: {},
         queuedMessagesBySessionId: {},
+        queuedMessagesByConversationId: {},
         queuedMessageEditBySessionId: {},
+        queuedMessageEditByConversationId: {},
         activeQueuedMessageBySessionId: {},
+        activeQueuedMessageByConversationId: {},
         pausedQueueBySessionId: {},
+        pausedQueueByConversationId: {},
         interruptedTurnStateBySessionId: {},
+        interruptedTurnStateByConversationId: {},
         tokenUsageBySessionId: {},
+        tokenUsageByConversationId: {},
 
         syncAutoContextForVault: (vaultPath) => {
             const next = loadAutoContextPreference(vaultPath);
@@ -8517,12 +10158,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setDefaultRuntime: (runtimeId) => {
+            const nextRuntimeId = isClaudeTerminalRuntimeId(runtimeId)
+                ? null
+                : runtimeId;
             _defaultRuntimePreferenceVersion += 1;
             set((state) => ({
-                defaultRuntimeId: runtimeId,
-                selectedRuntimeId: runtimeId ?? state.selectedRuntimeId,
+                defaultRuntimeId: nextRuntimeId,
+                selectedRuntimeId: nextRuntimeId ?? state.selectedRuntimeId,
             }));
-            saveAiPreferences({ defaultRuntimeId: runtimeId ?? undefined });
+            saveAiPreferences({
+                defaultRuntimeId: nextRuntimeId ?? undefined,
+            });
         },
 
         getDefaultNewChatRuntimeId: () => {
@@ -8684,11 +10330,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 // still available and ready. Otherwise stay on ACP runtimes;
                 // Claude Code remains available but is not promoted to the
                 // default just because the binary exists in PATH.
+                const persistedDefaultRuntimeId =
+                    loadAiPreferences().defaultRuntimeId;
                 const persistedRuntimeId = getSelectableDefaultRuntimeId(
-                        loadAiPreferences().defaultRuntimeId,
-                        runtimes,
-                        setupStatusByRuntimeId,
-                    );
+                    persistedDefaultRuntimeId,
+                    runtimes,
+                    setupStatusByRuntimeId,
+                );
+                if (isClaudeTerminalRuntimeId(persistedDefaultRuntimeId)) {
+                    saveAiPreferences({ defaultRuntimeId: undefined });
+                }
 
                 // Prefer in-memory changes made while this initialize() was in
                 // flight. "Automatic" is stored as null, so we need the version
@@ -8737,7 +10388,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 } else if (!get().historyStorageVaultPath) {
                     set({ historyStorageStatus: null });
                 }
-                const sessions = await aiListSessions(vaultPath);
+                // Initialization can overlap a probe during HMR. Filter it at
+                // inventory ingestion as well as at event ingestion below.
+                const sessions = (await aiListSessions(vaultPath)).filter(
+                    (session) =>
+                        !_turnCatalogProbeSessionIds.has(session.sessionId),
+                );
                 const hydratedRuntimes = hydrateRuntimesFromSessions(
                     runtimes,
                     sessions,
@@ -9350,6 +11006,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         upsertSession: (session, activate = false, options = {}) => {
+            // Probe sessions exist only to obtain model-dependent config and
+            // must not enter the canonical conversation projection.
+            if (_turnCatalogProbeSessionIds.has(session.sessionId)) {
+                return;
+            }
             let shouldDrainQueue = false;
             let sessionToPersist: AIChatSession | null = null;
             set((state) => {
@@ -9732,8 +11393,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
-        applyTokenUsage: ({ session_id, used, size, cost }) => {
+        applyTokenUsage: ({ session_id: sessionRef, used, size, cost }) => {
             set((state) => {
+                const session_id =
+                    resolveLegacySessionId(state, sessionRef) ?? sessionRef;
                 if (!state.sessionsById[session_id]) {
                     return state;
                 }
@@ -9909,14 +11572,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 // Don't create the message yet — it will be created lazily
                 // on the first delta so it appears in chronological order
                 // (after thinking and tool messages).
+                const streamingSession = {
+                    ...nextSession,
+                    status: "streaming" as const,
+                };
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: {
-                            ...nextSession,
-                            status: "streaming",
-                        },
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        streamingSession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         session_id,
@@ -9940,10 +11605,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const nextSession = markSessionStreamingIfLive(session);
                 if (nextSession === session) return state;
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: nextSession,
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        nextSession,
+                    ),
                 };
             });
             bufferMessageDelta(session_id, message_id, delta, messageRole);
@@ -9975,10 +11641,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     if (nextSession === session) return state;
                     return {
-                        sessionsById: {
-                            ...state.sessionsById,
-                            [session_id]: nextSession,
-                        },
+                        sessionsById: replaceSessionById(
+                            state.sessionsById,
+                            session_id,
+                            nextSession,
+                        ),
                     };
                 });
                 persistCurrentSession(session_id);
@@ -9992,7 +11659,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 if (!session) return state;
                 const activeQueuedMessage =
                     state.activeQueuedMessageBySessionId[session_id] ?? null;
-                const nextSession = finalizeActionLogForWorkCycle(
+                const finalizedSession = finalizeActionLogForWorkCycle(
                     stampElapsedOnTurnStartedSession(
                         {
                             ...markAllMessagesComplete(session),
@@ -10001,12 +11668,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         completedAt,
                     ),
                 );
+                const nextSession = completeActiveBindingTurn(
+                    { ...finalizedSession, activeWorkCycleId: null },
+                    message_id,
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: nextSession,
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        nextSession,
+                    ),
                     queuedMessagesBySessionId: activeQueuedMessage
                         ? cleanupQueuedMessagesBySessionId(
                               state.queuedMessagesBySessionId,
@@ -10053,26 +11725,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     nextSession.messageIndexById?.[message_id] != null;
                 if (exists) return state;
 
-                return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: appendSessionMessage(
-                            {
-                                ...nextSession,
-                                status: "streaming",
-                            },
-                            {
-                                id: message_id,
-                                role: "assistant",
-                                kind: "thinking",
-                                content: "",
-                                workCycleId: nextSession.activeWorkCycleId,
-                                title: "Thinking",
-                                timestamp: Date.now(),
-                                inProgress: true,
-                            },
-                        ),
+                const thinkingSession = appendSessionMessage(
+                    {
+                        ...nextSession,
+                        status: "streaming",
                     },
+                    {
+                        id: message_id,
+                        role: "assistant",
+                        kind: "thinking",
+                        content: "",
+                        workCycleId: nextSession.activeWorkCycleId,
+                        title: "Thinking",
+                        timestamp: Date.now(),
+                        inProgress: true,
+                    },
+                );
+                return {
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        thinkingSession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         session_id,
@@ -10092,10 +11766,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const nextSession = markSessionStreamingIfLive(session);
                 if (nextSession === session) return state;
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: nextSession,
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        nextSession,
+                    ),
                 };
             });
             bufferThinkingDelta(session_id, message_id, delta);
@@ -10111,15 +11786,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const session = state.sessionsById[session_id];
                 if (!session) return state;
 
+                const nextSession = setMessageInProgressState(
+                    session,
+                    message_id,
+                    false,
+                );
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [session_id]: setMessageInProgressState(
-                            session,
-                            message_id,
-                            false,
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        session_id,
+                        nextSession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         session_id,
@@ -10216,14 +11893,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     },
                 };
 
+                const activitySession = upsertSessionActivityMessage(
+                    consolidated,
+                    nextMessage,
+                );
+
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionActivityMessage(
-                            consolidated,
-                            nextMessage,
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        activitySession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -10282,14 +11962,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const session = state.sessionsById[payload.session_id];
                 if (!session) return state;
 
+                const nextSession = upsertSessionStatusMessage(
+                    session,
+                    payload,
+                );
+
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionStatusMessage(
-                            session,
-                            payload,
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        nextSession,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -10318,19 +12001,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...createImageGenerationMessage(payload),
                     workCycleId: nextSession.activeWorkCycleId,
                 };
+                const sessionWithImage = upsertSessionMessage(
+                    nextSession,
+                    nextMessage,
+                    {
+                        preserveTimestamp: true,
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            nextSession,
-                            nextMessage,
-                            {
-                                preserveTimestamp: true,
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithImage,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -10358,19 +12043,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...createPlanMessage(payload),
                     workCycleId: nextSession.activeWorkCycleId,
                 };
+                const sessionWithPlan = upsertSessionMessage(
+                    nextSession,
+                    nextMessage,
+                    {
+                        preserveTimestamp: true,
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            nextSession,
-                            nextMessage,
-                            {
-                                preserveTimestamp: true,
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithPlan,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -10472,21 +12159,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         target: payload.target ?? null,
                     },
                 };
+                const sessionWithPermission = upsertSessionMessage(
+                    {
+                        ...sessionWithBuffer,
+                        status: "waiting_permission",
+                    },
+                    nextMessage,
+                    {
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            {
-                                ...sessionWithBuffer,
-                                status: "waiting_permission",
-                            },
-                            nextMessage,
-                            {
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithPermission,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -10525,21 +12214,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         status: "pending",
                     },
                 };
+                const sessionWithUserInput = upsertSessionMessage(
+                    {
+                        ...nextSession,
+                        status: "waiting_user_input",
+                    },
+                    nextMessage,
+                    {
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            {
-                                ...nextSession,
-                                status: "waiting_user_input",
-                            },
-                            nextMessage,
-                            {
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithUserInput,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -10563,26 +12254,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const status = payload.status ?? "pending";
 
                 if (status === "completed") {
+                    const completedSession =
+                        updateUrlElicitationMessageState(
+                            {
+                                ...nextSession,
+                                status:
+                                    nextSession.status ===
+                                    "waiting_user_input"
+                                        ? "streaming"
+                                        : nextSession.status,
+                            },
+                            payload.request_id,
+                            {
+                                status: "completed",
+                                completedByRuntime: true,
+                            },
+                        );
                     return {
-                        sessionsById: {
-                            ...state.sessionsById,
-                            [payload.session_id]:
-                                updateUrlElicitationMessageState(
-                                    {
-                                        ...nextSession,
-                                        status:
-                                            nextSession.status ===
-                                            "waiting_user_input"
-                                                ? "streaming"
-                                                : nextSession.status,
-                                    },
-                                    payload.request_id,
-                                    {
-                                        status: "completed",
-                                        completedByRuntime: true,
-                                    },
-                                ),
-                        },
+                        sessionsById: replaceSessionById(
+                            state.sessionsById,
+                            payload.session_id,
+                            completedSession,
+                        ),
                         sessionOrder: touchSessionOrder(
                             state.sessionOrder,
                             payload.session_id,
@@ -10608,21 +12301,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         toolCallId: payload.tool_call_id ?? null,
                     },
                 };
+                const sessionWithUrlRequest = upsertSessionMessage(
+                    {
+                        ...nextSession,
+                        status: "waiting_user_input",
+                    },
+                    nextMessage,
+                    {
+                        preserveWorkCycleId: true,
+                    },
+                );
 
                 return {
-                    sessionsById: {
-                        ...state.sessionsById,
-                        [payload.session_id]: upsertSessionMessage(
-                            {
-                                ...nextSession,
-                                status: "waiting_user_input",
-                            },
-                            nextMessage,
-                            {
-                                preserveWorkCycleId: true,
-                            },
-                        ),
-                    },
+                    sessionsById: replaceSessionById(
+                        state.sessionsById,
+                        payload.session_id,
+                        sessionWithUrlRequest,
+                    ),
                     sessionOrder: touchSessionOrder(
                         state.sessionOrder,
                         payload.session_id,
@@ -10906,13 +12601,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const vaultPath = useVaultStore.getState().vaultPath;
                 const isCustomRuntime =
                     currentSession.runtimeId.startsWith("custom:");
-                const customRuntimeTranscriptFork =
-                    isCustomRuntimeTranscriptFork(currentSession);
-                const supportsNativeResume = runtimeSupportsCapability(
-                    get().runtimes,
-                    currentSession.runtimeId,
-                    "resume_session",
-                );
+                const transcriptFork =
+                    isTranscriptForkSession(currentSession);
+                const supportsNativeResume =
+                    !transcriptFork &&
+                    runtimeSupportsCapability(
+                        get().runtimes,
+                        currentSession.runtimeId,
+                        "resume_session",
+                    );
                 resumeStrategy = getResumeRecoveryStrategy(
                     get().runtimes,
                     currentSession,
@@ -10921,13 +12618,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     getSessionRuntimeStateForLog(currentSession);
                 const transcriptLoaded =
                     supportsNativeResume ||
-                    (isCustomRuntime && !customRuntimeTranscriptFork)
+                    (isCustomRuntime && !transcriptFork)
                         ? await loadPersistedTranscript(sessionId, "latest")
                         : await loadPersistedTranscript(sessionId, "full");
                 if (!transcriptLoaded) {
                     throw new Error(
                         supportsNativeResume ||
-                            (isCustomRuntime && !customRuntimeTranscriptFork)
+                            (isCustomRuntime && !transcriptFork)
                             ? "Failed to load the latest saved transcript before resuming."
                             : "Failed to load the full saved transcript before resuming.",
                     );
@@ -10937,10 +12634,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     get().sessionsById[sessionId] ?? currentSession;
                 const historySessionId =
                     getRuntimeHistorySessionId(latestSession);
+                const runtimeResumeSessionId =
+                    getRuntimeResumeSessionId(latestSession);
                 let latestCatalog = getRuntimeCatalogSnapshot(latestSession);
                 logResumeRecovery("started", {
                     resume_strategy: resumeStrategy,
-                    history_session_id: historySessionId,
                     runtime_id: latestSession.runtimeId,
                     persisted_message_count:
                         getSessionPersistedMessageCount(latestSession),
@@ -10956,14 +12654,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let resumedSession: AIChatSession;
                 let resumeContextPending = false;
 
-                if (isCustomRuntime && !customRuntimeTranscriptFork) {
+                if (isCustomRuntime && !transcriptFork) {
                     const continuationStrategy =
                         latestSession.continuationStrategy;
                     const launchFingerprint =
                         latestSession.runtimeLaunchFingerprint?.trim();
-                    const runtimeSessionId =
-                        latestSession.runtimeSessionId?.trim() ||
-                        historySessionId;
+                    const runtimeSessionId = runtimeResumeSessionId;
                     if (!continuationStrategy || !launchFingerprint) {
                         set((state) => {
                             const current = state.sessionsById[sessionId];
@@ -11083,7 +12779,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     try {
                         resumedSession = await aiResumeRuntimeSession(
                             latestSession.runtimeId,
-                            historySessionId,
+                            runtimeResumeSessionId,
                             vaultPath,
                             latestSession.additionalRoots ?? null,
                         );
@@ -11094,7 +12790,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         );
                         logResumeRecovery("failed", {
                             resume_strategy: "native_load_session",
-                            history_session_id: historySessionId,
                             runtime_id: latestSession.runtimeId,
                             persisted_message_count:
                                 getSessionPersistedMessageCount(latestSession),
@@ -11106,7 +12801,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             runtime_state_before: runtimeStateBefore,
                             runtime_state_after:
                                 getSessionRuntimeStateForLog(latestSession),
-                            error_message: nativeResumeMessage,
+                            error_code: getCanonicalConversationErrorCode(
+                                nativeResumeMessage,
+                                latestSession.runtimeId,
+                            ),
                         });
 
                         const fullTranscriptLoaded =
@@ -11124,7 +12822,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         resumeStrategy = "transcript_prompt_injection";
                         logResumeRecovery("started", {
                             resume_strategy: resumeStrategy,
-                            history_session_id: historySessionId,
                             runtime_id: latestSession.runtimeId,
                             persisted_message_count:
                                 getSessionPersistedMessageCount(latestSession),
@@ -11136,7 +12833,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             runtime_state_before: runtimeStateBefore,
                             runtime_state_after:
                                 getSessionRuntimeStateForLog(latestSession),
-                            error_message: nativeResumeMessage,
+                            error_code: getCanonicalConversationErrorCode(
+                                nativeResumeMessage,
+                                latestSession.runtimeId,
+                            ),
                         });
                         const fallback = await createTranscriptResumeSession(
                                 latestSession,
@@ -11165,11 +12865,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                 }
 
-                const migratedSession = startNewWorkCycle(
+                const migratedSession = normalizeResumedSessionWorkCycle(
                     replaceSessionTranscript(
                         {
                             ...resumedSession,
                             historySessionId,
+                            conversationBindings:
+                                latestSession.conversationBindings,
                             parentSessionId:
                                 resumedSession.parentSessionId ??
                                 latestSession.parentSessionId ??
@@ -11215,12 +12917,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 !isTransientRecoveryStatusMessage(message),
                         ),
                     ),
+                    latestSession.visibleWorkCycleId,
                 );
 
                 migrateSessionLocalState(sessionId, migratedSession);
                 logResumeRecovery("succeeded", {
                     resume_strategy: resumeStrategy,
-                    history_session_id: historySessionId,
                     runtime_id: migratedSession.runtimeId,
                     persisted_message_count:
                         getSessionPersistedMessageCount(migratedSession),
@@ -11243,9 +12945,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const failedSession = get().sessionsById[sessionId] ?? session;
                 logResumeRecovery("failed", {
                     resume_strategy: resumeStrategy,
-                    history_session_id: getRuntimeHistorySessionId(
-                        failedSession,
-                    ),
                     runtime_id: failedSession.runtimeId,
                     persisted_message_count:
                         getSessionPersistedMessageCount(failedSession),
@@ -11256,7 +12955,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     runtime_state_before: getSessionRuntimeStateForLog(session),
                     runtime_state_after:
                         getSessionRuntimeStateForLog(failedSession),
-                    error_message: message,
+                    error_code: getCanonicalConversationErrorCode(
+                        message,
+                        failedSession.runtimeId,
+                    ),
                 });
                 set((state) => {
                     const current = state.sessionsById[sessionId];
@@ -11566,6 +13268,309 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
         },
 
+        prepareConversationTurnCatalog: async (conversationId, selection) => {
+            const requestKey = getPreparedTurnCatalogKey(selection);
+            const prepared =
+                get().preparedTurnCatalogByConversationId[conversationId];
+            if (
+                (prepared &&
+                    getPreparedTurnCatalogKey(prepared) === requestKey) ||
+                _pendingTurnCatalogKeyByConversationId.get(conversationId) ===
+                    requestKey
+            ) {
+                return;
+            }
+
+            const state = get();
+            const runtime = state.runtimes.find(
+                (candidate) => candidate.runtime.id === selection.runtimeId,
+            );
+            if (
+                !runtime?.runtime.capabilities.includes("create_session")
+            ) {
+                return;
+            }
+            const sessionId =
+                state.sessionIdByConversationId[conversationId] ??
+                resolveLegacySessionId(state, conversationId);
+            const sourceSession = sessionId
+                ? state.sessionsById[sessionId]
+                : null;
+            if (!sourceSession) {
+                return;
+            }
+            if (
+                selection.runtimeId !== sourceSession.runtimeId &&
+                hasConversationHistory(sourceSession)
+            ) {
+                return;
+            }
+
+            _pendingTurnCatalogKeyByConversationId.set(
+                conversationId,
+                requestKey,
+            );
+            let probeSessionId: string | null = null;
+            try {
+                const vaultPath =
+                    sourceSession.vaultPath ??
+                    useVaultStore.getState().vaultPath ??
+                    null;
+                const probeSession = await aiCreateSession(
+                    selection.runtimeId,
+                    vaultPath,
+                    sourceSession.additionalRoots ?? [],
+                );
+                probeSessionId = probeSession.sessionId;
+                _turnCatalogProbeSessionIds.add(probeSessionId);
+                const discoveredSelection =
+                    resolveDiscoveredConversationSelection(
+                        runtime,
+                        probeSession,
+                        selection,
+                    );
+                // Configure the probe exactly like the eventual turn. Several
+                // ACPs reveal reasoning and service-tier options only after the
+                // target model has been selected. Bootstrap descriptor values
+                // are resolved from the live catalog first, so a synthetic
+                // `auto` model cannot prevent discovery from completing.
+                const configured = await configureConversationTurnSession(
+                    probeSession,
+                    discoveredSelection,
+                );
+                const configuredSession = configured.session;
+                const resolvedSelection = configured.selection;
+
+                if (
+                    _pendingTurnCatalogKeyByConversationId.get(
+                        conversationId,
+                    ) !== requestKey
+                ) {
+                    // A newer selection won the race; never publish stale
+                    // options from the superseded probe.
+                    return;
+                }
+                set((currentState) => ({
+                    runtimes: hydrateRuntimesFromSessions(
+                        currentState.runtimes,
+                        [configuredSession],
+                    ),
+                }));
+
+                let currentConversation =
+                    get().conversationsById[conversationId];
+                if (
+                    !currentConversation ||
+                    getPreparedTurnCatalogKey(
+                        currentConversation.preferredSelection,
+                    ) !== requestKey
+                ) {
+                    // Provider previews still warm the shared runtime catalog,
+                    // but must not change this conversation's staged choice.
+                    return;
+                }
+
+                if (
+                    !conversationSelectionsEqual(
+                        selection,
+                        resolvedSelection,
+                    )
+                ) {
+                    get().setConversationTurnSelection(
+                        conversationId,
+                        resolvedSelection,
+                    );
+                    currentConversation =
+                        get().conversationsById[conversationId];
+                    if (
+                        !currentConversation ||
+                        !conversationSelectionsEqual(
+                            currentConversation.preferredSelection,
+                            resolvedSelection,
+                        )
+                    ) {
+                        return;
+                    }
+                }
+
+                set((currentState) => ({
+                    preparedTurnCatalogByConversationId: {
+                        ...currentState.preparedTurnCatalogByConversationId,
+                        [conversationId]: {
+                            runtimeId: resolvedSelection.runtimeId,
+                            modelId: resolvedSelection.modelId,
+                            models: configuredSession.models,
+                            modes: configuredSession.modes,
+                            configOptions: configuredSession.configOptions,
+                            effortsByModel:
+                                configuredSession.effortsByModel ?? {},
+                        },
+                    },
+                }));
+            } catch (error) {
+                logWarn(
+                    "chat-store",
+                    `Failed to prepare turn catalog for ${selection.runtimeId}`,
+                    error,
+                );
+            } finally {
+                if (probeSessionId) {
+                    await aiDeleteRuntimeSession(probeSessionId).catch(
+                        () => {},
+                    );
+                    const sessionIdToRemove = probeSessionId;
+                    // The event bridge normally ignores probe sessions, but a
+                    // hot reload can race with creation. Remove any leaked
+                    // compatibility projection defensively after cleanup.
+                    set((currentState) => {
+                        if (!currentState.sessionsById[sessionIdToRemove]) {
+                            return currentState;
+                        }
+                        const sessionsById = {
+                            ...currentState.sessionsById,
+                        };
+                        delete sessionsById[sessionIdToRemove];
+                        return {
+                            sessionsById,
+                            sessionOrder: currentState.sessionOrder.filter(
+                                (sessionId) =>
+                                    sessionId !== sessionIdToRemove,
+                            ),
+                            activeSessionId:
+                                currentState.activeSessionId ===
+                                sessionIdToRemove
+                                    ? sourceSession.sessionId
+                                    : currentState.activeSessionId,
+                            lastFocusedSessionId:
+                                currentState.lastFocusedSessionId ===
+                                sessionIdToRemove
+                                    ? sourceSession.sessionId
+                                    : currentState.lastFocusedSessionId,
+                        };
+                    });
+                    _turnCatalogProbeSessionIds.delete(probeSessionId);
+                }
+                if (
+                    _pendingTurnCatalogKeyByConversationId.get(
+                        conversationId,
+                    ) === requestKey
+                ) {
+                    _pendingTurnCatalogKeyByConversationId.delete(
+                        conversationId,
+                    );
+                }
+            }
+        },
+
+        setConversationTurnSelection: (conversationId, selection) => {
+            const state = get();
+            const sessionId =
+                state.sessionIdByConversationId[conversationId] ??
+                resolveLegacySessionId(state, conversationId);
+            if (!sessionId) return;
+
+            let changed = false;
+            set((currentState) => {
+                const session = currentState.sessionsById[sessionId];
+                const conversation =
+                    currentState.conversationsById[conversationId];
+                const runtime = currentState.runtimes.find(
+                    (candidate) =>
+                        candidate.runtime.id === selection.runtimeId,
+                );
+                if (!session || !conversation || !runtime) {
+                    return currentState;
+                }
+
+                const activeBinding = conversation.activeBindingId
+                    ? currentState.bindingsById[conversation.activeBindingId]
+                    : null;
+                const activeRuntimeId =
+                    activeBinding?.runtimeId ?? session.runtimeId;
+                const initialProviderChanged =
+                    activeRuntimeId !== selection.runtimeId;
+                const setupStatus =
+                    currentState.setupStatusByRuntimeId[selection.runtimeId];
+                if (
+                    isClaudeTerminalRuntimeId(selection.runtimeId) ||
+                    (initialProviderChanged &&
+                        (getConversationProviderSelectionBlocker(
+                            conversation,
+                            {
+                                hasQueuedMessages:
+                                    (currentState.queuedMessagesBySessionId[
+                                        sessionId
+                                    ]?.length ?? 0) > 0 ||
+                                    currentState.activeQueuedMessageBySessionId[
+                                        sessionId
+                                    ] != null,
+                            },
+                        ) != null ||
+                            (setupStatus != null &&
+                                !isRuntimeSetupReady(setupStatus))))
+                ) {
+                    return currentState;
+                }
+
+                const bindings =
+                    updateConversationBindingsFromLegacySession(session);
+                const previous = bindings.preferredSelection;
+                const preparedCatalog =
+                    currentState.preparedTurnCatalogByConversationId[
+                        conversationId
+                    ];
+                const clearPreparedCatalog =
+                    preparedCatalog != null &&
+                    getPreparedTurnCatalogKey(preparedCatalog) !==
+                        getPreparedTurnCatalogKey(selection);
+                // Preserve the catalog when only effort/tier values change;
+                // invalidate it only when provider or model changes.
+                const optionKeys = new Set([
+                    ...Object.keys(previous.options),
+                    ...Object.keys(selection.options),
+                ]);
+                if (
+                    previous.runtimeId === selection.runtimeId &&
+                    previous.modelId === selection.modelId &&
+                    previous.modeId === selection.modeId &&
+                    [...optionKeys].every(
+                        (key) =>
+                            previous.options[key] === selection.options[key],
+                    )
+                ) {
+                    return currentState;
+                }
+
+                changed = true;
+                return {
+                    sessionsById: {
+                        ...currentState.sessionsById,
+                        [sessionId]: {
+                            ...session,
+                            conversationBindings: {
+                                ...bindings,
+                                revision: bindings.revision + 1,
+                                preferredSelection: {
+                                    ...selection,
+                                    options: { ...selection.options },
+                                },
+                            },
+                        },
+                    },
+                    ...(clearPreparedCatalog
+                        ? {
+                              preparedTurnCatalogByConversationId:
+                                  removeSessionMapEntry(
+                                      currentState.preparedTurnCatalogByConversationId,
+                                      conversationId,
+                                  ),
+                          }
+                        : {}),
+                };
+            });
+            if (changed) persistCurrentSession(sessionId);
+        },
+
         enqueueMessage: (sessionId, item) =>
             set((state) => ({
                 queuedMessagesBySessionId: {
@@ -11777,6 +13782,73 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
+        startConversationTurn: async (conversationId, selection) => {
+            const state = get();
+            const sessionId =
+                state.sessionIdByConversationId[conversationId] ??
+                resolveLegacySessionId(state, conversationId);
+            const session = sessionId
+                ? state.sessionsById[sessionId]
+                : undefined;
+            const conversation = state.conversationsById[conversationId];
+            if (!sessionId || !session || !conversation) return;
+
+            const activeBinding = conversation.activeBindingId
+                ? state.bindingsById[conversation.activeBindingId]
+                : null;
+            const activeRuntimeId =
+                activeBinding?.runtimeId ?? session.runtimeId;
+            const initialProviderChanged =
+                activeRuntimeId !== selection.runtimeId;
+            if (initialProviderChanged) {
+                const blocker = getConversationProviderSelectionBlocker(
+                    conversation,
+                    {
+                        hasQueuedMessages:
+                            (state.queuedMessagesBySessionId[sessionId]
+                                ?.length ?? 0) > 0 ||
+                            state.activeQueuedMessageBySessionId[sessionId] !=
+                                null,
+                    },
+                );
+                const runtime = state.runtimes.find(
+                    (candidate) =>
+                        candidate.runtime.id === selection.runtimeId,
+                );
+                const setupStatus =
+                    state.setupStatusByRuntimeId[selection.runtimeId];
+                if (
+                    blocker ||
+                    !runtime ||
+                    isClaudeTerminalRuntimeId(selection.runtimeId) ||
+                    (setupStatus != null &&
+                        !isRuntimeSetupReady(setupStatus))
+                ) {
+                    return;
+                }
+            }
+
+            const pendingSelection = {
+                ...selection,
+                options: { ...selection.options },
+            };
+            _pendingTurnSelectionByConversationId.set(
+                conversationId,
+                pendingSelection,
+            );
+            try {
+                await get().sendMessage(sessionId);
+            } finally {
+                const pending =
+                    _pendingTurnSelectionByConversationId.get(conversationId);
+                if (pending === pendingSelection) {
+                    _pendingTurnSelectionByConversationId.delete(
+                        conversationId,
+                    );
+                }
+            }
+        },
+
         sendMessage: async (sessionId) => {
             let resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
@@ -11791,9 +13863,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
+            const conversationId =
+                resolveConversationId(get(), resolvedSessionId) ??
+                session.historySessionId;
+            const requestedSelection =
+                _pendingTurnSelectionByConversationId.get(conversationId) ??
+                updateConversationBindingsFromLegacySession(session)
+                    .preferredSelection;
+            const selection =
+                requestedSelection.runtimeId !== session.runtimeId &&
+                hasConversationHistory(session)
+                    ? getConversationSelection(session)
+                    : requestedSelection;
+            const initialProviderChanged =
+                selection.runtimeId !== session.runtimeId;
+
             if (
-                !isLiveRuntimeSession(session) ||
-                needsFullResumeContextTranscript(session)
+                (!initialProviderChanged && !isLiveRuntimeSession(session)) ||
+                (!initialProviderChanged &&
+                    needsFullResumeContextTranscript(session))
             ) {
                 const preparedSessionId =
                     await prepareSessionForPromptBuild(resolvedSessionId);
@@ -11811,7 +13899,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const composerParts =
                 composerPartsBySessionId[resolvedSessionId] ??
                 createEmptyComposerParts();
-            const queuedItem = buildQueuedMessage(session, composerParts);
+            const queuedItem = buildQueuedMessage(
+                session,
+                composerParts,
+                selection,
+            );
             if (!queuedItem) return;
             const pendingStop = _pendingStopBySessionId.get(resolvedSessionId);
 
@@ -13477,7 +15569,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     runtimes,
                     get().setupStatusByRuntimeId,
                 ) ??
-                getDefaultRuntimeId(runtimes, get().setupStatusByRuntimeId);
+                getImplicitDefaultAcpRuntimeId(
+                    runtimes,
+                    get().setupStatusByRuntimeId,
+                );
             if (!nextRuntimeId) return null;
 
             const markPendingSessionError = (message: string) => {
@@ -13828,7 +15923,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     state.runtimes,
                     state.setupStatusByRuntimeId,
                 ) ??
-                getDefaultRuntimeId(
+                getImplicitDefaultAcpRuntimeId(
                     state.runtimes,
                     state.setupStatusByRuntimeId,
                 );
@@ -14241,6 +16336,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const forkedTitle = `${getSessionTitle(session)} (fork)`;
                 const now = Date.now();
                 const forkedSessionId = `persisted:${newHistoryId}`;
+                const forkedBindings = forkConversationBindings(
+                    updateConversationBindingsFromLegacySession(session),
+                    newHistoryId,
+                    now,
+                );
 
                 const runtime =
                     state.runtimes.find(
@@ -14252,12 +16352,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...session,
                     sessionId: forkedSessionId,
                     historySessionId: newHistoryId,
-                    runtimeSessionId: session.runtimeId.startsWith("custom:")
-                        ? null
-                        : session.runtimeSessionId,
-                    continuationStrategy: session.runtimeId.startsWith("custom:")
-                        ? "new_session_only"
-                        : session.continuationStrategy,
+                    runtimeSessionId: null,
+                    continuationStrategy: "new_session_only",
                     status: "idle",
                     isResumingSession: false,
                     isPersistedSession: true,
@@ -14275,6 +16371,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     isLoadingPersistedMessages: false,
                     activeWorkCycleId: null,
                     visibleWorkCycleId: null,
+                    conversationBindings: forkedBindings,
                 };
 
                 get().upsertSession(forkedSession, true);
@@ -14293,7 +16390,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
     };
-});
+};
+
+export const useChatStore = create<ChatStore>()(
+    withCanonicalChatProjection(createChatStore),
+);
 
 // Stop retaining agent-owned review state as soon as the current vault turns
 // AI change review off. File writes and the ordinary vault watcher are not
@@ -14465,6 +16566,9 @@ export function resetChatStore() {
     _queueDrainLocks.clear();
     _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
+    _pendingTurnCatalogKeyByConversationId.clear();
+    _turnCatalogProbeSessionIds.clear();
+    _pendingConversationTurnEventRouteBySessionId.clear();
     _pendingSessionPersistence.clear();
     _deltaBuffer.messageDelta.clear();
     _deltaBuffer.thinkingDelta.clear();
@@ -14482,6 +16586,7 @@ export function resetChatStore() {
         runtimeConnectionByRuntimeId: {},
         setupStatusByRuntimeId: {},
         runtimes: [],
+        preparedTurnCatalogByConversationId: {},
         sessionsById: {},
         sessionOrder: [],
         pendingAvailableCommandsBySessionId: {},
@@ -14537,5 +16642,8 @@ export function disposeChatStoreRuntime() {
     chatRuntimeInitialized = false;
     _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
+    _pendingTurnCatalogKeyByConversationId.clear();
+    _turnCatalogProbeSessionIds.clear();
+    _pendingConversationTurnEventRouteBySessionId.clear();
     clearTrackedPersistedReconciliationTimers();
 }

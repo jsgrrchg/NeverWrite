@@ -2623,14 +2623,20 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                     const nextTitle = options?.title ?? existing.title;
                     const nextHistorySessionId =
                         requestedHistorySessionId ?? existing.historySessionId;
+                    const nextConversationId =
+                        requestedHistorySessionId ??
+                        existing.conversationId ??
+                        sessionId;
                     const nextTab =
                         nextTitle === existing.title &&
                         existing.sessionId === sessionId &&
-                        existing.historySessionId === nextHistorySessionId
+                        existing.historySessionId === nextHistorySessionId &&
+                        existing.conversationId === nextConversationId
                             ? existing
                             : {
                                   ...existing,
                                   title: nextTitle,
+                                  conversationId: nextConversationId,
                                   sessionId,
                                   ...(nextHistorySessionId
                                       ? {

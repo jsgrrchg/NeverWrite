@@ -20,6 +20,17 @@ import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 
 const composerMockState = vi.hoisted(() => ({
     onPasteImage: undefined as ((file: File) => void) | undefined,
+    onSubmit: undefined as (() => void) | undefined,
+}));
+const agentControlsMockState = vi.hoisted(() => ({
+    props: null as null | {
+        runtimeId?: string;
+        providers?: Array<{
+            runtimeId: string;
+            disabledReason: string | null;
+        }>;
+        onProviderModelChange?: (runtimeId: string, modelId: string) => void;
+    },
 }));
 const messageListMockState = vi.hoisted(() => ({
     props: [] as Array<{
@@ -57,6 +68,7 @@ vi.mock("./AIChatComposer", () => ({
         footer,
         onToggleExpanded,
         onPasteImage,
+        onSubmit,
         placeholderText,
     }: {
         disabled?: boolean;
@@ -65,9 +77,11 @@ vi.mock("./AIChatComposer", () => ({
         footer?: ReactNode;
         onToggleExpanded?: () => void;
         onPasteImage?: (file: File) => void;
+        onSubmit?: () => void;
         placeholderText?: string;
-    }) => (
-        <div>
+    }) => {
+        composerMockState.onSubmit = onSubmit;
+        return <div>
             <button
                 type="button"
                 data-testid="chat-composer"
@@ -86,8 +100,8 @@ vi.mock("./AIChatComposer", () => ({
                     composerMockState.onPasteImage = onPasteImage;
                 }}
             />
-        </div>
-    ),
+        </div>;
+    },
 }));
 
 vi.mock("./AIChatContextBar", () => ({
@@ -95,7 +109,12 @@ vi.mock("./AIChatContextBar", () => ({
 }));
 
 vi.mock("./AIChatAgentControls", () => ({
-    AIChatAgentControls: () => <div data-testid="chat-agent-controls" />,
+    AIChatAgentControls: (
+        props: NonNullable<typeof agentControlsMockState.props>,
+    ) => {
+        agentControlsMockState.props = props;
+        return <div data-testid="chat-agent-controls" />;
+    },
 }));
 
 vi.mock("./EditedFilesBufferPanel", () => ({
@@ -170,6 +189,8 @@ describe("AIChatSessionView", () => {
         resetChatStore();
         useSettingsStore.getState().reset();
         composerMockState.onPasteImage = undefined;
+        composerMockState.onSubmit = undefined;
+        agentControlsMockState.props = null;
         messageListMockState.props = [];
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -180,6 +201,155 @@ describe("AIChatSessionView", () => {
             tabs: [],
             activeTabId: null,
         });
+    });
+
+    it("locks provider changes after the conversation starts", () => {
+        setupWorkspaceSession();
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B ACP",
+                        description: "Second provider",
+                        capabilities: ["create_session"],
+                    },
+                    models: [
+                        {
+                            id: "model-b",
+                            runtimeId: "provider-b",
+                            name: "Model B",
+                            description: "Provider B model",
+                        },
+                    ],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    runtimeId: "provider-b",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+            },
+        }));
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        expect(
+            agentControlsMockState.props?.providers?.map(
+                (provider) => provider.runtimeId,
+            ),
+        ).toContain("provider-b");
+        expect(
+            agentControlsMockState.props?.providers?.find(
+                (provider) => provider.runtimeId === "provider-b",
+            )?.disabledReason,
+        ).toBe("Start a new chat to use another provider.");
+
+        act(() => {
+            agentControlsMockState.props?.onProviderModelChange?.(
+                "provider-b",
+                "model-b",
+            );
+        });
+
+        expect(
+            useChatStore.getState().conversationsById["session-a"]
+                ?.preferredSelection,
+        ).toMatchObject({
+            runtimeId: "codex-acp",
+            modelId: "test-model",
+        });
+    });
+
+    it("treats the staged provider as active while the first turn is pending", () => {
+        const sessionId = "session-a";
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [sessionId]: {
+                    ...createSession(sessionId, "Workspace chat"),
+                    messages: [],
+                    persistedMessageCount: 0,
+                },
+            },
+            activeSessionId: sessionId,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B ACP",
+                        description: "Second provider",
+                        capabilities: ["create_session"],
+                    },
+                    models: [
+                        {
+                            id: "model-b",
+                            runtimeId: "provider-b",
+                            name: "Model B",
+                            description: "Provider B model",
+                        },
+                    ],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    runtimeId: "provider-b",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+            },
+        }));
+        useChatStore.setState((state) => ({
+            conversationsById: {
+                ...state.conversationsById,
+                [sessionId]: {
+                    ...state.conversationsById[sessionId]!,
+                    status: "streaming",
+                    preferredSelection: {
+                        ...state.conversationsById[sessionId]!.preferredSelection,
+                        runtimeId: "provider-b",
+                        modelId: "model-b",
+                    },
+                },
+            },
+            preparedTurnCatalogByConversationId: {
+                ...state.preparedTurnCatalogByConversationId,
+                [sessionId]: {
+                    runtimeId: "provider-b",
+                    modelId: "model-b",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    effortsByModel: {},
+                },
+            },
+        }));
+        useEditorStore.getState().openChat(sessionId, {
+            title: "Workspace chat",
+            paneId: "primary",
+        });
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(agentControlsMockState.props?.runtimeId).toBe("provider-b");
+        expect(
+            agentControlsMockState.props?.providers?.find(
+                (provider) => provider.runtimeId === "provider-b",
+            )?.disabledReason,
+        ).toBeNull();
     });
 
     it("renames the workspace chat from the local header title on double click", async () => {

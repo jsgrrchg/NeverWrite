@@ -180,6 +180,8 @@ export interface ChatTab {
     id: string;
     kind: "ai-chat";
     sessionId: string;
+    /** Stable identity shared by every workspace presentation of this chat. */
+    conversationId?: string;
     historySessionId?: string;
     title: string;
     history?: ChatHistoryEntry[];
@@ -876,6 +878,11 @@ export function createChatTab(
     title: string,
     historySessionId?: string | null,
 ): ChatTab {
+    const conversationId =
+        historySessionId ??
+        (sessionId.startsWith("persisted:")
+            ? sessionId.slice("persisted:".length) || sessionId
+            : sessionId);
     const entry: ChatHistoryEntry = {
         sessionId,
         ...(historySessionId ? { historySessionId } : {}),
@@ -884,6 +891,7 @@ export function createChatTab(
     return {
         id: crypto.randomUUID(),
         kind: "ai-chat",
+        conversationId,
         ...entry,
         history: [entry],
         historyIndex: 0,
@@ -930,6 +938,7 @@ export function buildChatTabFromHistory(
     return {
         id,
         kind: "ai-chat",
+        conversationId: entry.historySessionId ?? entry.sessionId,
         ...entry,
         history,
         historyIndex: safeIndex,

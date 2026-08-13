@@ -15,14 +15,12 @@ import {
 } from "./dragEvents";
 import type { AIChatSession } from "./types";
 import {
-    createNewChatInWorkspace,
     ensureWorkspaceChatSession,
     openChatSessionInWorkspace,
 } from "./chatPaneMovement";
 import { useChatStore } from "./store/chatStore";
 import { useAiChatEventBridge } from "./useAiChatEventBridge";
-import { CLAUDE_TERMINAL_RUNTIME_ID } from "./utils/runtimeMetadata";
-import { openClaudeCodeTerminalWithContext } from "../terminal/claudeCodeTerminal";
+import { createCanonicalAgent } from "./newAgentCreation";
 
 function hasVisibleAiComposerDropZone(targetSessionId?: string) {
     const selector = targetSessionId
@@ -311,15 +309,7 @@ export function AIChatWorkspaceHost({
                 .detail;
             if (detail.phase !== "attach") return;
 
-            if (
-                useChatStore.getState().getDefaultNewChatRuntimeId() ===
-                CLAUDE_TERMINAL_RUNTIME_ID
-            ) {
-                void openClaudeCodeTerminalWithContext(detail);
-                return;
-            }
-
-            void createNewChatInWorkspace().then((sessionId) => {
+            void createCanonicalAgent().then((sessionId) => {
                 if (!sessionId) return;
                 replayAttachAfterComposerMount(detail, sessionId);
                 focusComposerAtEnd(sessionId);

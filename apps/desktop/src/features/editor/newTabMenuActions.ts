@@ -9,10 +9,11 @@ import {
     selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../app/store/editorStore";
-import { createNewChatInWorkspace } from "../ai/chatPaneMovement";
-import { useChatStore } from "../ai/store/chatStore";
-import { CLAUDE_TERMINAL_RUNTIME_ID } from "../ai/utils/runtimeMetadata";
-import { openClaudeCodeTerminalWithContext } from "../terminal/claudeCodeTerminal";
+import {
+    canCreateClaudeCodeAgent,
+    createCanonicalAgent,
+    createClaudeCodeAgent,
+} from "../ai/newAgentCreation";
 import {
     isSearchTab,
     SEARCH_NOTE_ID,
@@ -28,17 +29,9 @@ async function createNewNote(paneId?: string) {
     }
 }
 
-function getRuntimeMenuLabel(name: string) {
-    const trimmed = name.trim();
-    return trimmed.replace(/ ACP$/, "");
-}
-
-async function createNewChat(runtimeId?: string, paneId?: string) {
+async function createNewAgent(paneId?: string) {
     try {
-        await createNewChatInWorkspace(
-            runtimeId,
-            paneId ? { paneId } : undefined,
-        );
+        await createCanonicalAgent(paneId);
     } catch (error) {
         console.error("Failed to create a new chat from the tab menu:", error);
     }
@@ -88,14 +81,6 @@ export function buildNewTabContextMenuEntries(options?: {
     paneId?: string;
 }): ContextMenuEntry[] {
     const paneId = options?.paneId;
-    const chatState = useChatStore.getState();
-    const runtimes = [...chatState.runtimes];
-    const selectedRuntimeId = chatState.selectedRuntimeId;
-    runtimes.sort((left, right) => {
-        if (left.runtime.id === selectedRuntimeId) return -1;
-        if (right.runtime.id === selectedRuntimeId) return 1;
-        return left.runtime.name.localeCompare(right.runtime.name);
-    });
     const entries: ContextMenuEntry[] = [
         {
             label: "New Note",
@@ -109,43 +94,24 @@ export function buildNewTabContextMenuEntries(options?: {
         },
         {
             label: "New Agent",
-            disabled: runtimes.length === 0,
-            children:
-                runtimes.length > 0
-                    ? runtimes.map((runtime) => ({
-                          label: getRuntimeMenuLabel(runtime.runtime.name),
-                          action: () => {
-                              useChatStore
-                                  .getState()
-                                  .setSelectedRuntime(runtime.runtime.id);
-                              if (
-                                  runtime.runtime.id ===
-                                  CLAUDE_TERMINAL_RUNTIME_ID
-                              ) {
-                                  void openClaudeCodeTerminalWithContext(
-                                      undefined,
-                                      paneId,
-                                  );
-                              } else {
-                                  void createNewChat(
-                                      runtime.runtime.id,
-                                      paneId,
-                                  );
-                              }
-                          },
-                      }))
-                    : [
-                          {
-                              label: "No providers available",
-                              disabled: true,
-                          },
-                      ],
+            action: () => {
+                void createNewAgent(paneId);
+            },
         },
         {
             label: "Open Graph",
             action: () => openGraph(paneId),
         },
     ];
+
+    if (canCreateClaudeCodeAgent()) {
+        entries.splice(3, 0, {
+            label: "Claude Code",
+            action: () => {
+                void createClaudeCodeAgent(paneId);
+            },
+        });
+    }
 
     entries.push({
         label: "New Terminal",
@@ -159,6 +125,6 @@ export async function openNewNoteInPane(paneId?: string) {
     await createNewNote(paneId);
 }
 
-export async function openNewAgentInPane(paneId?: string, runtimeId?: string) {
-    await createNewChat(runtimeId, paneId);
+export async function openNewAgentInPane(paneId?: string) {
+    await createNewAgent(paneId);
 }

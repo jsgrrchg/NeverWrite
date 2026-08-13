@@ -188,7 +188,7 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         id: CODEX_RUNTIME_ID,
         name: "Codex",
         description: "OpenAI Codex-compatible agent runtime.",
-        default_executable: "codex",
+        default_executable: "codex-acp",
         bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
         acp_args: NO_ACP_ARGS,
         acp_protocol: AcpProtocolFlavor::Current,
@@ -198,7 +198,7 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         id: CLAUDE_RUNTIME_ID,
         name: "Claude",
         description: "Claude ACP-compatible agent runtime.",
-        default_executable: "claude",
+        default_executable: "claude-agent-acp",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
         acp_protocol: AcpProtocolFlavor::Current,
@@ -311,13 +311,13 @@ mod tests {
         let expected = vec![
             (
                 CODEX_RUNTIME_ID,
-                "codex",
+                "codex-acp",
                 Some("NEVERWRITE_CODEX_ACP_BIN"),
                 Vec::<String>::new(),
             ),
             (
                 CLAUDE_RUNTIME_ID,
-                "claude",
+                "claude-agent-acp",
                 Some("NEVERWRITE_CLAUDE_ACP_BIN"),
                 Vec::new(),
             ),

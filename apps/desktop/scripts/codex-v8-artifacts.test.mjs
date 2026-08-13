@@ -29,6 +29,7 @@ import {
     CODEX_V8_ARTIFACT_PROFILE,
     createV8ArtifactPlan,
     fetchCodexV8Artifacts,
+    parseRustcHostTarget,
     parseV8ChecksumManifest,
     resolveCodexV8CargoEnvironment,
     resolveV8VersionFromLockfile,
@@ -113,6 +114,25 @@ function wrapperEnvironment(ambientEnv = process.env) {
 }
 
 describe("V8 artifact metadata", () => {
+    it("parses the host target from rustc verbose version output", () => {
+        expect(
+            parseRustcHostTarget(
+                "rustc 1.91.0\nbinary: rustc\nhost: aarch64-apple-darwin\nrelease: 1.91.0\n",
+            ),
+        ).toBe("aarch64-apple-darwin");
+    });
+
+    it("rejects missing or ambiguous rustc host targets", () => {
+        expect(() => parseRustcHostTarget("rustc 1.91.0\n")).toThrow(
+            /exactly one host target.*found 0/i,
+        );
+        expect(() =>
+            parseRustcHostTarget(
+                "host: aarch64-apple-darwin\nhost: x86_64-apple-darwin\n",
+            ),
+        ).toThrow(/exactly one host target.*found 2/i);
+    });
+
     it("resolves the exact v8 version from Cargo.lock", () => {
         expect(
             resolveV8VersionFromLockfile(`

@@ -1,9 +1,16 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { isWindows } from "./common.mjs";
+import {
+    parseRustcHostTarget,
+    resolveCodexV8CargoEnvironment,
+} from "./codex-v8-artifacts.mjs";
 import {
     signalExitCode,
     terminateChild,
@@ -12,16 +19,27 @@ import {
 
 
 const rootDir = fileURLToPath(new URL("..", import.meta.url));
+const workspaceRoot = path.resolve(rootDir, "../..");
+const claudeRuntimeDir = path.join(
+    workspaceRoot,
+    "vendor",
+    "Claude-agent-acp-upstream",
+);
 const rendererUrl = "http://127.0.0.1:5174";
+const execFileAsync = promisify(execFile);
 
 let vite = null;
 let electron = null;
 let shuttingDown = false;
 
 function run(command, args, options = {}) {
+    const env = { ...process.env, ...(options.env ?? {}) };
+    for (const key of options.unsetEnv ?? []) {
+        delete env[key];
+    }
     const child = spawn(command, args, {
-        cwd: rootDir,
-        env: { ...process.env, ...(options.env ?? {}) },
+        cwd: options.cwd ?? rootDir,
+        env,
         stdio: options.stdio ?? "inherit",
         detached: !isWindows && options.detached === true,
         shell: isWindows,
@@ -45,9 +63,9 @@ function shutdown(exitCode = 0) {
     }, FORCED_EXIT_TIMEOUT_MS).unref();
 }
 
-function runOnce(command, args, env = {}) {
+function runOnce(command, args, env = {}, cwd = rootDir) {
     return new Promise((resolve, reject) => {
-        const child = run(command, args, { env });
+        const child = run(command, args, { cwd, env });
         child.on("error", reject);
         child.on("exit", (code) => {
             if (code === 0) {
@@ -57,6 +75,55 @@ function runOnce(command, args, env = {}) {
             reject(new Error(`${command} ${args.join(" ")} exited with ${code}`));
         });
     });
+}
+
+async function ensureClaudeRuntimeDependencies() {
+    const packageLockPath = path.join(claudeRuntimeDir, "package-lock.json");
+    const packageLock = await fs.readFile(packageLockPath);
+    const expectedStamp = createHash("sha256")
+        .update(packageLock)
+        .digest("hex");
+    const stampPath = path.join(
+        claudeRuntimeDir,
+        "node_modules",
+        ".neverwrite-production-lock",
+    );
+    const requiredPackages = [
+        "@agentclientprotocol/sdk",
+        "@anthropic-ai/claude-agent-sdk",
+        "zod",
+    ];
+    const installedStamp = await fs.readFile(stampPath, "utf8").catch(() => "");
+    const dependenciesPresent = await Promise.all(
+        requiredPackages.map((packageName) =>
+            fs
+                .access(
+                    path.join(
+                        claudeRuntimeDir,
+                        "node_modules",
+                        packageName,
+                        "package.json",
+                    ),
+                )
+                .then(() => true)
+                .catch(() => false),
+        ),
+    );
+    if (
+        installedStamp.trim() === expectedStamp &&
+        dependenciesPresent.every(Boolean)
+    ) {
+        return;
+    }
+
+    console.log("Installing Claude ACP production dependencies.");
+    await runOnce(
+        "npm",
+        ["ci", "--omit=dev", "--include=optional", "--no-audit", "--no-fund"],
+        {},
+        claudeRuntimeDir,
+    );
+    await fs.writeFile(stampPath, `${expectedStamp}\n`, "utf8");
 }
 
 function waitForRenderer() {
@@ -95,6 +162,27 @@ process.on("unhandledRejection", (error) => {
 });
 
 async function main() {
+    await ensureClaudeRuntimeDependencies();
+
+    const { stdout: rustcVersion } = await execFileAsync("rustc", ["-vV"], {
+        cwd: workspaceRoot,
+    });
+    const codexV8Environment = await resolveCodexV8CargoEnvironment({
+        targetTriple: parseRustcHostTarget(rustcVersion),
+    });
+
+    await runOnce(
+        "cargo",
+        [
+            "build",
+            "--locked",
+            "--manifest-path",
+            "../../vendor/codex-acp/Cargo.toml",
+            "--bins",
+        ],
+        codexV8Environment,
+    );
+
     await runOnce(
         "cargo",
         ["build", "-p", "neverwrite-native-backend"],
@@ -138,6 +226,9 @@ async function main() {
         env: {
             ELECTRON_RENDERER_URL: rendererUrl,
         },
+        // Coding environments may use Electron as their Node runtime. The app
+        // process must start in normal Electron mode to expose the main API.
+        unsetEnv: ["ELECTRON_RUN_AS_NODE"],
         stdio: ["ignore", "inherit", "inherit"],
     });
 

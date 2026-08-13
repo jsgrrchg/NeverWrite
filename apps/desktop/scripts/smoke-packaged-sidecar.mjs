@@ -6,7 +6,10 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
-import { isolateExecutableForSmoke } from "./packaged-sidecar-isolation.mjs";
+import {
+    isolateExecutableForSmoke,
+    removeSmokeTempDirectory,
+} from "./packaged-sidecar-isolation.mjs";
 
 const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const executableName =
@@ -623,7 +626,7 @@ async function smokeMissingCodeModeHostFailsClosed(acpPath, packagedHostPath) {
             requireStandaloneHost: false,
         });
     } finally {
-        await fs.rm(isolatedRuntimeDir, { recursive: true, force: true });
+        await removeSmokeTempDirectory(isolatedRuntimeDir);
     }
 }
 

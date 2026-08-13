@@ -30,11 +30,13 @@ import {
     safeStorageSetItem,
 } from "../../app/utils/safeStorage";
 import {
-    createNewChatInWorkspace,
     openChatHistoryInWorkspace,
     openChatSessionInWorkspace,
 } from "./chatPaneMovement";
-import { openClaudeCodeTerminalWithContext } from "../terminal/claudeCodeTerminal";
+import {
+    createCanonicalAgent,
+    createClaudeCodeAgent,
+} from "./newAgentCreation";
 import { emitAgentSidebarDrag } from "./agentSidebarDragEvents";
 import {
     getSessionTitle,
@@ -147,10 +149,6 @@ function formatAgentTimestamp(timestamp: number): string {
         month: "short",
         day: "numeric",
     }).format(timestamp);
-}
-
-function getRuntimeMenuLabel(name: string) {
-    return name.trim().replace(/ ACP$/, "");
 }
 
 function isSessionWorking(session: AIChatSession) {
@@ -307,11 +305,15 @@ export function AgentsSidebarPanel() {
     const agentsSidebarScale = useSettingsStore(
         (state) => state.agentsSidebarScale,
     );
+    const claudeCodeEnabled = useSettingsStore(
+        (state) => state.claudeCodeEnabled,
+    );
     const activeSessionId = useChatStore((state) => state.activeSessionId);
     const sessionsById = useChatStore((state) => state.sessionsById);
     const sessionOrder = useChatStore((state) => state.sessionOrder);
-    const runtimes = useChatStore((state) => state.runtimes);
-    const selectedRuntimeId = useChatStore((state) => state.selectedRuntimeId);
+    const claudeCodeSetupStatus = useChatStore(
+        (state) => state.setupStatusByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID],
+    );
     const sessionInventoryLoaded = useChatStore(
         (state) => state.sessionInventoryLoaded,
     );
@@ -780,28 +782,26 @@ export function AgentsSidebarPanel() {
     );
 
     const newChatMenuEntries = useMemo<ContextMenuEntry[]>(() => {
-        const sortedRuntimes = [...runtimes].sort((left, right) => {
-            if (left.runtime.id === selectedRuntimeId) return -1;
-            if (right.runtime.id === selectedRuntimeId) return 1;
-            return left.runtime.name.localeCompare(right.runtime.name);
-        });
-
-        if (sortedRuntimes.length === 0) {
-            return [{ label: "No providers available", disabled: true }];
-        }
-
-        return sortedRuntimes.map((runtime) => ({
-            label: getRuntimeMenuLabel(runtime.runtime.name),
-            action: () => {
-                useChatStore.getState().setSelectedRuntime(runtime.runtime.id);
-                if (runtime.runtime.id === CLAUDE_TERMINAL_RUNTIME_ID) {
-                    void openClaudeCodeTerminalWithContext();
-                    return;
-                }
-                void createNewChatInWorkspace(runtime.runtime.id);
+        return [
+            {
+                label: "New Agent",
+                action: () => {
+                    void createCanonicalAgent();
+                },
             },
-        }));
-    }, [runtimes, selectedRuntimeId]);
+            {
+                label: "Claude Code",
+                action: () => {
+                    void createClaudeCodeAgent();
+                },
+            },
+        ];
+    }, []);
+
+    const showClaudeCodeCreation =
+        claudeCodeEnabled &&
+        claudeCodeSetupStatus?.authReady === true &&
+        !claudeCodeSetupStatus.onboardingRequired;
 
     const handleContextMenu = useCallback(
         (event: ReactMouseEvent<HTMLElement>, session: AIChatSession) => {
@@ -1276,6 +1276,10 @@ export function AgentsSidebarPanel() {
                         onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
+                            if (!showClaudeCodeCreation) {
+                                void createCanonicalAgent();
+                                return;
+                            }
                             const rect =
                                 event.currentTarget.getBoundingClientRect();
                             setContextMenu(null);
@@ -1285,8 +1289,8 @@ export function AgentsSidebarPanel() {
                                 payload: undefined,
                             });
                         }}
-                        title="New chat"
-                        aria-label="New chat"
+                        title="New agent"
+                        aria-label="New agent"
                         className="ub-chrome-btn flex h-5 w-5 cursor-pointer items-center justify-center rounded"
                         style={{
                             width: metrics.actionButtonSize,
@@ -1472,7 +1476,7 @@ export function AgentsSidebarPanel() {
                     ]}
                 />
             )}
-            {newChatMenu && (
+            {newChatMenu && showClaudeCodeCreation && (
                 <ContextMenu
                     menu={newChatMenu}
                     onClose={() => setNewChatMenu(null)}

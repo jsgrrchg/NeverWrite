@@ -41,9 +41,9 @@ import type {
     PersistedSessionHistory,
     PersistedSessionHistoryPage,
     CustomRuntimeContinuationResult,
+    ConversationSelection,
 } from "./types";
 import { buildFallbackRuntimeDescriptors } from "./utils/runtimeMetadata";
-import { isClaudeTerminalAuthMethodId } from "./utils/authMethods";
 
 const FALLBACK_RUNTIMES: AIRuntimeDescriptor[] =
     buildFallbackRuntimeDescriptors();
@@ -176,7 +176,7 @@ export function normalizeBackendSession(
         sessionId: session.session_id,
         historySessionId: session.session_id,
         parentSessionId: session.parent_session_id ?? null,
-        runtimeSessionId: session.runtime_session_id ?? null,
+        runtimeSessionId: session.runtime_session_id ?? session.session_id,
         closedAt: session.closed_at ?? null,
         // Backend titles come from the runtime/persisted session state. Manual
         // renames live only in customTitle on the renderer side.
@@ -252,36 +252,15 @@ function normalizeRuntimeDescriptor(
 function normalizeRuntimeSetupStatus(
     status: AIBackendRuntimeSetupStatusPayload,
 ): AIRuntimeSetupStatus {
-    let authMethods = status.auth_methods;
-    let authReady = status.auth_ready;
-    let authMethod = status.auth_method ?? undefined;
-
-    // Subscription-based auth (claude-ai-login, console-login, claude-login)
-    // only works with the Claude Code CLI, not the ACP sidecar. Strip these
-    // methods from claude-acp and mark as not-ready when the current auth is
-    // subscription-based so the provider shows as "Not configured" and the user
-    // is directed to use an API key instead.
-    if (status.runtime_id === "claude-acp") {
-        authMethods = authMethods.filter(
-            (m) => !isClaudeTerminalAuthMethodId(m.id),
-        );
-        if (isClaudeTerminalAuthMethodId(authMethod)) {
-            if (status.claude_provider_routing?.type !== "vertex") {
-                authReady = false;
-            }
-            authMethod = undefined;
-        }
-    }
-
     return {
         runtimeId: status.runtime_id,
         binaryReady: status.binary_ready,
         binaryPath: status.binary_path ?? undefined,
         binarySource: status.binary_source,
         hasCustomBinaryPath: status.has_custom_binary_path ?? false,
-        authReady,
-        authMethod,
-        authMethods,
+        authReady: status.auth_ready,
+        authMethod: status.auth_method ?? undefined,
+        authMethods: status.auth_methods,
         claudeProviderRouting: normalizeClaudeProviderRouting(
             status.claude_provider_routing,
         ),
@@ -792,6 +771,30 @@ export async function aiSendMessage(
         attachments,
     });
     return normalizeBackendSession(session);
+}
+
+export async function aiStartConversationTurn(input: {
+    conversationId: string;
+    bindingId: string;
+    runtimeId: string;
+    sessionId: string;
+    selection: ConversationSelection;
+}) {
+    assertRuntimeSessionId(input.sessionId, "start a conversation turn");
+    await invoke("ai_start_conversation_turn", {
+        input: {
+            conversation_id: input.conversationId,
+            binding_id: input.bindingId,
+            runtime_id: input.runtimeId,
+            session_id: input.sessionId,
+            selection: {
+                runtime_id: input.selection.runtimeId,
+                model_id: input.selection.modelId,
+                mode_id: input.selection.modeId,
+                options: input.selection.options,
+            },
+        },
+    });
 }
 
 export async function aiCancelTurn(sessionId: string) {

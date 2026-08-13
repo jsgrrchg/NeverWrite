@@ -17,6 +17,7 @@ export default mergeConfig(
                 "src-electron/**/*.test.ts",
                 "src-electron/**/*.test.tsx",
                 "scripts/codex-v8-artifacts.test.mjs",
+                "scripts/electron-release-retry.test.mjs",
                 "scripts/packaged-sidecar-isolation.test.mjs",
                 "scripts/stage-electron-sidecar.test.mjs",
             ],

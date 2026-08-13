@@ -78,6 +78,7 @@ const SUPPORTED_COMMANDS = new Set([
     "ai_set_model",
     "ai_set_mode",
     "ai_set_config_option",
+    "ai_start_conversation_turn",
     "ai_send_message",
     "ai_cancel_turn",
     "ai_respond_permission",

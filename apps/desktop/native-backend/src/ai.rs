@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Sender},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -76,6 +76,12 @@ static ACP_PROCESS_COUNTER: AtomicU64 = AtomicU64::new(1);
 const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str = "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
 const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
     "Grok login looks invalid or expired. Run Grok login again to reconnect.";
+const CLAUDE_LOGIN_INVALIDATED_MESSAGE: &str =
+    "Claude login looks invalid or expired. Run Claude subscription login again to reconnect.";
+const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+const CLAUDE_AUTH_STATUS_CACHE_TTL: Duration = Duration::from_secs(5);
+const CLAUDE_AUTH_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CLAUDE_AUTH_STATUS_MAX_OUTPUT_BYTES: u64 = 64 * 1024;
 const GROK_STORED_XAI_API_KEY_INVALID_MESSAGE: &str =
     "Stored xAI API key looks invalid. Add a new xAI API key to reconnect Grok.";
 const GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE: &str =
@@ -307,6 +313,24 @@ struct AiRuntimeSessionInput {
 struct AiCreateSessionInput {
     runtime_id: String,
     additional_roots: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiConversationTurnSelectionInput {
+    runtime_id: String,
+    model_id: String,
+    mode_id: String,
+    #[serde(default)]
+    options: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiStartConversationTurnInput {
+    conversation_id: String,
+    binding_id: String,
+    runtime_id: String,
+    session_id: String,
+    selection: AiConversationTurnSelectionInput,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -917,10 +941,18 @@ struct ManagedAiSession {
     active_turn_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationTurnBindingOwner {
+    conversation_id: String,
+    runtime_id: String,
+    session_id: String,
+}
+
 #[derive(Default)]
 struct NativeAiInner {
     sessions: HashMap<String, ManagedAiSession>,
     session_order: Vec<String>,
+    conversation_turn_bindings: HashMap<String, ConversationTurnBindingOwner>,
     setup: HashMap<String, RuntimeSetupState>,
     setup_load_error: Option<String>,
 }
@@ -1541,6 +1573,98 @@ impl NativeAi {
         Ok(json!(session))
     }
 
+    pub(crate) fn start_conversation_turn(&self, args: &Value) -> Result<Value, String> {
+        let input: AiStartConversationTurnInput = input_from_args(args)?;
+        if input.conversation_id.trim().is_empty() || input.binding_id.trim().is_empty() {
+            return Err("Conversation and binding ids are required to start a turn.".to_string());
+        }
+        if input.selection.runtime_id != input.runtime_id {
+            return Err(
+                "Conversation turn selection does not match the target runtime.".to_string(),
+            );
+        }
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        {
+            let session = state
+                .sessions
+                .get(&input.session_id)
+                .map(|managed| &managed.session)
+                .ok_or_else(|| format!("AI session not found: {}", input.session_id))?;
+            if session.runtime_id != input.runtime_id {
+                return Err(
+                    "Refusing to start a conversation turn on another provider's session."
+                        .to_string(),
+                );
+            }
+            if session.model_id != input.selection.model_id
+                || session.mode_id != input.selection.mode_id
+            {
+                return Err(
+                    "Conversation turn selection was not applied to the target session."
+                        .to_string(),
+                );
+            }
+            for (option_id, expected_value) in &input.selection.options {
+                let option = session
+                    .config_options
+                    .iter()
+                    .find(|option| option.id == *option_id)
+                    .ok_or_else(|| {
+                        format!("Conversation turn option is unavailable: {option_id}")
+                    })?;
+                if option.value != *expected_value {
+                    return Err(format!(
+                        "Conversation turn option was not applied: {option_id}"
+                    ));
+                }
+            }
+        }
+
+        if let Some(owner) = state.conversation_turn_bindings.get(&input.binding_id) {
+            if owner.conversation_id != input.conversation_id
+                || owner.runtime_id != input.runtime_id
+                || owner.session_id != input.session_id
+            {
+                return Err(
+                    "Conversation binding is already associated with another conversation or session."
+                        .to_string(),
+                );
+            }
+            return Ok(json!(null));
+        }
+        if state
+            .conversation_turn_bindings
+            .iter()
+            .any(|(binding_id, owner)| {
+                binding_id != &input.binding_id && owner.conversation_id == input.conversation_id
+            })
+        {
+            return Err("Conversation is already associated with another binding.".to_string());
+        }
+        if state
+            .conversation_turn_bindings
+            .iter()
+            .any(|(binding_id, owner)| {
+                binding_id != &input.binding_id && owner.session_id == input.session_id
+            })
+        {
+            return Err("Runtime session is already associated with another binding.".to_string());
+        }
+        state.conversation_turn_bindings.insert(
+            input.binding_id,
+            ConversationTurnBindingOwner {
+                conversation_id: input.conversation_id,
+                runtime_id: input.runtime_id,
+                session_id: input.session_id,
+            },
+        );
+        Ok(json!(null))
+    }
+
     pub(crate) fn create_session(
         &self,
         args: &Value,
@@ -1587,13 +1711,13 @@ impl NativeAi {
         ) {
             Ok(created) => created,
             Err(error) => {
-                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                if let Err(update_error) = self.invalidate_auth_after_session_start_error(
                     &input.runtime_id,
                     &setup,
                     error.message(),
                 ) {
                     return Err(format!(
-                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                        "{error}\n\nFailed to update runtime auth state: {update_error}"
                     ));
                 }
                 return Err(error.to_string());
@@ -1700,13 +1824,13 @@ impl NativeAi {
         ) {
             Ok(created) => created,
             Err(error) => {
-                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                if let Err(update_error) = self.invalidate_auth_after_session_start_error(
                     &input.runtime_id,
                     &setup,
                     error.message(),
                 ) {
                     return Err(format!(
-                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                        "{error}\n\nFailed to update runtime auth state: {update_error}"
                     ));
                 }
                 return Err(error.to_string());
@@ -2154,6 +2278,9 @@ impl NativeAi {
             .remove(&session_id)
             .ok_or_else(|| format!("AI session not found: {session_id}"))?;
         state.session_order.retain(|id| id != &session_id);
+        state
+            .conversation_turn_bindings
+            .retain(|_, owner| owner.session_id != session_id);
         let shutdown_handle = removed.runtime_handle.filter(|handle| {
             !state.sessions.values().any(|managed| {
                 managed
@@ -2194,6 +2321,9 @@ impl NativeAi {
                 }
             }
             state.session_order.retain(|id| id != &session_id);
+            state
+                .conversation_turn_bindings
+                .retain(|_, owner| owner.session_id != session_id);
             self.tool_diffs.clear_session(&session_id);
         }
         drop(state);
@@ -2300,19 +2430,22 @@ impl NativeAi {
         Ok(())
     }
 
-    fn invalidate_grok_auth_after_session_start_error(
+    fn invalidate_auth_after_session_start_error(
         &self,
         runtime_id: &str,
         setup_at_start: &RuntimeSetupState,
         error: &str,
     ) -> Result<(), String> {
-        if runtime_id != GROK_RUNTIME_ID || !is_grok_auth_error(error) {
+        let claude_method = (runtime_id == CLAUDE_RUNTIME_ID && is_claude_auth_error(error))
+            .then(|| effective_auth_method_for_acp_process_spec(runtime_id, setup_at_start))
+            .flatten()
+            .filter(|method| matches!(method.as_str(), "claude-ai-login" | "claude-login"));
+        let grok_source = (runtime_id == GROK_RUNTIME_ID && is_grok_auth_error(error))
+            .then(|| grok_auth_failure_source(setup_at_start))
+            .flatten();
+        if claude_method.is_none() && grok_source.is_none() {
             return Ok(());
         }
-
-        let Some(source) = grok_auth_failure_source(setup_at_start) else {
-            return Ok(());
-        };
 
         let (mut pending_setup, setup_load_error) = {
             let state = self
@@ -2326,7 +2459,11 @@ impl NativeAi {
         }
 
         let setup = pending_setup.entry(runtime_id.to_string()).or_default();
-        apply_grok_auth_failure(setup, source);
+        if let Some(method) = claude_method {
+            apply_claude_auth_failure(setup, method);
+        } else if let Some(source) = grok_source {
+            apply_grok_auth_failure(setup, source);
+        }
         self.setup_store.save(&pending_setup)?;
 
         let mut state = self
@@ -5642,6 +5779,7 @@ async fn start_acp12_runtime_session(
                 session_id: response.session_id.0.to_string(),
                 modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
                 config_options: acp12_session_config_options(
+                    &spec.runtime_id,
                     response.config_options,
                     response.models.or_else(|| initialize_model_state.clone()),
                 )
@@ -5673,6 +5811,7 @@ async fn start_acp12_runtime_session(
                 session_id: session_id.clone(),
                 modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
                 config_options: acp12_session_config_options(
+                    &spec.runtime_id,
                     response.config_options,
                     response.models.or_else(|| initialize_model_state.clone()),
                 )
@@ -5694,6 +5833,7 @@ fn acp12_initialize_model_state(
 }
 
 fn acp12_session_config_options(
+    runtime_id: &str,
     legacy_options: Option<Vec<acp12::schema::SessionConfigOption>>,
     legacy_models: Option<acp12::schema::SessionModelState>,
 ) -> Result<Option<Vec<SessionConfigOption>>, String> {
@@ -5705,7 +5845,7 @@ fn acp12_session_config_options(
     let options = options.get_or_insert_with(Vec::new);
     if !options.iter().any(|option| {
         matches!(
-            map_config_option_category(&option.id.0, option.category.as_ref()),
+            map_config_option_category(runtime_id, &option.id.0, option.category.as_ref()),
             AiConfigOptionCategory::Model
         )
     }) {
@@ -6251,7 +6391,11 @@ fn map_session_config_options(
             Some(AiConfigOption {
                 id: option.id.0.to_string(),
                 runtime_id: runtime_id.to_string(),
-                category: map_config_option_category(&option.id.0, option.category.as_ref()),
+                category: map_config_option_category(
+                    runtime_id,
+                    &option.id.0,
+                    option.category.as_ref(),
+                ),
                 label: option.name,
                 description: option.description,
                 kind: "select".to_string(),
@@ -6288,6 +6432,7 @@ fn align_synthesized_config_options_to_acp_state(
 }
 
 fn map_config_option_category(
+    runtime_id: &str,
     option_id: &str,
     category: Option<&SessionConfigOptionCategory>,
 ) -> AiConfigOptionCategory {
@@ -6307,6 +6452,11 @@ fn map_config_option_category(
     ) {
         return AiConfigOptionCategory::Reasoning;
     }
+    if matches!(normalized_id.as_str(), "servicetier" | "fastmode")
+        || (runtime_id == CLAUDE_RUNTIME_ID && normalized_id == "fast")
+    {
+        return AiConfigOptionCategory::ServiceTier;
+    }
 
     match category {
         Some(SessionConfigOptionCategory::Mode) => AiConfigOptionCategory::Mode,
@@ -6319,6 +6469,14 @@ fn map_config_option_category(
             ) =>
         {
             AiConfigOptionCategory::Reasoning
+        }
+        Some(SessionConfigOptionCategory::Other(value))
+            if matches!(
+                normalize_config_option_key(value).as_str(),
+                "servicetier" | "fastmode"
+            ) =>
+        {
+            AiConfigOptionCategory::ServiceTier
         }
         _ => AiConfigOptionCategory::Other,
     }
@@ -8087,7 +8245,7 @@ fn resolve_base_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> Reso
 
     if runtime_id == CLAUDE_RUNTIME_ID {
         let vendor = claude_vendor_entry_path();
-        if vendor.is_file() {
+        if vendor.is_file() && claude_runtime_dependencies_ready(&vendor) {
             return ResolvedAcpCommand {
                 display: Some(vendor.display().to_string()),
                 program: Some(PathBuf::from("node")),
@@ -8151,7 +8309,7 @@ fn resolve_packaged_acp_command(runtime_id: &str) -> Option<ResolvedAcpCommand> 
                 .join("claude-agent-acp")
                 .join("dist")
                 .join("index.js");
-            if node.is_file() && entry.is_file() {
+            if node.is_file() && entry.is_file() && claude_runtime_dependencies_ready(&entry) {
                 return Some(ResolvedAcpCommand {
                     display: Some(entry.display().to_string()),
                     program: Some(node),
@@ -8451,6 +8609,7 @@ fn inherited_auth_method_for_setup(runtime_id: &str, setup: &RuntimeSetupState) 
         runtime_id,
         !setup.suppress_persisted_auth,
         setup.auth_invalidated_at_ms,
+        setup,
     )
 }
 
@@ -8458,6 +8617,7 @@ fn inherited_auth_method(
     runtime_id: &str,
     include_persisted: bool,
     auth_invalidated_at_ms: Option<u64>,
+    setup: &RuntimeSetupState,
 ) -> Option<String> {
     match runtime_id {
         CODEX_RUNTIME_ID => env_secret_present("CODEX_API_KEY")
@@ -8468,6 +8628,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         CLAUDE_RUNTIME_ID => env_secret_present("ANTHROPIC_AUTH_TOKEN")
@@ -8485,6 +8646,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         GROK_RUNTIME_ID => env_secret_present("XAI_API_KEY")
@@ -8494,6 +8656,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         KILO_RUNTIME_ID => env_secret_present("KILO_API_KEY")
@@ -8503,6 +8666,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         OPENCODE_RUNTIME_ID => opencode_env_auth_present()
@@ -8512,6 +8676,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         _ => None,
@@ -8522,23 +8687,205 @@ fn inherited_persisted_auth_method(
     runtime_id: &str,
     include_persisted: bool,
     auth_invalidated_at_ms: Option<u64>,
+    setup: &RuntimeSetupState,
 ) -> Option<String> {
     include_persisted
-        .then(|| persisted_cli_auth_method_with_invalidated_at(runtime_id, auth_invalidated_at_ms))
+        .then(|| {
+            persisted_cli_auth_method_with_invalidated_at(runtime_id, auth_invalidated_at_ms, setup)
+        })
         .flatten()
 }
 
 fn persisted_cli_auth_method_with_invalidated_at(
     runtime_id: &str,
     auth_invalidated_at_ms: Option<u64>,
+    setup: &RuntimeSetupState,
 ) -> Option<String> {
     let home = home_dir()?;
-    persisted_cli_auth_method_for_home_with_invalidated_at(
+    let method = persisted_cli_auth_method_for_home_with_invalidated_at(
         runtime_id,
         &home,
         is_claude_remote_environment(),
         auth_invalidated_at_ms,
-    )
+    );
+    if runtime_id != CLAUDE_RUNTIME_ID || method.is_none() {
+        return method;
+    }
+
+    match claude_cli_auth_ready(setup) {
+        Some(true) => method,
+        Some(false) => None,
+        None if auth_invalidated_at_ms.is_some() => None,
+        None => method,
+    }
+}
+
+fn parse_claude_auth_status(raw: &[u8]) -> Option<bool> {
+    serde_json::from_slice::<Value>(raw)
+        .ok()?
+        .get("loggedIn")?
+        .as_bool()
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct ClaudeAuthProbeKey {
+    program: PathBuf,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    auth_invalidated_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct ClaudeAuthProbe {
+    key: ClaudeAuthProbeKey,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClaudeAuthProbeCacheEntry {
+    checked_at: Instant,
+    result: Option<bool>,
+}
+
+#[derive(Default)]
+struct ClaudeAuthProbeCache {
+    entries: HashMap<ClaudeAuthProbeKey, ClaudeAuthProbeCacheEntry>,
+}
+
+impl ClaudeAuthProbeCache {
+    fn get(&mut self, key: &ClaudeAuthProbeKey, ttl: Duration) -> Option<Option<bool>> {
+        self.entries
+            .retain(|_, entry| entry.checked_at.elapsed() < ttl);
+        self.entries.get(key).map(|entry| entry.result)
+    }
+
+    fn insert(&mut self, key: ClaudeAuthProbeKey, result: Option<bool>) {
+        self.entries.insert(
+            key,
+            ClaudeAuthProbeCacheEntry {
+                checked_at: Instant::now(),
+                result,
+            },
+        );
+    }
+}
+
+fn claude_auth_probe_cache() -> &'static Mutex<ClaudeAuthProbeCache> {
+    static CACHE: OnceLock<Mutex<ClaudeAuthProbeCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ClaudeAuthProbeCache::default()))
+}
+
+fn resolve_claude_auth_probe(setup: &RuntimeSetupState) -> Option<ClaudeAuthProbe> {
+    let mut resolved = resolve_base_acp_command(CLAUDE_RUNTIME_ID, setup);
+    let program = resolved.program.take()?;
+    resolved.args.extend([
+        "--cli".to_string(),
+        "auth".to_string(),
+        "status".to_string(),
+    ]);
+    let mut env = setup
+        .env
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<Vec<_>>();
+    env.sort_unstable();
+    Some(ClaudeAuthProbe {
+        key: ClaudeAuthProbeKey {
+            program,
+            args: resolved.args,
+            env,
+            auth_invalidated_at_ms: setup.auth_invalidated_at_ms,
+        },
+    })
+}
+
+fn capture_child_output<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        let _ = reader
+            .by_ref()
+            .take(CLAUDE_AUTH_STATUS_MAX_OUTPUT_BYTES)
+            .read_to_end(&mut output);
+        output
+    })
+}
+
+fn terminate_auth_probe(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let process_group = -(child.id() as i32);
+        // The child starts in its own process group, so the negative PID cannot
+        // target NeverWrite or another unrelated group.
+        unsafe {
+            libc::kill(process_group, libc::SIGKILL);
+        }
+        let _ = child.kill();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+fn execute_claude_auth_probe(probe: &ClaudeAuthProbe, timeout: Duration) -> Option<bool> {
+    let mut command = std::process::Command::new(&probe.key.program);
+    command
+        .args(&probe.key.args)
+        .envs(probe.key.env.iter().map(|(key, value)| (key, value)))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn().ok()?;
+    let stdout = child.stdout.take().map(capture_child_output);
+    let stderr = child.stderr.take().map(capture_child_output);
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started_at.elapsed() < timeout => {
+                let remaining = timeout.saturating_sub(started_at.elapsed());
+                thread::sleep(CLAUDE_AUTH_STATUS_POLL_INTERVAL.min(remaining));
+            }
+            Ok(None) | Err(_) => {
+                terminate_auth_probe(&mut child);
+                // Dropping the handles detaches the readers so an inherited
+                // pipe held by a misbehaving descendant cannot extend the
+                // synchronous timeout seen by the caller.
+                drop(stdout);
+                drop(stderr);
+                return None;
+            }
+        }
+    }
+
+    let stdout = stdout
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    parse_claude_auth_status(&stdout).or_else(|| parse_claude_auth_status(&stderr))
+}
+
+fn claude_cli_auth_ready(setup: &RuntimeSetupState) -> Option<bool> {
+    let probe = resolve_claude_auth_probe(setup)?;
+    if let Ok(mut cache) = claude_auth_probe_cache().lock() {
+        if let Some(result) = cache.get(&probe.key, CLAUDE_AUTH_STATUS_CACHE_TTL) {
+            return result;
+        }
+    }
+
+    let result = execute_claude_auth_probe(&probe, CLAUDE_AUTH_STATUS_TIMEOUT);
+    if let Ok(mut cache) = claude_auth_probe_cache().lock() {
+        cache.insert(probe.key, result);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -8782,12 +9129,17 @@ fn should_persist_auth_method(
 fn is_persistable_external_auth_method(runtime_id: &str, method_id: &str) -> bool {
     matches!(
         (runtime_id, method_id),
-        (GROK_RUNTIME_ID, "grok-login") | (OPENCODE_RUNTIME_ID, "opencode-login")
+        (CLAUDE_RUNTIME_ID, "claude-ai-login" | "claude-login")
+            | (GROK_RUNTIME_ID, "grok-login")
+            | (OPENCODE_RUNTIME_ID, "opencode-login")
     )
 }
 
 fn is_invalidation_tracked_external_auth_runtime(runtime_id: &str) -> bool {
-    matches!(runtime_id, GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID)
+    matches!(
+        runtime_id,
+        CLAUDE_RUNTIME_ID | GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID
+    )
 }
 
 fn is_local_auth_method(method_id: &str) -> bool {
@@ -8923,6 +9275,29 @@ enum GrokAuthFailureSource {
     InheritedXaiApiKey,
 }
 
+fn is_claude_auth_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+    [
+        "oauth session expired",
+        "failed to authenticate",
+        "authentication_failed",
+        "authentication required",
+        "auth_required",
+        "not logged in",
+    ]
+    .into_iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn apply_claude_auth_failure(setup: &mut RuntimeSetupState, method: String) {
+    setup.auth_method = Some(method);
+    setup.auth_ready = false;
+    setup.suppress_persisted_auth = false;
+    setup.auth_invalidated_at_ms = Some(current_epoch_ms());
+    setup.message = Some(CLAUDE_LOGIN_INVALIDATED_MESSAGE.to_string());
+    refresh_runtime_setup_flags(CLAUDE_RUNTIME_ID, setup);
+}
+
 fn is_grok_auth_error(error: &str) -> bool {
     let normalized = error.to_lowercase();
     [
@@ -9029,6 +9404,25 @@ fn codex_vendor_binary_path() -> PathBuf {
 fn claude_vendor_entry_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../vendor/Claude-agent-acp-upstream/dist/index.js")
+}
+
+fn claude_runtime_dependencies_ready(entry: &Path) -> bool {
+    let Some(runtime_root) = entry.parent().and_then(Path::parent) else {
+        return false;
+    };
+    [
+        ["@agentclientprotocol", "sdk"],
+        ["@anthropic-ai", "claude-agent-sdk"],
+        ["zod", ""],
+    ]
+    .iter()
+    .all(|components| {
+        let mut package = runtime_root.join("node_modules").join(components[0]);
+        if !components[1].is_empty() {
+            package = package.join(components[1]);
+        }
+        package.join("package.json").is_file()
+    })
 }
 
 fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
@@ -10825,6 +11219,106 @@ mod tests {
     }
 
     #[test]
+    fn claude_runtime_requires_its_production_dependencies() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("dist/index.js");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, b"").unwrap();
+
+        assert!(!claude_runtime_dependencies_ready(&entry));
+    }
+
+    #[test]
+    fn claude_runtime_accepts_a_complete_production_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("dist/index.js");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, b"").unwrap();
+        for package in [
+            "@agentclientprotocol/sdk",
+            "@anthropic-ai/claude-agent-sdk",
+            "zod",
+        ] {
+            let package_json = temp
+                .path()
+                .join("node_modules")
+                .join(package)
+                .join("package.json");
+            fs::create_dir_all(package_json.parent().unwrap()).unwrap();
+            fs::write(package_json, b"{}").unwrap();
+        }
+
+        assert!(claude_runtime_dependencies_ready(&entry));
+    }
+
+    #[test]
+    fn conversation_turn_rejects_a_selection_for_another_runtime() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let error = ai
+            .start_conversation_turn(&json!({
+                "input": {
+                    "conversation_id": "conversation-1",
+                    "binding_id": "binding-b",
+                    "runtime_id": "provider-b",
+                    "session_id": "local-b",
+                    "selection": {
+                        "runtime_id": "provider-a",
+                        "model_id": "model-a",
+                        "mode_id": "default",
+                        "options": {}
+                    }
+                }
+            }))
+            .expect_err("cross-runtime selections must be rejected");
+
+        assert!(error.contains("does not match the target runtime"));
+    }
+
+    #[test]
+    fn conversation_turn_rejects_unknown_requested_options() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, "session-1");
+        let mut input =
+            test_conversation_turn_input(&ai, "conversation-1", "binding-1", "session-1");
+        input["input"]["selection"]["options"]["unknown-option"] = json!("value");
+
+        let error = ai
+            .start_conversation_turn(&input)
+            .expect_err("unknown requested options must be rejected");
+
+        assert!(error.contains("option is unavailable: unknown-option"));
+    }
+
+    #[test]
+    fn conversation_turn_binds_canonical_identity_to_one_runtime_session() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, "session-1");
+        let input = test_conversation_turn_input(&ai, "conversation-1", "binding-1", "session-1");
+
+        ai.start_conversation_turn(&input)
+            .expect("the initial canonical association should succeed");
+        ai.start_conversation_turn(&input)
+            .expect("reusing the same canonical association should succeed");
+
+        let conflicting =
+            test_conversation_turn_input(&ai, "conversation-2", "binding-1", "session-1");
+        let error = ai
+            .start_conversation_turn(&conflicting)
+            .expect_err("a binding cannot move to another conversation");
+        assert!(error.contains("already associated with another conversation or session"));
+
+        let conflicting =
+            test_conversation_turn_input(&ai, "conversation-2", "binding-2", "session-1");
+        let error = ai
+            .start_conversation_turn(&conflicting)
+            .expect_err("a runtime session cannot belong to another binding");
+        assert!(error.contains("Runtime session is already associated"));
+    }
+
+    #[test]
     fn normalize_additional_roots_keeps_existing_directory() {
         let temp = tempfile::tempdir().unwrap();
         let raw = temp.path().to_string_lossy().to_string();
@@ -11469,6 +11963,39 @@ mod tests {
                 active_turn_id: None,
             },
         );
+    }
+
+    fn test_conversation_turn_input(
+        ai: &NativeAi,
+        conversation_id: &str,
+        binding_id: &str,
+        session_id: &str,
+    ) -> Value {
+        let state = ai.inner.lock().unwrap();
+        let session = &state
+            .sessions
+            .get(session_id)
+            .expect("test session should exist")
+            .session;
+        let options = session
+            .config_options
+            .iter()
+            .map(|option| (option.id.clone(), option.value.clone()))
+            .collect::<HashMap<_, _>>();
+        json!({
+            "input": {
+                "conversation_id": conversation_id,
+                "binding_id": binding_id,
+                "runtime_id": session.runtime_id,
+                "session_id": session_id,
+                "selection": {
+                    "runtime_id": session.runtime_id,
+                    "model_id": session.model_id,
+                    "mode_id": session.mode_id,
+                    "options": options,
+                }
+            }
+        })
     }
 
     fn mark_test_session_as_child(
@@ -13954,11 +14481,13 @@ mod tests {
     fn setup_accepts_local_http_claude_gateway_urls() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
+        let runtime = std::env::current_exe().expect("test executable should resolve");
 
         let status = ai
             .update_setup(&json!({
                 "runtimeId": CLAUDE_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": runtime,
                     "anthropic_base_url": "http://localhost:3000",
                     "anthropic_auth_token": { "action": "set", "value": "test-token" }
                 }
@@ -14050,11 +14579,13 @@ mod tests {
     fn setup_accepts_anthropic_api_key_auth() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
+        let runtime = std::env::current_exe().expect("test executable should resolve");
 
         let status = ai
             .update_setup(&json!({
                 "runtimeId": CLAUDE_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": runtime,
                     "anthropic_api_key": { "action": "set", "value": "test-key" }
                 }
             }))
@@ -14197,10 +14728,12 @@ mod tests {
     fn claude_provider_routing_validates_and_normalizes_explicit_setup() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
+        let runtime = std::env::current_exe().expect("test executable should resolve");
 
         ai.update_setup(&json!({
             "runtimeId": CLAUDE_RUNTIME_ID,
             "input": {
+                "custom_binary_path": runtime,
                 "anthropic_api_key": {
                     "action": "set",
                     "value": "existing-anthropic-secret"
@@ -15070,6 +15603,15 @@ mod tests {
                     "high",
                     vec![SessionConfigSelectOption::new("high", "High")],
                 ),
+                SessionConfigOption::select(
+                    "service_tier",
+                    "Fast Mode",
+                    "off",
+                    vec![
+                        SessionConfigSelectOption::new("off", "Off"),
+                        SessionConfigSelectOption::new("fast", "Fast"),
+                    ],
+                ),
             ],
         );
 
@@ -15078,6 +15620,10 @@ mod tests {
         assert!(matches!(
             options[2].category,
             AiConfigOptionCategory::Reasoning
+        ));
+        assert!(matches!(
+            options[3].category,
+            AiConfigOptionCategory::ServiceTier
         ));
     }
 
@@ -15112,6 +15658,7 @@ mod tests {
     #[test]
     fn acp12_model_state_is_exposed_as_model_config_option() {
         let config_options = acp12_session_config_options(
+            GROK_RUNTIME_ID,
             None,
             Some(acp12::schema::SessionModelState::new(
                 "grok-build",
@@ -16071,6 +16618,46 @@ mod tests {
         assert!(matches!(
             mapped[0].category,
             AiConfigOptionCategory::Reasoning
+        ));
+    }
+
+    #[test]
+    fn acp_config_mapping_classifies_only_known_fast_options_as_service_tiers() {
+        let claude = map_session_config_options(
+            CLAUDE_RUNTIME_ID,
+            vec![SessionConfigOption::select(
+                "fast",
+                "Fast mode",
+                "off",
+                vec![
+                    SessionConfigSelectOption::new("off", "Off"),
+                    SessionConfigSelectOption::new("on", "On"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Other(
+                "model_config".to_string(),
+            ))],
+        );
+        let unrelated = map_session_config_options(
+            "custom:example",
+            vec![SessionConfigOption::select(
+                "fast",
+                "Fast mode",
+                "off",
+                vec![
+                    SessionConfigSelectOption::new("off", "Off"),
+                    SessionConfigSelectOption::new("on", "On"),
+                ],
+            )],
+        );
+
+        assert!(matches!(
+            claude[0].category,
+            AiConfigOptionCategory::ServiceTier
+        ));
+        assert!(matches!(
+            unrelated[0].category,
+            AiConfigOptionCategory::Other
         ));
     }
 
@@ -18320,6 +18907,156 @@ mod tests {
     }
 
     #[test]
+    fn claude_auth_status_parser_uses_the_cli_logged_in_flag() {
+        assert_eq!(
+            parse_claude_auth_status(br#"{"loggedIn":true,"authMethod":"claude.ai"}"#),
+            Some(true)
+        );
+        assert_eq!(
+            parse_claude_auth_status(br#"{"loggedIn":false,"authMethod":"none"}"#),
+            Some(false)
+        );
+        assert_eq!(parse_claude_auth_status(b"not-json"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_auth_probe_uses_the_effective_binary_and_caches_its_result() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("custom-claude-acp");
+        let marker = temp.path().join("probe-count");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf x >> \"$NEVERWRITE_AUTH_PROBE_MARKER\"\nprintf '{\"loggedIn\":%s}' \"$NEVERWRITE_AUTH_PROBE_RESULT\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut setup = RuntimeSetupState {
+            custom_binary_path: Some(executable.display().to_string()),
+            env: HashMap::from([
+                (
+                    "NEVERWRITE_AUTH_PROBE_MARKER".to_string(),
+                    marker.display().to_string(),
+                ),
+                (
+                    "NEVERWRITE_AUTH_PROBE_RESULT".to_string(),
+                    "true".to_string(),
+                ),
+            ]),
+            ..RuntimeSetupState::default()
+        };
+
+        assert_eq!(claude_cli_auth_ready(&setup), Some(true));
+        assert_eq!(claude_cli_auth_ready(&setup), Some(true));
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "x");
+
+        setup.env.insert(
+            "NEVERWRITE_AUTH_PROBE_RESULT".to_string(),
+            "false".to_string(),
+        );
+        assert_eq!(claude_cli_auth_ready(&setup), Some(false));
+        assert_eq!(claude_cli_auth_ready(&setup), Some(false));
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "xx");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_auth_probe_terminates_a_hung_process_group() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("hanging-claude-acp");
+        fs::write(&executable, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(executable.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+        let probe = resolve_claude_auth_probe(&setup).expect("custom probe should resolve");
+        let started_at = Instant::now();
+
+        assert_eq!(
+            execute_claude_auth_probe(&probe, Duration::from_millis(50)),
+            None
+        );
+        assert!(started_at.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn claude_auth_error_detector_matches_expired_oauth() {
+        for error in [
+            "Failed to authenticate: OAuth session expired and could not be refreshed",
+            "authentication_failed",
+            "authentication required",
+            "auth_required",
+            "Claude is not logged in",
+        ] {
+            assert!(is_claude_auth_error(error), "{error:?} should be detected");
+        }
+
+        assert!(!is_claude_auth_error("model does not support that option"));
+    }
+
+    #[test]
+    fn claude_oauth_error_marks_subscription_login_invalidated() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path,
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let setup_at_start = RuntimeSetupState {
+            auth_method: Some("claude-ai-login".to_string()),
+            auth_ready: true,
+            ..RuntimeSetupState::default()
+        };
+        native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .insert(CLAUDE_RUNTIME_ID.to_string(), setup_at_start.clone());
+
+        native_ai
+            .invalidate_auth_after_session_start_error(
+                CLAUDE_RUNTIME_ID,
+                &setup_at_start,
+                "Failed to authenticate: OAuth session expired and could not be refreshed",
+            )
+            .unwrap();
+
+        let setup = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(CLAUDE_RUNTIME_ID)
+            .cloned()
+            .expect("Claude setup should remain");
+        assert_eq!(setup.auth_method.as_deref(), Some("claude-ai-login"));
+        assert!(!setup.auth_ready);
+        assert!(setup.auth_invalidated_at_ms.is_some());
+        assert_eq!(
+            setup.message.as_deref(),
+            Some(CLAUDE_LOGIN_INVALIDATED_MESSAGE)
+        );
+
+        let persisted_setup = native_ai
+            .setup_store
+            .load()
+            .unwrap()
+            .remove(CLAUDE_RUNTIME_ID)
+            .expect("Claude setup should persist invalidated login");
+        assert_eq!(
+            persisted_setup.auth_method.as_deref(),
+            Some("claude-ai-login")
+        );
+        assert!(persisted_setup.auth_invalidated_at_ms.is_some());
+    }
+
+    #[test]
     fn grok_login_auth_error_marks_external_auth_invalidated() {
         let _guard = ENV_TEST_LOCK.lock().unwrap();
         let previous = std::env::var_os("XAI_API_KEY");
@@ -18344,7 +19081,7 @@ mod tests {
             .insert(GROK_RUNTIME_ID.to_string(), setup_at_start.clone());
 
         native_ai
-            .invalidate_grok_auth_after_session_start_error(
+            .invalidate_auth_after_session_start_error(
                 GROK_RUNTIME_ID,
                 &setup_at_start,
                 "cached_token unauthorized",
@@ -18420,7 +19157,7 @@ mod tests {
             .cloned()
             .expect("Grok setup should exist");
         native_ai
-            .invalidate_grok_auth_after_session_start_error(
+            .invalidate_auth_after_session_start_error(
                 GROK_RUNTIME_ID,
                 &setup_at_start,
                 "401 invalid api key",
@@ -18483,7 +19220,7 @@ mod tests {
             .cloned()
             .expect("Grok setup should exist");
         native_ai
-            .invalidate_grok_auth_after_session_start_error(
+            .invalidate_auth_after_session_start_error(
                 GROK_RUNTIME_ID,
                 &setup_at_start,
                 "unauthorized",
@@ -19372,7 +20109,7 @@ mod tests {
             .expect("Grok ACP process spec should resolve");
 
         assert_eq!(
-            inherited_auth_method(GROK_RUNTIME_ID, true, None),
+            inherited_auth_method(GROK_RUNTIME_ID, true, None, &setup),
             Some("xai-api-key".to_string())
         );
         assert_eq!(spec.env.get("XAI_API_KEY"), None);

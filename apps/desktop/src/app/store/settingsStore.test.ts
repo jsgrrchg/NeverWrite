@@ -30,6 +30,7 @@ describe("settingsStore", () => {
     it("defaults app settings", () => {
         expect(useSettingsStore.getState().terminalFontFamily).toBe("");
         expect(useSettingsStore.getState().terminalFontSize).toBe(13);
+        expect(useSettingsStore.getState().claudeCodeEnabled).toBe(false);
         expect(useSettingsStore.getState().claudeCodeOptimized).toBe(false);
         expect(useSettingsStore.getState().claudeCodeSkipPermissions).toBe(
             false,
@@ -236,6 +237,7 @@ describe("settingsStore", () => {
             .getState()
             .setSetting("terminalFontFamily", "FiraCode Nerd Font");
         useSettingsStore.getState().setSetting("terminalFontSize", 16);
+        useSettingsStore.getState().setSetting("claudeCodeEnabled", true);
         useSettingsStore.getState().setSetting("claudeCodeOptimized", true);
         useSettingsStore
             .getState()
@@ -256,6 +258,7 @@ describe("settingsStore", () => {
             state: {
                 terminalFontFamily: "FiraCode Nerd Font",
                 terminalFontSize: 16,
+                claudeCodeEnabled: true,
                 claudeCodeOptimized: true,
                 claudeCodeSkipPermissions: true,
                 claudeCodeModel: "claude-sonnet-4-6",

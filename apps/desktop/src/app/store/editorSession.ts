@@ -137,6 +137,7 @@ type PersistedGraphWorkspaceTab = {
 type PersistedChatWorkspaceTab = {
     id: string;
     kind: "ai-chat";
+    conversationId?: string;
     sessionId: string;
     historySessionId?: string;
     title: string;
@@ -400,6 +401,9 @@ function serializeWorkspaceTabForSession(
         return {
             id: normalized.id,
             kind: "ai-chat",
+            ...(normalized.conversationId
+                ? { conversationId: normalized.conversationId }
+                : {}),
             sessionId: normalized.sessionId,
             ...(normalized.historySessionId
                 ? { historySessionId: normalized.historySessionId }
@@ -744,6 +748,9 @@ async function restorePersistedWorkspaceTabsById(
             restoredTabsById[tab.id] = {
                 id: tab.id,
                 kind: "ai-chat",
+                ...(tab.conversationId
+                    ? { conversationId: tab.conversationId }
+                    : {}),
                 sessionId: tab.sessionId,
                 ...(tab.historySessionId
                     ? { historySessionId: tab.historySessionId }

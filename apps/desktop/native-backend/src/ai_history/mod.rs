@@ -4,7 +4,7 @@ use std::sync::{mpsc::Sender, Mutex};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use neverwrite_ai::persistence::{self, PersistedSessionHistory};
+use neverwrite_ai::persistence::{self, PersistedConversationBindings, PersistedSessionHistory};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -1043,12 +1043,18 @@ impl AiHistoryStorageService {
                     .ok_or_else(|| "Missing argument: history".to_string())?;
                 let managed_attachment_ids =
                     validate_managed_attachment_shapes(attachment_owner, &history_value)?;
+                let bindings = history_value
+                    .get("conversation_bindings")
+                    .cloned()
+                    .map(serde_json::from_value::<PersistedConversationBindings>)
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
                 let history: PersistedSessionHistory =
                     serde_json::from_value(history_value).map_err(|error| error.to_string())?;
                 // Validate and promote blobs before publishing the transcript;
                 // mark them committed only after the durable history reference
                 // exists, so cleanup can protect interrupted promotions.
-                persistence::save_session_history(&storage_root, &history)?;
+                persistence::save_session_history_with_bindings(&storage_root, &history, bindings)?;
                 for attachment_id in managed_attachment_ids {
                     attachments::mark_committed(attachment_owner, &attachment_id)?;
                 }
@@ -1058,10 +1064,12 @@ impl AiHistoryStorageService {
                 let include_messages = bool_arg(&args, "includeMessages")
                     .or_else(|| bool_arg(&args, "include_messages"))
                     .unwrap_or(true);
-                Ok(json!(persistence::load_all_session_histories(
-                    &storage_root,
-                    include_messages
-                )?))
+                Ok(json!(
+                    persistence::load_all_session_histories_with_bindings(
+                        &storage_root,
+                        include_messages
+                    )?
+                ))
             }
             "ai_load_session_history_page" => {
                 let session_id = required_string(&args, &["sessionId", "session_id"])?;
@@ -2134,6 +2142,81 @@ mod tests {
             persistence::load_all_session_histories(&layout.device.histories, true).unwrap();
         assert_eq!(histories.len(), 2);
         assert!(!layout.vault.histories.exists());
+    }
+
+    #[test]
+    fn storage_moves_preserve_canonical_provider_bindings() {
+        let app_data = tempfile::tempdir().unwrap();
+        let vault = tempfile::tempdir().unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        let history = json!({
+            "version": 1,
+            "session_id": "canonical-session",
+            "runtime_id": "codex-acp",
+            "model_id": "test-model",
+            "mode_id": "default",
+            "created_at": 1,
+            "updated_at": 2,
+            "messages": [{
+                "id": "message-canonical",
+                "role": "user",
+                "kind": "text",
+                "content": "Preserve bindings",
+                "timestamp": 2
+            }],
+            "conversation_bindings": {
+                "version": 1,
+                "revision": 0,
+                "conversation_id": "canonical-session",
+                "preferred_selection": {
+                    "runtime_id": "codex-acp",
+                    "model_id": "test-model",
+                    "mode_id": "default",
+                    "options": {}
+                },
+                "active_binding_id": "binding-codex",
+                "provider_bindings": [{
+                    "binding_id": "binding-codex",
+                    "conversation_id": "canonical-session",
+                    "runtime_id": "codex-acp",
+                    "model_id": "test-model",
+                    "mode_id": "default",
+                    "options": {},
+                    "runtime_state": "live",
+                    "context_generation": 0
+                }],
+                "context_summary": null,
+                "transcript_observation": {
+                    "message_count": 1,
+                    "updated_at": 2,
+                    "transcript_fingerprint": null
+                }
+            }
+        });
+        service
+            .invoke(
+                "ai_save_session_history",
+                vault.path(),
+                json!({ "history": history }),
+            )
+            .unwrap();
+
+        for target_scope in ["vault", "device"] {
+            service
+                .invoke(
+                    "reconcile_ai_history_storage",
+                    vault.path(),
+                    json!({ "targetScope": target_scope }),
+                )
+                .unwrap();
+            let loaded = service
+                .invoke("ai_load_session_histories", vault.path(), json!({}))
+                .unwrap();
+            assert_eq!(
+                loaded[0]["conversation_bindings"]["provider_bindings"][0]["binding_id"],
+                "binding-codex"
+            );
+        }
     }
 
     #[test]

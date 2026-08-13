@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     aiCreateCustomRuntime,
     aiDeleteCustomRuntime,
+    aiGetSetupStatus,
     aiListCustomRuntimes,
     aiListDeletedCustomRuntimes,
     aiRestoreCustomRuntime,
@@ -11,6 +12,7 @@ import {
     normalizeBackendSession,
 } from "./api";
 import type {
+    AIBackendRuntimeSetupStatusPayload,
     AIBackendSessionPayload,
     AICustomAcpRuntimeDefinition,
     AICustomAcpRuntimeDefinitionInput,
@@ -43,6 +45,34 @@ describe("normalizeBackendSession", () => {
 
         expect(session.persistedTitle).toBe("Runtime generated title");
         expect(session.customTitle).toBeNull();
+    });
+});
+
+describe("runtime setup status", () => {
+    it("preserves Claude ACP subscription authentication", async () => {
+        const status: AIBackendRuntimeSetupStatusPayload = {
+            runtime_id: "claude-acp",
+            binary_ready: true,
+            binary_source: "vendor",
+            auth_ready: true,
+            auth_method: "claude-ai-login",
+            auth_methods: [
+                {
+                    id: "claude-ai-login",
+                    name: "Claude subscription",
+                    description: "Use a Claude subscription.",
+                },
+            ],
+            onboarding_required: false,
+        };
+        vi.mocked(invoke).mockResolvedValue(status);
+
+        await expect(aiGetSetupStatus("claude-acp")).resolves.toMatchObject({
+            runtimeId: "claude-acp",
+            authReady: true,
+            authMethod: "claude-ai-login",
+            authMethods: status.auth_methods,
+        });
     });
 });
 
