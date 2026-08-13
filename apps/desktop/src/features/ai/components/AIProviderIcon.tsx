@@ -95,6 +95,25 @@ export function AIProviderIcon({
         );
     }
 
+    if (runtimeId.includes("kilo")) {
+        return (
+            <svg
+                className={className}
+                fill="none"
+                height={size}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={size}
+            >
+                <line strokeWidth="1.5" x1="4.75" x2="4.75" y1="2.75" y2="13.25" />
+                <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="2.75" />
+                <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="13.25" />
+            </svg>
+        );
+    }
+
     return (
         <svg
             className={className}
@@ -103,12 +122,12 @@ export function AIProviderIcon({
             stroke="currentColor"
             strokeLinecap="round"
             strokeLinejoin="round"
-            viewBox="0 0 16 16"
+            strokeWidth="1.75"
+            viewBox="0 0 24 24"
             width={size}
         >
-            <line strokeWidth="1.5" x1="4.75" x2="4.75" y1="2.75" y2="13.25" />
-            <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="2.75" />
-            <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="13.25" />
+            <path d="M9.7 2.7 9.4 4a8.2 8.2 0 0 0-1.8 1L6.3 4.6 4.6 6.3 5 7.6a8.2 8.2 0 0 0-1 1.8l-1.3.3v4.6l1.3.3a8.2 8.2 0 0 0 1 1.8l-.4 1.3 1.7 1.7 1.3-.4a8.2 8.2 0 0 0 1.8 1l.3 1.3h4.6l.3-1.3a8.2 8.2 0 0 0 1.8-1l1.3.4 1.7-1.7-.4-1.3a8.2 8.2 0 0 0 1-1.8l1.3-.3V9.7L20 9.4a8.2 8.2 0 0 0-1-1.8l.4-1.3-1.7-1.7-1.3.4a8.2 8.2 0 0 0-1.8-1l-.3-1.3H9.7Z" />
+            <circle cx="12" cy="12" r="3" />
         </svg>
     );
 }
