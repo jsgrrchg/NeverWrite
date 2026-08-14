@@ -523,6 +523,56 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.getByText("Failed")).toBeInTheDocument();
     });
 
+    it("completes and reopens a focused thread without changing its tab", async () => {
+        const session = createSession("session-complete", "Complete me");
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+        useEditorStore.getState().openChat(session.sessionId, {
+            title: "Complete me",
+            paneId: "primary",
+        });
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Complete" }));
+
+        await waitFor(() => {
+            expect(
+                useAgentSidebarStore.getState().sessionMetadata[session.sessionId]
+                    ?.completedAt,
+            ).toEqual(expect.any(Number));
+        });
+        expect(screen.getByText("Completed")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Reopen" })).toBeInTheDocument();
+        expect(useEditorStore.getState().tabs).toHaveLength(1);
+
+        fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
+        await waitFor(() => {
+            expect(
+                useAgentSidebarStore.getState().sessionMetadata[session.sessionId]
+                    ?.completedAt,
+            ).toBeNull();
+        });
+        expect(useEditorStore.getState().tabs).toHaveLength(1);
+    });
+
+    it("does not offer Complete while work needs attention", () => {
+        const session = createSession(
+            "session-review",
+            "Review pending",
+            "review_required",
+        );
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+        renderComponent(<AgentsSidebarPanel />);
+        expect(screen.queryByRole("button", { name: "Complete" })).toBeNull();
+    });
+
     it("renders subagents under their parent and opens the child row", async () => {
         const parent = createSession("session-parent", "Parent task");
         const child = createSession(

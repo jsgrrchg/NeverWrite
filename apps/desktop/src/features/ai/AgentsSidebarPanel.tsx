@@ -61,8 +61,11 @@ import {
 } from "./components/AgentsSidebarItem";
 import { AIProviderIcon } from "./components/AIProviderIcon";
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection";
+import { AgentsSidebarShelf } from "./components/AgentsSidebarShelf";
 import {
     buildAgentSidebarProjection,
+    canCompleteAgentSidebarStatus,
+    isEffectivelyCompleted,
     resolveAgentSidebarSessionStatus,
     type AgentSidebarGroup,
     type AgentSidebarStatus,
@@ -305,6 +308,16 @@ export function AgentsSidebarPanel() {
     const reconcileSidebar = useAgentSidebarStore((state) => state.reconcile);
     const markSessionVisited = useAgentSidebarStore(
         (state) => state.markSessionVisited,
+    );
+    const completeSession = useAgentSidebarStore(
+        (state) => state.completeSession,
+    );
+    const reopenSession = useAgentSidebarStore((state) => state.reopenSession);
+    const completedShelfExpanded = useAgentSidebarStore(
+        (state) => state.completedShelfExpanded,
+    );
+    const setCompletedShelfExpanded = useAgentSidebarStore(
+        (state) => state.setCompletedShelfExpanded,
     );
 
     const focusedWorkspaceChatSessionId = useEditorStore(
@@ -770,6 +783,8 @@ export function AgentsSidebarPanel() {
             status?: AgentSidebarStatus;
             workingStartedAt?: number | null;
             variant?: "card" | "slim";
+            quickActionLabel?: string;
+            onQuickAction?: () => void;
             onToggleCollapse?: () => void;
         },
     ) => {
@@ -846,6 +861,8 @@ export function AgentsSidebarPanel() {
                     if (canPin) togglePinnedChat(session.sessionId);
                 }}
                 onToggleCollapse={options?.onToggleCollapse}
+                quickActionLabel={options?.quickActionLabel}
+                onQuickAction={options?.onQuickAction}
                 onContextMenu={(event) => handleContextMenu(event, session)}
                 onDragStart={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
@@ -909,7 +926,10 @@ export function AgentsSidebarPanel() {
         );
     };
 
-    const renderGroup = (group: AgentSidebarGroup) => {
+    const renderGroup = (
+        group: AgentSidebarGroup,
+        lifecycle: "active" | "completed" = "active",
+    ) => {
         const collapsed = collapsedParentIds.has(group.root.sessionId);
         const forceChildrenVisible =
             hasFilter ||
@@ -932,6 +952,21 @@ export function AgentsSidebarPanel() {
                     isCollapsed: collapsed && !forceChildrenVisible,
                     status: group.status,
                     workingStartedAt: group.workingStartedAt,
+                    variant: lifecycle === "completed" ? "slim" : "card",
+                    quickActionLabel:
+                        lifecycle === "completed"
+                            ? "Reopen"
+                            : !isClaudeTerminalAgentSession(group.root) &&
+                                canCompleteAgentSidebarStatus(group.status)
+                              ? "Complete"
+                              : undefined,
+                    onQuickAction:
+                        lifecycle === "completed"
+                            ? () => reopenSession(group.root.sessionId)
+                            : !isClaudeTerminalAgentSession(group.root) &&
+                                canCompleteAgentSidebarStatus(group.status)
+                              ? () => completeSession(group.root.sessionId)
+                              : undefined,
                     onToggleCollapse:
                         group.children.length > 0
                             ? () => toggleCollapsedParent(group.root.sessionId)
@@ -1098,7 +1133,7 @@ export function AgentsSidebarPanel() {
                         }}
                     >
                         {groups.length > 0 ? (
-                            groups.map(renderGroup)
+                            groups.map((group) => renderGroup(group))
                         ) : (
                             <p
                                 className="px-3 py-1 text-[10.5px]"
@@ -1112,6 +1147,20 @@ export function AgentsSidebarPanel() {
             </section>
         );
     };
+
+    const contextGroup = contextMenu
+        ? allProjectedGroups.find((group) =>
+              group.sessionIds.includes(contextMenu.payload.sessionId),
+          )
+        : null;
+    const contextMetadata = contextGroup
+        ? sessionMetadata[contextGroup.root.sessionId]
+        : null;
+    const contextIsCompleted = Boolean(
+        contextGroup &&
+            contextMetadata &&
+            isEffectivelyCompleted(contextGroup, contextMetadata),
+    );
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -1249,7 +1298,7 @@ export function AgentsSidebarPanel() {
                             count={unfiledGroups.length}
                             headerMetrics={metrics.header}
                         >
-                            {unfiledGroups.map(renderGroup)}
+                            {unfiledGroups.map((group) => renderGroup(group))}
                         </AgentsSidebarSection>
                     ) : (
                         <>
@@ -1258,7 +1307,7 @@ export function AgentsSidebarPanel() {
                                 count={pinnedGroups.length}
                                 headerMetrics={metrics.header}
                             >
-                                {pinnedGroups.map(renderGroup)}
+                                {pinnedGroups.map((group) => renderGroup(group))}
                             </AgentsSidebarSection>
                             {pinnedGroups.length > 0 ? (
                                 <div
@@ -1276,8 +1325,19 @@ export function AgentsSidebarPanel() {
                                 isDropTarget={isDraggingOverUnfiled}
                                 headerMetrics={metrics.header}
                             >
-                                {unfiledGroups.map(renderGroup)}
+                                {unfiledGroups.map((group) => renderGroup(group))}
                             </AgentsSidebarSection>
+                            <AgentsSidebarShelf
+                                title="Completed"
+                                groups={projection.completedGroups}
+                                expanded={completedShelfExpanded}
+                                onExpandedChange={setCompletedShelfExpanded}
+                                focusedSessionId={activeSidebarId}
+                                initialLimit={5}
+                                renderGroup={(group) =>
+                                    renderGroup(group, "completed")
+                                }
+                            />
                         </>
                     )
                 )}
@@ -1296,6 +1356,33 @@ export function AgentsSidebarPanel() {
                             action: () =>
                                 togglePinnedChat(contextMenu.payload.sessionId),
                         },
+                        ...(!contextGroup ||
+                        isSubagentSession(contextMenu.payload) ||
+                        isClaudeTerminalAgentSession(contextMenu.payload)
+                            ? []
+                            : contextIsCompleted
+                              ? [
+                                    {
+                                        label: "Reopen",
+                                        action: () =>
+                                            reopenSession(
+                                                contextGroup.root.sessionId,
+                                            ),
+                                    },
+                                ]
+                              : [
+                                    {
+                                        label: "Complete",
+                                        disabled:
+                                            !canCompleteAgentSidebarStatus(
+                                                contextGroup.status,
+                                            ),
+                                        action: () =>
+                                            completeSession(
+                                                contextGroup.root.sessionId,
+                                            ),
+                                    },
+                                ]),
                         {
                             label: "Rename",
                             disabled: isSubagentSession(contextMenu.payload),

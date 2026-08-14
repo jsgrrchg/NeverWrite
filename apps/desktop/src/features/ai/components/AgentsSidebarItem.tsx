@@ -50,6 +50,8 @@ export interface AgentsSidebarItemProps {
     onStartRename: () => void;
     onTogglePin: () => void;
     onToggleCollapse?: () => void;
+    quickActionLabel?: string;
+    onQuickAction?: () => void;
     onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
     onDragStart?: (coords: AgentsSidebarItemDragCoordinates) => void;
     onDragMove?: (coords: AgentsSidebarItemDragCoordinates) => void;
@@ -146,6 +148,8 @@ export function AgentsSidebarItem({
     onStartRename,
     onTogglePin,
     onToggleCollapse,
+    quickActionLabel,
+    onQuickAction,
     onContextMenu,
     onDragStart,
     onDragMove,
@@ -423,6 +427,20 @@ export function AgentsSidebarItem({
         </button>
     ) : null;
 
+    const quickAction = quickActionLabel && onQuickAction ? (
+        <button
+            type="button"
+            className="rounded px-1.5 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 focus:opacity-100"
+            style={{ color: "var(--text-secondary)", fontSize: metrics.timestampFontSize }}
+            onClick={(event) => {
+                event.stopPropagation();
+                onQuickAction();
+            }}
+        >
+            {quickActionLabel}
+        </button>
+    ) : null;
+
     if (variant === "slim") {
         return (
             <div
@@ -445,6 +463,7 @@ export function AgentsSidebarItem({
                 {titleNode}
                 {collapseButton}
                 {pinButton}
+                {quickAction}
                 <span
                     className="shrink-0"
                     style={{
@@ -488,6 +507,7 @@ export function AgentsSidebarItem({
                 >
                     {statusLabel || timestampLabel}
                 </span>
+                {quickAction}
             </div>
             <div className="flex min-w-0 flex-1 items-center">{titleNode}</div>
             <div className="flex min-h-4 items-end justify-between gap-1">
