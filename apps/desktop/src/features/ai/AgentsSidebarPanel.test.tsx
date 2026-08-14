@@ -406,7 +406,7 @@ describe("AgentsSidebarPanel", () => {
         expect(useChatStore.getState().selectedRuntimeId).toBe("codex-acp");
     });
 
-    it("keeps open working agents in the order they became busy", async () => {
+    it("keeps canonical order when agent working states change", async () => {
         const alpha = createSession(
             "session-alpha",
             "Alpha task",
@@ -454,9 +454,73 @@ describe("AgentsSidebarPanel", () => {
             const labels = screen
                 .getAllByTestId("agent-sidebar-item")
                 .map((item) => item.textContent ?? "");
-            expect(labels[0]).toContain("Alpha task");
-            expect(labels[1]).toContain("Beta task");
+            expect(labels[0]).toContain("Beta task");
+            expect(labels[1]).toContain("Alpha task");
         });
+    });
+
+    it("renders the T3-style card contract without project chrome", () => {
+        const startedAt = Date.now() - 3 * 60_000;
+        const working = createSession(
+            "session-working",
+            "Draft the chapter",
+            "streaming",
+            startedAt,
+            {
+                activeWorkCycleId: "cycle-1",
+                messages: [
+                    {
+                        id: "working-message",
+                        role: "user",
+                        kind: "text",
+                        content: "Draft the chapter",
+                        timestamp: startedAt,
+                        workCycleId: "cycle-1",
+                    },
+                ],
+            },
+        );
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [working.sessionId]: working },
+            sessionOrder: [working.sessionId],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        const card = screen.getByTestId("agent-sidebar-item");
+        expect(card).toHaveStyle({ minHeight: "78px", borderRadius: "9px" });
+        expect(card.querySelector('[data-agent-status="working"]')).toHaveTextContent(
+            "Working 3m",
+        );
+        expect(card.children[1]).toHaveTextContent("Draft the chapter");
+        expect(card.children[2].querySelector("svg")).not.toBeNull();
+        expect(card).not.toHaveTextContent("/vault");
+        expect(card).not.toHaveTextContent("main");
+        expect(screen.queryByText("Open")).toBeNull();
+    });
+
+    it("keeps approval, input, review, and failure distinct", () => {
+        const sessions = [
+            createSession("review", "Review item", "review_required", 4),
+            createSession("approval", "Approval item", "waiting_permission", 3),
+            createSession("input", "Input item", "waiting_user_input", 2),
+            createSession("failed", "Failed item", "error", 1),
+        ];
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: Object.fromEntries(
+                sessions.map((item) => [item.sessionId, item]),
+            ),
+            sessionOrder: sessions.map((item) => item.sessionId),
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        expect(screen.getByText("Review")).toBeInTheDocument();
+        expect(screen.getByText("Approval")).toBeInTheDocument();
+        expect(screen.getByText("Input")).toBeInTheDocument();
+        expect(screen.getByText("Failed")).toBeInTheDocument();
     });
 
     it("renders subagents under their parent and opens the child row", async () => {
@@ -485,7 +549,7 @@ describe("AgentsSidebarPanel", () => {
             .map((item) => item.textContent ?? "");
         expect(labels[0]).toContain("Parent task");
         expect(labels[1]).toContain("Worker investigation");
-        expect(labels[1]).toContain("Working…");
+        expect(labels[1]).toContain("Working");
 
         fireEvent.click(screen.getAllByTestId("agent-sidebar-item")[1]);
 
@@ -881,7 +945,7 @@ describe("AgentsSidebarPanel", () => {
         }
     });
 
-    it("keeps working subagents in activation order under their parent", async () => {
+    it("keeps working subagents in canonical creation order", async () => {
         const parent = createSession("session-parent", "Parent task", "streaming");
         const heisenberg = createSession(
             "session-heisenberg",
@@ -915,8 +979,8 @@ describe("AgentsSidebarPanel", () => {
                 .getAllByTestId("agent-sidebar-item")
                 .map((item) => item.textContent ?? "");
             expect(labels[0]).toContain("Parent task");
-            expect(labels[1]).toContain("Heisenberg");
-            expect(labels[2]).toContain("Mill");
+            expect(labels[1]).toContain("Mill");
+            expect(labels[2]).toContain("Heisenberg");
         });
     });
 

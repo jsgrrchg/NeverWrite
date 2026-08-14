@@ -3,17 +3,9 @@ import {
     useRef,
     type MouseEvent as ReactMouseEvent,
 } from "react";
-import { AIProviderIcon } from "./AIProviderIcon";
+import type { AgentSidebarStatus } from "../agentSidebarModel";
 import type { AIChatSession } from "../types";
-
-// Comando-style session row for the left sidebar Agents panel. Keep the row
-// deliberately single-line: the list is for switching threads, not reading
-// transcripts. The full context remains available in the editor chat tab.
-
-export type AgentsSidebarActivityIndicator = {
-    readonly tone: "working" | "danger";
-    readonly title: string;
-} | null;
+import { AIProviderIcon } from "./AIProviderIcon";
 
 export interface AgentsSidebarItemMetrics {
     rowPaddingX: number;
@@ -25,6 +17,8 @@ export interface AgentsSidebarItemMetrics {
     providerIconSize: number;
     pinButtonSize: number;
     pinIconSize: number;
+    cardMinHeight: number;
+    cardRadius: number;
 }
 
 export interface AgentsSidebarItemDragCoordinates {
@@ -36,12 +30,14 @@ export interface AgentsSidebarItemProps {
     session: AIChatSession;
     title: string;
     timestampLabel: string;
+    status?: AgentSidebarStatus;
+    statusLabel?: string;
+    variant?: "card" | "slim";
     isActive: boolean;
     isPinned: boolean;
     canPin?: boolean;
     canRename?: boolean;
     depth?: number;
-    indicator: AgentsSidebarActivityIndicator;
     childCount?: number;
     isCollapsed?: boolean;
     isRenaming: boolean;
@@ -62,10 +58,9 @@ export interface AgentsSidebarItemProps {
     metrics: AgentsSidebarItemMetrics;
 }
 
-function isInteractiveDragTarget(
-    target: EventTarget | null,
-    row: HTMLElement,
-) {
+const AGENT_SIDEBAR_DRAG_THRESHOLD_PX = 5;
+
+function isInteractiveDragTarget(target: EventTarget | null, row: HTMLElement) {
     if (!(target instanceof Element)) return false;
     const interactive = target.closest(
         "button,input,textarea,select,a,[role='button']",
@@ -73,20 +68,11 @@ function isInteractiveDragTarget(
     return Boolean(interactive && interactive !== row);
 }
 
-const AGENT_SIDEBAR_DRAG_THRESHOLD_PX = 5;
-
-function toDragCoordinates(event: PointerEvent) {
-    return {
-        clientX: event.clientX,
-        clientY: event.clientY,
-    };
-}
-
 function safelySetPointerCapture(target: HTMLElement, pointerId: number) {
     try {
         target.setPointerCapture?.(pointerId);
     } catch {
-        // Pointer capture can fail if the pointer was already released.
+        // A native release can race pointer capture during global dragging.
     }
 }
 
@@ -97,20 +83,57 @@ function safelyReleasePointerCapture(
     try {
         target?.releasePointerCapture?.(pointerId);
     } catch {
-        // The pointer may no longer be captured; global listeners still clean up.
+        // Global listeners still guarantee cleanup when capture is already gone.
     }
+}
+
+function statusColor(status: AgentSidebarStatus | undefined) {
+    switch (status) {
+        case "review":
+        case "approval":
+        case "input":
+            return "var(--diff-warn, #d97706)";
+        case "working":
+            return "var(--accent)";
+        case "failed":
+            return "var(--diff-remove, #f43f5e)";
+        case "done":
+            return "var(--diff-add, #22c55e)";
+        default:
+            return "var(--text-secondary)";
+    }
+}
+
+function PinIcon({ filled, size }: { filled: boolean; size: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill={filled ? "currentColor" : "none"}
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <path d="M9 3h6l-1 6 4 4v2H6v-2l4-4-1-6Z" />
+            <path d="M12 15v6" />
+        </svg>
+    );
 }
 
 export function AgentsSidebarItem({
     session,
     title,
     timestampLabel,
+    status = "ready",
+    statusLabel,
+    variant = "card",
     isActive,
     isPinned,
     canPin = true,
     canRename = true,
     depth = 0,
-    indicator,
     childCount = 0,
     isCollapsed = false,
     isRenaming,
@@ -146,6 +169,7 @@ export function AgentsSidebarItem({
     const globalDragCleanupRef = useRef<(() => void) | null>(null);
     const suppressClickRef = useRef(false);
     const hasChildren = childCount > 0;
+
     useEffect(() => {
         dragCallbacksRef.current = {
             onDragStart,
@@ -155,27 +179,18 @@ export function AgentsSidebarItem({
         };
     }, [onDragStart, onDragMove, onDragEnd, onDragCancel]);
 
-    useEffect(() => {
-        return () => {
+    useEffect(
+        () => () => {
             const state = dragStateRef.current;
             dragStateRef.current = null;
             globalDragCleanupRef.current?.();
             globalDragCleanupRef.current = null;
             if (!state) return;
-
             safelyReleasePointerCapture(state.captureTarget, state.pointerId);
-            if (state.active) {
-                dragCallbacksRef.current.onDragCancel?.();
-            }
-        };
-    }, []);
-
-    const suppressNextClick = () => {
-        suppressClickRef.current = true;
-        window.requestAnimationFrame(() => {
-            suppressClickRef.current = false;
-        });
-    };
+            if (state.active) dragCallbacksRef.current.onDragCancel?.();
+        },
+        [],
+    );
 
     const clearDragSession = () => {
         const state = dragStateRef.current;
@@ -188,16 +203,21 @@ export function AgentsSidebarItem({
         return state;
     };
 
+    const suppressNextClick = () => {
+        suppressClickRef.current = true;
+        window.requestAnimationFrame(() => {
+            suppressClickRef.current = false;
+        });
+    };
+
     const completeDrag = (
         pointerId: number,
         coords: AgentsSidebarItemDragCoordinates,
     ) => {
         const state = dragStateRef.current;
         if (!state || state.pointerId !== pointerId) return;
-
         clearDragSession();
         if (!state.active) return;
-
         suppressNextClick();
         dragCallbacksRef.current.onDragEnd?.(coords);
     };
@@ -205,310 +225,282 @@ export function AgentsSidebarItem({
     const cancelDrag = (pointerId: number) => {
         const state = dragStateRef.current;
         if (!state || state.pointerId !== pointerId) return;
-
         clearDragSession();
-        if (state.active) {
-            dragCallbacksRef.current.onDragCancel?.();
-        }
+        if (state.active) dragCallbacksRef.current.onDragCancel?.();
     };
 
     const processDragMove = (event: PointerEvent) => {
         const state = dragStateRef.current;
         if (!state || state.pointerId !== event.pointerId) return;
-
-        const coords = toDragCoordinates(event);
-
+        const coords = { clientX: event.clientX, clientY: event.clientY };
         if (event.buttons === 0) {
-            if (state.active) {
-                completeDrag(event.pointerId, coords);
-            } else {
-                clearDragSession();
-            }
+            if (state.active) completeDrag(event.pointerId, coords);
+            else clearDragSession();
             return;
         }
-
         if (!state.active) {
-            const dx = event.clientX - state.startX;
-            const dy = event.clientY - state.startY;
-            if (Math.hypot(dx, dy) < AGENT_SIDEBAR_DRAG_THRESHOLD_PX) {
+            if (
+                Math.hypot(
+                    event.clientX - state.startX,
+                    event.clientY - state.startY,
+                ) < AGENT_SIDEBAR_DRAG_THRESHOLD_PX
+            ) {
                 return;
             }
-
             state.active = true;
             dragCallbacksRef.current.onDragStart?.(coords);
         }
-
         event.preventDefault();
         dragCallbacksRef.current.onDragMove?.(coords);
     };
 
     const startGlobalDragTracking = () => {
         globalDragCleanupRef.current?.();
-
-        const handlePointerMove = (event: PointerEvent) => {
-            processDragMove(event);
-        };
-        const handlePointerUp = (event: PointerEvent) => {
-            completeDrag(event.pointerId, toDragCoordinates(event));
-        };
-        const handlePointerCancel = (event: PointerEvent) => {
-            cancelDrag(event.pointerId);
-        };
-
-        window.addEventListener("pointermove", handlePointerMove);
-        window.addEventListener("pointerup", handlePointerUp);
-        window.addEventListener("pointercancel", handlePointerCancel);
+        const onMove = (event: PointerEvent) => processDragMove(event);
+        const onUp = (event: PointerEvent) =>
+            completeDrag(event.pointerId, {
+                clientX: event.clientX,
+                clientY: event.clientY,
+            });
+        const onCancel = (event: PointerEvent) => cancelDrag(event.pointerId);
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onCancel);
         globalDragCleanupRef.current = () => {
-            window.removeEventListener("pointermove", handlePointerMove);
-            window.removeEventListener("pointerup", handlePointerUp);
-            window.removeEventListener("pointercancel", handlePointerCancel);
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onCancel);
         };
     };
 
-    return (
-        <div
-            role="button"
-            aria-current={isActive ? "true" : undefined}
-            tabIndex={0}
-            data-testid="agent-sidebar-item"
-            title={title}
-            className="group flex w-full cursor-pointer items-center rounded-md"
+    const beginPointerDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (
+            isRenaming ||
+            event.button !== 0 ||
+            isInteractiveDragTarget(event.target, event.currentTarget)
+        ) {
+            return;
+        }
+        const previous = clearDragSession();
+        if (previous?.active) dragCallbacksRef.current.onDragCancel?.();
+        dragStateRef.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            active: false,
+            captureTarget: event.currentTarget,
+        };
+        safelySetPointerCapture(event.currentTarget, event.pointerId);
+        startGlobalDragTracking();
+    };
+
+    const handleKeyboardOpen = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (isRenaming || event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onOpen();
+        }
+    };
+
+    const commonProps = {
+        role: "button",
+        tabIndex: 0,
+        title,
+        "aria-current": isActive ? ("true" as const) : undefined,
+        "data-testid": "agent-sidebar-item",
+        "data-agent-session-id": session.sessionId,
+        onClick: () => {
+            if (!suppressClickRef.current && !isRenaming) onOpen();
+        },
+        onPointerDown: beginPointerDrag,
+        onLostPointerCapture: (event: React.PointerEvent<HTMLDivElement>) => {
+            const state = dragStateRef.current;
+            if (!state || state.pointerId !== event.pointerId || event.buttons !== 0) {
+                return;
+            }
+            const wasActive = state.active;
+            clearDragSession();
+            if (wasActive) dragCallbacksRef.current.onDragCancel?.();
+        },
+        onDoubleClick: (event: React.MouseEvent<HTMLDivElement>) => {
+            if (isRenaming || !canRename) return;
+            event.preventDefault();
+            onStartRename();
+        },
+        onContextMenu,
+        onKeyDown: handleKeyboardOpen,
+    };
+
+    const titleNode = isRenaming ? (
+        <input
+            ref={renameInputRef}
+            autoFocus
+            className="min-w-0 flex-1 rounded px-1 py-0.5 font-medium outline-none"
             style={{
-                gap: metrics.inlineGap,
-                padding: `${metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
-                paddingLeft: metrics.rowPaddingLeft + depth * 14,
-                backgroundColor: isActive
-                    ? "color-mix(in srgb, var(--accent) 14%, transparent)"
-                    : "transparent",
-                transition:
-                    "background-color 100ms ease, color 100ms ease",
+                background: "var(--bg-primary)",
+                color: "var(--text-primary)",
+                border: "1px solid var(--accent)",
+                fontSize: metrics.titleFontSize,
             }}
-            onClick={() => {
-                if (suppressClickRef.current) return;
-                if (isRenaming) return;
-                onOpen();
-            }}
-            onPointerDown={(event) => {
-                if (
-                    isRenaming ||
-                    (event.button ?? 0) !== 0 ||
-                    isInteractiveDragTarget(event.target, event.currentTarget)
-                ) {
-                    return;
-                }
-
-                const previousState = clearDragSession();
-                if (previousState?.active) {
-                    dragCallbacksRef.current.onDragCancel?.();
-                }
-
-                dragStateRef.current = {
-                    pointerId: event.pointerId,
-                    startX: event.clientX,
-                    startY: event.clientY,
-                    active: false,
-                    captureTarget: event.currentTarget,
-                };
-                safelySetPointerCapture(event.currentTarget, event.pointerId);
-                startGlobalDragTracking();
-            }}
-            onLostPointerCapture={(event) => {
-                const state = dragStateRef.current;
-                if (!state || state.pointerId !== event.pointerId) {
-                    return;
-                }
-
-                if (event.buttons !== 0) {
-                    return;
-                }
-
-                const wasActive = state.active;
-                clearDragSession();
-                if (wasActive) {
-                    dragCallbacksRef.current.onDragCancel?.();
-                }
-            }}
-            onDoubleClick={(event) => {
-                if (isRenaming || !canRename) return;
-                event.preventDefault();
-                onStartRename();
-            }}
-            onContextMenu={onContextMenu}
+            value={renameValue}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => onRenameChange(event.target.value)}
+            onBlur={onRenameCommit}
             onKeyDown={(event) => {
-                if (isRenaming || event.target !== event.currentTarget) return;
-                if (event.key === "Enter" || event.key === " ") {
+                event.stopPropagation();
+                if (event.key === "Enter") {
                     event.preventDefault();
-                    onOpen();
+                    onRenameCommit();
+                } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    onRenameCancel();
                 }
             }}
-            onMouseEnter={(event) => {
-                if (isActive) return;
-                event.currentTarget.style.backgroundColor =
-                    "color-mix(in srgb, var(--bg-tertiary) 65%, transparent)";
+        />
+    ) : (
+        <span
+            className="min-w-0 flex-1 truncate font-medium"
+            style={{ color: "var(--text-primary)", fontSize: metrics.titleFontSize }}
+        >
+            {title}
+        </span>
+    );
+
+    const pinButton = canPin ? (
+        <button
+            type="button"
+            title={isPinned ? "Unpin from sidebar" : "Pin to sidebar"}
+            aria-label={isPinned ? "Unpin from sidebar" : "Pin to sidebar"}
+            onClick={(event) => {
+                event.stopPropagation();
+                onTogglePin();
             }}
-            onMouseLeave={(event) => {
-                if (isActive) return;
-                event.currentTarget.style.backgroundColor = "transparent";
+            className={`flex shrink-0 items-center justify-center rounded transition-opacity ${
+                isPinned
+                    ? "opacity-100"
+                    : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 focus:opacity-100"
+            }`}
+            style={{
+                width: metrics.pinButtonSize,
+                height: metrics.pinButtonSize,
+                color: isPinned ? "var(--text-primary)" : "var(--text-secondary)",
             }}
         >
-            <AIProviderIcon
-                runtimeId={session.runtimeId}
-                size={metrics.providerIconSize}
-                className="shrink-0"
-            />
+            <PinIcon filled={isPinned} size={metrics.pinIconSize} />
+        </button>
+    ) : null;
 
-            {isRenaming ? (
-                    <input
-                        ref={renameInputRef}
-                        autoFocus
-                        className="min-w-0 flex-1 rounded px-1 py-0.5 text-[11.5px] font-medium outline-none"
-                        style={{
-                            background: "var(--bg-primary)",
-                            color: "var(--text-primary)",
-                            border: "1px solid var(--accent)",
-                            fontSize: metrics.titleFontSize,
-                        }}
-                        value={renameValue}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => onRenameChange(event.target.value)}
-                        onBlur={onRenameCommit}
-                        onKeyDown={(event) => {
-                            event.stopPropagation();
-                            if (event.key === "Enter") {
-                                event.preventDefault();
-                                onRenameCommit();
-                            } else if (event.key === "Escape") {
-                                event.preventDefault();
-                                onRenameCancel();
-                            }
-                        }}
-                    />
-                ) : (
-                    <span
-                        className="min-w-0 flex-1 truncate text-[11.5px] font-medium"
-                        style={{
-                            color: "var(--text-primary)",
-                            fontSize: metrics.titleFontSize,
-                        }}
-                    >
-                        {title}
-                    </span>
-                )}
+    const collapseButton = hasChildren ? (
+        <button
+            type="button"
+            title={isCollapsed ? "Expand agents" : "Collapse agents"}
+            aria-label={isCollapsed ? "Expand agents" : "Collapse agents"}
+            onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onToggleCollapse?.();
+            }}
+            className="flex shrink-0 items-center justify-center rounded"
+            style={{
+                width: metrics.pinButtonSize,
+                height: metrics.pinButtonSize,
+                color: "var(--text-secondary)",
+            }}
+        >
+            <svg
+                width={metrics.pinIconSize}
+                height={metrics.pinIconSize}
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ transform: isCollapsed ? "rotate(-90deg)" : "none" }}
+            >
+                <path d="m4 6 4 4 4-4" />
+            </svg>
+        </button>
+    ) : null;
 
-            {/* Keep provider marks aligned; expansion is a row action, not a
-                leading tree gutter. */}
-            {hasChildren ? (
-                <button
-                    type="button"
-                    title={isCollapsed ? "Expand agents" : "Collapse agents"}
-                    aria-label={
-                        isCollapsed ? "Expand agents" : "Collapse agents"
-                    }
-                    onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onToggleCollapse?.();
-                    }}
-                    className="flex shrink-0 items-center justify-center rounded"
-                    style={{
-                        width: metrics.pinButtonSize,
-                        height: metrics.pinButtonSize,
-                        color: "var(--text-secondary)",
-                        background: "transparent",
-                    }}
-                >
-                    <svg
-                        width={metrics.pinIconSize}
-                        height={metrics.pinIconSize}
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{
-                            transform: isCollapsed
-                                ? "rotate(-90deg)"
-                                : "rotate(0)",
-                            transition: "transform 120ms ease",
-                        }}
-                    >
-                        <path d="m4 6 4 4 4-4" />
-                    </svg>
-                </button>
-            ) : canPin ? (
-                <span
-                    aria-hidden
-                    className="shrink-0"
-                    style={{
-                        width: metrics.pinButtonSize,
-                        height: metrics.pinButtonSize,
-                    }}
-                />
-            ) : null}
-
-            {canPin ? (
-                    <button
-                        type="button"
-                        title={
-                            isPinned ? "Unpin from sidebar" : "Pin to sidebar"
-                        }
-                        aria-label={
-                            isPinned ? "Unpin from sidebar" : "Pin to sidebar"
-                        }
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            onTogglePin();
-                        }}
-                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity ${
-                            isPinned
-                                ? "opacity-100"
-                                : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-                        }`}
-                        style={{
-                            width: metrics.pinButtonSize,
-                            height: metrics.pinButtonSize,
-                            color: isPinned
-                                ? "var(--text-primary)"
-                                : "var(--text-secondary)",
-                        }}
-                    >
-                        <svg
-                            width={metrics.pinIconSize}
-                            height={metrics.pinIconSize}
-                            viewBox="0 0 24 24"
-                            fill={isPinned ? "currentColor" : "none"}
-                            stroke="currentColor"
-                            strokeWidth="1.7"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="M9 3h6l-1 6 4 4v2H6v-2l4-4-1-6Z" />
-                            <path d="M12 15v6" />
-                        </svg>
-                    </button>
-                ) : null}
-
-            <span
-                className="shrink-0 text-[10px]"
-                title={indicator?.title}
+    if (variant === "slim") {
+        return (
+            <div
+                {...commonProps}
+                className="group flex w-full cursor-pointer items-center rounded-md outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
                 style={{
-                    color:
-                        indicator?.tone === "danger"
-                            ? "var(--diff-remove, #f43f5e)"
-                            : indicator?.tone === "working"
-                              ? "var(--diff-warn, #d97706)"
-                              : "var(--text-secondary)",
-                    fontSize: metrics.timestampFontSize,
-                    opacity: 0.8,
+                    gap: metrics.inlineGap,
+                    padding: `${metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
+                    paddingLeft: metrics.rowPaddingLeft + depth * 14,
+                    backgroundColor: isActive
+                        ? "color-mix(in srgb, var(--accent) 14%, transparent)"
+                        : "transparent",
                 }}
             >
-                {indicator?.tone === "working"
-                    ? "Working…"
-                    : indicator?.tone === "danger"
-                      ? "Error"
-                      : timestampLabel}
-            </span>
+                <AIProviderIcon
+                    runtimeId={session.runtimeId}
+                    size={metrics.providerIconSize}
+                    className="shrink-0 opacity-70"
+                />
+                {titleNode}
+                {collapseButton}
+                {pinButton}
+                <span
+                    className="shrink-0"
+                    style={{
+                        color: statusColor(status),
+                        fontSize: metrics.timestampFontSize,
+                        opacity: 0.82,
+                    }}
+                >
+                    {statusLabel || timestampLabel}
+                </span>
+            </div>
+        );
+    }
+
+    return (
+        <div
+            {...commonProps}
+            className="group relative flex w-full cursor-pointer flex-col outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+            style={{
+                minHeight: metrics.cardMinHeight,
+                gap: metrics.inlineGap,
+                padding: `${metrics.rowPaddingY * 1.5}px ${metrics.rowPaddingX}px`,
+                marginLeft: depth * 10,
+                width: depth > 0 ? `calc(100% - ${depth * 10}px)` : "100%",
+                borderRadius: metrics.cardRadius,
+                backgroundColor: isActive
+                    ? "color-mix(in srgb, var(--accent) 24%, var(--bg-secondary))"
+                    : "transparent",
+                transition: "background-color 100ms ease, box-shadow 100ms ease",
+            }}
+        >
+            <div className="flex min-h-4 items-center justify-end gap-1.5">
+                <span
+                    data-agent-status={status}
+                    className="truncate text-right font-medium"
+                    style={{
+                        color: statusColor(status),
+                        fontSize: metrics.timestampFontSize,
+                        opacity: status === "ready" ? 0.72 : 0.95,
+                    }}
+                >
+                    {statusLabel || timestampLabel}
+                </span>
+            </div>
+            <div className="flex min-w-0 flex-1 items-center">{titleNode}</div>
+            <div className="flex min-h-4 items-end justify-between gap-1">
+                <div className="flex items-center gap-0.5">
+                    {collapseButton}
+                    {pinButton}
+                </div>
+                <AIProviderIcon
+                    runtimeId={session.runtimeId}
+                    size={metrics.providerIconSize}
+                    className="shrink-0 opacity-80"
+                />
+            </div>
         </div>
     );
 }

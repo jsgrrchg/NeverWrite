@@ -19,7 +19,6 @@ import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import {
     isChatTab,
     isTerminalTab,
-    selectEditorWorkspaceTabs,
     selectFocusedEditorTab,
     useEditorStore,
 } from "../../app/store/editorStore";
@@ -39,12 +38,7 @@ import {
     getSessionTitleText,
     getSessionUpdatedAt,
 } from "./sessionPresentation";
-import {
-    buildAiSessionHierarchyGroups,
-    compareHierarchyGroupsByUpdatedAtDesc,
-    countAiSessionChildren,
-    type AiSessionHierarchyGroup,
-} from "./sessionHierarchy";
+import { countAiSessionChildren } from "./sessionHierarchy";
 import {
     claudeTerminalAgentSessionId,
     closeClaudeTerminalAgentSession,
@@ -63,19 +57,22 @@ import {
 import { useInlineRename } from "./components/useInlineRename";
 import {
     AgentsSidebarItem,
-    type AgentsSidebarActivityIndicator,
     type AgentsSidebarItemMetrics,
 } from "./components/AgentsSidebarItem";
 import { AIProviderIcon } from "./components/AIProviderIcon";
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection";
+import {
+    buildAgentSidebarProjection,
+    resolveAgentSidebarSessionStatus,
+    type AgentSidebarGroup,
+    type AgentSidebarStatus,
+} from "./agentSidebarModel";
 
 // Comando-style Agents panel living inside the left sidebar. Replaces the
 // previous right-panel AIChatPanel for the session list (the actual
 // conversations still open as center editor tabs). Groups sessions into
 // Pinned / Open / All, supports inline rename, pin toggle and a right-click
 // context menu for rename/pin/delete.
-
-type ActivitySession = Pick<AIChatSession, "status">;
 
 type AgentDragPreview = {
     x: number;
@@ -98,21 +95,6 @@ type ChatSidebarDropTarget =
     | { kind: "folder"; folderId: string }
     | { kind: "unfiled" }
     | null;
-
-function deriveActivityIndicator(
-    session: ActivitySession,
-): AgentsSidebarActivityIndicator {
-    switch (session.status) {
-        case "streaming":
-        case "waiting_permission":
-        case "waiting_user_input":
-            return { tone: "working", title: "Agent busy" };
-        case "error":
-            return { tone: "danger", title: "Agent error" };
-        default:
-            return null;
-    }
-}
 
 function formatAgentTimestamp(timestamp: number): string {
     if (!timestamp) return "";
@@ -143,60 +125,39 @@ function formatAgentTimestamp(timestamp: number): string {
     }).format(timestamp);
 }
 
-function isSessionWorking(session: AIChatSession) {
-    return deriveActivityIndicator(session)?.tone === "working";
+function formatElapsed(startedAt: number | null, now: number) {
+    if (startedAt === null) return "";
+    const seconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    return `${Math.floor(minutes / 60)}h`;
 }
 
-function compareOpenHierarchyGroups(
-    a: AiSessionHierarchyGroup,
-    b: AiSessionHierarchyGroup,
-    workingOrder: ReadonlyMap<string, number>,
+function formatStatusLabel(
+    status: AgentSidebarStatus,
+    timestampLabel: string,
+    workingStartedAt: number | null,
+    now: number,
 ) {
-    const aOrder = getGroupWorkingOrder(a, workingOrder);
-    const bOrder = getGroupWorkingOrder(b, workingOrder);
-    const aWorking = aOrder !== undefined;
-    const bWorking = bOrder !== undefined;
-
-    if (aWorking && bWorking) {
-        return aOrder - bOrder;
+    switch (status) {
+        case "review":
+            return "Review";
+        case "approval":
+            return "Approval";
+        case "input":
+            return "Input";
+        case "working": {
+            const elapsed = formatElapsed(workingStartedAt, now);
+            return elapsed ? `Working ${elapsed}` : "Working";
+        }
+        case "failed":
+            return "Failed";
+        case "done":
+            return "Done";
+        case "ready":
+            return timestampLabel;
     }
-    if (aWorking !== bWorking) {
-        return aWorking ? -1 : 1;
-    }
-    return compareHierarchyGroupsByUpdatedAtDesc(a, b);
-}
-
-function compareSidebarHierarchySiblings(
-    left: AIChatSession,
-    right: AIChatSession,
-    workingOrder: ReadonlyMap<string, number>,
-) {
-    const leftOrder = workingOrder.get(left.sessionId);
-    const rightOrder = workingOrder.get(right.sessionId);
-    const leftWorking = leftOrder !== undefined;
-    const rightWorking = rightOrder !== undefined;
-
-    if (leftWorking && rightWorking) {
-        return leftOrder - rightOrder;
-    }
-    if (leftWorking !== rightWorking) {
-        return leftWorking ? -1 : 1;
-    }
-
-    return 0;
-}
-
-function getGroupWorkingOrder(
-    group: AiSessionHierarchyGroup,
-    workingOrder: ReadonlyMap<string, number>,
-) {
-    let earliest: number | undefined;
-    for (const sessionId of group.sessionIds) {
-        const order = workingOrder.get(sessionId);
-        if (order === undefined) continue;
-        earliest = earliest === undefined ? order : Math.min(earliest, order);
-    }
-    return earliest;
 }
 
 function isSubagentSession(session: AIChatSession) {
@@ -254,6 +215,8 @@ function buildAgentsSidebarMetrics(scalePercent: number): {
             providerIconSize: scaleMetric(12, scale, 10),
             pinButtonSize: scaleMetric(16, scale, 14),
             pinIconSize: scaleMetric(11, scale, 10),
+            cardMinHeight: scaleMetric(78, scale, 66),
+            cardRadius: scaleMetric(9, scale, 7),
         },
         header: {
             fontSize: scaleMetric(10, scale, 9),
@@ -321,6 +284,8 @@ export function AgentsSidebarPanel() {
         (state) => state.collapsedParentSessionIds,
     );
     const folderOrder = useAgentSidebarStore((state) => state.folderOrder);
+    const pinnedOrder = useAgentSidebarStore((state) => state.pinnedOrder);
+    const activeOrder = useAgentSidebarStore((state) => state.activeOrder);
     const createFolder = useAgentSidebarStore((state) => state.createFolder);
     const renameFolder = useAgentSidebarStore((state) => state.renameFolder);
     const deleteFolder = useAgentSidebarStore((state) => state.deleteFolder);
@@ -338,24 +303,8 @@ export function AgentsSidebarPanel() {
         (state) => state.migrateLegacyMetadata,
     );
     const reconcileSidebar = useAgentSidebarStore((state) => state.reconcile);
-
-    // Sessions currently open as editor tabs across any pane. Drives the
-    // "Open" section — mirrors Comando's behaviour of bubbling live tabs to
-    // the top of the list.
-    const openSessionIds = useEditorStore(
-        useShallow((state) => {
-            const ids = new Set<string>();
-            for (const tab of selectEditorWorkspaceTabs(state)) {
-                if (isChatTab(tab)) {
-                    ids.add(tab.sessionId);
-                } else if (isTerminalTab(tab)) {
-                    // A Claude Code terminal tab being open means its agent
-                    // entry belongs in the "Open" section.
-                    ids.add(claudeTerminalAgentSessionId(tab.terminalId));
-                }
-            }
-            return ids;
-        }),
+    const markSessionVisited = useAgentSidebarStore(
+        (state) => state.markSessionVisited,
     );
 
     const focusedWorkspaceChatSessionId = useEditorStore(
@@ -376,7 +325,6 @@ export function AgentsSidebarPanel() {
         }),
     );
 
-    // Raw chronological list (persisted order already reflects updatedAt).
     const sessions = useMemo(
         () =>
             sessionOrder
@@ -388,170 +336,99 @@ export function AgentsSidebarPanel() {
     const [filterText, setFilterText] = useState("");
     const normalizedFilter = filterText.trim().toLowerCase();
     const hasFilter = normalizedFilter.length > 0;
-
-    const workingOrderRef = useRef<Map<string, number>>(new Map());
-    const workingCounterRef = useRef(0);
-    const [workingOrderRevision, setWorkingOrderRevision] = useState(0);
-
-    useEffect(() => {
-        const map = workingOrderRef.current;
-        const liveSessionIds = new Set<string>();
-        let changed = false;
-
-        for (const session of sessions) {
-            liveSessionIds.add(session.sessionId);
-            const working = isSessionWorking(session);
-            const tracked = map.has(session.sessionId);
-            if (working && !tracked) {
-                workingCounterRef.current += 1;
-                map.set(session.sessionId, workingCounterRef.current);
-                changed = true;
-            } else if (!working && tracked) {
-                map.delete(session.sessionId);
-                changed = true;
-            }
-        }
-
-        for (const trackedId of Array.from(map.keys())) {
-            if (!liveSessionIds.has(trackedId)) {
-                map.delete(trackedId);
-                changed = true;
-            }
-        }
-
-        if (changed) {
-            setWorkingOrderRevision((value) => value + 1);
-        }
-    }, [sessions]);
-
-    const pinnedRootIds = useMemo(
-        () => new Set(Object.keys(pinnedEntries)),
-        [pinnedEntries],
-    );
-    const hierarchy = useMemo(
+    const [now, setNow] = useState(() => Date.now());
+    const orderedFolders = useMemo(() => {
+        const unordered = Object.values(chatFolders).sort(
+            (left, right) => left.createdAt - right.createdAt,
+        );
+        const byId = new Map(unordered.map((folder) => [folder.id, folder]));
+        const ordered = folderOrder.flatMap((id) => {
+            const folder = byId.get(id);
+            if (!folder) return [];
+            byId.delete(id);
+            return [folder];
+        });
+        return [...ordered, ...unordered.filter((folder) => byId.has(folder.id))];
+    }, [chatFolders, folderOrder]);
+    const projection = useMemo(
         () =>
-            buildAiSessionHierarchyGroups({
+            buildAgentSidebarProjection({
                 sessions,
-                normalizedFilter,
-                openSessionIds,
-                pinnedSessionIds: pinnedRootIds,
-                compareSiblings: (left, right) =>
-                    compareSidebarHierarchySiblings(
-                        left,
-                        right,
-                        workingOrderRef.current,
-                    ),
+                metadataBySessionId: sessionMetadata,
+                folders: orderedFolders,
+                pinnedOrder,
+                activeOrder,
+                filterText,
+                focusedSessionId:
+                    focusedWorkspaceChatSessionId ?? focusedTerminalAgentSessionId,
+                now,
             }),
-        // workingOrderRevision keeps this memo in sync with the ref-backed map.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
         [
-            normalizedFilter,
-            openSessionIds,
-            pinnedRootIds,
+            activeOrder,
+            filterText,
+            focusedTerminalAgentSessionId,
+            focusedWorkspaceChatSessionId,
+            now,
+            orderedFolders,
+            pinnedOrder,
+            sessionMetadata,
             sessions,
-            workingOrderRevision,
         ],
     );
+    const allProjectedGroups = useMemo(
+        () => [
+            ...projection.pinnedGroups,
+            ...projection.activeFolders.flatMap((folder) => folder.groups),
+            ...projection.unfiledActiveGroups,
+            ...projection.snoozedGroups,
+            ...projection.completedGroups,
+            ...projection.searchResults,
+        ],
+        [projection],
+    );
+    const hasWorkingGroup = allProjectedGroups.some(
+        (group) => group.status === "working",
+    );
+    useEffect(() => {
+        if (!hasWorkingGroup) return;
+        const delay = 1_000 - (Date.now() % 1_000) + 8;
+        const timer = window.setTimeout(() => setNow(Date.now()), delay);
+        return () => window.clearTimeout(timer);
+    }, [hasWorkingGroup, now]);
 
-    // Pins are root-owned: legacy child pins are pruned so subagents stay under
-    // their parent instead of jumping into a separate Pinned bucket.
     useEffect(() => {
         if (!sessionInventoryLoaded) return;
-        migrateLegacyMetadata(hierarchy.rootSessionIds);
-        reconcileSidebar(hierarchy.rootSessionIds);
+        migrateLegacyMetadata(projection.rootSessionIds);
+        reconcileSidebar(projection.rootSessionIds);
     }, [
-        hierarchy.rootSessionIds,
         migrateLegacyMetadata,
+        projection.rootSessionIds,
         reconcileSidebar,
         sessionInventoryLoaded,
     ]);
-
-    // Shortcut sections are mutually exclusive with each other. They are not
-    // a partition of folder navigation: a foldered chat may intentionally
-    // also appear in Pinned or Open for quick access.
-    const { pinnedGroups, openGroups, otherGroups } = useMemo(() => {
-        const pinned: AiSessionHierarchyGroup[] = [];
-        const open: AiSessionHierarchyGroup[] = [];
-        const other: AiSessionHierarchyGroup[] = [];
-        for (const group of hierarchy.groups) {
-            if (group.isPinnedRoot) {
-                pinned.push(group);
-            } else if (group.hasOpenSession) {
-                open.push(group);
-            } else {
-                other.push(group);
-            }
-        }
-        pinned.sort((a, b) => {
-            const aPinned = pinnedEntries[a.root.sessionId]?.pinnedAt ?? 0;
-            const bPinned = pinnedEntries[b.root.sessionId]?.pinnedAt ?? 0;
-            if (bPinned !== aPinned) return bPinned - aPinned;
-            return compareHierarchyGroupsByUpdatedAtDesc(a, b);
-        });
-        open.sort((a, b) =>
-            compareOpenHierarchyGroups(a, b, workingOrderRef.current),
-        );
-        other.sort(compareHierarchyGroupsByUpdatedAtDesc);
-        return {
-            pinnedGroups: pinned,
-            openGroups: open,
-            otherGroups: other,
-        };
-        // workingOrderRevision keeps this memo in sync with the ref-backed map.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hierarchy.groups, pinnedEntries, workingOrderRevision]);
-    const orderedFolders = useMemo(
-        () => {
-            const unordered = Object.values(chatFolders).sort(
-                (left, right) => left.createdAt - right.createdAt,
-            );
-            const byId = new Map(unordered.map((folder) => [folder.id, folder]));
-            const ordered = folderOrder.flatMap((id) => {
-                const folder = byId.get(id);
-                if (!folder) return [];
-                byId.delete(id);
-                return [folder];
-            });
-            // This also makes an interrupted migration harmless: folders that
-            // have not reached folderOrder remain visible and usable.
-            return [...ordered, ...unordered.filter((folder) => byId.has(folder.id))];
-        },
-        [chatFolders, folderOrder],
-    );
-    // Folders are the chat's organizational home. Keep every group eligible
-    // here (including pinned/open groups) so the folder projection remains
-    // visible alongside those status-based shortcuts. All is the only section
-    // limited to unfiled groups, avoiding a redundant third copy.
-    const folderGroups = useMemo(() => {
-        const groups = new Map<string, AiSessionHierarchyGroup[]>();
-        for (const folder of orderedFolders) groups.set(folder.id, []);
-        for (const group of hierarchy.groups) {
-            const folderId = sessionFolderIds[group.root.sessionId];
-            if (folderId && groups.has(folderId)) {
-                groups.get(folderId)?.push(group);
-            }
-        }
-        return groups;
-    }, [hierarchy.groups, orderedFolders, sessionFolderIds]);
-    const unfiledGroups = useMemo(
+    const pinnedGroups = projection.pinnedGroups;
+    const folderGroups = useMemo(
         () =>
-            otherGroups.filter(
-                (group) => !sessionFolderIds[group.root.sessionId],
+            new Map(
+                projection.activeFolders.map(({ folder, groups }) => [
+                    folder.id,
+                    groups,
+                ]),
             ),
-        [otherGroups, sessionFolderIds],
+        [projection.activeFolders],
     );
+    const unfiledGroups = hasFilter
+        ? projection.searchResults
+        : projection.unfiledActiveGroups;
 
     const totalCount = sessions.length;
-    const filteredCount = hierarchy.groups.reduce(
+    const filteredCount = (hasFilter
+        ? projection.searchResults
+        : allProjectedGroups
+    ).reduce(
         (count, group) => count + 1 + group.visibleChildren.length,
         0,
     );
-    // Only decorate Open/All headers when there is more than one non-pinned
-    // section or when Pinned is already showing — otherwise a single "Open"
-    // header above a lonely list reads as noise.
-    const showOpenAllHeaders =
-        pinnedGroups.length > 0 ||
-        (openGroups.length > 0 && otherGroups.length > 0);
 
     const {
         editingKey,
@@ -861,6 +738,18 @@ export function AgentsSidebarPanel() {
             ? focusedTerminalAgentSessionId
             : null) ??
         activeSessionId;
+    const visitedProjectionKeyRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!activeSidebarId) return;
+        const visibleGroup = allProjectedGroups.find((group) =>
+            group.sessionIds.includes(activeSidebarId),
+        );
+        if (!visibleGroup) return;
+        const visitKey = `${visibleGroup.root.sessionId}:${visibleGroup.lastCompletedAt ?? 0}`;
+        if (visitedProjectionKeyRef.current === visitKey) return;
+        visitedProjectionKeyRef.current = visitKey;
+        markSessionVisited(visibleGroup.root.sessionId, Date.now());
+    }, [activeSidebarId, allProjectedGroups, markSessionVisited]);
     const metrics = useMemo(
         () => buildAgentsSidebarMetrics(agentsSidebarScale),
         [agentsSidebarScale],
@@ -878,6 +767,9 @@ export function AgentsSidebarPanel() {
             isCollapsed?: boolean;
             canPin?: boolean;
             canRename?: boolean;
+            status?: AgentSidebarStatus;
+            workingStartedAt?: number | null;
+            variant?: "card" | "slim";
             onToggleCollapse?: () => void;
         },
     ) => {
@@ -885,9 +777,20 @@ export function AgentsSidebarPanel() {
         const canPin = options?.canPin ?? !isSubagent;
         const canRename = options?.canRename ?? !isSubagent;
         const isPinned = Boolean(pinnedEntries[session.sessionId]);
-        const indicator = deriveActivityIndicator(session);
+        const status =
+            options?.status ??
+            resolveAgentSidebarSessionStatus(
+                session,
+                sessionMetadata[session.sessionId],
+            );
         const updatedAt = getSessionUpdatedAt(session);
         const timestampLabel = formatAgentTimestamp(updatedAt);
+        const statusLabel = formatStatusLabel(
+            status,
+            timestampLabel,
+            options?.workingStartedAt ?? null,
+            now,
+        );
         const dragTitle = getSessionTitleText(session);
         const updateDragPreview = (clientX: number, clientY: number) => {
             setDragPreview({
@@ -913,12 +816,14 @@ export function AgentsSidebarPanel() {
                 session={session}
                 title={getSessionTitle(session)}
                 timestampLabel={timestampLabel}
+                status={status}
+                statusLabel={statusLabel}
+                variant={options?.variant ?? "card"}
                 isActive={activeSidebarId === session.sessionId}
                 isPinned={canPin && isPinned}
                 canPin={canPin}
                 canRename={canRename}
                 depth={options?.depth ?? 0}
-                indicator={indicator}
                 childCount={options?.childCount ?? 0}
                 isCollapsed={options?.isCollapsed ?? false}
                 isRenaming={editingKey === session.sessionId}
@@ -1004,14 +909,17 @@ export function AgentsSidebarPanel() {
         );
     };
 
-    const renderGroup = (group: AiSessionHierarchyGroup) => {
+    const renderGroup = (group: AgentSidebarGroup) => {
         const collapsed = collapsedParentIds.has(group.root.sessionId);
         const forceChildrenVisible =
             hasFilter ||
             group.visibleChildren.some(
                 (child) =>
                     child.sessionId === activeSidebarId ||
-                    isSessionWorking(child),
+                    resolveAgentSidebarSessionStatus(
+                        child,
+                        sessionMetadata[group.root.sessionId],
+                    ) !== "ready",
             );
         const showChildren =
             group.visibleChildren.length > 0 &&
@@ -1022,6 +930,8 @@ export function AgentsSidebarPanel() {
                 {renderItem(group.root, {
                     childCount: group.children.length,
                     isCollapsed: collapsed && !forceChildrenVisible,
+                    status: group.status,
+                    workingStartedAt: group.workingStartedAt,
                     onToggleCollapse:
                         group.children.length > 0
                             ? () => toggleCollapsedParent(group.root.sessionId)
@@ -1035,6 +945,7 @@ export function AgentsSidebarPanel() {
                               depth: 1,
                               canPin: false,
                               canRename: false,
+                              variant: "slim",
                           }),
                       )
                     : null}
@@ -1332,35 +1243,43 @@ export function AgentsSidebarPanel() {
                         body={`No threads match "${filterText.trim()}".`}
                     />
                 ) : (
-                    <>
+                    hasFilter ? (
                         <AgentsSidebarSection
-                            title="Pinned"
-                            count={pinnedGroups.length}
-                            headerMetrics={metrics.header}
-                        >
-                            {pinnedGroups.map(renderGroup)}
-                        </AgentsSidebarSection>
-                        <AgentsSidebarSection
-                            title="Open"
-                            count={openGroups.length}
-                            showHeader={showOpenAllHeaders}
-                            headerMetrics={metrics.header}
-                        >
-                            {openGroups.map(renderGroup)}
-                        </AgentsSidebarSection>
-                        {orderedFolders.map(renderFolder)}
-                        <AgentsSidebarSection
-                            title="All"
+                            title="Results"
                             count={unfiledGroups.length}
-                            showHeader={showOpenAllHeaders || orderedFolders.length > 0}
-                            showWhenEmpty={orderedFolders.length > 0}
-                            dropTarget="all"
-                            isDropTarget={isDraggingOverUnfiled}
                             headerMetrics={metrics.header}
                         >
                             {unfiledGroups.map(renderGroup)}
                         </AgentsSidebarSection>
-                    </>
+                    ) : (
+                        <>
+                            <AgentsSidebarSection
+                                title="Pinned"
+                                count={pinnedGroups.length}
+                                headerMetrics={metrics.header}
+                            >
+                                {pinnedGroups.map(renderGroup)}
+                            </AgentsSidebarSection>
+                            {pinnedGroups.length > 0 ? (
+                                <div
+                                    className="mx-2 mt-2 h-px"
+                                    style={{ background: "var(--border)" }}
+                                />
+                            ) : null}
+                            {orderedFolders.map(renderFolder)}
+                            <AgentsSidebarSection
+                                title="Active"
+                                count={unfiledGroups.length}
+                                showHeader={orderedFolders.length > 0}
+                                showWhenEmpty={orderedFolders.length > 0}
+                                dropTarget="all"
+                                isDropTarget={isDraggingOverUnfiled}
+                                headerMetrics={metrics.header}
+                            >
+                                {unfiledGroups.map(renderGroup)}
+                            </AgentsSidebarSection>
+                        </>
+                    )
                 )}
             </div>
 
