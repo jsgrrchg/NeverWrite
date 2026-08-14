@@ -35,6 +35,7 @@ export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
     const activateSidebarView = useLayoutStore(
         (state) => state.activateSidebarView,
     );
+    const moveSidebarView = useLayoutStore((state) => state.moveSidebarView);
     const toggleSidebar = useLayoutStore((state) => state.toggleSidebar);
     const updateAvailable = useAppUpdateStore(
         (state) => !!state.status?.update,
@@ -107,6 +108,7 @@ export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
                     views={views}
                     activeView={activeView}
                     onSelect={selectView}
+                    onMove={moveSidebarView}
                 />
             </div>
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

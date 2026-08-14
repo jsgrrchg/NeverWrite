@@ -223,6 +223,31 @@ describe("App web clipper routing", () => {
         });
     });
 
+    it("registers conditional sidebar movement commands", async () => {
+        renderComponent(<App />);
+        await waitFor(() => {
+            expect(
+                useCommandStore.getState().commands.has(
+                    "layout:move-files-right",
+                ),
+            ).toBe(true);
+        });
+
+        expect(
+            useCommandStore
+                .getState()
+                .search("")
+                .map((command) => command.label),
+        ).toContain("Move Files to Right Sidebar");
+        useCommandStore.getState().execute("layout:move-files-right");
+        expect(
+            useCommandStore
+                .getState()
+                .search("")
+                .map((command) => command.label),
+        ).toContain("Move Files to Left Sidebar");
+    });
+
     it("keeps the persisted chat workspace when chat initialization fails during cold start", async () => {
         const persistedWorkspace = {
             version: 1 as const,

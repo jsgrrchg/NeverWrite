@@ -15,6 +15,7 @@ export function RightSidebarShell() {
     const activateSidebarView = useLayoutStore(
         (state) => state.activateSidebarView,
     );
+    const moveSidebarView = useLayoutStore((state) => state.moveSidebarView);
     const toggleRightPanel = useLayoutStore((state) => state.toggleRightPanel);
     const views = getSidebarViews("right", placement);
     const compactContextualViews = views.some(
@@ -55,6 +56,7 @@ export function RightSidebarShell() {
                     activeView={activeView}
                     compactContextualViews={compactContextualViews}
                     onSelect={selectView}
+                    onMove={moveSidebarView}
                 />
                 <button
                     type="button"

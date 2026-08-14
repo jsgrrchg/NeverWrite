@@ -699,6 +699,30 @@ function useRegisterCommands(
             execute: () => useLayoutStore.getState().toggleRightPanel(),
         });
 
+        for (const view of ["files", "agents"] as const) {
+            const label = view === "files" ? "Files" : "Agents";
+            register({
+                id: `layout:move-${view}-right`,
+                label: `Move ${label} to Right Sidebar`,
+                category: "Layout",
+                when: () =>
+                    useLayoutStore.getState().movableSidebarPlacement[view] ===
+                    "left",
+                execute: () =>
+                    useLayoutStore.getState().moveSidebarView(view, "right"),
+            });
+            register({
+                id: `layout:move-${view}-left`,
+                label: `Move ${label} to Left Sidebar`,
+                category: "Layout",
+                when: () =>
+                    useLayoutStore.getState().movableSidebarPlacement[view] ===
+                    "right",
+                execute: () =>
+                    useLayoutStore.getState().moveSidebarView(view, "left"),
+            });
+        }
+
         register({
             id: "app:open-settings",
             label: openSettingsShortcut.label,

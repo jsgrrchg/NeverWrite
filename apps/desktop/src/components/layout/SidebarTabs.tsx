@@ -1,6 +1,14 @@
-import type { KeyboardEvent, MouseEvent } from "react";
+import { useState, type KeyboardEvent, type MouseEvent } from "react";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "../context-menu/ContextMenu";
 import type { SidebarSide, SidebarView } from "./sidebarViews";
-import { SIDEBAR_VIEW_CATALOG } from "./sidebarViews";
+import {
+    isMovableSidebarView,
+    SIDEBAR_VIEW_CATALOG,
+    type MovableSidebarView,
+} from "./sidebarViews";
 
 export function SidebarViewIcon({ view }: { view: SidebarView }) {
     const common = {
@@ -72,10 +80,7 @@ interface SidebarTabsProps {
     activeView: SidebarView;
     compactContextualViews?: boolean;
     onSelect: (view: SidebarView) => void;
-    onRequestContextMenu?: (
-        view: SidebarView,
-        event: MouseEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonElement>,
-    ) => void;
+    onMove?: (view: MovableSidebarView, target: SidebarSide) => void;
 }
 
 export function SidebarTabs({
@@ -84,70 +89,111 @@ export function SidebarTabs({
     activeView,
     compactContextualViews = false,
     onSelect,
-    onRequestContextMenu,
+    onMove,
 }: SidebarTabsProps) {
+    const [menu, setMenu] =
+        useState<ContextMenuState<MovableSidebarView> | null>(null);
+    const requestContextMenu = (
+        view: SidebarView,
+        event: MouseEvent<HTMLButtonElement> | KeyboardEvent<HTMLButtonElement>,
+    ) => {
+        if (!onMove || !isMovableSidebarView(view)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        const pointer = "clientX" in event && event.clientX > 0;
+        setMenu({
+            payload: view,
+            x: pointer ? event.clientX : rect.left,
+            y: pointer ? event.clientY : rect.bottom,
+        });
+    };
+
     return (
-        <div
-            className="flex min-w-0 flex-1 items-center gap-1"
-            data-sidebar-tabs={side}
-        >
-            {views.map((view) => {
-                const definition = SIDEBAR_VIEW_CATALOG[view];
-                const compact =
-                    definition.compact ||
-                    (compactContextualViews &&
-                        (view === "outline" || view === "links"));
-                const active = activeView === view;
-                return (
-                    <button
-                        key={view}
-                        type="button"
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onClick={() => onSelect(view)}
-                        onContextMenu={(event) =>
-                            onRequestContextMenu?.(view, event)
-                        }
-                        onKeyDown={(event) => {
-                            if (
-                                event.key === "ContextMenu" ||
-                                (event.shiftKey && event.key === "F10")
-                            ) {
-                                onRequestContextMenu?.(view, event);
+        <>
+            <div
+                className="flex min-w-0 flex-1 items-center gap-1"
+                data-sidebar-tabs={side}
+            >
+                {views.map((view) => {
+                    const definition = SIDEBAR_VIEW_CATALOG[view];
+                    const compact =
+                        definition.compact ||
+                        (compactContextualViews &&
+                            (view === "outline" || view === "links"));
+                    const active = activeView === view;
+                    return (
+                        <button
+                            key={view}
+                            type="button"
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={() => onSelect(view)}
+                            onContextMenu={(event) =>
+                                requestContextMenu(view, event)
                             }
-                        }}
-                        title={definition.label}
-                        aria-label={definition.label}
-                        data-active={active || undefined}
-                        data-sidebar-tab={view}
-                        className="no-drag ub-sidebar-tab flex items-center justify-center gap-1.5 text-[11px] font-medium rounded-md"
-                        style={{
-                            flex: compact ? "0 0 auto" : 1,
-                            minWidth: 0,
-                            height: side === "left" ? 28 : 26,
-                            padding: compact ? "0 8px" : "0 6px",
-                            border: active
-                                ? "1px solid color-mix(in srgb, var(--accent) 22%, var(--border))"
-                                : "1px solid transparent",
-                            background: active
-                                ? "color-mix(in srgb, var(--bg-primary) 60%, transparent)"
-                                : "transparent",
-                            color: active
-                                ? "var(--text-primary)"
-                                : "var(--text-secondary)",
-                            boxShadow: active
-                                ? "0 1px 2px rgb(0 0 0 / 0.12)"
-                                : "none",
-                            transition:
-                                "background-color 140ms ease-out, color 140ms ease-out, border-color 140ms ease-out, transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 140ms ease-out",
-                        }}
-                    >
-                        <SidebarViewIcon view={view} />
-                        {!compact && (
-                            <span className="truncate">{definition.label}</span>
-                        )}
-                    </button>
-                );
-            })}
-        </div>
+                            onKeyDown={(event) => {
+                                if (
+                                    event.key === "ContextMenu" ||
+                                    (event.shiftKey && event.key === "F10")
+                                ) {
+                                    requestContextMenu(view, event);
+                                }
+                            }}
+                            title={definition.label}
+                            aria-label={definition.label}
+                            data-active={active || undefined}
+                            data-sidebar-tab={view}
+                            className="no-drag ub-sidebar-tab flex items-center justify-center gap-1.5 text-[11px] font-medium rounded-md"
+                            style={{
+                                flex: compact ? "0 0 auto" : 1,
+                                minWidth: 0,
+                                height: side === "left" ? 28 : 26,
+                                padding: compact ? "0 8px" : "0 6px",
+                                border: active
+                                    ? "1px solid color-mix(in srgb, var(--accent) 22%, var(--border))"
+                                    : "1px solid transparent",
+                                background: active
+                                    ? "color-mix(in srgb, var(--bg-primary) 60%, transparent)"
+                                    : "transparent",
+                                color: active
+                                    ? "var(--text-primary)"
+                                    : "var(--text-secondary)",
+                                boxShadow: active
+                                    ? "0 1px 2px rgb(0 0 0 / 0.12)"
+                                    : "none",
+                                transition:
+                                    "background-color 140ms ease-out, color 140ms ease-out, border-color 140ms ease-out, transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 140ms ease-out",
+                            }}
+                        >
+                            <SidebarViewIcon view={view} />
+                            {!compact && (
+                                <span className="truncate">
+                                    {definition.label}
+                                </span>
+                            )}
+                        </button>
+                    );
+                })}
+            </div>
+            {menu && (
+                <ContextMenu
+                    menu={menu}
+                    entries={[
+                        {
+                            label:
+                                side === "left"
+                                    ? "Move to Right Sidebar"
+                                    : "Move to Left Sidebar",
+                            action: () =>
+                                onMove?.(
+                                    menu.payload,
+                                    side === "left" ? "right" : "left",
+                                ),
+                        },
+                    ]}
+                    onClose={() => setMenu(null)}
+                />
+            )}
+        </>
     );
 }

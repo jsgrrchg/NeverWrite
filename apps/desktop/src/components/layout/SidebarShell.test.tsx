@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+    fireEvent,
+    render,
+    screen,
+    waitFor,
+    within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createDefaultLayoutState,
@@ -90,5 +96,36 @@ describe("sidebar shells", () => {
         expect(screen.getByTestId("maps-content")).toBeInTheDocument();
         expect(screen.queryByTestId("files-content")).not.toBeInTheDocument();
         expect(screen.queryByTestId("vault-switcher")).not.toBeInTheDocument();
+    });
+
+    it("moves Files from its context menu and supports keyboard invocation", async () => {
+        render(
+            <>
+                <SidebarShell onOpenSettings={vi.fn()} />
+                <RightSidebarShell />
+            </>,
+        );
+        const files = screen.getByRole("button", { name: "Files" });
+        fireEvent.keyDown(files, { key: "F10", shiftKey: true });
+        fireEvent.click(await screen.findByText("Move to Right Sidebar"));
+        await waitFor(() =>
+            expect(
+                useLayoutStore.getState().movableSidebarPlacement.files,
+            ).toBe("right"),
+        );
+        expect(
+            within(screen.getByTestId("right-sidebar-shell")).getByRole(
+                "button",
+                { name: "Files" },
+            ),
+        ).toBeInTheDocument();
+    });
+
+    it("does not offer movement for fixed views", () => {
+        render(<SidebarShell onOpenSettings={vi.fn()} />);
+        fireEvent.contextMenu(screen.getByRole("button", { name: "Tags" }));
+        expect(
+            screen.queryByText(/Move to (Left|Right) Sidebar/),
+        ).not.toBeInTheDocument();
     });
 });
