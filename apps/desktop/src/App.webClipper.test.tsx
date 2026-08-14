@@ -50,6 +50,10 @@ vi.mock("./components/layout/SidebarShell", () => ({
     SidebarShell: () => <div data-testid="sidebar-shell" />,
 }));
 
+vi.mock("./components/layout/RightSidebarShell", () => ({
+    RightSidebarShell: () => <div data-testid="right-sidebar-shell" />,
+}));
+
 vi.mock("./features/notes/LinksPanel", () => ({
     LinksPanel: () => <div data-testid="links-panel" />,
 }));

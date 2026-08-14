@@ -9,8 +9,7 @@ import { resolveDeferredUnlisten } from "./app/utils/deferredUnlisten";
 import { vaultInvoke } from "./app/utils/vaultInvoke";
 import { AppLayout } from "./components/layout/AppLayout";
 import { SidebarShell } from "./components/layout/SidebarShell";
-import { LinksPanel } from "./features/notes/LinksPanel";
-import { OutlinePanel } from "./features/notes/OutlinePanel";
+import { RightSidebarShell } from "./components/layout/RightSidebarShell";
 import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
 import { listChatWorkspaceHistoryReferences } from "./features/ai/chatWorkspaceRestoration";
@@ -175,183 +174,6 @@ function resetAppToActualSize() {
     resetAppZoom();
 }
 
-type RightPanelTab = "outline" | "links";
-
-// The right panel lives outside the center column, so its tab bar starts at
-// Y=0 of the window. On Windows and Linux that zone is owned by the native
-// `titleBarOverlay` (34px tall caption strip anchored to the window's
-// top-right), which would otherwise paint min/max/close on top of the tab
-// bar. Reserve a matching 34px drag strip at the top of the panel — same
-// pattern as `EditorChromeBar` for the center column.
-const DESKTOP_PLATFORM = getDesktopPlatform();
-const USES_NATIVE_TITLEBAR_OVERLAY =
-    DESKTOP_PLATFORM === "windows" || DESKTOP_PLATFORM === "linux";
-
-const RIGHT_PANEL_TABS: Array<{
-    value: RightPanelTab;
-    label: string;
-    icon: React.ReactNode;
-}> = [
-    {
-        value: "outline",
-        label: "Outline",
-        icon: (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <path d="M3 3.5h10" />
-                <path d="M5.5 8h7.5" />
-                <path d="M8 12.5h5" />
-                <path d="M3 8h.01" />
-                <path d="M5.5 12.5h.01" />
-            </svg>
-        ),
-    },
-    {
-        value: "links",
-        label: "Links",
-        icon: (
-            <svg
-                width="12"
-                height="12"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <path d="M10 2h4v4M14 2l-6 6M6 4H3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-3" />
-            </svg>
-        ),
-    },
-];
-
-function RightPanelTabBar({
-    view,
-    onSelect,
-    onCollapse,
-}: {
-    view: RightPanelTab;
-    onSelect: (view: RightPanelTab) => void;
-    onCollapse: () => void;
-}) {
-    return (
-        <div
-            className="flex items-center gap-1"
-            style={{ padding: "8px 8px 6px", flexShrink: 0 }}
-        >
-            {RIGHT_PANEL_TABS.map((tab) => {
-                const active = view === tab.value;
-                return (
-                    <button
-                        key={tab.value}
-                        type="button"
-                        onClick={() => onSelect(tab.value)}
-                        title={tab.label}
-                        data-active={active || undefined}
-                        className="ub-sidebar-tab flex items-center justify-center gap-1.5 text-[11px] font-medium rounded-md"
-                        style={{
-                            flex: 1,
-                            minWidth: 0,
-                            height: 26,
-                            padding: "0 6px",
-                            border: active
-                                ? "1px solid color-mix(in srgb, var(--accent) 22%, var(--border))"
-                                : "1px solid transparent",
-                            background: active
-                                ? "color-mix(in srgb, var(--bg-primary) 60%, transparent)"
-                                : "transparent",
-                            color: active
-                                ? "var(--text-primary)"
-                                : "var(--text-secondary)",
-                            boxShadow: active
-                                ? "0 1px 2px rgb(0 0 0 / 0.12)"
-                                : "none",
-                            transition:
-                                "background-color 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease",
-                        }}
-                    >
-                        {tab.icon}
-                        <span className="truncate">{tab.label}</span>
-                    </button>
-                );
-            })}
-            <button
-                type="button"
-                onClick={onCollapse}
-                title="Hide right panel"
-                aria-label="Hide right panel"
-                className="ub-chrome-btn flex items-center justify-center shrink-0 rounded-md"
-                style={{
-                    width: 26,
-                    height: 26,
-                    border: "1px solid transparent",
-                    background: "transparent",
-                    color: "var(--text-secondary)",
-                    opacity: 0.82,
-                }}
-            >
-                <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.4"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                >
-                    <rect x="2" y="2.5" width="12" height="11" rx="2.2" />
-                    <path d="M6 2.5v11" />
-                </svg>
-            </button>
-        </div>
-    );
-}
-
-function RightPanel() {
-    const rightPanelView = useLayoutStore(
-        (s) => s.activeSidebarView.right,
-    ) as RightPanelTab;
-    const activateSidebarView = useLayoutStore((s) => s.activateSidebarView);
-    const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
-    return (
-        <div className="flex h-full min-h-0 flex-col overflow-hidden">
-            {USES_NATIVE_TITLEBAR_OVERLAY && (
-                <div
-                    aria-hidden="true"
-                    data-right-panel-titlebar-inset
-                    style={
-                        {
-                            height: 34,
-                            flexShrink: 0,
-                            WebkitAppRegion: "drag",
-                            backgroundColor: "var(--sidebar-vibrancy-tint)",
-                        } as React.CSSProperties
-                    }
-                />
-            )}
-            <RightPanelTabBar
-                view={rightPanelView}
-                onSelect={(view) => activateSidebarView("right", view)}
-                onCollapse={toggleRightPanel}
-            />
-            <div className="min-h-0 flex-1 overflow-hidden">
-                {rightPanelView === "outline" && <OutlineRightPanel />}
-                {rightPanelView === "links" && <LinksPanel />}
-            </div>
-        </div>
-    );
-}
-
 const VAULT_OVERLAY_STRIP_LABEL: React.CSSProperties = {
     fontSize: "0.68em",
     letterSpacing: "0.12em",
@@ -507,42 +329,6 @@ function VaultOpeningOverlay() {
                 </div>
             </div>
         </div>
-    );
-}
-
-function OutlineRightPanel() {
-    const activeNoteId = useEditorStore((state) => {
-        const tab = selectFocusedEditorTab(state);
-        return tab && isNoteTab(tab) ? tab.noteId : null;
-    });
-    const activeContent = useEditorStore((state) => {
-        const tab = selectFocusedEditorTab(state);
-        return tab && isNoteTab(tab) ? tab.content : null;
-    });
-    const queueSelectionReveal = useEditorStore((s) => s.queueSelectionReveal);
-
-    if (!activeNoteId) {
-        return (
-            <div
-                className="flex items-center justify-center h-full text-xs"
-                style={{ color: "var(--text-secondary)" }}
-            >
-                No note open
-            </div>
-        );
-    }
-
-    return (
-        <OutlinePanel
-            content={activeContent}
-            onSelectHeading={(selection) =>
-                queueSelectionReveal({
-                    noteId: activeNoteId,
-                    anchor: selection.anchor,
-                    head: selection.head,
-                })
-            }
-        />
     );
 }
 
@@ -2343,7 +2129,7 @@ export default function App() {
                             </div>
                         </div>
                     }
-                    right={<RightPanel />}
+                    right={<RightSidebarShell />}
                 />
                 <VaultOpeningOverlay />
             </div>
