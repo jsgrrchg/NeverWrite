@@ -54,6 +54,10 @@ export interface AgentsSidebarItemProps {
     onQuickAction?: () => void;
     secondaryActionLabel?: string;
     onSecondaryAction?: () => void;
+    reorderScope?: string;
+    dropPosition?: "before" | "after" | null;
+    isKeyboardGrabbed?: boolean;
+    onSortKeyboard?: (action: "toggle" | "up" | "down" | "cancel") => void;
     onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
     onDragStart?: (coords: AgentsSidebarItemDragCoordinates) => void;
     onDragMove?: (coords: AgentsSidebarItemDragCoordinates) => void;
@@ -154,6 +158,10 @@ export function AgentsSidebarItem({
     onQuickAction,
     secondaryActionLabel,
     onSecondaryAction,
+    reorderScope,
+    dropPosition = null,
+    isKeyboardGrabbed = false,
+    onSortKeyboard,
     onContextMenu,
     onDragStart,
     onDragMove,
@@ -304,7 +312,19 @@ export function AgentsSidebarItem({
 
     const handleKeyboardOpen = (event: React.KeyboardEvent<HTMLDivElement>) => {
         if (isRenaming || event.target !== event.currentTarget) return;
-        if (event.key === "Enter" || event.key === " ") {
+        if (event.key === " " && onSortKeyboard) {
+            event.preventDefault();
+            onSortKeyboard("toggle");
+        } else if (isKeyboardGrabbed && event.key === "ArrowUp") {
+            event.preventDefault();
+            onSortKeyboard?.("up");
+        } else if (isKeyboardGrabbed && event.key === "ArrowDown") {
+            event.preventDefault();
+            onSortKeyboard?.("down");
+        } else if (isKeyboardGrabbed && event.key === "Escape") {
+            event.preventDefault();
+            onSortKeyboard?.("cancel");
+        } else if (event.key === "Enter") {
             event.preventDefault();
             onOpen();
         }
@@ -317,6 +337,8 @@ export function AgentsSidebarItem({
         "aria-current": isActive ? ("true" as const) : undefined,
         "data-testid": "agent-sidebar-item",
         "data-agent-session-id": session.sessionId,
+        "data-agent-reorder-scope": reorderScope,
+        "data-agent-keyboard-grabbed": isKeyboardGrabbed || undefined,
         onClick: () => {
             if (!suppressClickRef.current && !isRenaming) onOpen();
         },
@@ -470,6 +492,8 @@ export function AgentsSidebarItem({
                     backgroundColor: isActive
                         ? "color-mix(in srgb, var(--accent) 14%, transparent)"
                         : "transparent",
+                    borderTop: dropPosition === "before" ? "2px solid var(--accent)" : "2px solid transparent",
+                    borderBottom: dropPosition === "after" ? "2px solid var(--accent)" : "2px solid transparent",
                 }}
             >
                 <AIProviderIcon
@@ -511,6 +535,8 @@ export function AgentsSidebarItem({
                     ? "color-mix(in srgb, var(--accent) 24%, var(--bg-secondary))"
                     : "transparent",
                 transition: "background-color 100ms ease, box-shadow 100ms ease",
+                borderTop: dropPosition === "before" ? "2px solid var(--accent)" : "2px solid transparent",
+                borderBottom: dropPosition === "after" ? "2px solid var(--accent)" : "2px solid transparent",
             }}
         >
             <div className="flex min-h-4 items-center justify-end gap-1.5">

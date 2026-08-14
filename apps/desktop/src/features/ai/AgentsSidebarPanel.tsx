@@ -106,6 +106,12 @@ type ChatSidebarDropTarget =
     | { kind: "unfiled" }
     | null;
 
+type AgentRowDropTarget = {
+    sessionId: string;
+    scope: string;
+    position: "before" | "after";
+};
+
 function formatAgentTimestamp(timestamp: number): string {
     if (!timestamp) return "";
     const now = Date.now();
@@ -190,12 +196,37 @@ function getChatSidebarDropTargetAtPoint(
     }
     const target = document.elementFromPoint(clientX, clientY);
     if (!(target instanceof Element)) return null;
+    if (target.closest("[data-agent-session-id]")) return null;
     const folderId = target.closest<HTMLElement>("[data-chat-folder-id]")
         ?.dataset.chatFolderId;
     if (folderId) return { kind: "folder", folderId };
     return target.closest("[data-chat-unfiled-drop-zone]")
         ? { kind: "unfiled" }
         : null;
+}
+
+function getAgentRowDropTargetAtPoint(
+    clientX: number,
+    clientY: number,
+    sourceSessionId: string,
+    sourceScope: string | undefined,
+): AgentRowDropTarget | null {
+    if (!sourceScope || typeof document.elementFromPoint !== "function") {
+        return null;
+    }
+    const target = document.elementFromPoint(clientX, clientY);
+    const row = target?.closest<HTMLElement>("[data-agent-reorder-scope]");
+    const sessionId = row?.dataset.agentSessionId;
+    const scope = row?.dataset.agentReorderScope;
+    if (!row || !sessionId || !scope || scope !== sourceScope || sessionId === sourceSessionId) {
+        return null;
+    }
+    const rect = row.getBoundingClientRect();
+    return {
+        sessionId,
+        scope,
+        position: clientY < rect.top + rect.height / 2 ? "before" : "after",
+    };
 }
 
 function buildAgentsSidebarMetrics(scalePercent: number): {
@@ -333,6 +364,18 @@ export function AgentsSidebarPanel() {
     );
     const setSnoozedShelfExpanded = useAgentSidebarStore(
         (state) => state.setSnoozedShelfExpanded,
+    );
+    const reorderPinnedSession = useAgentSidebarStore(
+        (state) => state.reorderPinnedSession,
+    );
+    const reorderActiveSession = useAgentSidebarStore(
+        (state) => state.reorderActiveSession,
+    );
+    const resetPinnedOrder = useAgentSidebarStore(
+        (state) => state.resetPinnedOrder,
+    );
+    const resetActiveOrder = useAgentSidebarStore(
+        (state) => state.resetActiveOrder,
     );
 
     const focusedWorkspaceChatSessionId = useEditorStore(
@@ -570,6 +613,14 @@ export function AgentsSidebarPanel() {
         null,
     );
     const [isDraggingOverUnfiled, setIsDraggingOverUnfiled] = useState(false);
+    const [rowDropTarget, setRowDropTarget] =
+        useState<AgentRowDropTarget | null>(null);
+    const [keyboardSort, setKeyboardSort] = useState<{
+        sessionId: string;
+        scope: string;
+        originalOrder: string[];
+    } | null>(null);
+    const [sortAnnouncement, setSortAnnouncement] = useState("");
     const folderDragRef = useRef<{
         pointerId: number;
         folderId: string;
@@ -815,6 +866,90 @@ export function AgentsSidebarPanel() {
         [collapsedParentSessionIds],
     );
 
+    const getReorderScopeIds = (scope: string) => {
+        if (scope === "pinned") {
+            return projection.pinnedGroups.map((group) => group.root.sessionId);
+        }
+        if (scope === "active:unfiled") {
+            return projection.unfiledActiveGroups.map(
+                (group) => group.root.sessionId,
+            );
+        }
+        const folderId = scope.startsWith("active:folder:")
+            ? scope.slice("active:folder:".length)
+            : null;
+        return (
+            projection.activeFolders.find(
+                ({ folder }) => folder.id === folderId,
+            )?.groups ?? []
+        ).map((group) => group.root.sessionId);
+    };
+
+    const applyScopedReorder = (
+        sessionId: string,
+        scope: string,
+        destinationIndex: number,
+    ) => {
+        const scopeIds = getReorderScopeIds(scope);
+        if (scope === "pinned") {
+            reorderPinnedSession(sessionId, destinationIndex, scopeIds);
+        } else {
+            reorderActiveSession(sessionId, destinationIndex, scopeIds);
+        }
+    };
+
+    const handleKeyboardSort = (
+        sessionId: string,
+        scope: string,
+        action: "toggle" | "up" | "down" | "cancel",
+    ) => {
+        if (action === "toggle") {
+            if (keyboardSort?.sessionId === sessionId) {
+                setKeyboardSort(null);
+                setSortAnnouncement("Agent position saved.");
+            } else {
+                setKeyboardSort({
+                    sessionId,
+                    scope,
+                    originalOrder: [
+                        ...(scope === "pinned" ? pinnedOrder : activeOrder),
+                    ],
+                });
+                const scopeIds = getReorderScopeIds(scope);
+                setSortAnnouncement(
+                    `Picked up agent ${scopeIds.indexOf(sessionId) + 1} of ${scopeIds.length}.`,
+                );
+            }
+            return;
+        }
+        if (keyboardSort?.sessionId !== sessionId) return;
+        if (action === "cancel") {
+            if (scope === "pinned") resetPinnedOrder();
+            else resetActiveOrder();
+            keyboardSort.originalOrder.forEach((id, index) => {
+                if (scope === "pinned") reorderPinnedSession(id, index);
+                else reorderActiveSession(id, index);
+            });
+            setKeyboardSort(null);
+            setSortAnnouncement("Agent move cancelled.");
+            return;
+        }
+        const scopeIds = getReorderScopeIds(scope);
+        const currentIndex = scopeIds.indexOf(sessionId);
+        const destinationIndex = Math.max(
+            0,
+            Math.min(
+                scopeIds.length - 1,
+                currentIndex + (action === "up" ? -1 : 1),
+            ),
+        );
+        if (currentIndex < 0 || currentIndex === destinationIndex) return;
+        applyScopedReorder(sessionId, scope, destinationIndex);
+        setSortAnnouncement(
+            `Agent moved to position ${destinationIndex + 1} of ${scopeIds.length}.`,
+        );
+    };
+
     const renderItem = (
         session: AIChatSession,
         options?: {
@@ -831,6 +966,7 @@ export function AgentsSidebarPanel() {
             secondaryActionLabel?: string;
             onSecondaryAction?: () => void;
             statusLabelOverride?: string;
+            reorderScope?: string;
             onToggleCollapse?: () => void;
         },
     ) => {
@@ -871,6 +1007,16 @@ export function AgentsSidebarPanel() {
                 target?.kind === "folder" ? target.folderId : null,
             );
             setIsDraggingOverUnfiled(target?.kind === "unfiled");
+            setRowDropTarget(
+                target
+                    ? null
+                    : getAgentRowDropTargetAtPoint(
+                          clientX,
+                          clientY,
+                          session.sessionId,
+                          options?.reorderScope,
+                      ),
+            );
         };
 
         return (
@@ -913,6 +1059,25 @@ export function AgentsSidebarPanel() {
                 onQuickAction={options?.onQuickAction}
                 secondaryActionLabel={options?.secondaryActionLabel}
                 onSecondaryAction={options?.onSecondaryAction}
+                reorderScope={options?.reorderScope}
+                dropPosition={
+                    rowDropTarget?.sessionId === session.sessionId
+                        ? rowDropTarget.position
+                        : null
+                }
+                isKeyboardGrabbed={
+                    keyboardSort?.sessionId === session.sessionId
+                }
+                onSortKeyboard={
+                    options?.reorderScope
+                        ? (action) =>
+                              handleKeyboardSort(
+                                  session.sessionId,
+                                  options.reorderScope!,
+                                  action,
+                              )
+                        : undefined
+                }
                 onContextMenu={(event) => handleContextMenu(event, session)}
                 onDragStart={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
@@ -941,14 +1106,40 @@ export function AgentsSidebarPanel() {
                     const target = canPin
                         ? getChatSidebarDropTargetAtPoint(clientX, clientY)
                         : null;
-                    const movedWithinSidebar = target !== null;
+                    const reorderTarget = target
+                        ? null
+                        : getAgentRowDropTargetAtPoint(
+                              clientX,
+                              clientY,
+                              session.sessionId,
+                              options?.reorderScope,
+                          );
+                    const movedWithinSidebar =
+                        target !== null || reorderTarget !== null;
                     if (target?.kind === "folder") {
                         moveSessionToFolder(session.sessionId, target.folderId);
                     } else if (target?.kind === "unfiled") {
                         moveSessionToFolder(session.sessionId, null);
+                    } else if (reorderTarget && options?.reorderScope) {
+                        const scopeIds = getReorderScopeIds(options.reorderScope);
+                        const remaining = scopeIds.filter(
+                            (id) => id !== session.sessionId,
+                        );
+                        const targetIndex = remaining.indexOf(
+                            reorderTarget.sessionId,
+                        );
+                        if (targetIndex >= 0) {
+                            applyScopedReorder(
+                                session.sessionId,
+                                options.reorderScope,
+                                targetIndex +
+                                    (reorderTarget.position === "after" ? 1 : 0),
+                            );
+                        }
                     }
                     setDragOverFolderId(null);
                     setIsDraggingOverUnfiled(false);
+                    setRowDropTarget(null);
                     emitAgentSidebarDrag({
                         // Sidebar drops belong to the sidebar; prevent the
                         // workspace pane drop handler from acting as well.
@@ -963,6 +1154,7 @@ export function AgentsSidebarPanel() {
                     setDragPreview(null);
                     setDragOverFolderId(null);
                     setIsDraggingOverUnfiled(false);
+                    setRowDropTarget(null);
                     emitAgentSidebarDrag({
                         phase: "cancel",
                         x: 0,
@@ -1057,6 +1249,15 @@ export function AgentsSidebarPanel() {
                                   rootMetadata.snoozedUntil,
                                   now,
                               )
+                            : undefined,
+                    reorderScope:
+                        lifecycle === "active"
+                            ? rootMetadata?.pinnedAt !== null &&
+                              rootMetadata?.pinnedAt !== undefined
+                                ? "pinned"
+                                : rootMetadata?.folderId
+                                  ? `active:folder:${rootMetadata.folderId}`
+                                  : "active:unfiled"
                             : undefined,
                     onToggleCollapse:
                         group.children.length > 0
@@ -1258,6 +1459,12 @@ export function AgentsSidebarPanel() {
             contextMetadata.snoozedUntil > now &&
             !agentSidebarStatusNeedsAttention(contextGroup.status),
     );
+    const contextOrderKind = contextGroup
+        ? contextMetadata?.pinnedAt !== null &&
+          contextMetadata?.pinnedAt !== undefined
+            ? "pinned"
+            : "active"
+        : null;
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -1450,6 +1657,10 @@ export function AgentsSidebarPanel() {
                 )}
             </div>
 
+            <div className="sr-only" aria-live="polite" aria-atomic="true">
+                {sortAnnouncement}
+            </div>
+
             {contextMenu && (
                 <ContextMenu
                     menu={contextMenu}
@@ -1528,6 +1739,22 @@ export function AgentsSidebarPanel() {
                                           ),
                                       },
                                   ]),
+                        ...(contextOrderKind === "pinned" && pinnedOrder.length > 0
+                            ? [
+                                  {
+                                      label: "Reset pinned order",
+                                      action: resetPinnedOrder,
+                                  },
+                              ]
+                            : contextOrderKind === "active" &&
+                                activeOrder.length > 0
+                              ? [
+                                    {
+                                        label: "Reset active order",
+                                        action: resetActiveOrder,
+                                    },
+                                ]
+                              : []),
                         {
                             label: "Rename",
                             disabled: isSubagentSession(contextMenu.payload),

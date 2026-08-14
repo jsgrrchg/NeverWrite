@@ -614,6 +614,116 @@ describe("AgentsSidebarPanel", () => {
         ).toBe(folderId);
     });
 
+    it("reorders active cards with the keyboard and announces the move", async () => {
+        const first = createSession("first", "First", "idle", 300);
+        const second = createSession("second", "Second", "idle", 200);
+        const third = createSession("third", "Third", "idle", 100);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { first, second, third },
+            sessionOrder: ["first", "second", "third"],
+        }));
+        renderComponent(<AgentsSidebarPanel />);
+
+        const firstRow = document.querySelector<HTMLElement>(
+            '[data-agent-session-id="first"]',
+        )!;
+        fireEvent.keyDown(firstRow, { key: " " });
+        fireEvent.keyDown(firstRow, { key: "ArrowDown" });
+        fireEvent.keyDown(firstRow, { key: " " });
+
+        await waitFor(() => {
+            const labels = screen
+                .getAllByTestId("agent-sidebar-item")
+                .map((item) => item.getAttribute("data-agent-session-id"));
+            expect(labels).toEqual(["second", "first", "third"]);
+        });
+        expect(screen.getByText("Agent position saved.")).toBeInTheDocument();
+        expect(useAgentSidebarStore.getState().activeOrder).toEqual([
+            "second",
+            "first",
+            "third",
+        ]);
+    });
+
+    it("reorders active cards by pointer without turning the drop into a folder move", async () => {
+        const first = createSession("first", "First", "idle", 200);
+        const second = createSession("second", "Second", "idle", 100);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { first, second },
+            sessionOrder: ["first", "second"],
+        }));
+        renderComponent(<AgentsSidebarPanel />);
+        const source = document.querySelector<HTMLElement>(
+            '[data-agent-session-id="first"]',
+        )!;
+        const target = document.querySelector<HTMLElement>(
+            '[data-agent-session-id="second"]',
+        )!;
+        vi.spyOn(document, "elementFromPoint").mockReturnValue(target);
+        vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+            x: 0,
+            y: 100,
+            top: 100,
+            left: 0,
+            right: 200,
+            bottom: 180,
+            width: 200,
+            height: 80,
+            toJSON: () => ({}),
+        });
+
+        firePointer(source, "pointerdown", {
+            pointerId: 91,
+            buttons: 1,
+            clientX: 10,
+            clientY: 10,
+        });
+        firePointer(window, "pointermove", {
+            pointerId: 91,
+            buttons: 1,
+            clientX: 10,
+            clientY: 170,
+        });
+        firePointer(window, "pointerup", {
+            pointerId: 91,
+            buttons: 0,
+            clientX: 10,
+            clientY: 170,
+        });
+
+        await waitFor(() => {
+            expect(useAgentSidebarStore.getState().activeOrder).toEqual([
+                "second",
+                "first",
+            ]);
+        });
+        expect(getFolderAssignments()).toEqual({});
+    });
+
+    it("cancels a keyboard reorder with Escape", async () => {
+        const first = createSession("first", "First", "idle", 200);
+        const second = createSession("second", "Second", "idle", 100);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { first, second },
+            sessionOrder: ["first", "second"],
+        }));
+        renderComponent(<AgentsSidebarPanel />);
+        const row = document.querySelector<HTMLElement>(
+            '[data-agent-session-id="first"]',
+        )!;
+        fireEvent.keyDown(row, { key: " " });
+        fireEvent.keyDown(row, { key: "ArrowDown" });
+        fireEvent.keyDown(row, { key: "Escape" });
+
+        await waitFor(() => {
+            expect(useAgentSidebarStore.getState().activeOrder).toEqual([]);
+        });
+        expect(screen.getByText("Agent move cancelled.")).toBeInTheDocument();
+    });
+
     it("renders subagents under their parent and opens the child row", async () => {
         const parent = createSession("session-parent", "Parent task");
         const child = createSession(

@@ -3,6 +3,7 @@ import {
     EMPTY_AGENT_SIDEBAR_STATE,
     getAgentSidebarStorageKey,
     resetAgentSidebarStore,
+    syncAgentSidebarStorageEvent,
     useAgentSidebarStore,
 } from "./agentSidebarStore";
 
@@ -91,6 +92,44 @@ describe("agentSidebarStore", () => {
         useAgentSidebarStore.getState().setVaultPath(VAULT_A);
         expect(useAgentSidebarStore.getState().sessionMetadata.a?.pinnedAt).toBe(10);
         expect(useAgentSidebarStore.getState().sessionMetadata.b).toBeUndefined();
+    });
+
+    it("synchronizes metadata written by another window for the active vault", () => {
+        useAgentSidebarStore.getState().setVaultPath(VAULT_A);
+        syncAgentSidebarStorageEvent({
+            key: getAgentSidebarStorageKey(VAULT_A),
+            newValue: JSON.stringify({
+                ...EMPTY_AGENT_SIDEBAR_STATE,
+                pinnedOrder: ["shared"],
+                sessionMetadata: {
+                    shared: metadata({ pinnedAt: 42 }),
+                },
+            }),
+        });
+
+        expect(useAgentSidebarStore.getState()).toMatchObject({
+            vaultPath: VAULT_A,
+            legacyMigrationPending: false,
+            pinnedOrder: ["shared"],
+            sessionMetadata: { shared: metadata({ pinnedAt: 42 }) },
+        });
+    });
+
+    it("ignores storage updates for another vault", () => {
+        useAgentSidebarStore.getState().setVaultPath(VAULT_A);
+        useAgentSidebarStore.getState().pinSession("local", 1);
+        syncAgentSidebarStorageEvent({
+            key: getAgentSidebarStorageKey(VAULT_B),
+            newValue: JSON.stringify({
+                ...EMPTY_AGENT_SIDEBAR_STATE,
+                pinnedOrder: ["remote"],
+                sessionMetadata: {
+                    remote: metadata({ pinnedAt: 2 }),
+                },
+            }),
+        });
+
+        expect(useAgentSidebarStore.getState().pinnedOrder).toEqual(["local"]);
     });
 
     it("waits for the inventory before importing global legacy metadata", () => {

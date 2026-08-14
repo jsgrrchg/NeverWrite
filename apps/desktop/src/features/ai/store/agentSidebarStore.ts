@@ -4,6 +4,10 @@ import {
     safeStorageSetItem,
 } from "../../../app/utils/safeStorage";
 import { logWarn } from "../../../app/utils/runtimeLog";
+import {
+    reorderAgentScope,
+    reorderVisiblePinnedAgents,
+} from "../agentSidebarOrder";
 
 export interface ChatFolder {
     id: string;
@@ -54,8 +58,16 @@ interface AgentSidebarStore extends PersistedAgentSidebarStateV1 {
     reopenSession: (sessionId: string) => void;
     snoozeSession: (sessionId: string, snoozedUntil: number, at?: number) => void;
     wakeSession: (sessionId: string) => void;
-    reorderPinnedSession: (sessionId: string, destinationIndex: number) => void;
-    reorderActiveSession: (sessionId: string, destinationIndex: number) => void;
+    reorderPinnedSession: (
+        sessionId: string,
+        destinationIndex: number,
+        visibleSessionIds?: readonly string[],
+    ) => void;
+    reorderActiveSession: (
+        sessionId: string,
+        destinationIndex: number,
+        scopeSessionIds?: readonly string[],
+    ) => void;
     resetPinnedOrder: () => void;
     resetActiveOrder: () => void;
     replaceSessionId: (fromSessionId: string, toSessionId: string) => void;
@@ -533,24 +545,38 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                 },
             });
         }),
-    reorderPinnedSession: (sessionId, destinationIndex) =>
+    reorderPinnedSession: (sessionId, destinationIndex, visibleSessionIds) =>
         set((state) =>
             mutate(state, {
-                pinnedOrder: moveInOrder(
-                    state.pinnedOrder,
-                    sessionId,
-                    destinationIndex,
-                ),
+                pinnedOrder: visibleSessionIds
+                    ? reorderVisiblePinnedAgents(
+                          state.pinnedOrder,
+                          visibleSessionIds,
+                          sessionId,
+                          destinationIndex,
+                      )
+                    : moveInOrder(
+                          state.pinnedOrder,
+                          sessionId,
+                          destinationIndex,
+                      ),
             }),
         ),
-    reorderActiveSession: (sessionId, destinationIndex) =>
+    reorderActiveSession: (sessionId, destinationIndex, scopeSessionIds) =>
         set((state) =>
             mutate(state, {
-                activeOrder: moveInOrder(
-                    state.activeOrder,
-                    sessionId,
-                    destinationIndex,
-                ),
+                activeOrder: scopeSessionIds
+                    ? reorderAgentScope(
+                          state.activeOrder,
+                          scopeSessionIds,
+                          sessionId,
+                          destinationIndex,
+                      )
+                    : moveInOrder(
+                          state.activeOrder,
+                          sessionId,
+                          destinationIndex,
+                      ),
             }),
         ),
     resetPinnedOrder: () => set((state) => mutate(state, { pinnedOrder: [] })),
@@ -649,4 +675,34 @@ export function resetAgentSidebarStore() {
         vaultPath: null,
         legacyMigrationPending: false,
     });
+}
+
+export function syncAgentSidebarStorageEvent(
+    event: Pick<StorageEvent, "key" | "newValue">,
+) {
+    const state = useAgentSidebarStore.getState();
+    if (
+        !state.vaultPath ||
+        event.key !== getAgentSidebarStorageKey(state.vaultPath) ||
+        event.newValue === null
+    ) {
+        return;
+    }
+    try {
+        useAgentSidebarStore.setState({
+            ...normalizePersistedState(JSON.parse(event.newValue)),
+            legacyMigrationPending: false,
+        });
+    } catch (error) {
+        logWarn(
+            "agent-sidebar",
+            "Failed to synchronize agent sidebar metadata",
+            error,
+            { onceKey: `storage-sync:${state.vaultPath}` },
+        );
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener("storage", syncAgentSidebarStorageEvent);
 }
