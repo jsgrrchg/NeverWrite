@@ -52,6 +52,8 @@ export interface AgentsSidebarItemProps {
     onToggleCollapse?: () => void;
     quickActionLabel?: string;
     onQuickAction?: () => void;
+    secondaryActionLabel?: string;
+    onSecondaryAction?: () => void;
     onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
     onDragStart?: (coords: AgentsSidebarItemDragCoordinates) => void;
     onDragMove?: (coords: AgentsSidebarItemDragCoordinates) => void;
@@ -150,6 +152,8 @@ export function AgentsSidebarItem({
     onToggleCollapse,
     quickActionLabel,
     onQuickAction,
+    secondaryActionLabel,
+    onSecondaryAction,
     onContextMenu,
     onDragStart,
     onDragMove,
@@ -440,6 +444,19 @@ export function AgentsSidebarItem({
             {quickActionLabel}
         </button>
     ) : null;
+    const secondaryAction = secondaryActionLabel && onSecondaryAction ? (
+        <button
+            type="button"
+            className="rounded px-1.5 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 focus:opacity-100"
+            style={{ color: "var(--text-secondary)", fontSize: metrics.timestampFontSize }}
+            onClick={(event) => {
+                event.stopPropagation();
+                onSecondaryAction();
+            }}
+        >
+            {secondaryActionLabel}
+        </button>
+    ) : null;
 
     if (variant === "slim") {
         return (
@@ -464,6 +481,7 @@ export function AgentsSidebarItem({
                 {collapseButton}
                 {pinButton}
                 {quickAction}
+                {secondaryAction}
                 <span
                     className="shrink-0"
                     style={{
@@ -508,6 +526,7 @@ export function AgentsSidebarItem({
                     {statusLabel || timestampLabel}
                 </span>
                 {quickAction}
+                {secondaryAction}
             </div>
             <div className="flex min-w-0 flex-1 items-center">{titleNode}</div>
             <div className="flex min-h-4 items-end justify-between gap-1">

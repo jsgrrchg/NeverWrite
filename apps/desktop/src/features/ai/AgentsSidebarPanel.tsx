@@ -64,12 +64,19 @@ import { AgentsSidebarSection } from "./components/AgentsSidebarSection";
 import { AgentsSidebarShelf } from "./components/AgentsSidebarShelf";
 import {
     buildAgentSidebarProjection,
+    agentSidebarStatusNeedsAttention,
     canCompleteAgentSidebarStatus,
     isEffectivelyCompleted,
     resolveAgentSidebarSessionStatus,
     type AgentSidebarGroup,
     type AgentSidebarStatus,
 } from "./agentSidebarModel";
+import {
+    AGENT_SNOOZE_PRESETS,
+    formatSnoozeWakeLabel,
+    getSafeSnoozeDelay,
+    resolveAgentSnoozeTimestamp,
+} from "./agentSidebarSnooze";
 
 // Comando-style Agents panel living inside the left sidebar. Replaces the
 // previous right-panel AIChatPanel for the session list (the actual
@@ -319,6 +326,14 @@ export function AgentsSidebarPanel() {
     const setCompletedShelfExpanded = useAgentSidebarStore(
         (state) => state.setCompletedShelfExpanded,
     );
+    const snoozeSession = useAgentSidebarStore((state) => state.snoozeSession);
+    const wakeSession = useAgentSidebarStore((state) => state.wakeSession);
+    const snoozedShelfExpanded = useAgentSidebarStore(
+        (state) => state.snoozedShelfExpanded,
+    );
+    const setSnoozedShelfExpanded = useAgentSidebarStore(
+        (state) => state.setSnoozedShelfExpanded,
+    );
 
     const focusedWorkspaceChatSessionId = useEditorStore(
         useShallow((state) => {
@@ -408,6 +423,34 @@ export function AgentsSidebarPanel() {
         const timer = window.setTimeout(() => setNow(Date.now()), delay);
         return () => window.clearTimeout(timer);
     }, [hasWorkingGroup, now]);
+    const nextSnoozeWake = useMemo(() => {
+        const futureWakes = Object.values(sessionMetadata).flatMap((metadata) =>
+            metadata.snoozedUntil !== null && metadata.snoozedUntil > now
+                ? [metadata.snoozedUntil]
+                : [],
+        );
+        return futureWakes.length > 0 ? Math.min(...futureWakes) : null;
+    }, [now, sessionMetadata]);
+    useEffect(() => {
+        if (nextSnoozeWake === null) return;
+        const timer = window.setTimeout(
+            () => setNow(Date.now()),
+            getSafeSnoozeDelay(Date.now(), nextSnoozeWake),
+        );
+        return () => window.clearTimeout(timer);
+    }, [nextSnoozeWake]);
+    useEffect(() => {
+        const refreshClock = () => setNow(Date.now());
+        const handleVisibility = () => {
+            if (document.visibilityState === "visible") refreshClock();
+        };
+        window.addEventListener("focus", refreshClock);
+        document.addEventListener("visibilitychange", handleVisibility);
+        return () => {
+            window.removeEventListener("focus", refreshClock);
+            document.removeEventListener("visibilitychange", handleVisibility);
+        };
+    }, []);
 
     useEffect(() => {
         if (!sessionInventoryLoaded) return;
@@ -785,6 +828,9 @@ export function AgentsSidebarPanel() {
             variant?: "card" | "slim";
             quickActionLabel?: string;
             onQuickAction?: () => void;
+            secondaryActionLabel?: string;
+            onSecondaryAction?: () => void;
+            statusLabelOverride?: string;
             onToggleCollapse?: () => void;
         },
     ) => {
@@ -800,12 +846,14 @@ export function AgentsSidebarPanel() {
             );
         const updatedAt = getSessionUpdatedAt(session);
         const timestampLabel = formatAgentTimestamp(updatedAt);
-        const statusLabel = formatStatusLabel(
-            status,
-            timestampLabel,
-            options?.workingStartedAt ?? null,
-            now,
-        );
+        const statusLabel =
+            options?.statusLabelOverride ??
+            formatStatusLabel(
+                status,
+                timestampLabel,
+                options?.workingStartedAt ?? null,
+                now,
+            );
         const dragTitle = getSessionTitleText(session);
         const updateDragPreview = (clientX: number, clientY: number) => {
             setDragPreview({
@@ -863,6 +911,8 @@ export function AgentsSidebarPanel() {
                 onToggleCollapse={options?.onToggleCollapse}
                 quickActionLabel={options?.quickActionLabel}
                 onQuickAction={options?.onQuickAction}
+                secondaryActionLabel={options?.secondaryActionLabel}
+                onSecondaryAction={options?.onSecondaryAction}
                 onContextMenu={(event) => handleContextMenu(event, session)}
                 onDragStart={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
@@ -928,8 +978,19 @@ export function AgentsSidebarPanel() {
 
     const renderGroup = (
         group: AgentSidebarGroup,
-        lifecycle: "active" | "completed" = "active",
+        requestedLifecycle: "active" | "snoozed" | "completed" = "active",
     ) => {
+        const rootMetadata = sessionMetadata[group.root.sessionId];
+        const lifecycle =
+            requestedLifecycle === "active" && hasFilter && rootMetadata
+                ? rootMetadata.snoozedUntil !== null &&
+                  rootMetadata.snoozedUntil > now &&
+                  !agentSidebarStatusNeedsAttention(group.status)
+                    ? "snoozed"
+                    : isEffectivelyCompleted(group, rootMetadata)
+                      ? "completed"
+                      : "active"
+                : requestedLifecycle;
         const collapsed = collapsedParentIds.has(group.root.sessionId);
         const forceChildrenVisible =
             hasFilter ||
@@ -952,10 +1013,12 @@ export function AgentsSidebarPanel() {
                     isCollapsed: collapsed && !forceChildrenVisible,
                     status: group.status,
                     workingStartedAt: group.workingStartedAt,
-                    variant: lifecycle === "completed" ? "slim" : "card",
+                    variant: lifecycle === "active" ? "card" : "slim",
                     quickActionLabel:
                         lifecycle === "completed"
                             ? "Reopen"
+                            : lifecycle === "snoozed"
+                              ? "Wake now"
                             : !isClaudeTerminalAgentSession(group.root) &&
                                 canCompleteAgentSidebarStatus(group.status)
                               ? "Complete"
@@ -963,10 +1026,38 @@ export function AgentsSidebarPanel() {
                     onQuickAction:
                         lifecycle === "completed"
                             ? () => reopenSession(group.root.sessionId)
+                            : lifecycle === "snoozed"
+                              ? () => wakeSession(group.root.sessionId)
                             : !isClaudeTerminalAgentSession(group.root) &&
                                 canCompleteAgentSidebarStatus(group.status)
                               ? () => completeSession(group.root.sessionId)
                               : undefined,
+                    secondaryActionLabel:
+                        lifecycle === "active" &&
+                        !isClaudeTerminalAgentSession(group.root) &&
+                        !agentSidebarStatusNeedsAttention(group.status)
+                            ? "Snooze"
+                            : undefined,
+                    onSecondaryAction:
+                        lifecycle === "active" &&
+                        !isClaudeTerminalAgentSession(group.root) &&
+                        !agentSidebarStatusNeedsAttention(group.status)
+                            ? () =>
+                                  snoozeSession(
+                                      group.root.sessionId,
+                                      resolveAgentSnoozeTimestamp(
+                                          "one-hour",
+                                          Date.now(),
+                                      ),
+                                  )
+                            : undefined,
+                    statusLabelOverride:
+                        lifecycle === "snoozed" && rootMetadata?.snoozedUntil
+                            ? formatSnoozeWakeLabel(
+                                  rootMetadata.snoozedUntil,
+                                  now,
+                              )
+                            : undefined,
                     onToggleCollapse:
                         group.children.length > 0
                             ? () => toggleCollapsedParent(group.root.sessionId)
@@ -1161,6 +1252,12 @@ export function AgentsSidebarPanel() {
             contextMetadata &&
             isEffectivelyCompleted(contextGroup, contextMetadata),
     );
+    const contextIsSnoozed = Boolean(
+        contextGroup &&
+            contextMetadata?.snoozedUntil &&
+            contextMetadata.snoozedUntil > now &&
+            !agentSidebarStatusNeedsAttention(contextGroup.status),
+    );
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -1328,6 +1425,16 @@ export function AgentsSidebarPanel() {
                                 {unfiledGroups.map((group) => renderGroup(group))}
                             </AgentsSidebarSection>
                             <AgentsSidebarShelf
+                                title="Snoozed"
+                                groups={projection.snoozedGroups}
+                                expanded={snoozedShelfExpanded}
+                                onExpandedChange={setSnoozedShelfExpanded}
+                                focusedSessionId={activeSidebarId}
+                                renderGroup={(group) =>
+                                    renderGroup(group, "snoozed")
+                                }
+                            />
+                            <AgentsSidebarShelf
                                 title="Completed"
                                 groups={projection.completedGroups}
                                 expanded={completedShelfExpanded}
@@ -1383,6 +1490,44 @@ export function AgentsSidebarPanel() {
                                             ),
                                     },
                                 ]),
+                        ...(!contextGroup ||
+                        contextIsCompleted ||
+                        isSubagentSession(contextMenu.payload) ||
+                        isClaudeTerminalAgentSession(contextMenu.payload)
+                            ? []
+                            : contextIsSnoozed
+                              ? [
+                                    {
+                                        label: "Wake now",
+                                        action: () =>
+                                            wakeSession(
+                                                contextGroup.root.sessionId,
+                                            ),
+                                    },
+                                ]
+                              : agentSidebarStatusNeedsAttention(
+                                      contextGroup.status,
+                                  )
+                                ? []
+                                : [
+                                      {
+                                          label: "Snooze",
+                                          children: AGENT_SNOOZE_PRESETS.map(
+                                              (preset) => ({
+                                                  label: preset.label,
+                                                  action: () =>
+                                                      snoozeSession(
+                                                          contextGroup.root
+                                                              .sessionId,
+                                                          resolveAgentSnoozeTimestamp(
+                                                              preset.id,
+                                                              Date.now(),
+                                                          ),
+                                                      ),
+                                              }),
+                                          ),
+                                      },
+                                  ]),
                         {
                             label: "Rename",
                             disabled: isSubagentSession(contextMenu.payload),

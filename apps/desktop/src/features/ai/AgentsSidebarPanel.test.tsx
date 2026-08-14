@@ -573,6 +573,47 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.queryByRole("button", { name: "Complete" })).toBeNull();
     });
 
+    it("snoozes and wakes an active thread without changing its folder", async () => {
+        const session = createSession("session-snooze", "Snooze me");
+        const folderId = useAgentSidebarStore.getState().createFolder("Research");
+        useAgentSidebarStore
+            .getState()
+            .moveSessionToFolder(session.sessionId, folderId);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        }));
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Snooze" }));
+
+        await waitFor(() => {
+            expect(
+                useAgentSidebarStore.getState().sessionMetadata[session.sessionId]
+                    ?.snoozedUntil,
+            ).toEqual(expect.any(Number));
+        });
+        expect(screen.getByText("Snoozed")).toBeInTheDocument();
+        expect(
+            useAgentSidebarStore.getState().sessionMetadata[session.sessionId]
+                ?.folderId,
+        ).toBe(folderId);
+
+        fireEvent.click(screen.getByRole("button", { name: /Snoozed/ }));
+        fireEvent.click(screen.getByRole("button", { name: "Wake now" }));
+        await waitFor(() => {
+            expect(
+                useAgentSidebarStore.getState().sessionMetadata[session.sessionId]
+                    ?.snoozedUntil,
+            ).toBeNull();
+        });
+        expect(
+            useAgentSidebarStore.getState().sessionMetadata[session.sessionId]
+                ?.folderId,
+        ).toBe(folderId);
+    });
+
     it("renders subagents under their parent and opens the child row", async () => {
         const parent = createSession("session-parent", "Parent task");
         const child = createSession(
