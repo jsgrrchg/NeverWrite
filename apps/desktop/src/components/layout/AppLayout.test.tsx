@@ -491,6 +491,21 @@ describe("AppLayout", () => {
         ).not.toBeInTheDocument();
     });
 
+    it("mounts right content only once while the collapsed peek is visible", () => {
+        useLayoutStore.setState({ rightPanelCollapsed: true });
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
+        );
+
+        expect(screen.queryByText("Right")).not.toBeInTheDocument();
+        fireEvent.mouseEnter(screen.getByTestId("right-peek-hotspot"));
+        expect(screen.getAllByText("Right")).toHaveLength(1);
+    });
+
     it("keeps the collapsed sidebar peek open inside the edge safe zone", () => {
         vi.useFakeTimers();
         useLayoutStore.setState({ sidebarCollapsed: true });

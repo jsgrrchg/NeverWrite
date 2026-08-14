@@ -1149,7 +1149,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                                 : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
                         }}
                     >
-                        {right}
+                        {!rightPanelCollapsed && right}
                     </div>
                 )}
             </div>
