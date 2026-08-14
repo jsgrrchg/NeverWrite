@@ -318,8 +318,10 @@ function RightPanelTabBar({
 }
 
 function RightPanel() {
-    const rightPanelView = useLayoutStore((s) => s.rightPanelView);
-    const activateRightView = useLayoutStore((s) => s.activateRightView);
+    const rightPanelView = useLayoutStore(
+        (s) => s.activeSidebarView.right,
+    ) as RightPanelTab;
+    const activateSidebarView = useLayoutStore((s) => s.activateSidebarView);
     const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
     return (
         <div className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -339,7 +341,7 @@ function RightPanel() {
             )}
             <RightPanelTabBar
                 view={rightPanelView}
-                onSelect={activateRightView}
+                onSelect={(view) => activateSidebarView("right", view)}
                 onCollapse={toggleRightPanel}
             />
             <div className="min-h-0 flex-1 overflow-hidden">
@@ -558,8 +560,7 @@ function useRegisterCommands(
         const platform = getDesktopPlatform();
         const commandPaletteShortcut = getShortcutDefinition("command_palette");
         const quickSwitcherShortcut = getShortcutDefinition("quick_switcher");
-        const searchInVaultShortcut =
-            getShortcutDefinition("search_in_vault");
+        const searchInVaultShortcut = getShortcutDefinition("search_in_vault");
         const openVaultShortcut = getShortcutDefinition("open_vault");
         const newNoteShortcut = getShortcutDefinition("new_note");
         const newAgentShortcut = getShortcutDefinition("new_agent");
@@ -928,9 +929,7 @@ function useRegisterCommands(
             execute: () => {
                 const tab = activeTerminalTab();
                 if (!tab) return;
-                void useTerminalRuntimeStore
-                    .getState()
-                    .restart(tab.terminalId);
+                void useTerminalRuntimeStore.getState().restart(tab.terminalId);
             },
         });
 
@@ -1062,7 +1061,9 @@ function useGlobalShortcuts(
 
             if (matchesShortcutAction(e, "new_terminal", platform)) {
                 e.preventDefault();
-                useCommandStore.getState().execute("workspace:new-terminal-tab");
+                useCommandStore
+                    .getState()
+                    .execute("workspace:new-terminal-tab");
                 return;
             }
 
@@ -1496,11 +1497,7 @@ export default function App() {
         [],
     );
 
-    useRegisterCommands(
-        openSettings,
-        windowMode === "main",
-        shortcutOverrides,
-    );
+    useRegisterCommands(openSettings, windowMode === "main", shortcutOverrides);
     useGlobalShortcuts(
         openSettings,
         shortcutOverrides,
@@ -1768,8 +1765,9 @@ export default function App() {
             let restoredWorkspace = false;
 
             try {
-                const initialization =
-                    await useChatStore.getState().initialize();
+                const initialization = await useChatStore
+                    .getState()
+                    .initialize();
                 if (cancelled) return;
 
                 if (!initialization.sessionInventoryLoaded) {
@@ -1798,7 +1796,10 @@ export default function App() {
                     (workspace?.tabs ?? []).map((tab) => [tab.sessionId, tab]),
                 );
                 const restoredChatMetadataBySessionId = new Map(
-                    restoredChatWorkspace.tabs.map((tab) => [tab.sessionId, tab]),
+                    restoredChatWorkspace.tabs.map((tab) => [
+                        tab.sessionId,
+                        tab,
+                    ]),
                 );
                 const restoredChatMetadataByHistoryId = new Map(
                     restoredChatWorkspace.tabs.flatMap((tab) =>
@@ -1835,9 +1836,9 @@ export default function App() {
 
                 const initialChatHistoryReferences =
                     listChatWorkspaceHistoryReferences(
-                        selectEditorWorkspaceTabs(useEditorStore.getState()).filter(
-                            isChatTab,
-                        ),
+                        selectEditorWorkspaceTabs(
+                            useEditorStore.getState(),
+                        ).filter(isChatTab),
                     );
                 for (const entry of initialChatHistoryReferences) {
                     const resolvedHistorySessionId =
@@ -1853,17 +1854,20 @@ export default function App() {
                         sessionIdByHistoryId.get(resolvedHistorySessionId) ??
                         restoredChatMetadataByHistoryId.get(
                             resolvedHistorySessionId,
-                        )?.sessionId ?? entry.sessionId;
+                        )?.sessionId ??
+                        entry.sessionId;
 
                     if (
                         resolvedSessionId !== entry.sessionId ||
                         resolvedHistorySessionId !== entry.historySessionId
                     ) {
-                        useEditorStore.getState().replaceAiSessionId(
-                            entry.sessionId,
-                            resolvedSessionId,
-                            resolvedHistorySessionId,
-                        );
+                        useEditorStore
+                            .getState()
+                            .replaceAiSessionId(
+                                entry.sessionId,
+                                resolvedSessionId,
+                                resolvedHistorySessionId,
+                            );
                     }
                 }
 
@@ -1871,8 +1875,10 @@ export default function App() {
                 const focusedEditorTab = selectFocusedEditorTab(editorState);
                 const restoredChatHistoryReferences =
                     listChatWorkspaceHistoryReferences(
-                        selectEditorWorkspaceTabs(editorState).filter(isChatTab),
-                );
+                        selectEditorWorkspaceTabs(editorState).filter(
+                            isChatTab,
+                        ),
+                    );
                 await useChatStore.getState().reconcileRestoredWorkspaceTabs(
                     restoredChatHistoryReferences.map((entry) => {
                         const resolvedHistorySessionId =
@@ -1969,9 +1975,7 @@ export default function App() {
                     return;
 
                 const syncStrategy = getVaultChangeSyncStrategy(event.payload);
-                if (
-                    syncStrategy === "apply-note-change-and-refresh-entries"
-                ) {
+                if (syncStrategy === "apply-note-change-and-refresh-entries") {
                     applyVaultNoteChange(event.payload);
                     void refreshEntries();
                 } else if (syncStrategy === "refresh-entries") {

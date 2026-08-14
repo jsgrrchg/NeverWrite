@@ -16,6 +16,7 @@ import { BookmarksPanel } from "../../features/bookmarks/BookmarksPanel";
 import { MapsPanel } from "../../features/maps/MapsPanel";
 import { AgentsSidebarPanel } from "../../features/ai/AgentsSidebarPanel";
 import { VaultSwitcher } from "../../features/vault/VaultSwitcher";
+import { SIDEBAR_VIEW_CATALOG } from "./sidebarViews";
 
 // A single unified translucent left pane that replaces both the horizontal
 // chrome bar's sidebar toggle and the vertical ActivityBar rail. It renders
@@ -30,14 +31,6 @@ const IS_MACOS = getDesktopPlatform() === "macos";
 // fit on a single row without truncation at default sidebar width.
 const PRIMARY_TABS: SidebarView[] = ["files", "agents"];
 const SECONDARY_TABS: SidebarView[] = ["tags", "bookmarks", "maps"];
-
-const TAB_LABELS: Record<SidebarView, string> = {
-    files: "Files",
-    tags: "Tags",
-    bookmarks: "Bookmarks",
-    maps: "Maps",
-    agents: "Agents",
-};
 
 function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
     if (event.button !== 0) return;
@@ -115,7 +108,7 @@ function SidebarTabButton({
             type="button"
             onMouseDown={(event) => event.stopPropagation()}
             onClick={() => onSelect(view)}
-            title={TAB_LABELS[view]}
+            title={SIDEBAR_VIEW_CATALOG[view].label}
             data-active={active || undefined}
             data-sidebar-tab={view}
             className="no-drag ub-sidebar-tab flex items-center justify-center gap-1.5 text-[11px] font-medium rounded-md"
@@ -130,19 +123,17 @@ function SidebarTabButton({
                 background: active
                     ? "color-mix(in srgb, var(--bg-primary) 60%, transparent)"
                     : "transparent",
-                color: active
-                    ? "var(--text-primary)"
-                    : "var(--text-secondary)",
-                boxShadow: active
-                    ? "0 1px 2px rgb(0 0 0 / 0.12)"
-                    : "none",
+                color: active ? "var(--text-primary)" : "var(--text-secondary)",
+                boxShadow: active ? "0 1px 2px rgb(0 0 0 / 0.12)" : "none",
                 transition:
                     "background-color 140ms ease-out, color 140ms ease-out, border-color 140ms ease-out, transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 140ms ease-out",
             }}
         >
             <SidebarTabIcon view={view} />
             {!compact && (
-                <span className="truncate">{TAB_LABELS[view]}</span>
+                <span className="truncate">
+                    {SIDEBAR_VIEW_CATALOG[view].label}
+                </span>
             )}
         </button>
     );
@@ -153,11 +144,13 @@ export interface SidebarShellProps {
 }
 
 export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
-    const sidebarView = useLayoutStore((s) => s.sidebarView);
-    const setSidebarView = useLayoutStore((s) => s.setSidebarView);
+    const sidebarView = useLayoutStore((s) => s.activeSidebarView.left);
+    const activateSidebarView = useLayoutStore((s) => s.activateSidebarView);
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
 
-    const updateAvailable = useAppUpdateStore((state) => !!state.status?.update);
+    const updateAvailable = useAppUpdateStore(
+        (state) => !!state.status?.update,
+    );
 
     const trafficLightInsetHeight = IS_MACOS
         ? Math.max(28, getTrafficLightSpacerWidth() / 2 + 12)
@@ -168,9 +161,9 @@ export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
     // browsing views inside the Arc peek overlay keeps the sidebar hidden.
     const handleSelectView = useCallback(
         (view: SidebarView) => {
-            setSidebarView(view);
+            activateSidebarView("left", view);
         },
-        [setSidebarView],
+        [activateSidebarView],
     );
 
     const currentView = sidebarView;
@@ -191,12 +184,14 @@ export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
                 data-sidebar-drag-inset
                 onMouseDown={startWindowDrag}
                 className="flex items-center justify-end"
-                style={{
-                    height: Math.max(trafficLightInsetHeight, 38),
-                    padding: "0 8px",
-                    flexShrink: 0,
-                    WebkitAppRegion: "drag",
-                } as CSSProperties}
+                style={
+                    {
+                        height: Math.max(trafficLightInsetHeight, 38),
+                        padding: "0 8px",
+                        flexShrink: 0,
+                        WebkitAppRegion: "drag",
+                    } as CSSProperties
+                }
             >
                 <button
                     type="button"

@@ -128,7 +128,7 @@ describe("AppLayout", () => {
             rightPanelCollapsed: false,
             rightPanelExpanded: false,
             rightPanelWidth: 280,
-            rightPanelView: "outline",
+            activeSidebarView: { left: "files", right: "outline" },
         });
     });
 
