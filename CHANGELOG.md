@@ -39,12 +39,6 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 ### Added
 
 - Added bidirectional placement for the Files and Agents sidebar views, with accessible context-menu and command-palette actions, persistent layout preferences, side-aware reveal and drag behavior, and adaptive right-sidebar sizing.
-- Added Snoozed and Completed shelves to Agents, with timed and attention-driven wake-up, reversible completion, and vault-scoped persistence.
-- Added accessible pointer and keyboard reordering for Pinned and Active agent conversations.
-
-### Changed
-
-- Reworked Agents into a stable vault inbox with T3-style conversation cards, distinct Working, Review, Approval, Input, Failed, and Done states, and organization independent of open workspace tabs.
 
 ## [0.7.1] - 2026-08-09
 
