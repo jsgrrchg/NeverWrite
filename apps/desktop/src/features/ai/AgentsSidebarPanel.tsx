@@ -26,10 +26,6 @@ import {
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
-    safeStorageGetItem,
-    safeStorageSetItem,
-} from "../../app/utils/safeStorage";
-import {
     openChatHistoryInWorkspace,
     openChatSessionInWorkspace,
 } from "./chatPaneMovement";
@@ -56,11 +52,10 @@ import {
     isClaudeTerminalAgentSession,
 } from "./claudeTerminalAgentSession";
 import { useChatStore } from "./store/chatStore";
-import { usePinnedChatsStore } from "./store/pinnedChatsStore";
 import {
-    useChatFoldersStore,
+    useAgentSidebarStore,
     type ChatFolder,
-} from "./store/chatFoldersStore";
+} from "./store/agentSidebarStore";
 import type { AIChatSession } from "./types";
 import {
     CLAUDE_TERMINAL_RUNTIME_ID,
@@ -79,9 +74,6 @@ import { AgentsSidebarSection } from "./components/AgentsSidebarSection";
 // conversations still open as center editor tabs). Groups sessions into
 // Pinned / Open / All, supports inline rename, pin toggle and a right-click
 // context menu for rename/pin/delete.
-
-const AGENTS_SIDEBAR_COLLAPSED_PARENTS_KEY =
-    "neverwrite.ai.agentsSidebar.collapsedParents";
 
 type ActivitySession = Pick<AIChatSession, "status">;
 
@@ -207,28 +199,6 @@ function getGroupWorkingOrder(
     return earliest;
 }
 
-function loadCollapsedParentSessionIds() {
-    try {
-        const raw = safeStorageGetItem(AGENTS_SIDEBAR_COLLAPSED_PARENTS_KEY);
-        const parsed = raw ? (JSON.parse(raw) as unknown) : null;
-        if (!Array.isArray(parsed)) return new Set<string>();
-        return new Set(parsed.filter((id): id is string => typeof id === "string"));
-    } catch {
-        return new Set<string>();
-    }
-}
-
-function persistCollapsedParentSessionIds(ids: ReadonlySet<string>) {
-    try {
-        safeStorageSetItem(
-            AGENTS_SIDEBAR_COLLAPSED_PARENTS_KEY,
-            JSON.stringify([...ids]),
-        );
-    } catch {
-        // Sidebar collapse state is a convenience preference; ignore quota failures.
-    }
-}
-
 function isSubagentSession(session: AIChatSession) {
     return Boolean(session.parentSessionId?.trim());
 }
@@ -320,29 +290,54 @@ export function AgentsSidebarPanel() {
     const deleteSession = useChatStore((state) => state.deleteSession);
     const renameSession = useChatStore((state) => state.renameSession);
 
-    const pinnedEntries = usePinnedChatsStore((state) => state.entries);
-    const togglePinnedChat = usePinnedChatsStore((state) => state.togglePin);
-    const unpinChat = usePinnedChatsStore((state) => state.unpin);
-    const reconcilePinned = usePinnedChatsStore((state) => state.reconcile);
-    const chatFolders = useChatFoldersStore((state) => state.folders);
-    const sessionFolderIds = useChatFoldersStore(
-        (state) => state.sessionFolderIds,
+    const sessionMetadata = useAgentSidebarStore((state) => state.sessionMetadata);
+    const pinnedEntries = useMemo(
+        () =>
+            Object.fromEntries(
+                Object.entries(sessionMetadata).flatMap(([sessionId, metadata]) =>
+                    metadata.pinnedAt === null
+                        ? []
+                        : [[sessionId, { pinnedAt: metadata.pinnedAt }]],
+                ),
+            ),
+        [sessionMetadata],
     );
-    const collapsedFolderIds = useChatFoldersStore(
+    const sessionFolderIds = useMemo(
+        () =>
+            Object.fromEntries(
+                Object.entries(sessionMetadata).flatMap(([sessionId, metadata]) =>
+                    metadata.folderId ? [[sessionId, metadata.folderId]] : [],
+                ),
+            ),
+        [sessionMetadata],
+    );
+    const togglePinnedChat = useAgentSidebarStore((state) => state.togglePin);
+    const unpinChat = useAgentSidebarStore((state) => state.unpinSession);
+    const chatFolders = useAgentSidebarStore((state) => state.folders);
+    const collapsedFolderIds = useAgentSidebarStore(
         (state) => state.collapsedFolderIds,
     );
-    const folderOrder = useChatFoldersStore((state) => state.folderOrder);
-    const createFolder = useChatFoldersStore((state) => state.createFolder);
-    const renameFolder = useChatFoldersStore((state) => state.renameFolder);
-    const deleteFolder = useChatFoldersStore((state) => state.deleteFolder);
-    const reorderFolder = useChatFoldersStore((state) => state.reorderFolder);
-    const moveSessionToFolder = useChatFoldersStore(
-        (state) => state.moveSession,
+    const collapsedParentSessionIds = useAgentSidebarStore(
+        (state) => state.collapsedParentSessionIds,
     );
-    const toggleFolderCollapsed = useChatFoldersStore(
+    const folderOrder = useAgentSidebarStore((state) => state.folderOrder);
+    const createFolder = useAgentSidebarStore((state) => state.createFolder);
+    const renameFolder = useAgentSidebarStore((state) => state.renameFolder);
+    const deleteFolder = useAgentSidebarStore((state) => state.deleteFolder);
+    const reorderFolder = useAgentSidebarStore((state) => state.reorderFolder);
+    const moveSessionToFolder = useAgentSidebarStore(
+        (state) => state.moveSessionToFolder,
+    );
+    const toggleFolderCollapsed = useAgentSidebarStore(
         (state) => state.toggleFolderCollapsed,
     );
-    const reconcileFolders = useChatFoldersStore((state) => state.reconcile);
+    const toggleCollapsedParent = useAgentSidebarStore(
+        (state) => state.toggleParentCollapsed,
+    );
+    const migrateLegacyMetadata = useAgentSidebarStore(
+        (state) => state.migrateLegacyMetadata,
+    );
+    const reconcileSidebar = useAgentSidebarStore((state) => state.reconcile);
 
     // Sessions currently open as editor tabs across any pane. Drives the
     // "Open" section — mirrors Comando's behaviour of bubbling live tabs to
@@ -461,12 +456,15 @@ export function AgentsSidebarPanel() {
     // Pins are root-owned: legacy child pins are pruned so subagents stay under
     // their parent instead of jumping into a separate Pinned bucket.
     useEffect(() => {
-        reconcilePinned(hierarchy.rootSessionIds);
-    }, [hierarchy.rootSessionIds, reconcilePinned]);
-    useEffect(() => {
         if (!sessionInventoryLoaded) return;
-        reconcileFolders(hierarchy.rootSessionIds);
-    }, [hierarchy.rootSessionIds, reconcileFolders, sessionInventoryLoaded]);
+        migrateLegacyMetadata(hierarchy.rootSessionIds);
+        reconcileSidebar(hierarchy.rootSessionIds);
+    }, [
+        hierarchy.rootSessionIds,
+        migrateLegacyMetadata,
+        reconcileSidebar,
+        sessionInventoryLoaded,
+    ]);
 
     // Shortcut sections are mutually exclusive with each other. They are not
     // a partition of folder navigation: a foldered chat may intentionally
@@ -867,22 +865,10 @@ export function AgentsSidebarPanel() {
         () => buildAgentsSidebarMetrics(agentsSidebarScale),
         [agentsSidebarScale],
     );
-    const [collapsedParentIds, setCollapsedParentIds] = useState(
-        loadCollapsedParentSessionIds,
+    const collapsedParentIds = useMemo(
+        () => new Set(collapsedParentSessionIds),
+        [collapsedParentSessionIds],
     );
-
-    const toggleCollapsedParent = useCallback((sessionId: string) => {
-        setCollapsedParentIds((current) => {
-            const next = new Set(current);
-            if (next.has(sessionId)) {
-                next.delete(sessionId);
-            } else {
-                next.add(sessionId);
-            }
-            persistCollapsedParentSessionIds(next);
-            return next;
-        });
-    }, []);
 
     const renderItem = (
         session: AIChatSession,

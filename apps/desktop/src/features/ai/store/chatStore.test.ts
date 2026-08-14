@@ -38,8 +38,10 @@ import {
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
-import { useChatFoldersStore } from "./chatFoldersStore";
-import { usePinnedChatsStore } from "./pinnedChatsStore";
+import {
+    resetAgentSidebarStore,
+    useAgentSidebarStore,
+} from "./agentSidebarStore";
 import {
     disposeChatStoreRuntime,
     flushDeltasSync,
@@ -589,12 +591,7 @@ describe("chatStore", () => {
         resetClaudeCodeInstalledCacheForTests();
         resetChatStore();
         resetChatTabsStore();
-        usePinnedChatsStore.setState({ entries: {} });
-        useChatFoldersStore.setState({
-            folders: {},
-            sessionFolderIds: {},
-            collapsedFolderIds: [],
-        });
+        resetAgentSidebarStore();
         resetExternalReloadBaselinesForTests();
         vi.clearAllMocks();
         delete (globalThis as Record<string, unknown>)
@@ -1859,14 +1856,14 @@ describe("chatStore", () => {
     it("keeps sidebar pins and folders when a provisional session becomes live", async () => {
         const provisionalSessionId = "pending-session";
         const liveSessionId = sessionPayload.session_id;
-        const folderId = useChatFoldersStore
+        const folderId = useAgentSidebarStore
             .getState()
             .createFolder("Research");
         expect(folderId).toBeTruthy();
-        useChatFoldersStore
+        useAgentSidebarStore
             .getState()
-            .moveSession(provisionalSessionId, folderId);
-        usePinnedChatsStore.getState().pin(provisionalSessionId);
+            .moveSessionToFolder(provisionalSessionId, folderId);
+        useAgentSidebarStore.getState().pinSession(provisionalSessionId);
         useChatStore.setState((state) => ({
             ...state,
             runtimes: [
@@ -1893,14 +1890,14 @@ describe("chatStore", () => {
             .newSession("codex-acp", provisionalSessionId);
 
         expect(createdSessionId).toBe(liveSessionId);
-        expect(usePinnedChatsStore.getState().entries).toEqual({
-            [liveSessionId]: expect.objectContaining({
+        expect(
+            useAgentSidebarStore.getState().sessionMetadata[liveSessionId],
+        ).toEqual(
+            expect.objectContaining({
                 pinnedAt: expect.any(Number),
+                folderId,
             }),
-        });
-        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
-            [liveSessionId]: folderId,
-        });
+        );
     });
 
     it("selects the first configured runtime on fresh boot", async () => {

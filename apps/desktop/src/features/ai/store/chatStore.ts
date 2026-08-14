@@ -112,8 +112,7 @@ import {
     resolveNoteTargetForPath,
 } from "../../editor/editorTargetResolver";
 import { getExternalReloadBaselineCandidate } from "../../editor/externalReloadBaselineCache";
-import { useChatFoldersStore } from "./chatFoldersStore";
-import { usePinnedChatsStore } from "./pinnedChatsStore";
+import { useAgentSidebarStore } from "./agentSidebarStore";
 import { useChatTabsStore } from "./chatTabsStore";
 import {
     clearChatRowUiSession,
@@ -3515,10 +3514,7 @@ function migrateSessionLocalState(
     clearStaleStreamingCheck(fromSessionId);
     _queueDrainLocks.delete(fromSessionId);
     replaceChatRowUiSessionId(fromSessionId, toSession.sessionId);
-    usePinnedChatsStore
-        .getState()
-        .replaceSessionId(fromSessionId, toSession.sessionId);
-    useChatFoldersStore
+    useAgentSidebarStore
         .getState()
         .replaceSessionId(fromSessionId, toSession.sessionId);
     useChatTabsStore

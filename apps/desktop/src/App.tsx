@@ -107,7 +107,7 @@ import {
     useChatTabsStore,
 } from "./features/ai/store/chatTabsStore";
 import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
-import { useChatFoldersStore } from "./features/ai/store/chatFoldersStore";
+import { useAgentSidebarStore } from "./features/ai/store/agentSidebarStore";
 import { useTerminalRuntimeStore } from "./features/terminal/terminalRuntimeStore";
 import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
 import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
@@ -1562,7 +1562,7 @@ export default function App() {
     useEffect(() => {
         if (windowMode !== "main") return;
 
-        useChatFoldersStore.getState().setVaultPath(vaultPath);
+        useAgentSidebarStore.getState().setVaultPath(vaultPath);
         resetChatStore();
         resetChatTabsStore();
 
