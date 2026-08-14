@@ -327,4 +327,12 @@ and Electron smoke tests when possible.
   [`apps/web-clipper/src/lib/desktop-api.ts`](../apps/web-clipper/src/lib/desktop-api.ts),
   and [`apps/desktop/src-electron/main/webClipper.ts`](../apps/desktop/src-electron/main/webClipper.ts).
 
-Last updated: June 1, 2026.
+## Sidebar layout ownership
+
+The renderer models sidebar content independently from sidebar geometry. `sidebarViews.ts` owns the canonical view catalog, fixed-side policy, movable placement for Files and Agents, ordering, fallbacks, and minimum widths. `layoutStore.ts` owns persistent placement, one active view per side, collapse state, and dimensions.
+
+`SidebarShell` and `RightSidebarShell` retain platform-specific chrome and render only the active view available on their side through the shared tab strip and content mapping. Files and Agents are auxiliary launchers that can move between sides; they do not own editor tabs, agent sessions, chat content, or workspace panes. Tags, Bookmarks, and Maps remain fixed to the left, while Outline and Links remain fixed to the right.
+
+Reveal and drag flows resolve the current side at runtime. `Reveal in File Tree` activates and mounts Files before emitting its selection intent, and `AppLayout` pins only the peek overlay where a file or agent drag began. Right-side geometry keeps a 200 px minimum for Outline and Links and a 280 px minimum for Files and Agents, with the same 2000 px nominal maximum as the left sidebar.
+
+Last updated: August 14, 2026.

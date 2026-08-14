@@ -50,6 +50,10 @@ vi.mock("./components/layout/SidebarShell", () => ({
     SidebarShell: () => <div data-testid="sidebar-shell" />,
 }));
 
+vi.mock("./components/layout/RightSidebarShell", () => ({
+    RightSidebarShell: () => <div data-testid="right-sidebar-shell" />,
+}));
+
 vi.mock("./features/notes/LinksPanel", () => ({
     LinksPanel: () => <div data-testid="links-panel" />,
 }));
@@ -217,6 +221,31 @@ describe("App web clipper routing", () => {
             tabs: [],
             activeTabId: null,
         });
+    });
+
+    it("registers conditional sidebar movement commands", async () => {
+        renderComponent(<App />);
+        await waitFor(() => {
+            expect(
+                useCommandStore.getState().commands.has(
+                    "layout:move-files-left",
+                ),
+            ).toBe(true);
+        });
+
+        expect(
+            useCommandStore
+                .getState()
+                .search("")
+                .map((command) => command.label),
+        ).toContain("Move Files to Left Sidebar");
+        useCommandStore.getState().execute("layout:move-files-left");
+        expect(
+            useCommandStore
+                .getState()
+                .search("")
+                .map((command) => command.label),
+        ).toContain("Move Files to Right Sidebar");
     });
 
     it("keeps the persisted chat workspace when chat initialization fails during cold start", async () => {

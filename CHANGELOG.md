@@ -34,6 +34,12 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Added bidirectional placement for the Files and Agents sidebar views, with accessible context-menu and command-palette actions, persistent layout preferences, side-aware reveal and drag behavior, and adaptive right-sidebar sizing.
+
 ## [0.7.1] - 2026-08-09
 
 ### Fixed

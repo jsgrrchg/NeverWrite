@@ -128,7 +128,7 @@ describe("AppLayout", () => {
             rightPanelCollapsed: false,
             rightPanelExpanded: false,
             rightPanelWidth: 280,
-            rightPanelView: "outline",
+            activeSidebarView: { left: "files", right: "outline" },
         });
     });
 
@@ -438,6 +438,79 @@ describe("AppLayout", () => {
         expect(
             screen.queryByTestId("sidebar-peek-overlay"),
         ).not.toBeInTheDocument();
+    });
+
+    it.each([
+        [FILE_TREE_NOTE_DRAG_EVENT, "files", { notes: [] }],
+        [
+            AGENT_SIDEBAR_DRAG_EVENT,
+            "agents",
+            { sessionId: "session-1", title: "Dragged agent" },
+        ],
+    ] as const)(
+        "keeps the right peek mounted for %s drags that cross the edge before starting",
+        (eventName, sourceView, payload) => {
+            vi.useFakeTimers();
+            useLayoutStore.getState().moveSidebarView(sourceView, "right");
+            useLayoutStore.setState({ rightPanelCollapsed: true });
+            render(
+                <AppLayout
+                    left={<div>Left</div>}
+                    center={<div>Center</div>}
+                    right={<div>Right</div>}
+                />,
+            );
+            fireEvent.mouseEnter(screen.getByTestId("right-peek-hotspot"));
+            const overlay = screen.getByTestId("right-peek-overlay");
+            act(() => {
+                window.dispatchEvent(
+                    new CustomEvent(eventName, {
+                        detail: {
+                            phase: "start",
+                            x: 400,
+                            y: 400,
+                            ...payload,
+                        },
+                    }),
+                );
+            });
+            fireEvent.mouseLeave(overlay);
+            act(() => vi.advanceTimersByTime(400));
+            expect(
+                screen.getByTestId("right-peek-overlay"),
+            ).toBeInTheDocument();
+            act(() => {
+                window.dispatchEvent(
+                    new CustomEvent(eventName, {
+                        detail: {
+                            phase: "cancel",
+                            x: 400,
+                            y: 400,
+                            ...payload,
+                        },
+                    }),
+                );
+                vi.advanceTimersByTime(400);
+            });
+            expect(
+                screen.queryByTestId("right-peek-overlay"),
+            ).not.toBeInTheDocument();
+        },
+    );
+
+    it("mounts right content only once while the collapsed peek is visible", () => {
+        useLayoutStore.setState({ rightPanelCollapsed: true });
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
+        );
+
+        expect(screen.queryByText("Right")).not.toBeInTheDocument();
+        fireEvent.mouseEnter(screen.getByTestId("right-peek-hotspot"));
+        expect(screen.getAllByText("Right")).toHaveLength(1);
     });
 
     it("keeps the collapsed sidebar peek open inside the edge safe zone", () => {
