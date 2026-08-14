@@ -228,7 +228,7 @@ describe("App web clipper routing", () => {
         await waitFor(() => {
             expect(
                 useCommandStore.getState().commands.has(
-                    "layout:move-files-right",
+                    "layout:move-files-left",
                 ),
             ).toBe(true);
         });
@@ -238,14 +238,14 @@ describe("App web clipper routing", () => {
                 .getState()
                 .search("")
                 .map((command) => command.label),
-        ).toContain("Move Files to Right Sidebar");
-        useCommandStore.getState().execute("layout:move-files-right");
+        ).toContain("Move Files to Left Sidebar");
+        useCommandStore.getState().execute("layout:move-files-left");
         expect(
             useCommandStore
                 .getState()
                 .search("")
                 .map((command) => command.label),
-        ).toContain("Move Files to Left Sidebar");
+        ).toContain("Move Files to Right Sidebar");
     });
 
     it("keeps the persisted chat workspace when chat initialization fails during cold start", async () => {
