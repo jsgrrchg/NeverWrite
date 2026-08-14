@@ -12,7 +12,6 @@ import { getCurrentWindow } from "@neverwrite/runtime";
 import {
     DEFAULT_RIGHT_PANEL_WIDTH,
     DEFAULT_SIDEBAR_WIDTH,
-    MIN_RIGHT_PANEL_WIDTH,
     MIN_SIDEBAR_WIDTH,
     useLayoutStore,
 } from "../../app/store/layoutStore";
@@ -28,6 +27,7 @@ import {
     AGENT_SIDEBAR_DRAG_EVENT,
     type AgentSidebarDragDetail,
 } from "../../features/ai/agentSidebarDragEvents";
+import { getSidebarViewMinimumWidth, type SidebarSide } from "./sidebarViews";
 
 // Both macOS (native "sidebar" vibrancy) and Windows 11 (native acrylic
 // backgroundMaterial) paint a translucent window material beneath the
@@ -113,6 +113,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const rightPanelExpanded = useLayoutStore((s) => s.rightPanelExpanded);
     const rightPanelWidth = useLayoutStore((s) => s.rightPanelWidth);
+    const activeRightView = useLayoutStore((s) => s.activeSidebarView.right);
+    const rightMinimumWidth = getSidebarViewMinimumWidth(activeRightView);
     const collapseRightPanelToWidth = useLayoutStore(
         (s) => s.collapseRightPanelToWidth,
     );
@@ -132,9 +134,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const sidebarDockFrameRef = useRef<number | null>(null);
     const sidebarDockUnmountTimerRef = useRef<number | null>(null);
     const previousSidebarCollapsedRef = useRef(sidebarCollapsed);
-    const [renderDockedSidebar, setRenderDockedSidebar] = useState(
-        !sidebarCollapsed,
-    );
+    const [renderDockedSidebar, setRenderDockedSidebar] =
+        useState(!sidebarCollapsed);
     const [dockedSidebarWidth, setDockedSidebarWidth] = useState(() =>
         sidebarCollapsed ? 0 : sidebarWidth,
     );
@@ -157,7 +158,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const sidebarOverlayRef = useRef<HTMLDivElement>(null);
     const overlayDismissTimerRef = useRef<number | null>(null);
     const sidebarPointerRef = useRef<PointerPosition | null>(null);
-    const sidebarDragActiveRef = useRef(false);
+    const sidebarDragOriginRef = useRef<SidebarSide | null>(null);
 
     // Demote the inner wrapper once its own slide finishes. Guard on the
     // event target so transitions bubbling up from sidebar descendants don't
@@ -214,12 +215,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     );
 
     const scheduleHideSidebarOverlay = useCallback(() => {
-        if (sidebarDragActiveRef.current) return;
+        if (sidebarDragOriginRef.current === "left") return;
         if (overlayDismissTimerRef.current !== null) return;
         overlayDismissTimerRef.current = window.setTimeout(() => {
             overlayDismissTimerRef.current = null;
             if (
-                sidebarDragActiveRef.current ||
+                sidebarDragOriginRef.current === "left" ||
                 isSidebarPointerInSafeZone()
             ) {
                 return;
@@ -339,6 +340,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     // a drop target for note drags, so the simple hover flow is enough.
     const [rightOverlayVisible, setRightOverlayVisible] = useState(false);
     const rightOverlayRef = useRef<HTMLDivElement>(null);
+    const rightPanelRef = useRef<HTMLDivElement>(null);
     const rightOverlayDismissTimerRef = useRef<number | null>(null);
     const rightPointerRef = useRef<PointerPosition | null>(null);
 
@@ -375,9 +377,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     );
 
     const scheduleHideRightOverlay = useCallback(() => {
+        if (sidebarDragOriginRef.current === "right") return;
         if (rightOverlayDismissTimerRef.current !== null) return;
         rightOverlayDismissTimerRef.current = window.setTimeout(() => {
             rightOverlayDismissTimerRef.current = null;
+            if (sidebarDragOriginRef.current === "right") return;
             if (isRightPointerInSafeZone()) return;
             setRightOverlayVisible(false);
         }, EDGE_PEEK_DISMISS_DELAY_MS);
@@ -412,10 +416,32 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     ]);
 
     useEffect(() => {
+        const pointInside = (
+            element: HTMLElement | null,
+            x: number,
+            y: number,
+        ) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) {
+                const width = Number.parseFloat(element.style.width);
+                if (!Number.isFinite(width)) return false;
+                if (element.dataset.edgePeekOverlay === "left") {
+                    return x >= 0 && x <= width;
+                }
+                if (element.dataset.edgePeekOverlay === "right") {
+                    return x >= window.innerWidth - width;
+                }
+            }
+            return (
+                x >= rect.left &&
+                x <= rect.right &&
+                y >= rect.top &&
+                y <= rect.bottom
+            );
+        };
         const handleSidebarOriginDrag = (
-            detail:
-                | FileTreeNoteDragDetail
-                | AgentSidebarDragDetail,
+            detail: FileTreeNoteDragDetail | AgentSidebarDragDetail,
         ) => {
             if (!detail) return;
             if (Number.isFinite(detail.x) && Number.isFinite(detail.y)) {
@@ -426,28 +452,44 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             }
 
             if (detail.phase === "start" || detail.phase === "move") {
-                const rootRect = rootRef.current?.getBoundingClientRect();
-                const overlayLeft = rootRect?.left ?? 0;
-                const startedInsideSidebarOverlay =
-                    detail.phase === "start" &&
-                    sidebarCollapsed &&
-                    sidebarOverlayVisible &&
-                    ("origin" in detail
-                        ? detail.origin?.kind !== "workspace-tab"
-                        : true) &&
-                    detail.x >= overlayLeft &&
-                    detail.x <= overlayLeft + sidebarWidth;
-
-                if (
-                    !sidebarDragActiveRef.current &&
-                    !startedInsideSidebarOverlay
-                ) {
-                    return;
+                if (detail.phase === "start") {
+                    if (
+                        "origin" in detail &&
+                        detail.origin?.kind === "workspace-tab"
+                    )
+                        return;
+                    sidebarDragOriginRef.current =
+                        pointInside(
+                            sidebarOverlayRef.current,
+                            detail.x,
+                            detail.y,
+                        ) ||
+                        pointInside(leftPanelRef.current, detail.x, detail.y)
+                            ? "left"
+                            : pointInside(
+                                    rightOverlayRef.current,
+                                    detail.x,
+                                    detail.y,
+                                ) ||
+                                pointInside(
+                                    rightPanelRef.current,
+                                    detail.x,
+                                    detail.y,
+                                )
+                              ? "right"
+                              : null;
                 }
-
-                sidebarDragActiveRef.current = true;
-                if (sidebarCollapsed) {
+                if (
+                    sidebarDragOriginRef.current === "left" &&
+                    sidebarCollapsed
+                ) {
                     showSidebarOverlay();
+                }
+                if (
+                    sidebarDragOriginRef.current === "right" &&
+                    rightPanelCollapsed
+                ) {
+                    showRightOverlay();
                 }
                 return;
             }
@@ -457,10 +499,14 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 detail.phase === "cancel" ||
                 detail.phase === "attach"
             ) {
-                if (!sidebarDragActiveRef.current) return;
-                sidebarDragActiveRef.current = false;
-                if (sidebarCollapsed) {
+                const origin = sidebarDragOriginRef.current;
+                if (!origin) return;
+                sidebarDragOriginRef.current = null;
+                if (origin === "left" && sidebarCollapsed) {
                     scheduleHideSidebarOverlay();
+                }
+                if (origin === "right" && rightPanelCollapsed) {
+                    scheduleHideRightOverlay();
                 }
             }
         };
@@ -483,7 +529,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             handleAgentSidebarDrag,
         );
         return () => {
-            sidebarDragActiveRef.current = false;
+            sidebarDragOriginRef.current = null;
             window.removeEventListener(
                 FILE_TREE_NOTE_DRAG_EVENT,
                 handleFileTreeDrag,
@@ -495,10 +541,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         };
     }, [
         scheduleHideSidebarOverlay,
+        scheduleHideRightOverlay,
         showSidebarOverlay,
+        showRightOverlay,
+        rightPanelCollapsed,
         sidebarCollapsed,
-        sidebarOverlayVisible,
-        sidebarWidth,
     ]);
 
     // Tear down the timer on unmount; also retract the overlay as soon as the
@@ -585,7 +632,6 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     // --- Right panel ---
     const [isResizingRight, setIsResizingRight] = useState(false);
     const [collapsePreviewRight, setCollapsePreviewRight] = useState(false);
-    const rightPanelRef = useRef<HTMLDivElement>(null);
     const rightResizerRef = useRef<HTMLDivElement>(null);
     const rightSessionRef = useRef<HorizontalResizeSession | null>(null);
     const rightFrameRef = useRef<number | null>(null);
@@ -597,7 +643,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         layoutWidth - effectiveRightForLeftCalc - MIN_CENTER_PEEK_WIDTH,
     );
     const maxRightWidthForLayout = Math.max(
-        MIN_RIGHT_PANEL_WIDTH,
+        rightMinimumWidth,
         layoutWidth - effectiveLeft - MIN_CENTER_PEEK_WIDTH,
     );
     const effectiveRight = rightPanelCollapsed
@@ -777,11 +823,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             setIsResizingRight(false);
 
             if (s.pendingWidth < RIGHT_COLLAPSE_TRIGGER_WIDTH) {
-                collapseRightPanelToWidth(MIN_RIGHT_PANEL_WIDTH);
+                collapseRightPanelToWidth(rightMinimumWidth);
                 return;
             }
             const clamped = Math.max(
-                MIN_RIGHT_PANEL_WIDTH,
+                rightMinimumWidth,
                 Math.min(maxRightWidthForLayout, s.pendingWidth),
             );
             const snapped =
@@ -794,6 +840,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             applyRightWidth,
             collapseRightPanelToWidth,
             maxRightWidthForLayout,
+            rightMinimumWidth,
             showRightPanelAtWidth,
             syncRightPreview,
         ],

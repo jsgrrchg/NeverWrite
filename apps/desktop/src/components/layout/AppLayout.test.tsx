@@ -440,6 +440,57 @@ describe("AppLayout", () => {
         ).not.toBeInTheDocument();
     });
 
+    it.each([
+        [FILE_TREE_NOTE_DRAG_EVENT, { notes: [] }],
+        [
+            AGENT_SIDEBAR_DRAG_EVENT,
+            { sessionId: "session-1", title: "Dragged agent" },
+        ],
+    ])("keeps the right peek mounted for %s drags", (eventName, payload) => {
+        vi.useFakeTimers();
+        useLayoutStore.setState({ rightPanelCollapsed: true });
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
+        );
+        fireEvent.mouseEnter(screen.getByTestId("right-peek-hotspot"));
+        const overlay = screen.getByTestId("right-peek-overlay");
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(eventName, {
+                    detail: {
+                        phase: "start",
+                        x: window.innerWidth - 40,
+                        y: 40,
+                        ...payload,
+                    },
+                }),
+            );
+        });
+        fireEvent.mouseLeave(overlay);
+        act(() => vi.advanceTimersByTime(400));
+        expect(screen.getByTestId("right-peek-overlay")).toBeInTheDocument();
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(eventName, {
+                    detail: {
+                        phase: "cancel",
+                        x: 400,
+                        y: 400,
+                        ...payload,
+                    },
+                }),
+            );
+            vi.advanceTimersByTime(400);
+        });
+        expect(
+            screen.queryByTestId("right-peek-overlay"),
+        ).not.toBeInTheDocument();
+    });
+
     it("keeps the collapsed sidebar peek open inside the edge safe zone", () => {
         vi.useFakeTimers();
         useLayoutStore.setState({ sidebarCollapsed: true });

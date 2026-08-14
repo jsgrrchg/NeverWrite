@@ -54,6 +54,16 @@ describe("layoutStore", () => {
         });
     });
 
+    it("uses the active right view minimum while preserving broad expansion", () => {
+        useLayoutStore.getState().showRightPanelAtWidth(200);
+        expect(useLayoutStore.getState().rightPanelWidth).toBe(200);
+        useLayoutStore.getState().moveSidebarView("files", "right");
+        useLayoutStore.getState().showRightPanelAtWidth(220);
+        expect(useLayoutStore.getState().rightPanelWidth).toBe(280);
+        useLayoutStore.getState().showRightPanelAtWidth(1600);
+        expect(useLayoutStore.getState().rightPanelWidth).toBe(1600);
+    });
+
     it("hydrates placement and migrates compatible legacy selections", () => {
         localStorage.setItem(
             "neverwrite.sidebar.movable-placement.v1",
