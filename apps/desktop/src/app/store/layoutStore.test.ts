@@ -17,6 +17,7 @@ describe("layoutStore", () => {
     });
 
     it("moves an active view atomically and opens its destination", () => {
+        useLayoutStore.getState().moveSidebarView("files", "left");
         useLayoutStore.setState({
             rightPanelCollapsed: true,
             rightPanelWidth: 200,
@@ -36,13 +37,12 @@ describe("layoutStore", () => {
     it("moves an inactive view without changing the source selection", () => {
         useLayoutStore.getState().moveSidebarView("agents", "right");
         expect(useLayoutStore.getState().activeSidebarView).toEqual({
-            left: "files",
+            left: "tags",
             right: "agents",
         });
     });
 
     it("shows a view on its current side", () => {
-        useLayoutStore.getState().moveSidebarView("files", "right");
         useLayoutStore.setState({
             rightPanelCollapsed: true,
             activeSidebarView: { left: "tags", right: "outline" },
@@ -55,22 +55,25 @@ describe("layoutStore", () => {
     });
 
     it("uses the active right view minimum while preserving broad expansion", () => {
+        useLayoutStore.getState().activateSidebarView("right", "outline");
         useLayoutStore.getState().showRightPanelAtWidth(200);
         expect(useLayoutStore.getState().rightPanelWidth).toBe(200);
-        useLayoutStore.getState().moveSidebarView("files", "right");
+        useLayoutStore.getState().activateSidebarView("right", "files");
         useLayoutStore.getState().showRightPanelAtWidth(220);
         expect(useLayoutStore.getState().rightPanelWidth).toBe(280);
         useLayoutStore.getState().showRightPanelAtWidth(1600);
         expect(useLayoutStore.getState().rightPanelWidth).toBe(1600);
     });
 
-    it("hydrates placement and migrates compatible legacy selections", () => {
+    it("hydrates persisted placement and active selections", () => {
         localStorage.setItem(
             "neverwrite.sidebar.movable-placement.v1",
             JSON.stringify({ files: "right" }),
         );
-        localStorage.setItem("neverwrite.sidebar.view", "agents");
-        localStorage.setItem("neverwrite.rightpanel.view", "files");
+        localStorage.setItem(
+            "neverwrite.sidebar.active-views.v1",
+            JSON.stringify({ left: "agents", right: "files" }),
+        );
         expect(readHydratedLayoutSnapshot()).toMatchObject({
             movableSidebarPlacement: { files: "right", agents: "left" },
             activeSidebarView: { left: "agents", right: "files" },
@@ -84,8 +87,17 @@ describe("layoutStore", () => {
             JSON.stringify({ left: "outline", right: "maps" }),
         );
         expect(readHydratedLayoutSnapshot()).toMatchObject({
-            movableSidebarPlacement: { files: "left", agents: "left" },
-            activeSidebarView: { left: "files", right: "outline" },
+            movableSidebarPlacement: { files: "right", agents: "left" },
+            activeSidebarView: { left: "agents", right: "outline" },
+        });
+    });
+
+    it("uses the new layout for users without placement preferences", () => {
+        localStorage.setItem("neverwrite.sidebar.view", "files");
+        localStorage.setItem("neverwrite.rightpanel.view", "outline");
+        expect(readHydratedLayoutSnapshot()).toMatchObject({
+            movableSidebarPlacement: { files: "right", agents: "left" },
+            activeSidebarView: { left: "agents", right: "files" },
         });
     });
 

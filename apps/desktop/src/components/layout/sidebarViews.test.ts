@@ -8,15 +8,15 @@ import {
 
 describe("sidebarViews", () => {
     it("returns the canonical default order", () => {
-        const placement = { files: "left", agents: "left" } as const;
+        const placement = { files: "right", agents: "left" } as const;
         expect(getSidebarViews("left", placement)).toEqual([
-            "files",
             "agents",
             "tags",
             "bookmarks",
             "maps",
         ]);
         expect(getSidebarViews("right", placement)).toEqual([
+            "files",
             "outline",
             "links",
         ]);
@@ -42,7 +42,7 @@ describe("sidebarViews", () => {
 
     it("normalizes corrupt and partial placements", () => {
         expect(normalizeMovableSidebarPlacement(undefined)).toEqual({
-            files: "left",
+            files: "right",
             agents: "left",
         });
         expect(

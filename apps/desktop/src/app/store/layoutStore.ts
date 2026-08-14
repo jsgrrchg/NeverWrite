@@ -24,10 +24,8 @@ export type {
 
 const SIDEBAR_WIDTH_KEY = "neverwrite.sidebar.width";
 const SIDEBAR_COLLAPSED_KEY = "neverwrite.sidebar.collapsed";
-const LEGACY_SIDEBAR_VIEW_KEY = "neverwrite.sidebar.view";
 const RIGHT_PANEL_WIDTH_KEY = "neverwrite.rightpanel.width";
 const RIGHT_PANEL_COLLAPSED_KEY = "neverwrite.rightpanel.collapsed";
-const LEGACY_RIGHT_PANEL_VIEW_KEY = "neverwrite.rightpanel.view";
 const ACTIVE_SIDEBAR_VIEWS_KEY = "neverwrite.sidebar.active-views.v1";
 const MOVABLE_SIDEBAR_PLACEMENT_KEY = "neverwrite.sidebar.movable-placement.v1";
 const EDITOR_PANE_SIZES_KEY = "neverwrite.editor-pane.sizes";
@@ -145,10 +143,8 @@ export function readHydratedLayoutSnapshot(): LayoutSnapshot {
     );
     const storedActive = parseStoredJson(ACTIVE_SIDEBAR_VIEWS_KEY) as
         Partial<Record<SidebarSide, unknown>> | undefined;
-    const leftCandidate =
-        storedActive?.left ?? safeStorageGetItem(LEGACY_SIDEBAR_VIEW_KEY);
-    const rightCandidate =
-        storedActive?.right ?? safeStorageGetItem(LEGACY_RIGHT_PANEL_VIEW_KEY);
+    const leftCandidate = storedActive?.left ?? "agents";
+    const rightCandidate = storedActive?.right ?? "files";
     const activeSidebarView: ActiveSidebarViews = {
         left: normalizeActiveSidebarView("left", leftCandidate, placement),
         right: normalizeActiveSidebarView("right", rightCandidate, placement),
@@ -198,7 +194,7 @@ export function createDefaultLayoutState(): LayoutSnapshot {
     return {
         sidebarCollapsed: false,
         sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
-        activeSidebarView: { left: "files", right: "outline" },
+        activeSidebarView: { left: "agents", right: "files" },
         movableSidebarPlacement: { ...DEFAULT_MOVABLE_SIDEBAR_PLACEMENT },
         rightPanelCollapsed: false,
         rightPanelWidth: DEFAULT_RIGHT_PANEL_WIDTH,

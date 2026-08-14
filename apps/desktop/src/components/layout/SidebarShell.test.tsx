@@ -62,16 +62,19 @@ describe("sidebar shells", () => {
             within(left).getAllByRole("button", {
                 name: /Files|Agents|Tags|Bookmarks|Maps/,
             }),
-        ).toHaveLength(5);
+        ).toHaveLength(4);
         expect(
-            within(right).getAllByRole("button", { name: /Outline|Links/ }),
-        ).toHaveLength(2);
+            within(right).getAllByRole("button", {
+                name: /Files|Outline|Links/,
+            }),
+        ).toHaveLength(3);
         expect(screen.getAllByTestId("files-content")).toHaveLength(1);
-        expect(within(right).getByText("No note open")).toBeInTheDocument();
+        expect(screen.getAllByTestId("agents-content")).toHaveLength(1);
         expect(screen.getByTestId("vault-switcher")).toBeInTheDocument();
     });
 
     it("mounts moved content only in its owning shell and compacts contextual tabs", () => {
+        useLayoutStore.getState().moveSidebarView("files", "left");
         useLayoutStore.getState().moveSidebarView("files", "right");
         render(
             <>
@@ -107,14 +110,14 @@ describe("sidebar shells", () => {
         );
         const files = screen.getByRole("button", { name: "Files" });
         fireEvent.keyDown(files, { key: "F10", shiftKey: true });
-        fireEvent.click(await screen.findByText("Move to Right Sidebar"));
+        fireEvent.click(await screen.findByText("Move to Left Sidebar"));
         await waitFor(() =>
             expect(
                 useLayoutStore.getState().movableSidebarPlacement.files,
-            ).toBe("right"),
+            ).toBe("left"),
         );
         expect(
-            within(screen.getByTestId("right-sidebar-shell")).getByRole(
+            within(screen.getByTestId("sidebar-shell")).getByRole(
                 "button",
                 { name: "Files" },
             ),

@@ -16,7 +16,7 @@ interface SidebarViewDefinition {
 }
 
 export const DEFAULT_MOVABLE_SIDEBAR_PLACEMENT: MovableSidebarPlacement = {
-    files: "left",
+    files: "right",
     agents: "left",
 };
 
@@ -157,7 +157,7 @@ export function normalizeMovableSidebarPlacement(
             ? (value as Record<string, unknown>)
             : {};
     return {
-        files: record.files === "right" ? "right" : "left",
+        files: record.files === "left" ? "left" : "right",
         agents: record.agents === "right" ? "right" : "left",
     };
 }
