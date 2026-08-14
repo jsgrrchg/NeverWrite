@@ -74,10 +74,11 @@ export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
                     onClick={toggleSidebar}
                     title="Hide sidebar"
                     aria-label="Hide sidebar"
-                    className="no-drag ub-chrome-btn flex items-center justify-center rounded-md"
+                    className="no-drag ub-chrome-btn flex shrink-0 items-center justify-center rounded-md"
                     style={{
-                        width: 32,
-                        height: 32,
+                        width: 26,
+                        height: 26,
+                        transform: "translateY(-3px)",
                         border: "1px solid transparent",
                         background: "transparent",
                         color: "var(--text-secondary)",
@@ -85,8 +86,8 @@ export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
                     }}
                 >
                     <svg
-                        width="20"
-                        height="20"
+                        width="16"
+                        height="16"
                         viewBox="0 0 16 16"
                         fill="none"
                         stroke="currentColor"
