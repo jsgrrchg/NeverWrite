@@ -27,7 +27,11 @@ import {
     AGENT_SIDEBAR_DRAG_EVENT,
     type AgentSidebarDragDetail,
 } from "../../features/ai/agentSidebarDragEvents";
-import { getSidebarViewMinimumWidth, type SidebarSide } from "./sidebarViews";
+import {
+    getSidebarViewMinimumWidth,
+    type MovableSidebarView,
+    type SidebarSide,
+} from "./sidebarViews";
 
 // Both macOS (native "sidebar" vibrancy) and Windows 11 (native acrylic
 // backgroundMaterial) paint a translucent window material beneath the
@@ -416,32 +420,9 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     ]);
 
     useEffect(() => {
-        const pointInside = (
-            element: HTMLElement | null,
-            x: number,
-            y: number,
-        ) => {
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-            if (rect.width === 0 && rect.height === 0) {
-                const width = Number.parseFloat(element.style.width);
-                if (!Number.isFinite(width)) return false;
-                if (element.dataset.edgePeekOverlay === "left") {
-                    return x >= 0 && x <= width;
-                }
-                if (element.dataset.edgePeekOverlay === "right") {
-                    return x >= window.innerWidth - width;
-                }
-            }
-            return (
-                x >= rect.left &&
-                x <= rect.right &&
-                y >= rect.top &&
-                y <= rect.bottom
-            );
-        };
         const handleSidebarOriginDrag = (
             detail: FileTreeNoteDragDetail | AgentSidebarDragDetail,
+            sourceView: MovableSidebarView,
         ) => {
             if (!detail) return;
             if (Number.isFinite(detail.x) && Number.isFinite(detail.y)) {
@@ -456,28 +437,14 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     if (
                         "origin" in detail &&
                         detail.origin?.kind === "workspace-tab"
-                    )
+                    ) {
+                        sidebarDragOriginRef.current = null;
                         return;
+                    }
                     sidebarDragOriginRef.current =
-                        pointInside(
-                            sidebarOverlayRef.current,
-                            detail.x,
-                            detail.y,
-                        ) ||
-                        pointInside(leftPanelRef.current, detail.x, detail.y)
-                            ? "left"
-                            : pointInside(
-                                    rightOverlayRef.current,
-                                    detail.x,
-                                    detail.y,
-                                ) ||
-                                pointInside(
-                                    rightPanelRef.current,
-                                    detail.x,
-                                    detail.y,
-                                )
-                              ? "right"
-                              : null;
+                        useLayoutStore.getState().movableSidebarPlacement[
+                            sourceView
+                        ];
                 }
                 if (
                     sidebarDragOriginRef.current === "left" &&
@@ -514,12 +481,14 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         const handleFileTreeDrag = (event: Event) => {
             handleSidebarOriginDrag(
                 (event as CustomEvent<FileTreeNoteDragDetail>).detail,
+                "files",
             );
         };
 
         const handleAgentSidebarDrag = (event: Event) => {
             handleSidebarOriginDrag(
                 (event as CustomEvent<AgentSidebarDragDetail>).detail,
+                "agents",
             );
         };
 
