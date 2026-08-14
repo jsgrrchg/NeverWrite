@@ -288,11 +288,12 @@ export const WORKSPACE_PHASE0_INVENTORY = [
             "Phase 5 keeps ghost previews and multi-window routing here, while the workspace drag hook stays responsible only for target resolution and commit intent.",
     },
     {
-        id: "app-global-shortcuts-and-sidebar-chat-host",
+        id: "app-global-shortcuts-and-sidebar-shells",
         role: "chat-sidebar-bridge",
         file: "apps/desktop/src/App.tsx",
         symbols: [
-            "RightPanel",
+            "SidebarShell",
+            "RightSidebarShell",
             "cycleEditorTabs",
             "tabs",
             "activeTabId",
@@ -300,9 +301,9 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         reads: ["tabs", "activeTabId", "panes", "focusedPaneId"],
         writes: [],
         summary:
-            "The app shell no longer hosts the chat sidebar — that moved to the left SidebarShell. The right panel only exposes Outline/Links as contextual support.",
+            "The app shell composes side-aware shells. Files and Agents are movable auxiliary views, while Tags/Bookmarks/Maps remain left-only and Outline/Links remain right-only.",
         migrationIntent:
-            "Phase 2c keeps the right panel contextual and leaves future shortcut cleanup to focused-pane-aware commands.",
+            "Sidebar placement belongs to layout state; primary workspace ownership and future focused-pane shortcut cleanup remain separate concerns.",
     },
     {
         id: "ai-chat-panel-sidebar-primary-surface",
@@ -317,7 +318,7 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         reads: [],
         writes: [],
         summary:
-            "AgentsSidebarPanel acts as a Comando-style launcher for workspace-owned chat sessions inside the left sidebar, without rendering the primary composer surface itself.",
+            "AgentsSidebarPanel acts as a Comando-style launcher for workspace-owned chat sessions from either sidebar, without rendering the primary composer surface itself.",
         migrationIntent:
             "Keep this panel auxiliary and resist reintroducing a second primary chat surface here.",
     },
