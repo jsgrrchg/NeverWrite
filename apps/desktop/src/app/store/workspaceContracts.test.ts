@@ -29,6 +29,19 @@ describe("workspaceContracts Phase 0 inventory", () => {
             true,
         );
         expect(inventoryIds.has("chat-tabs-session-metadata-store")).toBe(true);
+
+        const agentsContract = WORKSPACE_PHASE0_INVENTORY.find(
+            (entry) => entry.id === "ai-chat-panel-sidebar-primary-surface",
+        );
+        expect(agentsContract?.symbols).toContain("AgentSidebarProjection");
+        expect(agentsContract?.symbols).toContain("useAgentSidebarStore");
+        expect(agentsContract?.summary).toContain(
+            "Pinned, Active, Snoozed and Completed",
+        );
+        expect(agentsContract?.summary).toContain("either sidebar");
+        expect(agentsContract?.migrationIntent).toContain(
+            "one vault per window",
+        );
     });
 
     it("keeps every inventory field reference inside the declared Phase 0 state surface", () => {

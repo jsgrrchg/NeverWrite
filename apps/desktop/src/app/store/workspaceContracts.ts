@@ -312,15 +312,17 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         symbols: [
             "AgentsSidebarPanel",
             "AgentsSidebarItem",
+            "AgentSidebarProjection",
+            "useAgentSidebarStore",
             "openChatSessionInWorkspace",
             "createNewChatInWorkspace",
         ],
         reads: [],
         writes: [],
         summary:
-            "AgentsSidebarPanel acts as a Comando-style launcher for workspace-owned chat sessions from either sidebar, without rendering the primary composer surface itself.",
+            "AgentsSidebarPanel projects the current vault's durable ACP sessions into the Pinned, Active, Snoozed and Completed inbox from either sidebar; lifecycle and manual order are vault-scoped metadata independent of physical workspace tabs.",
         migrationIntent:
-            "Keep this panel auxiliary and resist reintroducing a second primary chat surface here.",
+            "Keep this panel auxiliary, preserve one vault per window, and resist adding a second primary chat surface or multiproject routing here.",
     },
     {
         id: "chat-tabs-session-metadata-store",

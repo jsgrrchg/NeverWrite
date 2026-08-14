@@ -216,9 +216,7 @@ preferences, workspace state, or privacy-relevant local state.
 | `neverwrite:file-tree-expanded-folders:<vault-path>` | Per-vault file tree state | None | `FileTree.tsx` | Expanded folder paths. |
 | `neverwrite.fileTree.clipboard` | Global transient state | None | `fileTreeClipboard.ts` | File tree copy/cut payload. |
 | `neverwrite.search.history` | Global preference/state | `[]` | `searchHistory.ts` | Recent search queries. |
-| `neverwrite.chats.pinnedIds` | Global preference/state | `[]` | `pinnedChatsStore.ts` | Pinned chat session ids. |
-| `neverwrite.chats.folders` | Global preference/state | Empty folders, order, assignments, and collapsed state | `chatFoldersStore.ts` | Agents sidebar folder definitions, manual folder order, root-session-to-folder assignments, and collapsed folder ids. Folder names are global; assignments are reconciled against the root sessions available in the active vault. A Claude Code terminal pseudo-session can be assigned while live, but the assignment is removed when its terminal ends. |
-| `neverwrite.ai.agentsSidebar.collapsedParents` | Global UI state | `[]` | `AgentsSidebarPanel.tsx` | Collapsed parent groups in the agents sidebar. |
+| `neverwrite.agents.sidebar.v1:<encoded-vault-path>` | Per-vault Agents state | Empty folders, lifecycle, orders, visit state, and collapsed shelves/groups | `agentSidebarStore.ts` | Versioned source of truth for Pinned, Active, Snoozed, Completed, folders, explicit order, shelf expansion, and parent collapse. This device-local organization is independent of workspace tabs and chat transcript storage. |
 | `neverwrite.ai.runtime-catalog` | Global cache | `{}` | `chatStore.ts` | Cached runtime models, modes, and config option catalogs. |
 | `neverwrite:debug-log-scopes` | Global developer preference | None | `runtimeLog.ts` | Enables scoped debug logging. |
 | `neverwrite:perf-probe` | Global developer preference | `false` | `perfInstrumentation.ts` | Enables performance probe instrumentation. |
@@ -259,6 +257,7 @@ vault id.
 - AI auto-context still reads legacy `neverwrite.ai.preferences.autoContextEnabled`
   as a fallback, but new writes go to `neverwrite.ai.auto-context:<vault-path>`
   or `neverwrite.ai.auto-context:__global__`.
+- `agentSidebarStore` imports per-vault folders from `neverwrite.chats.folders:<vault-path>` and claims only current-vault session IDs from the legacy global `neverwrite.chats.pinnedIds` and `neverwrite.ai.agentsSidebar.collapsedParents` keys after the session inventory is loaded. New reads and writes use only `neverwrite.agents.sidebar.v1:<encoded-vault-path>`; the legacy sources remain untouched so unopened vaults can migrate safely.
 - Removing a vault from recent vaults also removes its vault-scoped settings,
   theme, editor tabs, chat tabs, and bookmarks.
 

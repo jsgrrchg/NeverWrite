@@ -80,16 +80,16 @@ or delete the agent. The session remains available in the sidebar and can be
 reopened in the focused chat tab, explicitly opened in a new tab, or placed in
 another pane.
 
+Within the current window's vault, Agents projects every root conversation into exactly one of `Pinned`, `Active`, `Snoozed`, or `Completed`. Pinned and Active have stable manual order, and folders subdivide Active without changing conversation ownership. Snooze and completion are reversible organizational states: neither operation closes a workspace view, changes chat-tab navigation history, stops a runtime, deletes a transcript, or resolves pending file changes.
+
+Pins, folders, collapsed groups, lifecycle timestamps, visit state, shelf expansion, and manual order are local UI metadata stored per vault under `neverwrite.agents.sidebar.v1:<encoded-vault-path>`. They are not provider transcript data and are not part of `session-meta.json`. They follow session ID migrations so a restored or newly durable session keeps its organization. The sidebar does not aggregate multiple vaults; opening another vault remains a window-level operation.
+
 With history-based tab opening enabled, a physical chat tab can hold a local
 Back/Forward history of sessions visited through that view. This workspace
 navigation history is persisted with the editor session, but it is distinct
 from the transcript stored under `.neverwrite/sessions/`.
 
-Deleting a conversation is different from closing a view. Explicit deletion
-removes physical tabs that display the session and prunes it from other chat-tab
-histories. Sidebar pins and folder assignments are local UI metadata rather
-than provider transcript data; they follow session ID migrations so a restored
-or newly durable session keeps its organization.
+Deleting a conversation is different from closing a view, completing it, or snoozing it. Explicit deletion removes physical tabs that display the session, prunes it from other chat-tab histories, and removes its vault-scoped Agents metadata.
 
 Claude Code launched in an integrated terminal is not an ACP chat and does not
 use this durable sidebar ownership model. Its sidebar row is a non-persisted
@@ -98,6 +98,8 @@ closing the terminal ends the process and removes the row. It has no chat-tab
 Back/Forward history, saved chat view, or `Open in New Tab` action. Terminal tabs
 can be restored as workspace tabs, but their current metadata does not relaunch
 Claude Code or recreate the agent-sidebar projection after an app restart.
+
+Claude Code terminal rows cannot be Snoozed or Completed. Their lifecycle remains explicit PTY ownership through `Close Terminal`; hiding a running terminal in a durable chat shelf would imply persistence that the terminal projection does not provide.
 
 ## Canonical Conversation Rollout And Rollback
 
