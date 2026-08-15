@@ -82,7 +82,7 @@ another pane.
 
 Within the current window's vault, Agents projects every root conversation into exactly one of `Pinned`, `Active`, `Snoozed`, or `Completed`. Pinned and Active have stable manual order, and folders subdivide Active without changing conversation ownership. Snooze and completion are reversible organizational states: neither operation closes a workspace view, changes chat-tab navigation history, stops a runtime, deletes a transcript, or resolves pending file changes.
 
-Pins, folders, collapsed groups, lifecycle timestamps, visit state, shelf expansion, and manual order are local UI metadata stored per vault under `neverwrite.agents.sidebar.v1:<encoded-vault-path>`. They are not provider transcript data and are not part of `session-meta.json`. They follow session ID migrations so a restored or newly durable session keeps its organization. The sidebar does not aggregate multiple vaults; opening another vault remains a window-level operation.
+Pins, collapsed groups, lifecycle timestamps, visit state, shelf expansion, and manual order are local UI metadata stored per vault under `neverwrite.agents.sidebar.v1:<encoded-vault-path>`. They are not provider transcript data and are not part of `session-meta.json`. They follow session ID migrations so a restored or newly durable session keeps its organization. The sidebar does not aggregate multiple vaults or group chats into folders; opening another vault remains a window-level operation.
 
 With history-based tab opening enabled, a physical chat tab can hold a local
 Back/Forward history of sessions visited through that view. This workspace

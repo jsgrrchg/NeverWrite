@@ -57,7 +57,7 @@ from the history of other chat tabs.
 
 Agents is a movable auxiliary view and may be hosted by either sidebar. It projects each vault's root conversations into the mutually exclusive `Pinned`, `Active`, `Snoozed`, and `Completed` lifecycle sections. Pinned and Active use explicit manual ordering, while folders organize only Active conversations. A status change can change a card's attention state, but it does not reorder the card.
 
-This organization is local, versioned metadata scoped to the vault under `neverwrite.agents.sidebar.v1:<encoded-vault-path>`. It includes pins, folders, collapsed groups, lifecycle timestamps, visit timestamps, shelf expansion, and manual order. It is not written into the ACP transcript or `session-meta.json`, and it must follow a session ID when that ID becomes durable. NeverWrite deliberately keeps one vault per window: Agents must not introduce project switching, project labels, branches, worktrees, PR metadata, or remote synchronization semantics.
+This organization is local, versioned metadata scoped to the vault under `neverwrite.agents.sidebar.v1:<encoded-vault-path>`. It includes pins, collapsed groups, lifecycle timestamps, visit timestamps, shelf expansion, and manual order. It is not written into the ACP transcript or `session-meta.json`, and it must follow a session ID when that ID becomes durable. NeverWrite deliberately keeps one vault per window: Agents must not introduce project switching, project labels, folders, branches, worktrees, PR metadata, or remote synchronization semantics.
 
 `Complete` and `Snooze` only change the sidebar projection. They do not close a tab, alter its Back/Forward history, stop an agent, accept or reject review changes, or delete transcript data. Completed conversations can be reopened. Snoozed conversations wake at their deadline or early when they require review, permission, user input, or failed-state attention.
 
@@ -80,7 +80,7 @@ chat-tab history or `Open in New Tab`. Closing the terminal tab ends the PTY and
 removes the sidebar entry, while the sidebar's explicit `Close Terminal` action
 confirms before performing the same lifecycle operation.
 
-Pins, renames, and folder assignments can decorate a live Claude Code terminal entry, but they do not make the pseudo-session durable. Terminal pseudo-sessions cannot be Snoozed or Completed because hiding a live PTY behind durable chat lifecycle metadata would be misleading. Their transient metadata is reconciled away when the terminal ends. A restored `TerminalTab` also does not encode enough information to relaunch Claude Code or reconstruct the pseudo-session automatically; terminal-agent restoration would require a separate persisted terminal role and launch contract.
+Pins and renames can decorate a live Claude Code terminal entry, but they do not make the pseudo-session durable. Terminal pseudo-sessions cannot be Snoozed or Completed because hiding a live PTY behind durable chat lifecycle metadata would be misleading. Their transient metadata is reconciled away when the terminal ends. A restored `TerminalTab` also does not encode enough information to relaunch Claude Code or reconstruct the pseudo-session automatically; terminal-agent restoration would require a separate persisted terminal role and launch contract.
 
 `FileTabView` applies the file viewer boundary:
 

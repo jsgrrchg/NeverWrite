@@ -216,7 +216,7 @@ preferences, workspace state, or privacy-relevant local state.
 | `neverwrite:file-tree-expanded-folders:<vault-path>` | Per-vault file tree state | None | `FileTree.tsx` | Expanded folder paths. |
 | `neverwrite.fileTree.clipboard` | Global transient state | None | `fileTreeClipboard.ts` | File tree copy/cut payload. |
 | `neverwrite.search.history` | Global preference/state | `[]` | `searchHistory.ts` | Recent search queries. |
-| `neverwrite.agents.sidebar.v1:<encoded-vault-path>` | Per-vault Agents state | Empty folders, lifecycle, orders, visit state, and collapsed shelves/groups | `agentSidebarStore.ts` | Versioned source of truth for Pinned, Active, Snoozed, Completed, folders, explicit order, shelf expansion, and parent collapse. This device-local organization is independent of workspace tabs and chat transcript storage. |
+| `neverwrite.agents.sidebar.v1:<encoded-vault-path>` | Per-vault Agents state | Empty lifecycle, orders, visit state, and collapsed shelves/groups | `agentSidebarStore.ts` | Versioned source of truth for Pinned, Active, Snoozed, Completed, explicit order, shelf expansion, and parent collapse. This device-local organization is independent of workspace tabs and chat transcript storage. |
 | `neverwrite.ai.runtime-catalog` | Global cache | `{}` | `chatStore.ts` | Cached runtime models, modes, and config option catalogs. |
 | `neverwrite:debug-log-scopes` | Global developer preference | None | `runtimeLog.ts` | Enables scoped debug logging. |
 | `neverwrite:perf-probe` | Global developer preference | `false` | `perfInstrumentation.ts` | Enables performance probe instrumentation. |
@@ -257,7 +257,7 @@ vault id.
 - AI auto-context still reads legacy `neverwrite.ai.preferences.autoContextEnabled`
   as a fallback, but new writes go to `neverwrite.ai.auto-context:<vault-path>`
   or `neverwrite.ai.auto-context:__global__`.
-- `agentSidebarStore` imports per-vault folders from `neverwrite.chats.folders:<vault-path>` and claims only current-vault session IDs from the legacy global `neverwrite.chats.pinnedIds` and `neverwrite.ai.agentsSidebar.collapsedParents` keys after the session inventory is loaded. New reads and writes use only `neverwrite.agents.sidebar.v1:<encoded-vault-path>`; the legacy sources remain untouched so unopened vaults can migrate safely.
+- `agentSidebarStore` claims only current-vault session IDs from the legacy global `neverwrite.chats.pinnedIds` and `neverwrite.ai.agentsSidebar.collapsedParents` keys after the session inventory is loaded. Legacy folder collections and assignments are ignored so every chat returns to the normal Active list. New reads and writes use only `neverwrite.agents.sidebar.v1:<encoded-vault-path>`; the legacy sources remain untouched.
 - Removing a vault from recent vaults also removes its vault-scoped settings,
   theme, editor tabs, chat tabs, and bookmarks.
 

@@ -128,7 +128,7 @@ As a result:
 - closing the terminal tab closes the PTY and removes the sidebar row;
 - `Close Terminal` in the sidebar confirms before closing the terminal, whereas
   ordinary tab-close paths follow terminal tab semantics;
-- pin, rename, and folder metadata apply only while that terminal agent remains
+- pin and rename metadata apply only while that terminal agent remains
   live and are cleaned up when it disappears; and
 - dragging the row onto the workspace focuses the existing terminal rather than
   creating or moving an ACP chat view.
