@@ -17,6 +17,7 @@ export interface AgentSidebarSessionMetadata {
 export interface PersistedAgentSidebarStateV1 {
     version: 1;
     collapsedParentSessionIds: string[];
+    expandedParentSessionIds: string[];
     pinnedOrder: string[];
     snoozedShelfExpanded: boolean;
     completedShelfExpanded: boolean;
@@ -29,6 +30,11 @@ interface AgentSidebarStore extends PersistedAgentSidebarStateV1 {
     setVaultPath: (vaultPath: string | null) => void;
     migrateLegacyMetadata: (rootSessionIds: Iterable<string>) => void;
     toggleParentCollapsed: (sessionId: string) => void;
+    setParentCollapsed: (
+        sessionId: string,
+        collapsed: boolean,
+        defaultsToCollapsed?: boolean,
+    ) => void;
     setSnoozedShelfExpanded: (expanded: boolean) => void;
     setCompletedShelfExpanded: (expanded: boolean) => void;
     togglePin: (sessionId: string, at?: number) => void;
@@ -58,6 +64,7 @@ const LEGACY_COLLAPSED_PARENTS_KEY =
 export const EMPTY_AGENT_SIDEBAR_STATE: PersistedAgentSidebarStateV1 = {
     version: 1,
     collapsedParentSessionIds: [],
+    expandedParentSessionIds: [],
     pinnedOrder: [],
     snoozedShelfExpanded: false,
     completedShelfExpanded: false,
@@ -123,6 +130,9 @@ function normalizePersistedState(value: unknown): PersistedAgentSidebarStateV1 {
         collapsedParentSessionIds: uniqueStrings(
             candidate.collapsedParentSessionIds,
         ),
+        expandedParentSessionIds: uniqueStrings(
+            candidate.expandedParentSessionIds,
+        ),
         pinnedOrder: uniqueStrings(candidate.pinnedOrder),
         snoozedShelfExpanded: candidate.snoozedShelfExpanded === true,
         completedShelfExpanded: candidate.completedShelfExpanded === true,
@@ -148,6 +158,7 @@ function persistedSnapshot(state: AgentSidebarStore): PersistedAgentSidebarState
     return {
         version: 1,
         collapsedParentSessionIds: state.collapsedParentSessionIds,
+        expandedParentSessionIds: state.expandedParentSessionIds,
         pinnedOrder: state.pinnedOrder,
         snoozedShelfExpanded: state.snoozedShelfExpanded,
         completedShelfExpanded: state.completedShelfExpanded,
@@ -258,6 +269,24 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
             if (collapsed.has(sessionId)) collapsed.delete(sessionId);
             else collapsed.add(sessionId);
             return mutate(state, { collapsedParentSessionIds: [...collapsed] });
+        }),
+    setParentCollapsed: (sessionId, collapsed, defaultsToCollapsed = false) =>
+        set((state) => {
+            const explicitCollapsed = new Set(state.collapsedParentSessionIds);
+            const explicitExpanded = new Set(state.expandedParentSessionIds);
+            if (defaultsToCollapsed) {
+                explicitCollapsed.delete(sessionId);
+                if (collapsed) explicitExpanded.delete(sessionId);
+                else explicitExpanded.add(sessionId);
+            } else {
+                explicitExpanded.delete(sessionId);
+                if (collapsed) explicitCollapsed.add(sessionId);
+                else explicitCollapsed.delete(sessionId);
+            }
+            return mutate(state, {
+                collapsedParentSessionIds: [...explicitCollapsed],
+                expandedParentSessionIds: [...explicitExpanded],
+            });
         }),
     setSnoozedShelfExpanded: (expanded) =>
         set((state) => mutate(state, { snoozedShelfExpanded: expanded })),
@@ -385,7 +414,13 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
             }
             const source = state.sessionMetadata[fromSessionId];
             const collapsed = state.collapsedParentSessionIds.includes(fromSessionId);
-            if (!source && !collapsed && !state.pinnedOrder.includes(fromSessionId)) {
+            const expanded = state.expandedParentSessionIds.includes(fromSessionId);
+            if (
+                !source &&
+                !collapsed &&
+                !expanded &&
+                !state.pinnedOrder.includes(fromSessionId)
+            ) {
                 return state;
             }
             const sessionMetadata = { ...state.sessionMetadata };
@@ -398,6 +433,11 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                 pinnedOrder: replaceInOrder(state.pinnedOrder, fromSessionId, toSessionId),
                 collapsedParentSessionIds: replaceInOrder(
                     state.collapsedParentSessionIds,
+                    fromSessionId,
+                    toSessionId,
+                ),
+                expandedParentSessionIds: replaceInOrder(
+                    state.expandedParentSessionIds,
                     fromSessionId,
                     toSessionId,
                 ),
@@ -433,6 +473,8 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
             const pinnedOrder = state.pinnedOrder.filter((id) => roots.has(id));
             const collapsedParentSessionIds =
                 state.collapsedParentSessionIds.filter((id) => roots.has(id));
+            const expandedParentSessionIds =
+                state.expandedParentSessionIds.filter((id) => roots.has(id));
             const metadataEntries = Object.entries(sessionMetadata);
             const metadataUnchanged =
                 metadataEntries.length ===
@@ -450,6 +492,10 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                 sameOrder(
                     collapsedParentSessionIds,
                     state.collapsedParentSessionIds,
+                ) &&
+                sameOrder(
+                    expandedParentSessionIds,
+                    state.expandedParentSessionIds,
                 )
             ) {
                 return state;
@@ -458,6 +504,7 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                 sessionMetadata,
                 pinnedOrder,
                 collapsedParentSessionIds,
+                expandedParentSessionIds,
             });
         }),
 }));

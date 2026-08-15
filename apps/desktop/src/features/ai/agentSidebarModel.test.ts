@@ -135,6 +135,30 @@ describe("agentSidebarModel", () => {
         ).toEqual(["done"]);
     });
 
+    it("applies parent lifecycle metadata to the complete Codex subagent group", () => {
+        const root = session("root", "idle", 100);
+        const child = session("child", "streaming", 200, {
+            parentSessionId: "root",
+        });
+
+        const snoozed = project(
+            [root, child],
+            { root: metadata({ snoozedAt: 10, snoozedUntil: 2_000 }) },
+        );
+        expect(snoozed.snoozedGroups[0].sessionIds).toEqual(["root", "child"]);
+        expect(snoozed.snoozedGroups[0].root.sessionId).toBe("root");
+
+        const completed = project(
+            [root, child],
+            { root: metadata({ completedAt: 300 }) },
+        );
+        expect(completed.completedGroups[0].sessionIds).toEqual([
+            "root",
+            "child",
+        ]);
+        expect(completed.completedGroups[0].root.sessionId).toBe("root");
+    });
+
     it.each([
         ["review_required", true],
         ["waiting_permission", true],

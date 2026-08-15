@@ -40,6 +40,7 @@ describe("agentSidebarStore", () => {
                 folderOrder: ["research", "research", "missing"],
                 collapsedFolderIds: ["research", "missing", 2],
                 collapsedParentSessionIds: ["root", "root", null],
+                expandedParentSessionIds: ["default-collapsed", "default-collapsed", null],
                 pinnedOrder: ["root", "root", 2],
                 completedShelfExpanded: true,
                 extra: "ignored",
@@ -55,6 +56,7 @@ describe("agentSidebarStore", () => {
         expect(useAgentSidebarStore.getState()).toMatchObject({
             version: 1,
             collapsedParentSessionIds: ["root"],
+            expandedParentSessionIds: ["default-collapsed"],
             pinnedOrder: ["root"],
             completedShelfExpanded: true,
             sessionMetadata: {
@@ -186,6 +188,27 @@ describe("agentSidebarStore", () => {
         );
     });
 
+    it("remembers expansions for parents whose children default to collapsed", () => {
+        useAgentSidebarStore.getState().setVaultPath(VAULT_A);
+
+        useAgentSidebarStore
+            .getState()
+            .setParentCollapsed("root", false, true);
+        expect(
+            useAgentSidebarStore.getState().expandedParentSessionIds,
+        ).toEqual(["root"]);
+        expect(
+            useAgentSidebarStore.getState().collapsedParentSessionIds,
+        ).toEqual([]);
+
+        useAgentSidebarStore
+            .getState()
+            .setParentCollapsed("root", true, true);
+        expect(
+            useAgentSidebarStore.getState().expandedParentSessionIds,
+        ).toEqual([]);
+    });
+
     it("appends new pins without disturbing the saved visual order", () => {
         useAgentSidebarStore.getState().setVaultPath(VAULT_A);
         useAgentSidebarStore.getState().pinSession("first", 1);
@@ -209,6 +232,7 @@ describe("agentSidebarStore", () => {
             },
             pinnedOrder: ["pending", "live"],
             collapsedParentSessionIds: ["pending"],
+            expandedParentSessionIds: ["pending"],
         });
         useAgentSidebarStore.getState().replaceSessionId("pending", "live");
         expect(useAgentSidebarStore.getState()).toMatchObject({
@@ -223,6 +247,7 @@ describe("agentSidebarStore", () => {
             },
             pinnedOrder: ["live"],
             collapsedParentSessionIds: ["live"],
+            expandedParentSessionIds: ["live"],
         });
     });
 

@@ -548,7 +548,7 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.getByText("Agent move cancelled.")).toBeInTheDocument();
     });
 
-    it("renders subagents under their parent and opens the child row", async () => {
+    it("keeps Codex subagents collapsed by default and opens a child row on demand", async () => {
         const parent = createSession("session-parent", "Parent task");
         const child = createSession(
             "session-child",
@@ -573,10 +573,23 @@ describe("AgentsSidebarPanel", () => {
             .getAllByTestId("agent-sidebar-item")
             .map((item) => item.textContent ?? "");
         expect(labels[0]).toContain("Parent task");
-        expect(labels[1]).toContain("Worker investigation");
-        expect(labels[1]).toContain("Working");
+        expect(labels).toHaveLength(1);
 
-        fireEvent.click(screen.getAllByTestId("agent-sidebar-item")[1]);
+        fireEvent.click(
+            screen.getByRole("button", { name: "Expand agents" }),
+        );
+
+        const expandedLabels = screen
+            .getAllByTestId("agent-sidebar-item")
+            .map((item) => item.textContent ?? "");
+        expect(expandedLabels[1]).toContain("Worker investigation");
+        expect(expandedLabels[1]).toContain("Working");
+
+        const childRow = screen.getAllByTestId("agent-sidebar-item")[1];
+        fireEvent.contextMenu(childRow);
+        expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+
+        fireEvent.click(childRow);
 
         await waitFor(() => {
             expect(
@@ -894,6 +907,10 @@ describe("AgentsSidebarPanel", () => {
 
         renderComponent(<AgentsSidebarPanel />);
 
+        fireEvent.click(
+            screen.getByRole("button", { name: "Expand agents" }),
+        );
+
         await waitFor(() => {
             const labels = screen
                 .getAllByTestId("agent-sidebar-item")
@@ -956,6 +973,10 @@ describe("AgentsSidebarPanel", () => {
         }));
 
         renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Expand agents" }),
+        );
 
         fireEvent.doubleClick(screen.getAllByTestId("agent-sidebar-item")[1]);
 

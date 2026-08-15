@@ -42,6 +42,8 @@ export interface AgentsSidebarItemProps {
     isPinned: boolean;
     canPin?: boolean;
     canRename?: boolean;
+    /** Subagent rows can be opened, but their lifecycle belongs to the parent. */
+    canManage?: boolean;
     depth?: number;
     childCount?: number;
     isCollapsed?: boolean;
@@ -281,6 +283,7 @@ export function AgentsSidebarItem({
     isPinned,
     canPin = true,
     canRename = true,
+    canManage = true,
     depth = 0,
     childCount = 0,
     isCollapsed = false,
@@ -487,7 +490,7 @@ export function AgentsSidebarItem({
         onClick: () => {
             if (!suppressClickRef.current && !isRenaming) onOpen();
         },
-        onPointerDown: beginPointerDrag,
+        onPointerDown: canManage ? beginPointerDrag : undefined,
         onLostPointerCapture: (event: React.PointerEvent<HTMLDivElement>) => {
             const state = dragStateRef.current;
             if (!state || state.pointerId !== event.pointerId || event.buttons !== 0) {
@@ -498,11 +501,13 @@ export function AgentsSidebarItem({
             if (wasActive) dragCallbacksRef.current.onDragCancel?.();
         },
         onDoubleClick: (event: React.MouseEvent<HTMLDivElement>) => {
-            if (isRenaming || !canRename) return;
+            if (isRenaming || !canManage || !canRename) return;
             event.preventDefault();
             onStartRename();
         },
-        onContextMenu,
+        onContextMenu: canManage
+            ? onContextMenu
+            : (event: ReactMouseEvent<HTMLDivElement>) => event.preventDefault(),
         onKeyDown: handleKeyboardOpen,
         onMouseEnter: () => setCardActionsVisible(true),
         onMouseLeave: (event: React.MouseEvent<HTMLDivElement>) => {
@@ -813,7 +818,9 @@ export function AgentsSidebarItem({
                                 fontSize: metrics.timestampFontSize,
                             }}
                         >
-                            {childCount === 1 ? "1 agent" : `${childCount} agents`}
+                            {childCount === 1
+                                ? "1 subagent"
+                                : `${childCount} subagents`}
                         </span>
                     ) : null}
                 </span>

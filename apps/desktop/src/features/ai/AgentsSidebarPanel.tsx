@@ -181,6 +181,10 @@ function isSubagentSession(session: AIChatSession) {
     return Boolean(session.parentSessionId?.trim());
 }
 
+function isCodexSubagentSession(session: AIChatSession) {
+    return isSubagentSession(session) && session.runtimeId.includes("codex");
+}
+
 function scaleMetric(base: number, scale: number, min: number) {
     return Math.max(min, Math.round(base * scale * 10) / 10);
 }
@@ -291,9 +295,15 @@ export function AgentsSidebarPanel() {
     const collapsedParentSessionIds = useAgentSidebarStore(
         (state) => state.collapsedParentSessionIds,
     );
+    const expandedParentSessionIds = useAgentSidebarStore(
+        (state) => state.expandedParentSessionIds,
+    );
     const pinnedOrder = useAgentSidebarStore((state) => state.pinnedOrder);
     const toggleCollapsedParent = useAgentSidebarStore(
         (state) => state.toggleParentCollapsed,
+    );
+    const setParentCollapsed = useAgentSidebarStore(
+        (state) => state.setParentCollapsed,
     );
     const migrateLegacyMetadata = useAgentSidebarStore(
         (state) => state.migrateLegacyMetadata,
@@ -589,6 +599,10 @@ export function AgentsSidebarPanel() {
         () => new Set(collapsedParentSessionIds),
         [collapsedParentSessionIds],
     );
+    const expandedParentIds = useMemo(
+        () => new Set(expandedParentSessionIds),
+        [expandedParentSessionIds],
+    );
 
     const getReorderScopeIds = (scope: string) => {
         return scope === "pinned"
@@ -660,6 +674,7 @@ export function AgentsSidebarPanel() {
             isCollapsed?: boolean;
             canPin?: boolean;
             canRename?: boolean;
+            canManage?: boolean;
             status?: AgentSidebarStatus;
             tone?: AgentSidebarTone;
             workingStartedAt?: number | null;
@@ -676,6 +691,7 @@ export function AgentsSidebarPanel() {
         const isSubagent = isSubagentSession(session);
         const canPin = options?.canPin ?? !isSubagent;
         const canRename = options?.canRename ?? !isSubagent;
+        const canManage = options?.canManage ?? !isSubagent;
         const isPinned = Boolean(pinnedEntries[session.sessionId]);
         const status =
             options?.status ??
@@ -729,6 +745,7 @@ export function AgentsSidebarPanel() {
                 isPinned={canPin && isPinned}
                 canPin={canPin}
                 canRename={canRename}
+                canManage={canManage}
                 depth={options?.depth ?? 0}
                 childCount={options?.childCount ?? 0}
                 isCollapsed={options?.isCollapsed ?? false}
@@ -869,16 +886,17 @@ export function AgentsSidebarPanel() {
                       ? "completed"
                       : "active"
                 : requestedLifecycle;
-        const collapsed = collapsedParentIds.has(group.root.sessionId);
+        const childrenDefaultToCollapsed = group.children.some(
+            isCodexSubagentSession,
+        );
+        const collapsed =
+            collapsedParentIds.has(group.root.sessionId) ||
+            (childrenDefaultToCollapsed &&
+                !expandedParentIds.has(group.root.sessionId));
         const forceChildrenVisible =
             hasFilter ||
             group.visibleChildren.some(
-                (child) =>
-                    child.sessionId === activeSidebarId ||
-                    resolveAgentSidebarSessionStatus(
-                        child,
-                        sessionMetadata[group.root.sessionId],
-                    ) !== "ready",
+                (child) => child.sessionId === activeSidebarId,
             );
         const showChildren =
             group.visibleChildren.length > 0 &&
@@ -952,7 +970,17 @@ export function AgentsSidebarPanel() {
                             : undefined,
                     onToggleCollapse:
                         group.children.length > 0
-                            ? () => toggleCollapsedParent(group.root.sessionId)
+                            ? () => {
+                                  if (childrenDefaultToCollapsed) {
+                                      setParentCollapsed(
+                                          group.root.sessionId,
+                                          !collapsed,
+                                          true,
+                                      );
+                                      return;
+                                  }
+                                  toggleCollapsedParent(group.root.sessionId);
+                              }
                             : undefined,
                     canPin: !group.isDetachedAgent,
                     canRename: !group.isDetachedAgent,
@@ -963,6 +991,27 @@ export function AgentsSidebarPanel() {
                               depth: 1,
                               canPin: false,
                               canRename: false,
+                              canManage: false,
+                              status: resolveAgentSidebarSessionStatus(
+                                  child,
+                                  rootMetadata,
+                              ),
+                              tone:
+                                  lifecycle === "snoozed"
+                                      ? "snoozed"
+                                      : lifecycle === "completed"
+                                        ? "done"
+                                        : undefined,
+                              statusLabelOverride:
+                                  lifecycle === "snoozed" &&
+                                  rootMetadata?.snoozedUntil
+                                      ? formatSnoozeWakeLabel(
+                                            rootMetadata.snoozedUntil,
+                                            now,
+                                        )
+                                      : lifecycle === "completed"
+                                        ? "Done"
+                                        : undefined,
                               variant: "slim",
                           }),
                       )
