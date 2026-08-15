@@ -6583,6 +6583,9 @@ fn selected_mode_id(
 }
 
 fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<AiConfigOption>) {
+    let has_mode_config_option = config_options
+        .iter()
+        .any(|option| matches!(option.category, AiConfigOptionCategory::Mode));
     if let Some(model_id) = config_options
         .iter()
         .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
@@ -6598,6 +6601,12 @@ fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<
         .filter(|value| !value.trim().is_empty())
     {
         session.mode_id = mode_id;
+    }
+    if has_mode_config_option {
+        // A config option update is the ACP's authoritative model-specific mode catalog.
+        // Keep the legacy modes field aligned so the renderer cannot retain modes removed
+        // after a model switch.
+        session.modes = map_session_modes_from_config_options(&session.runtime_id, &config_options);
     }
     session.config_options = config_options;
 }
@@ -16764,6 +16773,22 @@ mod tests {
     fn applying_config_options_removes_stale_reasoning_option() {
         let mut session = new_session_with_id(CLAUDE_RUNTIME_ID, "session-1".to_string()).unwrap();
         session.model_id = "claude-sonnet-4-5".to_string();
+        session.modes = vec![
+            AiModeOption {
+                id: "auto".to_string(),
+                runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+                name: "Auto".to_string(),
+                description: String::new(),
+                disabled: false,
+            },
+            AiModeOption {
+                id: "default".to_string(),
+                runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+                name: "Default".to_string(),
+                description: String::new(),
+                disabled: false,
+            },
+        ];
         session.config_options = map_session_config_options(
             CLAUDE_RUNTIME_ID,
             vec![
@@ -16817,6 +16842,14 @@ mod tests {
 
         assert_eq!(session.model_id, "claude-haiku-4-5");
         assert_eq!(session.mode_id, "default");
+        assert_eq!(
+            session
+                .modes
+                .iter()
+                .map(|mode| mode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default"]
+        );
         assert!(session
             .config_options
             .iter()
@@ -16830,6 +16863,22 @@ mod tests {
         let client = test_client_with_state(event_tx, Arc::clone(&session_state));
         let mut session = new_session_with_id(CLAUDE_RUNTIME_ID, "session-1".to_string()).unwrap();
         session.model_id = "claude-sonnet-4-5".to_string();
+        session.modes = vec![
+            AiModeOption {
+                id: "auto".to_string(),
+                runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+                name: "Auto".to_string(),
+                description: String::new(),
+                disabled: false,
+            },
+            AiModeOption {
+                id: "default".to_string(),
+                runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+                name: "Default".to_string(),
+                description: String::new(),
+                disabled: false,
+            },
+        ];
         session.config_options = map_session_config_options(
             CLAUDE_RUNTIME_ID,
             vec![
@@ -16916,6 +16965,14 @@ mod tests {
             .config_options
             .iter()
             .all(|option| !matches!(option.category, AiConfigOptionCategory::Reasoning)));
+        assert_eq!(
+            session
+                .modes
+                .iter()
+                .map(|mode| mode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default"]
+        );
     }
 
     #[test]

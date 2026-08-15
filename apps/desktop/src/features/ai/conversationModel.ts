@@ -53,6 +53,69 @@ function selectionOptions(configOptions: readonly AIConfigOption[]) {
     );
 }
 
+function modeConfigOption(configOptions: readonly AIConfigOption[]) {
+    return configOptions.find(
+        (option) => option.category === "mode" || option.id === "mode",
+    );
+}
+
+type ModeCatalogSource = Pick<
+    AIChatSession | AcpConversationBinding,
+    "runtimeId" | "modelId" | "modeId" | "modes" | "configOptions"
+>;
+
+/**
+ * Reconcile a staged mode with the provider's current model-specific catalog.
+ * ACP can remove a mode after a model switch, so a persisted or queued
+ * selection must fall back to the runtime's effective mode before a turn is sent.
+ */
+export function normalizeConversationSelectionForSession(
+    session: ModeCatalogSource,
+    selection: ConversationSelection,
+): ConversationSelection {
+    if (selection.runtimeId !== session.runtimeId) {
+        return selection;
+    }
+
+    const selectedModelConfigValue = session.configOptions.find(
+        (option) => option.category === "model",
+    )?.value;
+    if (
+        selection.modelId !== session.modelId &&
+        selection.modelId !== selectedModelConfigValue
+    ) {
+        return selection;
+    }
+
+    const modeOption = modeConfigOption(session.configOptions);
+    const availableModeIds = modeOption
+        ? modeOption.options.map((option) => option.value)
+        : session.modes
+              .filter((mode) => !mode.disabled)
+              .map((mode) => mode.id);
+    if (
+        availableModeIds.length === 0 ||
+        availableModeIds.includes(selection.modeId)
+    ) {
+        return selection;
+    }
+
+    const effectiveModeId =
+        (modeOption?.value && availableModeIds.includes(modeOption.value)
+            ? modeOption.value
+            : null) ??
+        (availableModeIds.includes(session.modeId) ? session.modeId : null) ??
+        availableModeIds[0];
+    if (!effectiveModeId || effectiveModeId === selection.modeId) {
+        return selection;
+    }
+
+    return {
+        ...selection,
+        modeId: effectiveModeId,
+    };
+}
+
 function selectionMatchesBinding(
     selection: ConversationSelection,
     binding: AcpConversationBinding,
@@ -232,6 +295,12 @@ export function updateConversationBindingsFromLegacySession(
         selectionMatchesBinding(current.preferredSelection, activeBinding);
     const preferredProviderMatchesActiveBinding =
         current.preferredSelection.runtimeId === projectedBinding.runtimeId;
+    const preferredSelection =
+        (hasConversationHistory(session) &&
+            !preferredProviderMatchesActiveBinding) ||
+        preferredSelectionTracksActiveBinding
+            ? projected.conversation.preferredSelection
+            : current.preferredSelection;
 
     return {
         ...current,
@@ -240,12 +309,10 @@ export function updateConversationBindingsFromLegacySession(
         // next-turn selection. Preserve it until that turn is accepted. Only
         // follow the live legacy session when the preference still describes
         // the binding we are replacing.
-        preferredSelection:
-            (hasConversationHistory(session) &&
-                !preferredProviderMatchesActiveBinding) ||
-            preferredSelectionTracksActiveBinding
-                ? projected.conversation.preferredSelection
-                : current.preferredSelection,
+        preferredSelection: normalizeConversationSelectionForSession(
+            nextBinding,
+            preferredSelection,
+        ),
         activeBindingId: nextBinding.bindingId,
         providerBindings,
     };
