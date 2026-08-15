@@ -34,7 +34,6 @@ import {
 } from "./newAgentCreation";
 import { emitAgentSidebarDrag } from "./agentSidebarDragEvents";
 import {
-    getSessionTitle,
     getSessionTitleText,
     getSessionUpdatedAt,
 } from "./sessionPresentation";
@@ -835,7 +834,10 @@ export function AgentsSidebarPanel() {
             <AgentsSidebarItem
                 key={session.sessionId}
                 session={session}
-                title={getSessionTitle(session)}
+                // The card has its own two-line visual limit. Passing the
+                // full title preserves the available second-line capacity
+                // instead of truncating it to the generic tab-title limit.
+                title={getSessionTitleText(session)}
                 timestampLabel={timestampLabel}
                 compactTimestampLabel={compactTimestampLabel}
                 status={status}

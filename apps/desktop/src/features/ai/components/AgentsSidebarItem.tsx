@@ -562,8 +562,10 @@ export function AgentsSidebarItem({
         />
     ) : (
         <span
-            className={`min-w-0 flex-1 font-medium ${
-                variant === "card" ? "line-clamp-2" : "truncate"
+            className={`min-w-0 font-medium ${
+                variant === "card"
+                    ? "block w-full line-clamp-2"
+                    : "flex-1 truncate"
             }`}
             style={{
                 color: "var(--text-primary)",
@@ -812,7 +814,7 @@ export function AgentsSidebarItem({
                 <span className="min-w-0 flex-1" />
                 {cardControls}
             </div>
-            <div className="flex min-w-0 items-start">{titleNode}</div>
+            <div className="flex w-full min-w-0 items-start">{titleNode}</div>
             <div className="flex min-h-4 items-center gap-1.5">
                 <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
                     {collapseButton}
