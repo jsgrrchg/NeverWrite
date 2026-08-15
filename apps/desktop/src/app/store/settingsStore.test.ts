@@ -81,8 +81,11 @@ describe("settingsStore", () => {
     });
 
     it("normalizes glass opacity", () => {
+        useSettingsStore.getState().setSetting("glassOpacity", 1);
+        expect(useSettingsStore.getState().glassOpacity).toBe(10);
+
         useSettingsStore.getState().setSetting("glassOpacity", 12);
-        expect(useSettingsStore.getState().glassOpacity).toBe(40);
+        expect(useSettingsStore.getState().glassOpacity).toBe(12);
 
         useSettingsStore.getState().setSetting("glassOpacity", 140);
         expect(useSettingsStore.getState().glassOpacity).toBe(100);

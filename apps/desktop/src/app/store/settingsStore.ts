@@ -14,7 +14,7 @@ export interface Settings {
 
     // Appearance
     uiFontFamily: EditorFontFamily;
-    glassOpacity: number; // 40–100 (percentage)
+    glassOpacity: number; // 10–100 (percentage)
 
     // Editor
     editorFontSize: number; // 10–24
@@ -80,7 +80,7 @@ const GLOBAL_SETTING_KEYS = [
     "hoverPreviewDelayMs",
 ] as const;
 
-export const MIN_GLASS_OPACITY = 40;
+export const MIN_GLASS_OPACITY = 10;
 export const MAX_GLASS_OPACITY = 100;
 export const DEFAULT_GLASS_OPACITY = 40;
 
