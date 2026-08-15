@@ -6,7 +6,6 @@ import {
 import type { AgentSidebarStatus } from "../agentSidebarModel";
 import type { AIChatSession } from "../types";
 import { AIProviderIcon } from "./AIProviderIcon";
-import { getRuntimeDisplayName } from "../utils/runtimeMetadata";
 
 export interface AgentsSidebarItemMetrics {
     rowPaddingX: number;
@@ -329,7 +328,6 @@ export function AgentsSidebarItem({
     const effectiveTone: AgentSidebarTone = tone ?? status;
     const toneColor = statusColor(effectiveTone);
     const brandColor = providerBrandColor(session.runtimeId);
-    const runtimeName = getRuntimeDisplayName(session.runtimeId);
     // A "ready" row has nothing to announce, and its timestamp already lives on
     // the detail line — showing it twice is what made the card read as noise.
     const showStatusLabel = effectiveTone !== "ready";
@@ -744,9 +742,7 @@ export function AgentsSidebarItem({
                 borderBottom: dropPosition === "after" ? "2px solid var(--accent)" : "2px solid transparent",
             }}
         >
-            {/* Context line: who is running this, and how long since it moved.
-                The elapsed time is compact here so it never competes with the
-                title for width. */}
+            {/* Context line: provider identity and how long since it moved. */}
             <div className="flex min-h-4 items-center gap-1.5">
                 <span className="flex shrink-0" style={{ color: brandColor }}>
                     <AIProviderIcon
@@ -755,15 +751,7 @@ export function AgentsSidebarItem({
                         className="shrink-0"
                     />
                 </span>
-                <span
-                    className="min-w-0 flex-1 truncate"
-                    style={{
-                        color: "var(--text-secondary)",
-                        fontSize: metrics.timestampFontSize,
-                    }}
-                >
-                    {runtimeName}
-                </span>
+                <span className="min-w-0 flex-1" />
                 {pinButton}
                 <span
                     className="shrink-0 tabular-nums"
