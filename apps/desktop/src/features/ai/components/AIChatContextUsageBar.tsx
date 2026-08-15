@@ -2,7 +2,7 @@ import type { AITokenUsage } from "../types";
 
 const WARNING_THRESHOLD = 0.85;
 const EXCEEDED_THRESHOLD = 1;
-const BAR_HEIGHT = 2;
+const BAR_HEIGHT = 3;
 
 interface AIChatContextUsageBarProps {
     usage?: AITokenUsage | null;
@@ -108,6 +108,11 @@ export function AIChatContextUsageBar({
                     width: `${ratio * 100}%`,
                     height: "100%",
                     backgroundColor: tone,
+                    // The left edge is clipped by the composer's bottom corner,
+                    // while the rounded cap keeps the progress endpoint from
+                    // reading as a hard vertical cut.
+                    borderTopRightRadius: BAR_HEIGHT,
+                    borderBottomRightRadius: BAR_HEIGHT,
                     boxShadow: shouldGlow
                         ? `0 0 8px ${tone}, 0 0 2px ${tone}`
                         : "none",

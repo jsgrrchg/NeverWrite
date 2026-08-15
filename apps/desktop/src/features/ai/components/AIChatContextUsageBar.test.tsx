@@ -34,6 +34,10 @@ describe("AIChatContextUsageBar", () => {
             "title",
             expect.stringContaining("Estimated cost:"),
         );
+        expect(bar.firstElementChild).toHaveStyle({
+            borderTopRightRadius: "3px",
+            borderBottomRightRadius: "3px",
+        });
     });
 
     it("stays hidden when there is no valid usage payload", () => {
