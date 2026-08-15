@@ -306,8 +306,10 @@ describe("AgentsSidebarPanel", () => {
         expect(card.querySelector('[data-agent-status="working"]')).toHaveTextContent(
             "Working 3m",
         );
+        expect(
+            card.children[0].querySelector('[data-agent-status="working"]'),
+        ).not.toBeNull();
         expect(card.children[1]).toHaveTextContent("Draft the chapter");
-        expect(card.children[2].querySelector("svg")).not.toBeNull();
         expect(card).not.toHaveTextContent("/vault");
         expect(card).not.toHaveTextContent("main");
         expect(screen.queryByText("Open")).toBeNull();

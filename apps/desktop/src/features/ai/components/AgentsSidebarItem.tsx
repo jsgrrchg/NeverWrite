@@ -701,23 +701,26 @@ export function AgentsSidebarItem({
     const actionsOverlayClassName =
         "pointer-events-none absolute flex items-center gap-0.5 opacity-0 transition-opacity has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 group-hover/row:pointer-events-auto group-hover/row:opacity-100";
 
-    const cardActionSlot = hasHoverActions ? (
+    // A card's upper-right corner has one job at rest: show live work. On
+    // hover or keyboard focus it becomes the action tray, so the status and
+    // controls never compete for the title's horizontal space.
+    const cardWorkingIndicator =
+        effectiveTone === "working" ? (
+            <span className="absolute inset-y-0 right-0 flex items-center">
+                {statusInline}
+            </span>
+        ) : null;
+    const cardControls = (
         <span
-            className="flex items-center gap-0.5 transition-opacity"
+            className="absolute inset-y-0 right-0 flex items-center gap-1.5 transition-opacity"
             style={{
                 opacity: cardActionsVisible ? 1 : 0,
                 pointerEvents: cardActionsVisible ? "auto" : "none",
             }}
         >
+            {pinButton}
             {quickAction}
             {secondaryAction}
-        </span>
-    ) : null;
-
-    const cardControls = (
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            {pinButton}
-            {cardActionSlot}
         </span>
     );
 
@@ -802,8 +805,8 @@ export function AgentsSidebarItem({
             {movementLabel ? (
                 <MotionCue label={movementLabel} fontSize={metrics.timestampFontSize} />
             ) : null}
-            {/* Context line: provider identity and how long since it moved. */}
-            <div className="flex min-h-4 items-center gap-1.5">
+            {/* Context line: provider identity; active work lives opposite it. */}
+            <div className="relative flex min-h-4 items-center gap-1.5">
                 <span className="flex shrink-0" style={{ color: brandColor }}>
                     <AIProviderIcon
                         runtimeId={session.runtimeId}
@@ -812,13 +815,16 @@ export function AgentsSidebarItem({
                     />
                 </span>
                 <span className="min-w-0 flex-1" />
-                {cardControls}
+                <span style={{ opacity: cardActionsVisible ? 0 : 1 }}>
+                    {cardWorkingIndicator}
+                </span>
+                {pinButton || hasHoverActions ? cardControls : null}
             </div>
             <div className="flex w-full min-w-0 items-start">{titleNode}</div>
             <div className="flex min-h-4 items-center gap-1.5">
                 <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
                     {collapseButton}
-                    {statusInline}
+                    {effectiveTone === "working" ? null : statusInline}
                     {hasChildren ? (
                         <span
                             className="shrink-0 rounded px-1"
