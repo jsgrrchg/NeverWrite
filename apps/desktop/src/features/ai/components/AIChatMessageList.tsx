@@ -1021,12 +1021,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 <button
                     type="button"
                     onClick={scrollToBottom}
-                    className="absolute left-1/2 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full"
+                    className="nw-chat-translucent-surface absolute left-1/2 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full"
                     style={{
                         bottom:
                             Math.max(0, bottomInset) +
                             SCROLL_TO_BOTTOM_DOCK_GAP_PX,
-                        backgroundColor: "var(--bg-tertiary)",
                         border: "1px solid var(--border)",
                         color: "var(--text-secondary)",
                         boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
