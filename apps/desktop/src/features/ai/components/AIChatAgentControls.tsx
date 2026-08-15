@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -72,54 +71,8 @@ interface TraitMenuSection {
 
 const SEARCHABLE_MODEL_RUNTIME_IDS = new Set(["kilo-acp", "opencode-acp"]);
 const GROK_RUNTIME_ID = "grok-acp";
-const CODEX_RUNTIME_ID = "codex-acp";
 const CODEX_FULL_ACCESS_MODE_ID = "full-access";
 const COMPOSER_MODE_OPTION_ID = "composer-mode";
-const CODEX_FULL_ACCESS_POLICY_HELP =
-  "Some destructive command forms may still be blocked by Codex safety policy.";
-
-function FullAccessPolicyHelp() {
-  const [open, setOpen] = useState(false);
-  const descriptionId = useId();
-
-  return (
-    <div className="relative flex shrink-0 items-center">
-      <button
-        aria-describedby={open ? descriptionId : undefined}
-        aria-label="Full Access safety policy"
-        className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold"
-        onBlur={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        style={{
-          backgroundColor: "transparent",
-          border: "1px solid var(--border)",
-          color: "var(--text-secondary)",
-        }}
-        type="button"
-      >
-        ?
-      </button>
-      {open ? (
-        <div
-          className="absolute bottom-full left-0 z-50 mb-1 w-72 rounded-lg px-3 py-2 text-xs"
-          id={descriptionId}
-          role="tooltip"
-          style={{
-            backgroundColor: "var(--bg-secondary)",
-            border: "1px solid var(--border)",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-            color: "var(--text-primary)",
-            lineHeight: 1.4,
-          }}
-        >
-          {CODEX_FULL_ACCESS_POLICY_HELP}
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 function shouldUseSearchableModelMenu(runtimeId?: string) {
   return runtimeId !== undefined && SEARCHABLE_MODEL_RUNTIME_IDS.has(runtimeId);
@@ -931,8 +884,6 @@ export function AIChatAgentControls({
 
     return options;
   }, [modeId, modes, traitDropdown, visibleExtraConfigs]);
-  const showFullAccessPolicyHelp =
-    runtimeId === CODEX_RUNTIME_ID && modeId === CODEX_FULL_ACCESS_MODE_ID;
   const showProviderPicker =
     providers.length > 0 && Boolean(runtimeId && onProviderModelChange);
   const showLegacyModelPicker =
@@ -1030,7 +981,6 @@ export function AIChatAgentControls({
           />
           </>
         ) : null}
-        {showFullAccessPolicyHelp ? <FullAccessPolicyHelp /> : null}
       </div>
       {compactOptions.length > 0 ? (
         <div className="nw-agent-controls-compact items-center">

@@ -423,7 +423,7 @@ describe("AIChatAgentControls", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows contextual safety help only for Codex Full Access", () => {
+  it("keeps the Full Access description in the approval menu", () => {
     const fullAccessDescription =
       "Codex can edit files outside this workspace and access the internet without asking for approval. Exercise caution when using.";
     const modes = [
@@ -442,7 +442,7 @@ describe("AIChatAgentControls", () => {
         disabled: false,
       },
     ];
-    const view = renderComponent(
+    renderComponent(
       <AIChatAgentControls
         runtimeId="codex-acp"
         modelId=""
@@ -457,48 +457,12 @@ describe("AIChatAgentControls", () => {
       />,
     );
 
-    const help = screen.getByRole("button", {
-      name: "Full Access safety policy",
-    });
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-
-    fireEvent.mouseEnter(help);
-    expect(screen.getByRole("tooltip")).toHaveTextContent(
-      "Some destructive command forms may still be blocked by Codex safety policy.",
-    );
-    fireEvent.mouseLeave(help);
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-
-    fireEvent.focus(help);
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
-    fireEvent.blur(help);
-
     fireEvent.click(screen.getByTitle("Approval Preset"));
     const fullAccessOption = screen
       .getAllByRole("button", { name: "Full Access" })
       .find((option) => option.getAttribute("title") === fullAccessDescription);
     expect(fullAccessOption).toHaveAttribute("title", fullAccessDescription);
 
-    view.unmount();
-    renderComponent(
-      <AIChatAgentControls
-        runtimeId="codex-acp"
-        modelId=""
-        modeId="auto"
-        effortsByModel={{}}
-        models={[]}
-        modes={modes}
-        configOptions={[]}
-        onModelChange={() => {}}
-        onModeChange={() => {}}
-        onConfigOptionChange={() => {}}
-      />,
-    );
-    expect(
-      screen.queryByRole("button", {
-        name: "Full Access safety policy",
-      }),
-    ).not.toBeInTheDocument();
   });
 
   it("filters reasoning efforts to the selected model", () => {
