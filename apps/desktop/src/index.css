@@ -272,6 +272,15 @@
         var(--text-secondary) 38%,
         transparent
     );
+    --nw-glass-opacity: 72%;
+    --nw-glass-blur: 14px;
+    --nw-glass-saturation: 1.12;
+    --nw-glass-surface: var(--bg-elevated);
+    --nw-glass-outline: color-mix(
+        in srgb,
+        var(--text-primary) 9%,
+        transparent
+    );
 
     /* Diff semantic colors — muted for light backgrounds */
     --diff-add: #15803d;
@@ -328,6 +337,14 @@
     --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
     --highlight-bg: rgba(202, 162, 0, 0.35);
     --highlight-text: #f5e082;
+    --nw-glass-blur: 18px;
+    --nw-glass-saturation: 1.06;
+    --nw-glass-surface: color-mix(
+        in srgb,
+        var(--bg-secondary) 96%,
+        white
+    );
+    --nw-glass-outline: color-mix(in srgb, white 7%, transparent);
 
     /* Diff semantic colors — softer for dark backgrounds */
     --diff-add: #4ade80;
@@ -482,7 +499,7 @@ html[data-desktop-platform="macos"],
 html[data-desktop-platform="windows"] {
     --sidebar-vibrancy-tint: color-mix(
         in srgb,
-        var(--bg-primary) 82%,
+        var(--bg-primary) var(--nw-glass-opacity),
         transparent
     );
 }
@@ -490,7 +507,7 @@ html[data-desktop-platform="macos"].dark,
 html[data-desktop-platform="windows"].dark {
     --sidebar-vibrancy-tint: color-mix(
         in srgb,
-        var(--bg-primary) 85%,
+        var(--bg-primary) var(--nw-glass-opacity),
         transparent
     );
 }
@@ -1614,50 +1631,73 @@ body.dragging-tab * {
     color: var(--text-primary);
 }
 
-/* The transcript stays beneath one shared frosted surface in both compact and
-   expanded modes. Applying the blur only to this wrapper avoids allocating
-   separate backdrop surfaces for Queue, Edits, and Composer. Keep the standard
-   property only: the production CSS pipeline adds compatible prefixes, while
-   declaring both can make minification retain only the unsupported prefix. */
+/* Queue, Edits, and Composer share one frosted layer. The compact dock applies
+   this material to its centered content surface instead of repainting the
+   entire pane, so the transcript and canvas remain visible around it. Keep the
+   standard property only: the production CSS pipeline adds compatible
+   prefixes, while declaring both can make minification retain only the
+   unsupported prefix. */
 .nw-chat-translucent-surface {
     background-color: color-mix(
         in srgb,
-        var(--bg-secondary) 80%,
+        var(--nw-glass-surface) var(--nw-glass-opacity),
         transparent
     );
-    backdrop-filter: blur(12px) saturate(120%);
+    backdrop-filter: blur(var(--nw-glass-blur))
+        saturate(var(--nw-glass-saturation));
 }
 
-/* Chat popovers use the same material as the composer dock. Keeping this in a
-   separate class lets portalled menus and controls outside the dock share the
-   tint without inheriting the dock's layout or shadow. */
+.nw-chat-floating-surface {
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid var(--nw-glass-outline);
+    border-radius: 20px;
+    box-shadow: 0 14px 32px -22px color-mix(in srgb, black 52%, transparent);
+}
+
+.dark .nw-chat-floating-surface {
+    box-shadow:
+        inset 0 1px color-mix(in srgb, white 4%, transparent),
+        0 18px 40px -26px color-mix(in srgb, black 82%, transparent);
+}
+
+/* Portalled menus use a slightly denser recipe than the composer. The extra
+   popover tint keeps labels legible over arbitrary editor and diff content. */
 .nw-chat-glass-menu {
     background-color: color-mix(
         in srgb,
-        var(--bg-secondary) 80%,
-        transparent
+        var(--bg-elevated) 18%,
+        color-mix(
+            in srgb,
+            var(--bg-secondary) var(--nw-glass-opacity),
+            transparent
+        )
     );
-    backdrop-filter: blur(12px) saturate(120%);
+    backdrop-filter: blur(var(--nw-glass-blur))
+        saturate(var(--nw-glass-saturation));
 }
 
-/* The tight negative-spread shadow separates the compact dock without painting
-   a false panel above it. The expanded surface already has pane edges. */
+/* Layout-only host. Visual elevation belongs to the centered glass surface so
+   the dock does not paint a false full-width panel above the transcript. */
 .nw-chat-bottom-dock {
-    box-shadow: 0 -4px 10px -8px
-        color-mix(in srgb, black 36%, transparent);
+    pointer-events: none;
+}
+
+.nw-chat-bottom-dock > .nw-chat-floating-surface {
+    pointer-events: auto;
 }
 
 @supports not (backdrop-filter: blur(1px)) {
     .nw-chat-translucent-surface,
     .nw-chat-glass-menu {
-        background-color: var(--bg-secondary);
+        background-color: var(--bg-elevated);
     }
 }
 
 @media (prefers-reduced-transparency: reduce) {
     .nw-chat-translucent-surface,
     .nw-chat-glass-menu {
-        background-color: var(--bg-secondary);
+        background-color: var(--bg-elevated);
         backdrop-filter: none;
     }
 }

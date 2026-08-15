@@ -327,6 +327,23 @@ describe("SettingsPanel", () => {
         expect(useSettingsStore.getState().aiChatContentWidth).toBe(800);
     });
 
+    it("sets glass opacity from Appearance", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+        const label = screen.getByText("Glass opacity");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        fireEvent.change(within(row as HTMLElement).getByRole("slider"), {
+            target: { value: "55" },
+        });
+
+        expect(useSettingsStore.getState().glassOpacity).toBe(55);
+        expect(within(row as HTMLElement).getByText("55%")).toBeInTheDocument();
+    });
+
     it("sets the interface font from Appearance", () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 

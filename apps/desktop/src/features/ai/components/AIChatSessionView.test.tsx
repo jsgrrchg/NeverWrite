@@ -548,6 +548,16 @@ describe("AIChatSessionView", () => {
         expect(dock).not.toContainElement(
             screen.getByTestId("chat-message-list"),
         );
+        const glassSurface = screen.getByTestId("chat-glass-surface");
+        expect(glassSurface).toHaveClass(
+            "nw-chat-translucent-surface",
+            "nw-chat-floating-surface",
+        );
+        expect(glassSurface).toHaveStyle({
+            width: "100%",
+            maxWidth: "600px",
+            marginInline: "auto",
+        });
 
         const auxiliaryRegion = screen.getByTestId(
             "chat-bottom-dock-auxiliary-region",
@@ -721,9 +731,18 @@ describe("AIChatSessionView", () => {
             "chat-expanded-composer-region",
         );
         expect(expandedRegion).toHaveClass(
-            "nw-chat-translucent-surface",
             "absolute",
             "inset-0",
+        );
+        expect(expandedRegion).not.toHaveClass(
+            "nw-chat-translucent-surface",
+        );
+        expect(screen.getByTestId("chat-glass-surface")).toHaveClass(
+            "nw-chat-translucent-surface",
+            "flex-1",
+        );
+        expect(screen.getByTestId("chat-glass-surface")).not.toHaveClass(
+            "nw-chat-floating-surface",
         );
         expect(screen.getByTestId("chat-message-list")).toBeInTheDocument();
         expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(
