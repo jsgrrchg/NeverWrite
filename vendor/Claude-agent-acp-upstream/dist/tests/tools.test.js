@@ -1558,13 +1558,24 @@ describe("applyTaskCreate / applyTaskUpdate", () => {
         });
     });
     it("parses the human-readable TaskList format used in session history", () => {
-        expect(parseTaskListOutput("#1 [in_progress] Run tests\n#2 [pending] Write release notes [blocked by #1]")).toEqual({
+        expect(parseTaskListOutput("#1 [in_progress] Run tests\n#2 [pending] Write release notes (release-bot) [blocked by #1, #3]")).toEqual({
             tasks: [
                 { id: "1", subject: "Run tests", status: "in_progress", blockedBy: [] },
-                { id: "2", subject: "Write release notes", status: "pending", blockedBy: ["1"] },
+                {
+                    id: "2",
+                    subject: "Write release notes",
+                    status: "pending",
+                    owner: "release-bot",
+                    blockedBy: ["1", "3"],
+                },
             ],
         });
         expect(parseTaskListOutput("No tasks found")).toEqual({ tasks: [] });
+    });
+    it("handles a long malformed blocked-by suffix without regex backtracking", () => {
+        const subject = `${"x".repeat(20_000)} [blocked by ${"#1, ".repeat(5_000)}x`;
+        const output = parseTaskListOutput(`#1 [pending] ${subject}`);
+        expect(output?.tasks).toEqual([{ id: "1", subject, status: "pending", blockedBy: [] }]);
     });
 });
 describe("toAcpNotifications - Task* tools", () => {
