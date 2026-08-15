@@ -96,7 +96,7 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
             }
             const displayPath = input?.file_path ? toDisplayPath(input.file_path, cwd) : undefined;
             return {
-                title: displayPath ? `Write ${displayPath}` : "Write",
+                title: displayPath ? `Write ${displayPath}` : "Preparing file…",
                 kind: "edit",
                 content,
                 locations: input?.file_path ? [{ path: input.file_path }] : [],
@@ -289,6 +289,15 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
                 content: planInput?.plan
                     ? [{ type: "content", content: { type: "text", text: planInput.plan } }]
                     : [],
+            };
+        }
+        case "Skill": {
+            const input = toolUse.input;
+            const skillName = input?.skill;
+            return {
+                title: skillName ? `Load skill: ${skillName}` : "Load skill",
+                kind: "other",
+                content: [],
             };
         }
         case "AskUserQuestion": {
@@ -658,6 +667,9 @@ export function toolUpdateFromToolResult(toolResult, toolUse, supportsTerminalOu
             // renders, no worse than before.
             return toAcpContentUpdate(stripAgentTrailerFromContent(toolResult.content), "is_error" in toolResult ? toolResult.is_error : false);
         }
+        case "Skill": {
+            return {};
+        }
         case "Edit": // Edit is handled in hooks
         case "Write": {
             return {};
@@ -798,34 +810,31 @@ function toAcpContentBlock(content, isError) {
 }
 export function planEntries(input) {
     return (input?.todos ?? []).map((todo) => ({
-        content: todo.content,
+        content: todo.status === "in_progress" && todo.activeForm ? todo.activeForm : todo.content,
         status: todo.status,
         priority: "medium",
     }));
 }
 /**
- * Best-effort parse of a TaskCreate tool_result content into the structured
- * TaskCreateOutput. The SDK delivers tool outputs either as a string or as
- * an array of TextBlockParam-like blocks containing JSON text; try both.
+ * Best-effort parse of a structured Task* tool_result. The SDK delivers tool
+ * outputs either as a string or as an array of TextBlockParam-like blocks
+ * containing JSON text; try both.
  */
-export function parseTaskCreateOutput(content) {
+function parseJsonToolOutput(content, isExpectedOutput) {
     const tryParse = (text) => {
         try {
             const parsed = JSON.parse(text);
-            if (parsed &&
-                typeof parsed === "object" &&
-                parsed.task &&
-                typeof parsed.task.id === "string") {
-                return parsed;
-            }
+            return isExpectedOutput(parsed) ? parsed : undefined;
         }
         catch {
-            // ignore
+            return undefined;
         }
-        return undefined;
     };
     if (typeof content === "string") {
         return tryParse(content);
+    }
+    if (content && typeof content === "object" && !Array.isArray(content)) {
+        return isExpectedOutput(content) ? content : undefined;
     }
     if (Array.isArray(content)) {
         for (const block of content) {
@@ -837,6 +846,119 @@ export function parseTaskCreateOutput(content) {
                         return parsed;
                 }
             }
+        }
+    }
+    return undefined;
+}
+function toolOutputTexts(content) {
+    if (typeof content === "string")
+        return [content];
+    if (!Array.isArray(content))
+        return [];
+    return content.flatMap((block) => block &&
+        typeof block === "object" &&
+        "type" in block &&
+        block.type === "text" &&
+        "text" in block &&
+        typeof block.text === "string"
+        ? [block.text]
+        : []);
+}
+export function parseTaskCreateOutput(content) {
+    const structured = parseJsonToolOutput(content, (parsed) => Boolean(parsed &&
+        typeof parsed === "object" &&
+        "task" in parsed &&
+        parsed.task &&
+        typeof parsed.task === "object" &&
+        "id" in parsed.task &&
+        typeof parsed.task.id === "string"));
+    if (structured)
+        return structured;
+    for (const text of toolOutputTexts(content)) {
+        const match = /^Task #(\S+) created successfully: (.+)$/.exec(text.trim());
+        if (match)
+            return { task: { id: match[1], subject: match[2] } };
+    }
+    return undefined;
+}
+export function parseTaskListOutput(content) {
+    const validStatuses = new Set(["pending", "in_progress", "completed"]);
+    const structured = parseJsonToolOutput(content, (parsed) => Boolean(parsed &&
+        typeof parsed === "object" &&
+        "tasks" in parsed &&
+        Array.isArray(parsed.tasks) &&
+        parsed.tasks.every((task) => task &&
+            typeof task === "object" &&
+            typeof task.id === "string" &&
+            typeof task.subject === "string" &&
+            typeof task.status === "string" &&
+            validStatuses.has(task.status))));
+    if (structured)
+        return structured;
+    for (const text of toolOutputTexts(content)) {
+        if (text.trim() === "No tasks found")
+            return { tasks: [] };
+        const tasks = [];
+        const lines = text.trim().split("\n");
+        for (const line of lines) {
+            const match = /^#(\S+) \[(pending|in_progress|completed)\] (.+)$/.exec(line);
+            if (!match) {
+                tasks.length = 0;
+                break;
+            }
+            let subject = match[3];
+            let owner;
+            let blockedBy = [];
+            const blockedMarker = " [blocked by ";
+            const blockedStart = subject.lastIndexOf(blockedMarker);
+            if (blockedStart > 0 && subject.endsWith("]")) {
+                const dependencies = subject.slice(blockedStart + blockedMarker.length, -1).split(", ");
+                if (dependencies.every((dependency) => dependency.length > 1 &&
+                    dependency.startsWith("#") &&
+                    !dependency.includes(",") &&
+                    !dependency.includes("]"))) {
+                    subject = subject.slice(0, blockedStart);
+                    blockedBy = dependencies.map((dependency) => dependency.slice(1));
+                }
+            }
+            const ownerStart = subject.lastIndexOf(" (");
+            if (ownerStart > 0 && subject.endsWith(")")) {
+                const candidate = subject.slice(ownerStart + 2, -1);
+                if (!candidate.includes("(") && !candidate.includes(")")) {
+                    subject = subject.slice(0, ownerStart);
+                    owner = candidate || undefined;
+                }
+            }
+            tasks.push({
+                id: match[1],
+                subject,
+                status: match[2],
+                ...(owner ? { owner } : {}),
+                blockedBy,
+            });
+        }
+        if (tasks.length > 0)
+            return { tasks };
+    }
+    return undefined;
+}
+export function parseTaskUpdateOutput(content, expectedTaskId) {
+    const structured = parseJsonToolOutput(content, (parsed) => Boolean(parsed &&
+        typeof parsed === "object" &&
+        "success" in parsed &&
+        typeof parsed.success === "boolean" &&
+        "taskId" in parsed &&
+        typeof parsed.taskId === "string" &&
+        "updatedFields" in parsed &&
+        Array.isArray(parsed.updatedFields) &&
+        parsed.updatedFields.every((field) => typeof field === "string")));
+    if (structured)
+        return structured;
+    for (const text of toolOutputTexts(content)) {
+        const notFound = /^Task #(\S+) not found$/.exec(text.trim());
+        const taskId = notFound?.[1] ?? expectedTaskId;
+        if (taskId && (notFound || text.trim() === "Failed to delete task")) {
+            return { success: false, taskId, updatedFields: [], error: text.trim() };
         }
     }
     return undefined;
@@ -872,9 +994,22 @@ export function applyTaskUpdate(state, input) {
         description: input.description ?? existing?.description,
     });
 }
+export function applyTaskList(state, output) {
+    const previous = new Map(state);
+    state.clear();
+    for (const task of output.tasks) {
+        const existing = previous.get(task.id);
+        state.set(task.id, {
+            subject: task.subject,
+            status: task.status,
+            activeForm: existing?.activeForm,
+            description: existing?.description,
+        });
+    }
+}
 export function taskStateToPlanEntries(state) {
     return Array.from(state.values()).map((task) => ({
-        content: task.subject,
+        content: task.status === "in_progress" && task.activeForm ? task.activeForm : task.subject,
         status: task.status,
         priority: "medium",
     }));

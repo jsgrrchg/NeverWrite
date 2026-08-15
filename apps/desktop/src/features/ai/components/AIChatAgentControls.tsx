@@ -69,8 +69,6 @@ interface TraitMenuSection {
 
 const SEARCHABLE_MODEL_RUNTIME_IDS = new Set(["kilo-acp", "opencode-acp"]);
 const GROK_RUNTIME_ID = "grok-acp";
-const CLAUDE_RUNTIME_ID = "claude-acp";
-const CLAUDE_FAST_OPTION_ID = "fast";
 const CODEX_RUNTIME_ID = "codex-acp";
 const CODEX_FULL_ACCESS_MODE_ID = "full-access";
 const CODEX_FULL_ACCESS_POLICY_HELP =
@@ -631,7 +629,6 @@ function normalizeConfigOptionId(value: string) {
 }
 
 function configPresentationCategory(
-  runtimeId: string | undefined,
   option: AIConfigOption,
 ) {
   if (option.category === "reasoning") {
@@ -644,8 +641,7 @@ function configPresentationCategory(
   const normalizedId = normalizeConfigOptionId(option.id);
   if (
     normalizedId === "servicetier" ||
-    normalizedId === "fastmode" ||
-    (runtimeId === CLAUDE_RUNTIME_ID && option.id === CLAUDE_FAST_OPTION_ID)
+    normalizedId === "fastmode"
   ) {
     return "service_tier" as const;
   }
@@ -681,11 +677,6 @@ function defaultServiceTierValues(options: DropdownOption[]) {
       ),
     )
     .map((item) => item.value);
-}
-
-function claudeModelSupportsFastMode(modelId: string) {
-  const normalized = normalizeConfigOptionId(modelId);
-  return normalized === "opus" || normalized.includes("claudeopus");
 }
 
 export function AIChatAgentControls({
@@ -774,14 +765,14 @@ export function AIChatAgentControls({
       extraConfigs
         .map((option) => ({
           option,
-          presentationCategory: configPresentationCategory(runtimeId, option),
+          presentationCategory: configPresentationCategory(option),
           // Session config options are the ACP's authoritative view
           // for the selected model. `effortsByModel` is discovery
           // metadata and can be empty or stale during a handoff.
           options: mapConfigOption(option),
         }))
         .filter(({ options }) => options.length > 0),
-    [extraConfigs, runtimeId],
+    [extraConfigs],
   );
   const traitSections = useMemo<TraitMenuSection[]>(() => {
     // Reasoning effort and service tier are separate ACP options, but they
@@ -816,40 +807,8 @@ export function AIChatAgentControls({
             : [],
       }));
 
-    if (
-      runtimeId === CLAUDE_RUNTIME_ID &&
-      !sections.some((section) => section.kind === "service_tier")
-    ) {
-      // Claude only advertises `fast` after selecting a compatible model
-      // (currently Opus). Showing the stable Standard/Fast section avoids the
-      // control disappearing across model changes while still preventing an
-      // unsupported Fast selection.
-      const fastSupported = claudeModelSupportsFastMode(selectedModelId);
-      sections.push({
-        kind: "service_tier",
-        optionId: CLAUDE_FAST_OPTION_ID,
-        label: "Service Tier",
-        value: "off",
-        options: [
-          {
-            value: "off",
-            label: "Standard",
-          },
-          {
-            value: "on",
-            label: "Fast",
-            disabled: !fastSupported,
-            description: fastSupported
-              ? "Use Claude Fast mode."
-              : "Fast is unavailable for the selected Claude model.",
-          },
-        ],
-        defaultValues: ["off"],
-      });
-    }
-
     return sections;
-  }, [runtimeId, selectedModelId, visibleConfigs]);
+  }, [visibleConfigs]);
   const traitDropdown = useMemo(() => {
     const reasoningSection = traitSections.find(
       (section) => section.kind === "reasoning",
