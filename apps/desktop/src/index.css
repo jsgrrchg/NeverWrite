@@ -272,7 +272,7 @@
         var(--text-secondary) 38%,
         transparent
     );
-    --nw-glass-opacity: 72%;
+    --nw-glass-opacity: 40%;
     --nw-glass-blur: 14px;
     --nw-glass-saturation: 1.12;
     --nw-glass-surface: var(--bg-elevated);

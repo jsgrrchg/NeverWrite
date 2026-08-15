@@ -82,7 +82,7 @@ const GLOBAL_SETTING_KEYS = [
 
 export const MIN_GLASS_OPACITY = 40;
 export const MAX_GLASS_OPACITY = 100;
-export const DEFAULT_GLASS_OPACITY = 72;
+export const DEFAULT_GLASS_OPACITY = 40;
 
 type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
 

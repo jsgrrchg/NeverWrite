@@ -29,7 +29,7 @@ describe("settingsStore", () => {
 
     it("defaults app settings", () => {
         expect(useSettingsStore.getState().uiFontFamily).toBe("system");
-        expect(useSettingsStore.getState().glassOpacity).toBe(72);
+        expect(useSettingsStore.getState().glassOpacity).toBe(40);
         expect(useSettingsStore.getState().terminalFontFamily).toBe("");
         expect(useSettingsStore.getState().terminalFontSize).toBe(13);
         expect(useSettingsStore.getState().claudeCodeEnabled).toBe(false);
