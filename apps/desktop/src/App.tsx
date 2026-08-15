@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { getCurrentWindow } from "@neverwrite/runtime";
 import { listen } from "@neverwrite/runtime";
@@ -72,6 +72,7 @@ import {
 import { useVaultStore, type VaultNoteChange } from "./app/store/vaultStore";
 import { useLayoutStore } from "./app/store/layoutStore";
 import { useSettingsStore } from "./app/store/settingsStore";
+import { resolveFontFamily } from "./app/utils/fontFamily";
 import { formatShortcutAction } from "./app/shortcuts/format";
 import {
     matchesShortcutAction,
@@ -1145,6 +1146,7 @@ function useDynamicScrollbars() {
 }
 
 export default function App() {
+    const uiFontFamily = useSettingsStore((s) => s.uiFontFamily);
     const editorPaneSizes = useLayoutStore((s) => s.editorPaneSizes);
     const setEditorPaneSizes = useLayoutStore((s) => s.setEditorPaneSizes);
     const restoreVault = useVaultStore((s) => s.restoreVault);
@@ -1178,6 +1180,20 @@ export default function App() {
             vaultParam === null
         ),
     );
+
+    useLayoutEffect(() => {
+        const root = document.documentElement;
+        const previousFont = root.style.getPropertyValue("--font-ui");
+        root.style.setProperty("--font-ui", resolveFontFamily(uiFontFamily));
+
+        return () => {
+            if (previousFont) {
+                root.style.setProperty("--font-ui", previousFont);
+            } else {
+                root.style.removeProperty("--font-ui");
+            }
+        };
+    }, [uiFontFamily]);
     const pendingNoteReloadsRef = useRef<
         Map<string, ReturnType<typeof setTimeout>>
     >(new Map());

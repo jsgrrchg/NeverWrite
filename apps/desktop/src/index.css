@@ -455,10 +455,7 @@ body,
 body {
     background-color: var(--bg-primary);
     color: var(--text-primary);
-    font-family:
-        system-ui,
-        -apple-system,
-        sans-serif;
+    font-family: var(--font-ui, system-ui, -apple-system, sans-serif);
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
