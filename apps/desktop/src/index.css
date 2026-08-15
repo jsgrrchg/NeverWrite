@@ -499,7 +499,7 @@ html[data-desktop-platform="macos"],
 html[data-desktop-platform="windows"] {
     --sidebar-vibrancy-tint: color-mix(
         in srgb,
-        var(--bg-primary) var(--nw-glass-opacity),
+        var(--bg-primary) 82%,
         transparent
     );
 }
@@ -507,7 +507,7 @@ html[data-desktop-platform="macos"].dark,
 html[data-desktop-platform="windows"].dark {
     --sidebar-vibrancy-tint: color-mix(
         in srgb,
-        var(--bg-primary) var(--nw-glass-opacity),
+        var(--bg-primary) 85%,
         transparent
     );
 }

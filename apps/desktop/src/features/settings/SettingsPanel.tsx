@@ -1047,11 +1047,10 @@ function AppearanceSettings({
             ],
             [
                 "Glass opacity",
-                "Control how solid translucent interface surfaces appear. Lower values reveal more content behind the composer, menus, and sidebars.",
+                "Control how solid translucent interface surfaces appear. Lower values reveal more content behind the composer and menus.",
                 "Transparency",
                 "Composer",
                 "Menus",
-                "Sidebars",
             ],
         ],
     );
@@ -1136,8 +1135,8 @@ function AppearanceSettings({
                 searchQuery={searchQuery}
                 section="Interface"
                 label="Glass opacity"
-                description="Control how solid translucent interface surfaces appear. Lower values reveal more content behind the composer, menus, and sidebars."
-                keywords={["Transparency", "Composer", "Menus", "Sidebars"]}
+                description="Control how solid translucent interface surfaces appear. Lower values reveal more content behind the composer and menus."
+                keywords={["Transparency", "Composer", "Menus"]}
                 control={
                     <SliderField
                         value={glassOpacity}
