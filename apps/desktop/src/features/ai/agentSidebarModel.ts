@@ -1,7 +1,6 @@
 import {
     getSessionPreview,
     getSessionTitleText,
-    getSessionUpdatedAt,
 } from "./sessionPresentation";
 import {
     buildAiSessionHierarchyGroups,
@@ -74,6 +73,24 @@ function transcriptMessages(session: AIChatSession): readonly AIChatMessage[] {
     return session.messages;
 }
 
+function isTransientRecoveryMessage(message: AIChatMessage) {
+    return (
+        message.kind === "status" &&
+        message.meta?.status_event === "session_recovery"
+    );
+}
+
+function latestActivityTimestamp(session: AIChatSession) {
+    const latestTranscriptTimestamp = transcriptMessages(session).reduce(
+        (latest, message) =>
+            isTransientRecoveryMessage(message)
+                ? latest
+                : Math.max(latest, message.timestamp),
+        0,
+    );
+    return Math.max(latestTranscriptTimestamp, session.persistedUpdatedAt ?? 0);
+}
+
 function latestAssistantTimestamp(session: AIChatSession) {
     let latest: number | null = null;
     for (const message of transcriptMessages(session)) {
@@ -88,8 +105,7 @@ function latestAssistantTimestamp(session: AIChatSession) {
 export function getAgentSidebarWorkingStartedAt(session: AIChatSession) {
     const isWorking =
         session.status === "streaming" ||
-        session.isPendingSessionCreation === true ||
-        session.isResumingSession === true;
+        session.isPendingSessionCreation === true;
     if (!isWorking) return null;
 
     const activeCycleId = session.activeWorkCycleId?.trim();
@@ -120,7 +136,7 @@ export function resolveAgentSidebarSessionStatus(
         case "error":
             return "failed";
         case "idle": {
-            if (session.isPendingSessionCreation || session.isResumingSession) {
+            if (session.isPendingSessionCreation) {
                 return "working";
             }
             const completedAt = latestAssistantTimestamp(session);
@@ -187,7 +203,8 @@ function decorateGroup(
         workingStartedAt:
             workingStarts.length > 0 ? Math.min(...workingStarts) : null,
         latestActivityAt: sessions.reduce(
-            (latest, session) => Math.max(latest, getSessionUpdatedAt(session)),
+            (latest, session) =>
+                Math.max(latest, latestActivityTimestamp(session)),
             0,
         ),
         lastCompletedAt:

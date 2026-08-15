@@ -237,6 +237,41 @@ describe("agentSidebarModel", () => {
         );
     });
 
+    it("does not reorder a chat while its saved session reconnects", () => {
+        const reconnecting = session("older", "idle", 100, {
+            isResumingSession: true,
+            messages: [
+                {
+                    id: "older-user",
+                    role: "user",
+                    kind: "text",
+                    content: "older",
+                    timestamp: 100,
+                },
+                {
+                    id: "status:neverwrite:recovery:reconnecting-saved-chat",
+                    role: "system",
+                    kind: "status",
+                    content: "Reconnecting saved chat...",
+                    timestamp: 1_000,
+                    meta: { status_event: "session_recovery" },
+                },
+            ],
+        });
+        const result = project([
+            reconnecting,
+            session("newer", "idle", 300),
+        ]);
+
+        expect(result.activeGroups.map((group) => group.root.sessionId)).toEqual([
+            "newer",
+            "older",
+        ]);
+        expect(result.activeGroups[1].latestActivityAt).toBe(100);
+        expect(result.activeGroups[1].status).toBe("ready");
+        expect(result.activeGroups[1].workingStartedAt).toBeNull();
+    });
+
     it("searches child preview and retains root context across all buckets", () => {
         const root = session("root", "idle", 1);
         const child = session("child", "idle", 2, {
