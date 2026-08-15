@@ -1070,6 +1070,10 @@ describe("AIChatMessageList streaming run indicator", () => {
         expectSharedChatContentColumn(
             screen.getByTestId("chat-pinned-plan-column"),
         );
+        expect(screen.getByTestId("chat-pinned-plan-overlay")).toHaveClass(
+            "absolute",
+            "z-[5]",
+        );
         expect(
             view.container.querySelector('[aria-label="Dismiss plan banner"]'),
         ).not.toBeNull();

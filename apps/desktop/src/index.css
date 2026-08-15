@@ -672,9 +672,9 @@ html[data-desktop-platform="windows"].dark {
 
 .chat-plan-frame {
     inline-size: 100%;
-    border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+    border: 1px solid var(--nw-glass-outline);
     border-radius: 0.75rem;
-    background: color-mix(in srgb, var(--bg-tertiary) 78%, transparent);
+    background: transparent;
 }
 
 .chat-code-header,

@@ -885,7 +885,7 @@ export function PlanMessage({
 
     return (
         <div
-            className="chat-plan-frame min-w-0 max-w-full overflow-hidden"
+            className="nw-chat-translucent-surface chat-plan-frame min-w-0 max-w-full overflow-hidden"
             data-plan-surface="true"
         >
             <div className="flex items-center gap-1.5 px-2.5 py-2">
