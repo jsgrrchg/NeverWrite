@@ -1263,8 +1263,21 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         width: rightPanelWidth,
                         zIndex: 20,
                         overflow: "hidden",
-                        backgroundColor: "var(--bg-secondary)",
-                        borderLeft: "1px solid var(--border)",
+                        // Keep Arc-style right peeks visually equivalent to
+                        // the left sidebar: native material shows through a
+                        // fixed sidebar tint, independent of chat glass opacity.
+                        backgroundColor: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "var(--sidebar-vibrancy-tint)"
+                            : "var(--bg-secondary)",
+                        backdropFilter: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "blur(24px) saturate(140%)"
+                            : undefined,
+                        WebkitBackdropFilter: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "blur(24px) saturate(140%)"
+                            : undefined,
+                        borderLeft: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "none"
+                            : "1px solid var(--border)",
                         boxShadow:
                             "-4px 0 24px rgba(0, 0, 0, 0.22), -1px 0 6px rgba(0, 0, 0, 0.10)",
                     }}
