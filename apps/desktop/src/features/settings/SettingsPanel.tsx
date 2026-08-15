@@ -12,6 +12,7 @@ import { openPath, openUrl, revealItemInDir } from "@neverwrite/runtime";
 import {
     EDITOR_FONT_FAMILY_OPTIONS,
     PDF_DEFAULT_ZOOM_STEPS,
+    UI_FONT_FAMILY_OPTIONS,
     useSettingsStore,
     type EditorFontFamily,
     type SpellcheckLanguage,
@@ -985,6 +986,7 @@ function AppearanceSettings({
         agentsSidebarScale,
         fileTreeStickyFolders,
         aiChatContentWidth,
+        uiFontFamily,
         setSetting,
     } = useSettingsStore();
     const [appZoomPercent, setAppZoomPercent] = useAppZoomPercent();
@@ -1028,6 +1030,20 @@ function AppearanceSettings({
             ],
         ],
     );
+    const showInterface = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Interface",
+        [
+            [
+                "Interface font",
+                "Font used for app controls and navigation. Editor, chat, composer, terminal, and code surfaces keep their own font settings.",
+                ...UI_FONT_FAMILY_OPTIONS.flatMap((option) => [
+                    option.value,
+                    option.label,
+                ]),
+            ],
+        ],
+    );
     const showZoom = sectionHasSettingsSearchMatches(searchQuery, "Zoom", [
         [
             "App zoom",
@@ -1042,7 +1058,14 @@ function AppearanceSettings({
         ],
     ]);
 
-    if (!showMode && !showTheme && !showNavigation && !showZoom && !showChat) {
+    if (
+        !showMode &&
+        !showTheme &&
+        !showInterface &&
+        !showNavigation &&
+        !showZoom &&
+        !showChat
+    ) {
         return <EmptyPanelSearchResult />;
     }
 
@@ -1074,6 +1097,30 @@ function AppearanceSettings({
                     <ThemePicker value={themeName} onChange={setThemeName} />
                 </>
             ) : null}
+
+            {showInterface ? <SectionLabel>Interface</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Interface"
+                label="Interface font"
+                description="Font used for app controls and navigation. Editor, chat, composer, terminal, and code surfaces keep their own font settings."
+                keywords={UI_FONT_FAMILY_OPTIONS.flatMap((option) => [
+                    option.value,
+                    option.label,
+                ])}
+                control={
+                    <SelectField
+                        value={uiFontFamily}
+                        options={UI_FONT_FAMILY_OPTIONS}
+                        onChange={(value) =>
+                            setSetting(
+                                "uiFontFamily",
+                                value as EditorFontFamily,
+                            )
+                        }
+                    />
+                }
+            />
 
             {showNavigation ? <SectionLabel>Navigation</SectionLabel> : null}
             <SearchableRow

@@ -12,6 +12,9 @@ export interface Settings {
     // General
     openLastVaultOnLaunch: boolean;
 
+    // Appearance
+    uiFontFamily: EditorFontFamily;
+
     // Editor
     editorFontSize: number; // 10–24
     editorFontFamily: EditorFontFamily;
@@ -187,8 +190,23 @@ export const EDITOR_FONT_FAMILY_OPTIONS: {
     { value: "typewriter", label: "Typewriter", group: "Mono" },
 ];
 
+export const UI_FONT_FAMILY_OPTIONS: {
+    value: EditorFontFamily;
+    label: string;
+}[] = [
+    { value: "system", label: "System" },
+    { value: "sans", label: "Inter" },
+    { value: "geist", label: "Geist" },
+    { value: "geist-mono", label: "Geist Mono" },
+    { value: "jetbrains", label: "JetBrains Mono" },
+    { value: "ibm-plex-mono", label: "IBM Plex Mono" },
+    { value: "atkinson", label: "Atkinson Hyperlegible" },
+    { value: "rounded", label: "Rounded (SF Pro)" },
+];
+
 const defaults: Settings = {
     openLastVaultOnLaunch: true,
+    uiFontFamily: "system",
     editorFontSize: 14,
     editorFontFamily: "system",
     editorLineHeight: 175,
@@ -466,6 +484,7 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             openLastVaultOnLaunch:
                 parsed.state.openLastVaultOnLaunch ??
                 defaults.openLastVaultOnLaunch,
+            uiFontFamily: normalizeEditorFontFamily(parsed.state.uiFontFamily),
             editorFontSize: normalizeIntInRange(
                 parsed.state.editorFontSize,
                 defaults.editorFontSize,
@@ -636,6 +655,7 @@ function hasStoredSpellcheckSettings(raw: string | null) {
 function pickSettings(state: SettingsStore): Settings {
     return {
         openLastVaultOnLaunch: state.openLastVaultOnLaunch,
+        uiFontFamily: state.uiFontFamily,
         editorFontSize: state.editorFontSize,
         editorFontFamily: state.editorFontFamily,
         editorLineHeight: state.editorLineHeight,

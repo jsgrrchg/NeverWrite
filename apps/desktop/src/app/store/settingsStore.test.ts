@@ -28,6 +28,7 @@ describe("settingsStore", () => {
     });
 
     it("defaults app settings", () => {
+        expect(useSettingsStore.getState().uiFontFamily).toBe("system");
         expect(useSettingsStore.getState().terminalFontFamily).toBe("");
         expect(useSettingsStore.getState().terminalFontSize).toBe(13);
         expect(useSettingsStore.getState().claudeCodeEnabled).toBe(false);
@@ -148,6 +149,7 @@ describe("settingsStore", () => {
         useSettingsStore.getState().setSetting("fileTreeStickyFolders", false);
         useSettingsStore.getState().setSetting("agentsSidebarScale", 125);
         useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
+        useSettingsStore.getState().setSetting("uiFontFamily", "geist");
 
         expect(useSettingsStore.getState().aiReviewEnabled).toBe(false);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
@@ -155,6 +157,7 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(false);
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(125);
         expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(750);
+        expect(useSettingsStore.getState().uiFontFamily).toBe("geist");
         expect(
             JSON.parse(
                 localStorage.getItem("neverwrite:settings:/vaults/devtools") ?? "",
@@ -167,8 +170,22 @@ describe("settingsStore", () => {
                 fileTreeStickyFolders: false,
                 agentsSidebarScale: 125,
                 editorAutosaveDelayMs: 750,
+                uiFontFamily: "geist",
             },
         });
+    });
+
+    it("keeps the interface font per vault", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/interface-one" });
+        useSettingsStore.getState().setSetting("uiFontFamily", "geist");
+
+        useVaultStore.setState({ vaultPath: "/vaults/interface-two" });
+        expect(useSettingsStore.getState().uiFontFamily).toBe("system");
+
+        useSettingsStore.getState().setSetting("uiFontFamily", "atkinson");
+
+        useVaultStore.setState({ vaultPath: "/vaults/interface-one" });
+        expect(useSettingsStore.getState().uiFontFamily).toBe("geist");
     });
 
     it("keeps AI change review enabled for older vault settings", () => {
