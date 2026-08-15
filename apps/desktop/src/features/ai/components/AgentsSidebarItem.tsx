@@ -1,6 +1,7 @@
 import {
     useEffect,
     useRef,
+    useState,
     type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { AgentSidebarStatus } from "../agentSidebarModel";
@@ -323,14 +324,12 @@ export function AgentsSidebarItem({
     });
     const globalDragCleanupRef = useRef<(() => void) | null>(null);
     const suppressClickRef = useRef(false);
+    const [cardActionsVisible, setCardActionsVisible] = useState(false);
     const hasChildren = childCount > 0;
     const statusIconSize = Math.max(9, Math.round(metrics.timestampFontSize + 1));
     const effectiveTone: AgentSidebarTone = tone ?? status;
     const toneColor = statusColor(effectiveTone);
     const brandColor = providerBrandColor(session.runtimeId);
-    // A "ready" row has nothing to announce, and its timestamp already lives on
-    // the detail line — showing it twice is what made the card read as noise.
-    const showStatusLabel = effectiveTone !== "ready";
 
     useEffect(() => {
         dragCallbacksRef.current = {
@@ -505,6 +504,26 @@ export function AgentsSidebarItem({
         },
         onContextMenu,
         onKeyDown: handleKeyboardOpen,
+        onMouseEnter: () => setCardActionsVisible(true),
+        onMouseLeave: (event: React.MouseEvent<HTMLDivElement>) => {
+            if (!event.currentTarget.contains(document.activeElement)) {
+                setCardActionsVisible(false);
+            }
+        },
+        onFocusCapture: (event: React.FocusEvent<HTMLDivElement>) => {
+            if (event.target !== event.currentTarget) {
+                setCardActionsVisible(true);
+            }
+        },
+        onBlurCapture: (event: React.FocusEvent<HTMLDivElement>) => {
+            const nextTarget = event.relatedTarget;
+            if (
+                !(nextTarget instanceof Node) ||
+                !event.currentTarget.contains(nextTarget)
+            ) {
+                setCardActionsVisible(false);
+            }
+        },
     };
 
     const titleNode = isRenaming ? (
@@ -535,8 +554,14 @@ export function AgentsSidebarItem({
         />
     ) : (
         <span
-            className="min-w-0 flex-1 truncate font-medium"
-            style={{ color: "var(--text-primary)", fontSize: metrics.titleFontSize }}
+            className={`min-w-0 flex-1 font-medium ${
+                variant === "card" ? "line-clamp-2" : "truncate"
+            }`}
+            style={{
+                color: "var(--text-primary)",
+                fontSize: metrics.titleFontSize,
+                lineHeight: 1.35,
+            }}
         >
             {title}
         </span>
@@ -646,18 +671,17 @@ export function AgentsSidebarItem({
     // neighbour and made the list wobble under the pointer, so the actions
     // live in an absolutely positioned overlay instead: they fade in over
     // reserved space and the text underneath never moves.
-    const statusInline = (
+    const statusInline = effectiveTone === "ready" ? null : (
         <span
             data-agent-status={status}
             className="inline-flex shrink-0 items-center gap-1 font-medium"
             style={{
                 color: toneColor,
                 fontSize: metrics.timestampFontSize,
-                opacity: effectiveTone === "ready" ? 0.75 : 1,
             }}
         >
             <StatusGlyph tone={effectiveTone} size={statusIconSize} />
-            {showStatusLabel ? statusLabel || timestampLabel : "Idle"}
+            {statusLabel || timestampLabel}
         </span>
     );
 
@@ -666,6 +690,26 @@ export function AgentsSidebarItem({
     // pointer moves away instead of fading back out.
     const actionsOverlayClassName =
         "pointer-events-none absolute flex items-center gap-0.5 opacity-0 transition-opacity has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 group-hover/row:pointer-events-auto group-hover/row:opacity-100";
+
+    const cardActionSlot = hasHoverActions ? (
+        <span
+            className="flex items-center gap-0.5 transition-opacity"
+            style={{
+                opacity: cardActionsVisible ? 1 : 0,
+                pointerEvents: cardActionsVisible ? "auto" : "none",
+            }}
+        >
+            {quickAction}
+            {secondaryAction}
+        </span>
+    ) : null;
+
+    const cardControls = (
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            {pinButton}
+            {cardActionSlot}
+        </span>
+    );
 
     if (variant === "slim") {
         return (
@@ -726,7 +770,7 @@ export function AgentsSidebarItem({
     return (
         <div
             {...commonProps}
-            className={`group/row relative flex w-full cursor-pointer flex-col justify-center outline-none transition-colors duration-100 focus-visible:ring-1 focus-visible:ring-[var(--accent)] ${
+            className={`group/row relative flex w-full cursor-pointer flex-col justify-start outline-none transition-colors duration-100 focus-visible:ring-1 focus-visible:ring-[var(--accent)] ${
                 isActive
                     ? "bg-[color-mix(in_srgb,var(--accent)_16%,transparent)]"
                     : "bg-transparent hover:bg-[color-mix(in_srgb,var(--text-primary)_6%,transparent)]"
@@ -752,9 +796,29 @@ export function AgentsSidebarItem({
                     />
                 </span>
                 <span className="min-w-0 flex-1" />
-                {pinButton}
+                {cardControls}
+            </div>
+            <div className="flex min-w-0 items-start">{titleNode}</div>
+            <div className="flex min-h-4 items-center gap-1.5">
+                <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+                    {collapseButton}
+                    {statusInline}
+                    {hasChildren ? (
+                        <span
+                            className="shrink-0 rounded px-1"
+                            style={{
+                                color: "var(--text-secondary)",
+                                backgroundColor:
+                                    "color-mix(in srgb, var(--text-primary) 8%, transparent)",
+                                fontSize: metrics.timestampFontSize,
+                            }}
+                        >
+                            {childCount === 1 ? "1 agent" : `${childCount} agents`}
+                        </span>
+                    ) : null}
+                </span>
                 <span
-                    className="shrink-0 tabular-nums"
+                    className="ml-auto shrink-0 tabular-nums"
                     style={{
                         color: "var(--text-secondary)",
                         fontSize: metrics.timestampFontSize,
@@ -764,39 +828,6 @@ export function AgentsSidebarItem({
                     {compactTimestampLabel ?? timestampLabel}
                 </span>
             </div>
-            <div className="flex min-w-0 flex-1 items-center">{titleNode}</div>
-            {/* State line: the status dot reads at a glance, and the hover
-                actions fade in over the empty right half of this row so the
-                card never reflows. */}
-            <div className="flex min-h-4 items-center gap-1.5">
-                {collapseButton}
-                {statusInline}
-                {hasChildren ? (
-                    <span
-                        className="shrink-0 rounded px-1"
-                        style={{
-                            color: "var(--text-secondary)",
-                            backgroundColor:
-                                "color-mix(in srgb, var(--text-primary) 8%, transparent)",
-                            fontSize: metrics.timestampFontSize,
-                        }}
-                    >
-                        {childCount === 1 ? "1 agent" : `${childCount} agents`}
-                    </span>
-                ) : null}
-            </div>
-            {hasHoverActions ? (
-                <span
-                    className={`${actionsOverlayClassName} right-0 bottom-0`}
-                    style={{
-                        paddingRight: metrics.rowPaddingX,
-                        paddingBottom: metrics.rowPaddingY * 1.5,
-                    }}
-                >
-                    {quickAction}
-                    {secondaryAction}
-                </span>
-            ) : null}
         </div>
     );
 }
