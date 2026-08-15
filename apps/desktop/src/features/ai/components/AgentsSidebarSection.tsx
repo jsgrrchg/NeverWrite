@@ -33,6 +33,7 @@ export function AgentsSidebarSection({
     return (
         <section
             className="mt-3 flex flex-col rounded first:mt-0"
+            data-agent-sidebar-section={title.toLowerCase()}
             data-chat-unfiled-drop-zone={dropTarget === "all" || undefined}
             style={{
                 backgroundColor: isDropTarget

@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -91,6 +92,13 @@ type AgentRowDropTarget = {
     sessionId: string;
     scope: string;
     position: "before" | "after";
+};
+
+type AgentSidebarMotionDestination = "Pinned" | "Active" | "Snoozed" | "Completed";
+
+type AgentSidebarMotion = {
+    origin: DOMRect;
+    destination: AgentSidebarMotionDestination;
 };
 
 function formatAgentTimestamp(timestamp: number): string {
@@ -535,6 +543,98 @@ export function AgentsSidebarPanel() {
         originalOrder: string[];
     } | null>(null);
     const [sortAnnouncement, setSortAnnouncement] = useState("");
+    const motionOriginsRef = useRef(new Map<string, AgentSidebarMotion>());
+    const motionCueTimeoutRef = useRef<number | null>(null);
+    const [motionCue, setMotionCue] = useState<{
+        sessionId: string;
+        destination: AgentSidebarMotionDestination;
+    } | null>(null);
+
+    const beginSidebarMotion = useCallback(
+        (sessionId: string, destination: AgentSidebarMotionDestination) => {
+            const element = document.querySelector<HTMLElement>(
+                `[data-agent-sidebar-motion-id="${sessionId}"]`,
+            );
+            if (element) {
+                motionOriginsRef.current.set(sessionId, {
+                    origin: element.getBoundingClientRect(),
+                    destination,
+                });
+            }
+            if (motionCueTimeoutRef.current !== null) {
+                window.clearTimeout(motionCueTimeoutRef.current);
+            }
+            setMotionCue({ sessionId, destination });
+            motionCueTimeoutRef.current = window.setTimeout(() => {
+                setMotionCue(null);
+                motionCueTimeoutRef.current = null;
+            }, 700);
+        },
+        [],
+    );
+
+    useEffect(
+        () => () => {
+            if (motionCueTimeoutRef.current !== null) {
+                window.clearTimeout(motionCueTimeoutRef.current);
+            }
+        },
+        [],
+    );
+
+    // Invert the card from its old rectangle after React moves it to a new
+    // section, so a metadata update reads as one continuous movement.
+    useLayoutEffect(() => {
+        const motions = [...motionOriginsRef.current.entries()];
+        motionOriginsRef.current.clear();
+        const reducedMotion = window.matchMedia?.(
+            "(prefers-reduced-motion: reduce)",
+        ).matches;
+
+        for (const [sessionId, motion] of motions) {
+            const element = document.querySelector<HTMLElement>(
+                `[data-agent-sidebar-motion-id="${sessionId}"]`,
+            );
+            const section = document.querySelector<HTMLElement>(
+                motion.destination === "Snoozed" || motion.destination === "Completed"
+                    ? `[data-agent-shelf="${motion.destination.toLowerCase()}"]`
+                    : `[data-agent-sidebar-section="${motion.destination.toLowerCase()}"]`,
+            );
+            section?.animate?.(
+                [
+                    { backgroundColor: "transparent" },
+                    { backgroundColor: "color-mix(in srgb, var(--accent) 13%, transparent)" },
+                    { backgroundColor: "transparent" },
+                ],
+                { duration: reducedMotion ? 1 : 420, easing: "ease-out" },
+            );
+            if (!element || reducedMotion) continue;
+            const destination = element.getBoundingClientRect();
+            element.animate?.(
+                [
+                    {
+                        transform: `translate(${motion.origin.left - destination.left}px, ${motion.origin.top - destination.top}px) scale(0.98)`,
+                        opacity: 0.72,
+                    },
+                    { transform: "translate(0, 0) scale(1)", opacity: 1 },
+                ],
+                { duration: 240, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
+            );
+        }
+        if (motionCue && !reducedMotion) {
+            document
+                .querySelector<HTMLElement>("[data-agent-sidebar-motion-cue]")
+                ?.animate?.(
+                [
+                    { opacity: 0, transform: "translateY(3px)" },
+                    { opacity: 1, transform: "translateY(0)" },
+                    { opacity: 1, transform: "translateY(0)" },
+                    { opacity: 0, transform: "translateY(-2px)" },
+                ],
+                { duration: 700, easing: "ease-out" },
+            );
+        }
+    }, [motionCue, projection]);
 
     const newChatMenuEntries = useMemo<ContextMenuEntry[]>(() => {
         return [
@@ -684,6 +784,7 @@ export function AgentsSidebarPanel() {
             secondaryActionLabel?: string;
             onSecondaryAction?: () => void;
             statusLabelOverride?: string;
+            movementLabel?: string;
             reorderScope?: string;
             onToggleCollapse?: () => void;
         },
@@ -739,6 +840,7 @@ export function AgentsSidebarPanel() {
                 compactTimestampLabel={compactTimestampLabel}
                 status={status}
                 statusLabel={statusLabel}
+                movementLabel={options?.movementLabel}
                 tone={options?.tone}
                 variant={options?.variant ?? "card"}
                 isActive={activeSidebarId === session.sessionId}
@@ -766,7 +868,12 @@ export function AgentsSidebarPanel() {
                     if (canRename) handleStartRename(session);
                 }}
                 onTogglePin={() => {
-                    if (canPin) togglePinnedChat(session.sessionId);
+                    if (!canPin) return;
+                    beginSidebarMotion(
+                        session.sessionId,
+                        isPinned ? "Active" : "Pinned",
+                    );
+                    togglePinnedChat(session.sessionId);
                 }}
                 onToggleCollapse={options?.onToggleCollapse}
                 quickActionLabel={options?.quickActionLabel}
@@ -903,7 +1010,11 @@ export function AgentsSidebarPanel() {
             (!collapsed || forceChildrenVisible);
 
         return (
-            <div key={group.root.sessionId} className="flex flex-col">
+            <div
+                key={group.root.sessionId}
+                className="flex flex-col"
+                data-agent-sidebar-motion-id={group.root.sessionId}
+            >
                 {renderItem(group.root, {
                     childCount: group.children.length,
                     isCollapsed: collapsed && !forceChildrenVisible,
@@ -929,12 +1040,21 @@ export function AgentsSidebarPanel() {
                               : undefined,
                     onQuickAction:
                         lifecycle === "completed"
-                            ? () => reopenSession(group.root.sessionId)
+                            ? () => {
+                                  beginSidebarMotion(group.root.sessionId, "Active");
+                                  reopenSession(group.root.sessionId);
+                              }
                             : lifecycle === "snoozed"
-                              ? () => wakeSession(group.root.sessionId)
+                              ? () => {
+                                    beginSidebarMotion(group.root.sessionId, "Active");
+                                    wakeSession(group.root.sessionId);
+                                }
                             : !isClaudeTerminalAgentSession(group.root) &&
                                 canCompleteAgentSidebarStatus(group.status)
-                              ? () => completeSession(group.root.sessionId)
+                              ? () => {
+                                    beginSidebarMotion(group.root.sessionId, "Completed");
+                                    completeSession(group.root.sessionId);
+                                }
                               : undefined,
                     secondaryActionLabel:
                         lifecycle === "active" &&
@@ -946,14 +1066,16 @@ export function AgentsSidebarPanel() {
                         lifecycle === "active" &&
                         !isClaudeTerminalAgentSession(group.root) &&
                         !agentSidebarStatusNeedsAttention(group.status)
-                            ? () =>
+                            ? () => {
+                                  beginSidebarMotion(group.root.sessionId, "Snoozed");
                                   snoozeSession(
                                       group.root.sessionId,
                                       resolveAgentSnoozeTimestamp(
                                           "one-hour",
                                           Date.now(),
                                       ),
-                                  )
+                                  );
+                              }
                             : undefined,
                     statusLabelOverride:
                         lifecycle === "snoozed" && rootMetadata?.snoozedUntil
@@ -961,6 +1083,10 @@ export function AgentsSidebarPanel() {
                                   rootMetadata.snoozedUntil,
                                   now,
                               )
+                            : undefined,
+                    movementLabel:
+                        motionCue?.sessionId === group.root.sessionId
+                            ? `Moved to ${motionCue.destination}`
                             : undefined,
                     reorderScope:
                         lifecycle === "active" &&
@@ -1219,8 +1345,15 @@ export function AgentsSidebarPanel() {
                                 ? "Unpin from Sidebar"
                                 : "Pin to Sidebar",
                             disabled: isSubagentSession(contextMenu.payload),
-                            action: () =>
-                                togglePinnedChat(contextMenu.payload.sessionId),
+                            action: () => {
+                                beginSidebarMotion(
+                                    contextMenu.payload.sessionId,
+                                    pinnedEntries[contextMenu.payload.sessionId]
+                                        ? "Active"
+                                        : "Pinned",
+                                );
+                                togglePinnedChat(contextMenu.payload.sessionId);
+                            },
                         },
                         ...(!contextGroup ||
                         isSubagentSession(contextMenu.payload) ||
@@ -1230,10 +1363,10 @@ export function AgentsSidebarPanel() {
                               ? [
                                     {
                                         label: "Reopen",
-                                        action: () =>
-                                            reopenSession(
-                                                contextGroup.root.sessionId,
-                                            ),
+                                        action: () => {
+                                            beginSidebarMotion(contextGroup.root.sessionId, "Active");
+                                            reopenSession(contextGroup.root.sessionId);
+                                        },
                                     },
                                 ]
                               : [
@@ -1243,10 +1376,10 @@ export function AgentsSidebarPanel() {
                                             !canCompleteAgentSidebarStatus(
                                                 contextGroup.status,
                                             ),
-                                        action: () =>
-                                            completeSession(
-                                                contextGroup.root.sessionId,
-                                            ),
+                                        action: () => {
+                                            beginSidebarMotion(contextGroup.root.sessionId, "Completed");
+                                            completeSession(contextGroup.root.sessionId);
+                                        },
                                     },
                                 ]),
                         ...(!contextGroup ||
@@ -1258,10 +1391,10 @@ export function AgentsSidebarPanel() {
                               ? [
                                     {
                                         label: "Wake now",
-                                        action: () =>
-                                            wakeSession(
-                                                contextGroup.root.sessionId,
-                                            ),
+                                        action: () => {
+                                            beginSidebarMotion(contextGroup.root.sessionId, "Active");
+                                            wakeSession(contextGroup.root.sessionId);
+                                        },
                                     },
                                 ]
                               : agentSidebarStatusNeedsAttention(
@@ -1274,7 +1407,8 @@ export function AgentsSidebarPanel() {
                                           children: AGENT_SNOOZE_PRESETS.map(
                                               (preset) => ({
                                                   label: preset.label,
-                                                  action: () =>
+                                                  action: () => {
+                                                      beginSidebarMotion(contextGroup.root.sessionId, "Snoozed");
                                                       snoozeSession(
                                                           contextGroup.root
                                                               .sessionId,
@@ -1282,7 +1416,8 @@ export function AgentsSidebarPanel() {
                                                               preset.id,
                                                               Date.now(),
                                                           ),
-                                                      ),
+                                                      );
+                                                  },
                                               }),
                                           ),
                                       },

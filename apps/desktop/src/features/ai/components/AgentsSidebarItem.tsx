@@ -35,6 +35,8 @@ export interface AgentsSidebarItemProps {
     compactTimestampLabel?: string;
     status?: AgentSidebarStatus;
     statusLabel?: string;
+    /** Brief visual confirmation after the row changes sidebar section. */
+    movementLabel?: string;
     /** Overrides the hue/glyph when the row's lifecycle outranks its status. */
     tone?: AgentSidebarTone;
     variant?: "card" | "slim";
@@ -277,6 +279,7 @@ export function AgentsSidebarItem({
     compactTimestampLabel,
     status = "ready",
     statusLabel,
+    movementLabel,
     tone,
     variant = "card",
     isActive,
@@ -733,6 +736,9 @@ export function AgentsSidebarItem({
                     borderBottom: dropPosition === "after" ? "2px solid var(--accent)" : "2px solid transparent",
                 }}
             >
+                {movementLabel ? (
+                    <MotionCue label={movementLabel} fontSize={metrics.timestampFontSize} />
+                ) : null}
                 <span className="flex shrink-0" style={{ color: brandColor }}>
                     <AIProviderIcon
                         runtimeId={session.runtimeId}
@@ -791,6 +797,9 @@ export function AgentsSidebarItem({
                 borderBottom: dropPosition === "after" ? "2px solid var(--accent)" : "2px solid transparent",
             }}
         >
+            {movementLabel ? (
+                <MotionCue label={movementLabel} fontSize={metrics.timestampFontSize} />
+            ) : null}
             {/* Context line: provider identity and how long since it moved. */}
             <div className="flex min-h-4 items-center gap-1.5">
                 <span className="flex shrink-0" style={{ color: brandColor }}>
@@ -836,5 +845,23 @@ export function AgentsSidebarItem({
                 </span>
             </div>
         </div>
+    );
+}
+
+function MotionCue({ label, fontSize }: { label: string; fontSize: number }) {
+    return (
+        <span
+            aria-hidden="true"
+            data-agent-sidebar-motion-cue
+            className="pointer-events-none absolute top-1/2 left-1/2 z-10 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded px-1.5 py-0.5 font-medium shadow-sm"
+            style={{
+                color: "var(--text-primary)",
+                backgroundColor: "var(--bg-primary)",
+                border: "1px solid var(--border)",
+                fontSize,
+            }}
+        >
+            {label}
+        </span>
     );
 }
