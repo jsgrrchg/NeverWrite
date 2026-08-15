@@ -29,6 +29,7 @@ describe("settingsStore", () => {
 
     it("defaults app settings", () => {
         expect(useSettingsStore.getState().uiFontFamily).toBe("system");
+        expect(useSettingsStore.getState().glassOpacity).toBe(40);
         expect(useSettingsStore.getState().terminalFontFamily).toBe("");
         expect(useSettingsStore.getState().terminalFontSize).toBe(13);
         expect(useSettingsStore.getState().claudeCodeEnabled).toBe(false);
@@ -77,6 +78,37 @@ describe("settingsStore", () => {
         useSettingsStore.getState().setSetting("aiChatContentWidth", 601);
 
         expect(useSettingsStore.getState().aiChatContentWidth).toBe(600);
+    });
+
+    it("normalizes glass opacity", () => {
+        useSettingsStore.getState().setSetting("glassOpacity", 1);
+        expect(useSettingsStore.getState().glassOpacity).toBe(10);
+
+        useSettingsStore.getState().setSetting("glassOpacity", 12);
+        expect(useSettingsStore.getState().glassOpacity).toBe(12);
+
+        useSettingsStore.getState().setSetting("glassOpacity", 140);
+        expect(useSettingsStore.getState().glassOpacity).toBe(100);
+    });
+
+    it("persists glass opacity globally across vaults", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/glass-one" });
+
+        useSettingsStore.getState().setSetting("glassOpacity", 55);
+
+        expect(
+            JSON.parse(localStorage.getItem("neverwrite:settings") ?? ""),
+        ).toMatchObject({ state: { glassOpacity: 55 } });
+        expect(
+            JSON.parse(
+                localStorage.getItem("neverwrite:settings:/vaults/glass-one") ??
+                    "",
+            ).state,
+        ).not.toHaveProperty("glassOpacity");
+
+        useVaultStore.setState({ vaultPath: "/vaults/glass-two" });
+
+        expect(useSettingsStore.getState().glassOpacity).toBe(55);
     });
 
     it("persists vim settings globally across vaults", () => {

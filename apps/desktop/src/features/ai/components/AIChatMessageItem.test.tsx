@@ -627,6 +627,9 @@ describe("AIChatMessageItem plan message", () => {
         expect(document.querySelector('[data-plan-surface="true"]')).toHaveClass(
             "chat-plan-frame",
         );
+        expect(document.querySelector('[data-plan-surface="true"]')).toHaveClass(
+            "nw-chat-translucent-surface",
+        );
         expect(
             document.querySelectorAll("[data-plan-entry-status]"),
         ).toHaveLength(2);

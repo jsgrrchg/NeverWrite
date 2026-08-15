@@ -435,9 +435,11 @@ describe("AIChatMessageList streaming run indicator", () => {
 
         expect(scrollContainer).toHaveStyle({ paddingBottom: "192px" });
         expect(scrollContainer.scrollTop).toBe(760);
-        expect(
-            screen.getByRole("button", { name: "Scroll to bottom" }),
-        ).toHaveStyle({ bottom: "12px" });
+        const scrollButton = screen.getByRole("button", {
+            name: "Scroll to bottom",
+        });
+        expect(scrollButton).toHaveStyle({ bottom: "12px" });
+        expect(scrollButton).toHaveClass("nw-chat-translucent-surface");
 
         scrollHeight = 1_000;
         act(() => {
@@ -1067,6 +1069,10 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(screen.getAllByText("Implement")).toHaveLength(1);
         expectSharedChatContentColumn(
             screen.getByTestId("chat-pinned-plan-column"),
+        );
+        expect(screen.getByTestId("chat-pinned-plan-overlay")).toHaveClass(
+            "absolute",
+            "z-[5]",
         );
         expect(
             view.container.querySelector('[aria-label="Dismiss plan banner"]'),

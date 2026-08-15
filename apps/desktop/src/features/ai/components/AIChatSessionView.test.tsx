@@ -36,8 +36,6 @@ const messageListMockState = vi.hoisted(() => ({
     props: [] as Array<{
         bottomInset?: number;
         sessionId?: string | null;
-        scrollToMessageId?: string | null;
-        onScrollToMessageComplete?: () => void;
     }>,
 }));
 
@@ -47,16 +45,9 @@ vi.mock("./AIChatMessageList", () => ({
     AIChatMessageList: (props: {
         bottomInset?: number;
         sessionId?: string | null;
-        scrollToMessageId?: string | null;
-        onScrollToMessageComplete?: () => void;
     }) => {
         messageListMockState.props.push(props);
-        return (
-            <div
-                data-testid="chat-message-list"
-                data-scroll-to-message-id={props.scrollToMessageId ?? ""}
-            />
-        );
+        return <div data-testid="chat-message-list" />;
     },
 }));
 
@@ -548,6 +539,16 @@ describe("AIChatSessionView", () => {
         expect(dock).not.toContainElement(
             screen.getByTestId("chat-message-list"),
         );
+        const glassSurface = screen.getByTestId("chat-glass-surface");
+        expect(glassSurface).toHaveClass(
+            "nw-chat-translucent-surface",
+            "nw-chat-floating-surface",
+        );
+        expect(glassSurface).toHaveStyle({
+            width: "100%",
+            maxWidth: "600px",
+            marginInline: "auto",
+        });
 
         const auxiliaryRegion = screen.getByTestId(
             "chat-bottom-dock-auxiliary-region",
@@ -721,9 +722,18 @@ describe("AIChatSessionView", () => {
             "chat-expanded-composer-region",
         );
         expect(expandedRegion).toHaveClass(
-            "nw-chat-translucent-surface",
             "absolute",
             "inset-0",
+        );
+        expect(expandedRegion).not.toHaveClass(
+            "nw-chat-translucent-surface",
+        );
+        expect(screen.getByTestId("chat-glass-surface")).toHaveClass(
+            "nw-chat-translucent-surface",
+            "flex-1",
+        );
+        expect(screen.getByTestId("chat-glass-surface")).not.toHaveClass(
+            "nw-chat-floating-surface",
         );
         expect(screen.getByTestId("chat-message-list")).toBeInTheDocument();
         expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(
@@ -764,142 +774,12 @@ describe("AIChatSessionView", () => {
         expect(findButton).toHaveAttribute("aria-pressed", "false");
     });
 
-    it("opens a user prompt outline from the local header", () => {
+    it("removes the legacy user prompt menu from the local header", () => {
         setupWorkspaceSession();
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                "session-a": {
-                    ...state.sessionsById["session-a"]!,
-                    messages: [
-                        {
-                            id: "user-1",
-                            role: "user",
-                            kind: "text",
-                            content: "First prompt",
-                            timestamp: 10,
-                        },
-                        {
-                            id: "assistant-1",
-                            role: "assistant",
-                            kind: "text",
-                            content: "Assistant answer",
-                            timestamp: 11,
-                        },
-                        {
-                            id: "user-2",
-                            role: "user",
-                            kind: "text",
-                            content: "Second prompt\nwith spacing",
-                            timestamp: 12,
-                        },
-                    ],
-                },
-            },
-        }));
-
         renderComponent(<AIChatSessionView paneId="primary" />);
-
-        const outlineButton = screen.getByRole("button", {
-            name: "User prompts",
-        });
-        fireEvent.click(outlineButton);
-
-        expect(outlineButton).toHaveAttribute("aria-pressed", "true");
         expect(
-            screen.getByRole("menuitem", { name: "Go to prompt 1" }),
-        ).toHaveTextContent("First prompt");
-        expect(
-            screen.getByRole("menuitem", { name: "Go to prompt 2" }),
-        ).toHaveTextContent("Second prompt with spacing");
-        expect(screen.queryByText("Assistant answer")).not.toBeInTheDocument();
-    });
-
-    it("shows an empty prompt outline state when the session has no user prompts", () => {
-        setupWorkspaceSession();
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                "session-a": {
-                    ...state.sessionsById["session-a"]!,
-                    messages: [
-                        {
-                            id: "assistant-1",
-                            role: "assistant",
-                            kind: "text",
-                            content: "Assistant answer",
-                            timestamp: 11,
-                        },
-                    ],
-                },
-            },
-        }));
-
-        renderComponent(<AIChatSessionView paneId="primary" />);
-
-        fireEvent.click(screen.getByRole("button", { name: "User prompts" }));
-
-        expect(screen.getByText("No user prompts")).toBeInTheDocument();
-    });
-
-    it("requests message-list navigation when selecting a user prompt", async () => {
-        setupWorkspaceSession();
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                "session-a": {
-                    ...state.sessionsById["session-a"]!,
-                    messages: [
-                        {
-                            id: "user-1",
-                            role: "user",
-                            kind: "text",
-                            content: "First prompt",
-                            timestamp: 10,
-                        },
-                        {
-                            id: "user-2",
-                            role: "user",
-                            kind: "text",
-                            content: "Second prompt",
-                            timestamp: 12,
-                        },
-                    ],
-                },
-            },
-        }));
-
-        renderComponent(<AIChatSessionView paneId="primary" />);
-
-        fireEvent.click(screen.getByRole("button", { name: "User prompts" }));
-        fireEvent.click(screen.getByRole("menuitem", { name: "Go to prompt 2" }));
-
-        await waitFor(() => {
-            expect(screen.getByTestId("chat-message-list")).toHaveAttribute(
-                "data-scroll-to-message-id",
-                "user-2",
-            );
-        });
-        expect(screen.queryByRole("menu", { name: "User prompts" })).toBeNull();
-    });
-
-    it("closes and disables the user prompt outline while the composer is expanded", async () => {
-        setupWorkspaceSession();
-
-        renderComponent(<AIChatSessionView paneId="primary" />);
-
-        const outlineButton = screen.getByRole("button", {
-            name: "User prompts",
-        });
-        fireEvent.click(outlineButton);
-        expect(outlineButton).toHaveAttribute("aria-pressed", "true");
-
-        fireEvent.click(screen.getByTestId("chat-composer"));
-
-        await waitFor(() => {
-            expect(outlineButton).toBeDisabled();
-            expect(outlineButton).toHaveAttribute("aria-pressed", "false");
-        });
+            screen.queryByRole("button", { name: "User prompts" }),
+        ).toBeNull();
         expect(screen.queryByRole("menu", { name: "User prompts" })).toBeNull();
     });
 

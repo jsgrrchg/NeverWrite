@@ -9,12 +9,14 @@ import {
     type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { WorkspaceLayoutNode } from "../../app/store/workspaceLayoutTree";
+import { isChatTab, useEditorStore, type EditorPaneState } from "../../app/store/editorStore";
 import { EditorPaneBar } from "./EditorPaneBar";
 import { EditorPaneContent } from "./EditorPaneContent";
 
 const RESIZER_HITBOX_SIZE = 10;
 const RESIZER_VISIBLE_SIZE = 1;
 const MIN_PANE_WIDTH = 180;
+const MIN_CHAT_PANE_WIDTH = 300;
 const MIN_PANE_HEIGHT = 140;
 
 interface ResizeSession {
@@ -41,16 +43,24 @@ interface WorkspaceSplitContainerProps {
     onResizeSplit: (splitId: string, sizes: readonly number[]) => void;
 }
 
-function getNodeConstraints(node: WorkspaceLayoutNode): NodeConstraints {
+function getPaneMinimumWidth(paneId: string, panes: EditorPaneState[]) {
+    const pane = panes.find((candidate) => candidate.id === paneId);
+    return pane?.tabs.some(isChatTab) ? MIN_CHAT_PANE_WIDTH : MIN_PANE_WIDTH;
+}
+
+function getNodeConstraints(
+    node: WorkspaceLayoutNode,
+    panes: EditorPaneState[],
+): NodeConstraints {
     if (node.type === "pane") {
         return {
-            minWidth: MIN_PANE_WIDTH,
+            minWidth: getPaneMinimumWidth(node.paneId, panes),
             minHeight: MIN_PANE_HEIGHT,
         };
     }
 
     const childConstraints = node.children.map((child) =>
-        getNodeConstraints(child),
+        getNodeConstraints(child, panes),
     );
 
     if (node.direction === "row") {
@@ -97,18 +107,20 @@ const WorkspacePane = memo(function WorkspacePane({
     isExternalFileDropActive,
     onPanePointerDown,
     onPaneFocus,
+    minimumWidth,
 }: {
     paneId: string;
     isFocused: boolean;
     isExternalFileDropActive: boolean;
     onPanePointerDown: () => void;
     onPaneFocus: (paneId: string) => void;
+    minimumWidth: number;
 }) {
     return (
         <div
             className="relative flex h-full min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden"
             style={{
-                minWidth: MIN_PANE_WIDTH,
+                minWidth: minimumWidth,
                 minHeight: MIN_PANE_HEIGHT,
                 border: "1px solid color-mix(in srgb, var(--border) 76%, transparent)",
                 borderRadius: 0,
@@ -160,15 +172,16 @@ export function WorkspaceSplitContainer({
     onResizeSplit,
 }: WorkspaceSplitContainerProps) {
     const containerRef = useRef<HTMLDivElement | null>(null);
+    const panes = useEditorStore((state) => state.panes);
     const resizeSessionRef = useRef<ResizeSession | null>(null);
     const [isResizing, setIsResizing] = useState(false);
 
     const childConstraints = useMemo(
         () =>
             node.type === "split"
-                ? node.children.map((child) => getNodeConstraints(child))
+                ? node.children.map((child) => getNodeConstraints(child, panes))
                 : [],
-        [node],
+        [node, panes],
     );
 
     const stopResize = useCallback((pointerId?: number) => {
@@ -290,6 +303,7 @@ export function WorkspaceSplitContainer({
                 }
                 onPanePointerDown={onPanePointerDown}
                 onPaneFocus={onPaneFocus}
+                minimumWidth={getPaneMinimumWidth(node.paneId, panes)}
             />
         );
     }

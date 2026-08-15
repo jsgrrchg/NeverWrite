@@ -1720,7 +1720,7 @@ export function AIChatComposer({
                 }
                 style={{
                     border: "none",
-                    borderTop: "1px solid var(--border)",
+                    borderTop: "none",
                     borderRadius: 0,
                     backgroundColor: "transparent",
                     boxShadow: externalDragActive

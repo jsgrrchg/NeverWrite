@@ -952,6 +952,21 @@ describe("MultiPaneWorkspace", () => {
         expect(primaryPane?.className).toContain("flex-1");
     });
 
+    it("keeps chat panes at least 300 pixels wide", () => {
+        setPaneChatSession("primary", "chat-minimum-width", "idle");
+        renderComponent(<MultiPaneWorkspace />);
+
+        const primaryPane = screen
+            .getByTestId("pane-content-primary")
+            .closest('[data-editor-pane-id="primary"]');
+        const secondaryPane = screen
+            .getByTestId("pane-content-secondary")
+            .closest('[data-editor-pane-id="secondary"]');
+
+        expect(primaryPane).toHaveStyle({ minWidth: "300px" });
+        expect(secondaryPane).toHaveStyle({ minWidth: "180px" });
+    });
+
     it("stretches the root split container to fill the workspace width", () => {
         renderComponent(<MultiPaneWorkspace />);
 
