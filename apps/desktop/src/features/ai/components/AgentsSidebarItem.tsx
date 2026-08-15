@@ -31,6 +31,8 @@ export interface AgentsSidebarItemProps {
     session: AIChatSession;
     title: string;
     timestampLabel: string;
+    /** Short form ("13m", "2h", "3d") for the card's context line. */
+    compactTimestampLabel?: string;
     status?: AgentSidebarStatus;
     statusLabel?: string;
     /** Overrides the hue/glyph when the row's lifecycle outranks its status. */
@@ -270,6 +272,7 @@ export function AgentsSidebarItem({
     session,
     title,
     timestampLabel,
+    compactTimestampLabel,
     status = "ready",
     statusLabel,
     tone,
@@ -638,48 +641,39 @@ export function AgentsSidebarItem({
         </button>
     ) : null;
 
-    // Status and hover actions share one right-hand slot, as they do in
-    // t3code: whichever is hidden leaves the flow entirely. Keeping both in
-    // flow is what squeezed slim titles down to an ellipsis, and reserving
-    // width for invisible buttons is dead space on every row that has none.
     const hasHoverActions = Boolean(quickAction || secondaryAction);
-    const renderStatusSlot = (showLabel: boolean) => (
-        <span className="relative ml-auto flex shrink-0 items-center justify-end">
-            {showLabel ? (
-                <span
-                    data-agent-status={status}
-                    className={`inline-flex shrink-0 items-center gap-1 font-medium transition-opacity ${
-                        hasHoverActions
-                            ? "group-hover/row:absolute group-hover/row:right-0 group-hover/row:opacity-0"
-                            : ""
-                    }`}
-                    style={{
-                        color: toneColor,
-                        fontSize: metrics.timestampFontSize,
-                        opacity: effectiveTone === "ready" ? 0.75 : 1,
-                    }}
-                >
-                    <StatusGlyph tone={effectiveTone} size={statusIconSize} />
-                    {statusLabel || timestampLabel}
-                </span>
-            ) : null}
-            {hasHoverActions ? (
-                // focus-visible rather than focus-within: a click leaves the
-                // button focused, and focus-within would pin the actions over
-                // the status once the pointer leaves instead of fading back.
-                <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100 group-hover/row:pointer-events-auto group-hover/row:static group-hover/row:opacity-100">
-                    {quickAction}
-                    {secondaryAction}
-                </span>
-            ) : null}
+
+    // Nothing in the row may change size or position on hover. Swapping the
+    // status label for the actions inside a shared in-flow slot reflowed every
+    // neighbour and made the list wobble under the pointer, so the actions
+    // live in an absolutely positioned overlay instead: they fade in over
+    // reserved space and the text underneath never moves.
+    const statusInline = (
+        <span
+            data-agent-status={status}
+            className="inline-flex shrink-0 items-center gap-1 font-medium"
+            style={{
+                color: toneColor,
+                fontSize: metrics.timestampFontSize,
+                opacity: effectiveTone === "ready" ? 0.75 : 1,
+            }}
+        >
+            <StatusGlyph tone={effectiveTone} size={statusIconSize} />
+            {showStatusLabel ? statusLabel || timestampLabel : "Idle"}
         </span>
     );
+
+    // focus-visible rather than focus-within: a click leaves the button
+    // focused, and focus-within would keep the actions pinned open once the
+    // pointer moves away instead of fading back out.
+    const actionsOverlayClassName =
+        "pointer-events-none absolute flex items-center gap-0.5 opacity-0 transition-opacity has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 group-hover/row:pointer-events-auto group-hover/row:opacity-100";
 
     if (variant === "slim") {
         return (
             <div
                 {...commonProps}
-                className={`group/row flex w-full cursor-pointer items-center rounded-md outline-none transition-colors duration-100 focus-visible:ring-1 focus-visible:ring-[var(--accent)] ${
+                className={`group/row relative flex w-full cursor-pointer items-center rounded-md outline-none transition-colors duration-100 focus-visible:ring-1 focus-visible:ring-[var(--accent)] ${
                     isActive
                         ? "bg-[color-mix(in_srgb,var(--accent)_16%,transparent)]"
                         : "bg-transparent hover:bg-[color-mix(in_srgb,var(--text-primary)_6%,transparent)]"
@@ -702,8 +696,31 @@ export function AgentsSidebarItem({
                 {titleNode}
                 {collapseButton}
                 {pinButton}
-                {/* Slim rows have no detail line, so the label always shows. */}
-                {renderStatusSlot(true)}
+                <span
+                    className="ml-auto flex shrink-0 items-center transition-opacity"
+                    // The overlay covers this slot, so the label fades rather
+                    // than yielding its box — fading costs no layout.
+                    style={{ opacity: hasHoverActions ? undefined : 1 }}
+                >
+                    <span
+                        className={
+                            hasHoverActions
+                                ? "transition-opacity group-hover/row:opacity-0"
+                                : undefined
+                        }
+                    >
+                        {statusInline}
+                    </span>
+                </span>
+                {hasHoverActions ? (
+                    <span
+                        className={`${actionsOverlayClassName} inset-y-0 right-0`}
+                        style={{ paddingRight: metrics.rowPaddingX }}
+                    >
+                        {quickAction}
+                        {secondaryAction}
+                    </span>
+                ) : null}
             </div>
         );
     }
@@ -727,10 +744,9 @@ export function AgentsSidebarItem({
                 borderBottom: dropPosition === "after" ? "2px solid var(--accent)" : "2px solid transparent",
             }}
         >
-            {/* Identity line — t3code anchors this slot with a colored project
-                favicon and the project name. An agent's equivalent identity is
-                the runtime it runs on, so the brand mark and its name take the
-                slot and the status sits opposite, as it does there. */}
+            {/* Context line: who is running this, and how long since it moved.
+                The elapsed time is compact here so it never competes with the
+                title for width. */}
             <div className="flex min-h-4 items-center gap-1.5">
                 <span className="flex shrink-0" style={{ color: brandColor }}>
                     <AIProviderIcon
@@ -749,25 +765,24 @@ export function AgentsSidebarItem({
                     {runtimeName}
                 </span>
                 {pinButton}
-                {renderStatusSlot(showStatusLabel)}
-            </div>
-            <div className="flex min-w-0 flex-1 items-center">{titleNode}</div>
-            {/* Detail line — the branch slot in t3code. Agents have no branch,
-                so it carries the "when", which the identity line only shows
-                while a live status isn't occupying that spot. */}
-            <div className="flex min-h-4 items-center gap-1.5">
-                {collapseButton}
                 <span
-                    className="inline-flex min-w-0 shrink items-center gap-1 truncate"
+                    className="shrink-0 tabular-nums"
                     style={{
                         color: "var(--text-secondary)",
                         fontSize: metrics.timestampFontSize,
                         opacity: 0.85,
                     }}
                 >
-                    <ClockIcon size={statusIconSize} />
-                    {timestampLabel}
+                    {compactTimestampLabel ?? timestampLabel}
                 </span>
+            </div>
+            <div className="flex min-w-0 flex-1 items-center">{titleNode}</div>
+            {/* State line: the status dot reads at a glance, and the hover
+                actions fade in over the empty right half of this row so the
+                card never reflows. */}
+            <div className="flex min-h-4 items-center gap-1.5">
+                {collapseButton}
+                {statusInline}
                 {hasChildren ? (
                     <span
                         className="shrink-0 rounded px-1"
@@ -782,6 +797,18 @@ export function AgentsSidebarItem({
                     </span>
                 ) : null}
             </div>
+            {hasHoverActions ? (
+                <span
+                    className={`${actionsOverlayClassName} right-0 bottom-0`}
+                    style={{
+                        paddingRight: metrics.rowPaddingX,
+                        paddingBottom: metrics.rowPaddingY * 1.5,
+                    }}
+                >
+                    {quickAction}
+                    {secondaryAction}
+                </span>
+            ) : null}
         </div>
     );
 }

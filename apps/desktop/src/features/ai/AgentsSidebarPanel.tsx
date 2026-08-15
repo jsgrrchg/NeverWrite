@@ -142,6 +142,26 @@ function formatAgentTimestamp(timestamp: number): string {
     }).format(timestamp);
 }
 
+// The card's context line pairs the runtime with "how long since this moved",
+// so the label has to stay narrow enough that the runtime name keeps its room.
+function formatCompactAgentTimestamp(timestamp: number): string {
+    if (!timestamp) return "";
+    const diffMinutes = Math.floor((Date.now() - timestamp) / 60_000);
+    if (diffMinutes < 1) return "now";
+    if (diffMinutes < 60) return `${diffMinutes}m`;
+
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) return `${diffHours}h`;
+
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays < 7) return `${diffDays}d`;
+
+    return new Intl.DateTimeFormat("en", {
+        month: "short",
+        day: "numeric",
+    }).format(timestamp);
+}
+
 function formatElapsed(startedAt: number | null, now: number) {
     if (startedAt === null) return "";
     const seconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
@@ -984,6 +1004,7 @@ export function AgentsSidebarPanel() {
             );
         const updatedAt = getSessionUpdatedAt(session);
         const timestampLabel = formatAgentTimestamp(updatedAt);
+        const compactTimestampLabel = formatCompactAgentTimestamp(updatedAt);
         const statusLabel =
             options?.statusLabelOverride ??
             formatStatusLabel(
@@ -1027,6 +1048,7 @@ export function AgentsSidebarPanel() {
                 session={session}
                 title={getSessionTitle(session)}
                 timestampLabel={timestampLabel}
+                compactTimestampLabel={compactTimestampLabel}
                 status={status}
                 statusLabel={statusLabel}
                 tone={options?.tone}
