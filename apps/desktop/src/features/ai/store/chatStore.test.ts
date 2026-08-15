@@ -1853,16 +1853,9 @@ describe("chatStore", () => {
         );
     });
 
-    it("keeps sidebar pins and folders when a provisional session becomes live", async () => {
+    it("keeps sidebar pins when a provisional session becomes live", async () => {
         const provisionalSessionId = "pending-session";
         const liveSessionId = sessionPayload.session_id;
-        const folderId = useAgentSidebarStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useAgentSidebarStore
-            .getState()
-            .moveSessionToFolder(provisionalSessionId, folderId);
         useAgentSidebarStore.getState().pinSession(provisionalSessionId);
         useChatStore.setState((state) => ({
             ...state,
@@ -1895,7 +1888,6 @@ describe("chatStore", () => {
         ).toEqual(
             expect.objectContaining({
                 pinnedAt: expect.any(Number),
-                folderId,
             }),
         );
     });

@@ -16,7 +16,6 @@ function metadata(overrides: Record<string, unknown> = {}) {
         completedAt: null,
         snoozedAt: null,
         snoozedUntil: null,
-        folderId: null,
         lastVisitedAt: null,
         ...overrides,
     };
@@ -56,17 +55,12 @@ describe("agentSidebarStore", () => {
 
         expect(useAgentSidebarStore.getState()).toMatchObject({
             version: 1,
-            folders: {
-                research: { id: "research", name: "Research", createdAt: 2 },
-            },
-            folderOrder: ["research"],
-            collapsedFolderIds: ["research"],
             collapsedParentSessionIds: ["root"],
             pinnedOrder: ["root"],
             activeOrder: ["active"],
             completedShelfExpanded: true,
             sessionMetadata: {
-                root: metadata({ pinnedAt: 4, folderId: "research" }),
+                root: metadata({ pinnedAt: 4 }),
                 invalid: metadata(),
             },
         });
@@ -154,7 +148,7 @@ describe("agentSidebarStore", () => {
         expect(JSON.parse(localStorage.getItem("neverwrite.chats.pinnedIds")!)).toHaveProperty("b");
     });
 
-    it("imports per-vault folders into session metadata", () => {
+    it("ignores legacy folder assignments so chats return to the active list", () => {
         localStorage.setItem(
             `neverwrite.chats.folders:${encodeURIComponent(VAULT_A)}`,
             JSON.stringify({
@@ -167,13 +161,7 @@ describe("agentSidebarStore", () => {
             }),
         );
         useAgentSidebarStore.getState().setVaultPath(VAULT_A);
-        expect(useAgentSidebarStore.getState()).toMatchObject({
-            folders: {
-                research: { id: "research", name: "Research", createdAt: 1 },
-            },
-            collapsedFolderIds: ["research"],
-            sessionMetadata: { a: metadata({ folderId: "research" }) },
-        });
+        expect(useAgentSidebarStore.getState().sessionMetadata).toEqual({});
     });
 
     it("applies lifecycle transitions atomically", () => {
@@ -207,7 +195,6 @@ describe("agentSidebarStore", () => {
                     completedAt: 2,
                     snoozedAt: 3,
                     snoozedUntil: 4,
-                    folderId: null,
                     lastVisitedAt: 5,
                 }),
             },

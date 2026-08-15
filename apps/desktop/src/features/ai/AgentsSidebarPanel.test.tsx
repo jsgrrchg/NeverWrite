@@ -93,15 +93,6 @@ function firePointer(
     fireEvent(target, event);
 }
 
-function getFolderAssignments() {
-    return Object.fromEntries(
-        Object.entries(useAgentSidebarStore.getState().sessionMetadata).flatMap(
-            ([sessionId, metadata]) =>
-                metadata.folderId ? [[sessionId, metadata.folderId]] : [],
-        ),
-    );
-}
-
 describe("AgentsSidebarPanel", () => {
     beforeEach(() => {
         resetChatStore();
@@ -147,36 +138,6 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
-    it("does not prune persisted folder assignments while cold-start inventory is loading", () => {
-        useAgentSidebarStore.setState({
-            folders: {
-                research: { id: "research", name: "Research", createdAt: 1 },
-            },
-            folderOrder: ["research"],
-            collapsedFolderIds: [],
-            sessionMetadata: {
-                "saved-session": {
-                    pinnedAt: null,
-                    completedAt: null,
-                    snoozedAt: null,
-                    snoozedUntil: null,
-                    folderId: "research",
-                    lastVisitedAt: null,
-                },
-            },
-        });
-        useChatStore.setState({
-            sessionsById: {},
-            sessionOrder: [],
-            sessionInventoryLoaded: false,
-        });
-
-        renderComponent(<AgentsSidebarPanel />);
-
-        expect(getFolderAssignments()).toEqual({
-            "saved-session": "research",
-        });
-    });
 
     it("creates a canonical agent directly when Claude Code is disabled", async () => {
         renderComponent(<AgentsSidebarPanel />);
@@ -194,156 +155,8 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.queryByRole("button", { name: "Claude" })).toBeNull();
     });
 
-    it("keeps existing chats unfiled until the user explicitly moves one", async () => {
-        const session = createSession("session-alpha", "Alpha task", "idle", 100);
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [session.sessionId]: session },
-            sessionOrder: [session.sessionId],
-        }));
-        renderComponent(<AgentsSidebarPanel />);
 
-        expect(screen.getByText("Alpha task")).toBeInTheDocument();
-        fireEvent.click(screen.getByRole("button", { name: "New folder" }));
-        fireEvent.change(screen.getByRole("textbox", { name: "Folder name" }), {
-            target: { value: "Research" },
-        });
-        fireEvent.blur(screen.getByRole("textbox", { name: "Folder name" }));
-        expect(screen.getByText("Research")).toBeInTheDocument();
-        expect(
-            getFolderAssignments(),
-        ).toEqual({});
 
-        fireEvent.contextMenu(screen.getByTestId("agent-sidebar-item"), {
-            clientX: 20,
-            clientY: 20,
-        });
-        const moveToFolder = await screen.findByRole("button", {
-            name: "Move to Folder",
-        });
-        fireEvent.mouseEnter(moveToFolder);
-        fireEvent.click(await screen.findByRole("button", { name: "Research" }));
-
-        await waitFor(() => {
-            expect(
-                getFolderAssignments(),
-            ).toEqual({ "session-alpha": expect.any(String) });
-        });
-        expect(screen.getAllByText("Alpha task").length).toBeGreaterThan(0);
-    });
-
-    it("renames, collapses, and deletes a folder without losing its chat", async () => {
-        const session = createSession("session-alpha", "Alpha task");
-        const folderId = useAgentSidebarStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useAgentSidebarStore
-            .getState()
-            .moveSessionToFolder(session.sessionId, folderId);
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [session.sessionId]: session },
-            sessionOrder: [session.sessionId],
-        }));
-
-        renderComponent(<AgentsSidebarPanel />);
-
-        expect(
-            document.querySelector('[data-chat-folder-icon]'),
-        ).toBeInTheDocument();
-        expect(
-            document.querySelector<HTMLElement>(
-                `[data-chat-folder-contents="${folderId}"]`,
-            ),
-        ).toHaveStyle({ marginLeft: "8px" });
-
-        fireEvent.click(screen.getByTitle("Collapse folder"));
-        expect(screen.queryByTestId("agent-sidebar-item")).toBeNull();
-
-        fireEvent.contextMenu(screen.getByTitle("Expand folder"));
-        fireEvent.click(
-            await screen.findByRole("button", { name: "Rename Folder" }),
-        );
-        const folderNameInput = await screen.findByRole("textbox", {
-            name: "Folder name",
-        });
-        fireEvent.change(folderNameInput, {
-            target: { value: "Archive" },
-        });
-        fireEvent.keyDown(folderNameInput, {
-            key: "Enter",
-        });
-        expect(screen.getByText("Archive")).toBeInTheDocument();
-
-        fireEvent.contextMenu(screen.getByTitle("Expand folder"));
-        fireEvent.click(
-            await screen.findByRole("button", { name: "Delete Folder" }),
-        );
-
-        await waitFor(() => {
-            expect(getFolderAssignments()).toEqual({});
-        });
-        expect(screen.queryByText("Archive")).not.toBeInTheDocument();
-        expect(screen.getByTestId("agent-sidebar-item")).toHaveTextContent(
-            "Alpha task",
-        );
-    });
-
-    it("reorders folders by dragging their headers", () => {
-        const first = useAgentSidebarStore.getState().createFolder("First");
-        const second = useAgentSidebarStore.getState().createFolder("Second");
-        expect(first).toBeTruthy();
-        expect(second).toBeTruthy();
-        const session = createSession("session-alpha", "Alpha task");
-        useAgentSidebarStore
-            .getState()
-            .moveSessionToFolder(session.sessionId, first);
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [session.sessionId]: session },
-            sessionOrder: [session.sessionId],
-        }));
-        renderComponent(<AgentsSidebarPanel />);
-
-        const firstHeader = document.querySelector<HTMLElement>(
-            `[data-chat-folder-header="${first}"]`,
-        );
-        const secondHeader = document.querySelector<HTMLElement>(
-            `[data-chat-folder-header="${second}"]`,
-        );
-        expect(firstHeader).not.toBeNull();
-        expect(secondHeader).not.toBeNull();
-        Object.defineProperty(document, "elementFromPoint", {
-            configurable: true,
-            value: vi.fn(() => secondHeader),
-        });
-        vi.spyOn(secondHeader!, "getBoundingClientRect").mockReturnValue({
-            top: 100,
-            height: 20,
-        } as DOMRect);
-
-        firePointer(firstHeader!, "pointerdown", {
-            clientX: 10,
-            clientY: 10,
-            pointerId: 7,
-        });
-        firePointer(window, "pointermove", {
-            clientX: 10,
-            clientY: 115,
-            pointerId: 7,
-        });
-        firePointer(window, "pointerup", {
-            clientX: 10,
-            clientY: 115,
-            pointerId: 7,
-        });
-
-        expect(useAgentSidebarStore.getState().folderOrder).toEqual([
-            second,
-            first,
-        ]);
-    });
 
     it("opens Claude Code from the plus menu as a terminal runtime", async () => {
         useSettingsStore.setState({ claudeCodeEnabled: true });
@@ -573,12 +386,8 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.queryByRole("button", { name: "Complete" })).toBeNull();
     });
 
-    it("snoozes and wakes an active thread without changing its folder", async () => {
+    it("snoozes and wakes an active thread", async () => {
         const session = createSession("session-snooze", "Snooze me");
-        const folderId = useAgentSidebarStore.getState().createFolder("Research");
-        useAgentSidebarStore
-            .getState()
-            .moveSessionToFolder(session.sessionId, folderId);
         useChatStore.setState((state) => ({
             ...state,
             sessionsById: { [session.sessionId]: session },
@@ -595,10 +404,6 @@ describe("AgentsSidebarPanel", () => {
             ).toEqual(expect.any(Number));
         });
         expect(screen.getByText("Snoozed")).toBeInTheDocument();
-        expect(
-            useAgentSidebarStore.getState().sessionMetadata[session.sessionId]
-                ?.folderId,
-        ).toBe(folderId);
 
         fireEvent.click(screen.getByRole("button", { name: /Snoozed/ }));
         fireEvent.click(screen.getByRole("button", { name: "Wake now" }));
@@ -608,10 +413,6 @@ describe("AgentsSidebarPanel", () => {
                     ?.snoozedUntil,
             ).toBeNull();
         });
-        expect(
-            useAgentSidebarStore.getState().sessionMetadata[session.sessionId]
-                ?.folderId,
-        ).toBe(folderId);
     });
 
     it("reorders active cards with the keyboard and announces the move", async () => {
@@ -646,7 +447,7 @@ describe("AgentsSidebarPanel", () => {
         ]);
     });
 
-    it("reorders active cards by pointer without turning the drop into a folder move", async () => {
+    it("reorders active cards by pointer", async () => {
         const first = createSession("first", "First", "idle", 200);
         const second = createSession("second", "Second", "idle", 100);
         useChatStore.setState((state) => ({
@@ -661,7 +462,10 @@ describe("AgentsSidebarPanel", () => {
         const target = document.querySelector<HTMLElement>(
             '[data-agent-session-id="second"]',
         )!;
-        vi.spyOn(document, "elementFromPoint").mockReturnValue(target);
+        Object.defineProperty(document, "elementFromPoint", {
+            configurable: true,
+            value: vi.fn(() => target),
+        });
         vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
             x: 0,
             y: 100,
@@ -699,7 +503,7 @@ describe("AgentsSidebarPanel", () => {
                 "first",
             ]);
         });
-        expect(getFolderAssignments()).toEqual({});
+        delete (document as Partial<Document>).elementFromPoint;
     });
 
     it("cancels a keyboard reorder with Escape", async () => {
@@ -802,112 +606,7 @@ describe("AgentsSidebarPanel", () => {
         ).not.toHaveBeenCalled();
     });
 
-    it("moves a root chat into a folder when it is dropped on that folder", () => {
-        const alpha = createSession("session-alpha", "Alpha task");
-        const folderId = useAgentSidebarStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [alpha.sessionId]: alpha },
-            sessionOrder: [alpha.sessionId],
-        }));
-        const dragEvents: AgentSidebarDragDetail[] = [];
-        const handleDrag = (event: Event) =>
-            dragEvents.push(
-                (event as CustomEvent<AgentSidebarDragDetail>).detail,
-            );
-        window.addEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
 
-        try {
-            renderComponent(<AgentsSidebarPanel />);
-            const folderLabel = screen.getByText("Research");
-            Object.defineProperty(document, "elementFromPoint", {
-                configurable: true,
-                value: vi.fn(() => folderLabel),
-            });
-            const row = screen.getByTestId("agent-sidebar-item");
-            firePointer(row, "pointerdown", {
-                button: 0,
-                buttons: 1,
-                pointerId: 9,
-                clientX: 10,
-                clientY: 10,
-            });
-            firePointer(window, "pointermove", {
-                pointerId: 9,
-                buttons: 1,
-                clientX: 20,
-                clientY: 10,
-            });
-            firePointer(window, "pointerup", {
-                pointerId: 9,
-                clientX: 20,
-                clientY: 10,
-            });
-
-            expect(getFolderAssignments()).toEqual({
-                [alpha.sessionId]: folderId,
-            });
-            expect(dragEvents.at(-1)?.phase).toBe("cancel");
-        } finally {
-            delete (document as Partial<Document>).elementFromPoint;
-            window.removeEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
-        }
-    });
-
-    it("removes a root chat from its folder when it is dropped on All", () => {
-        const alpha = createSession("session-alpha", "Alpha task");
-        const folderId = useAgentSidebarStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useAgentSidebarStore
-            .getState()
-            .moveSessionToFolder(alpha.sessionId, folderId);
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [alpha.sessionId]: alpha },
-            sessionOrder: [alpha.sessionId],
-        }));
-
-        renderComponent(<AgentsSidebarPanel />);
-        const allDropZone = document.querySelector(
-            "[data-chat-unfiled-drop-zone]",
-        );
-        expect(allDropZone).not.toBeNull();
-        Object.defineProperty(document, "elementFromPoint", {
-            configurable: true,
-            value: vi.fn(() => allDropZone),
-        });
-
-        try {
-            const row = screen.getByTestId("agent-sidebar-item");
-            firePointer(row, "pointerdown", {
-                button: 0,
-                buttons: 1,
-                pointerId: 10,
-                clientX: 10,
-                clientY: 10,
-            });
-            firePointer(window, "pointermove", {
-                pointerId: 10,
-                buttons: 1,
-                clientX: 20,
-                clientY: 10,
-            });
-            firePointer(window, "pointerup", {
-                pointerId: 10,
-                clientX: 20,
-                clientY: 10,
-            });
-
-            expect(getFolderAssignments()).toEqual({});
-        } finally {
-            delete (document as Partial<Document>).elementFromPoint;
-        }
-    });
 
     it("completes an agent row drag when pointerup is received on window", () => {
         const alpha = createSession("session-alpha", "Alpha task");

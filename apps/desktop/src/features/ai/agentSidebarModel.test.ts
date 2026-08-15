@@ -46,7 +46,6 @@ function metadata(
         completedAt: null,
         snoozedAt: null,
         snoozedUntil: null,
-        folderId: null,
         lastVisitedAt: null,
         ...overrides,
     };
@@ -60,7 +59,6 @@ function project(
     return buildAgentSidebarProjection({
         sessions,
         metadataBySessionId,
-        folders: [{ id: "folder", name: "Folder", createdAt: 1 }],
         pinnedOrder: [],
         activeOrder: [],
         now,
@@ -110,7 +108,7 @@ describe("agentSidebarModel", () => {
         const review = session("review", "review_required", 102, {
             parentSessionId: "root",
         });
-        expect(project([root, failed, review]).unfiledActiveGroups[0].status).toBe(
+        expect(project([root, failed, review]).activeGroups[0].status).toBe(
             "review",
         );
     });
@@ -128,7 +126,7 @@ describe("agentSidebarModel", () => {
             "pin",
         ]);
         expect(
-            result.unfiledActiveGroups.map((group) => group.root.sessionId),
+            result.activeGroups.map((group) => group.root.sessionId),
         ).toEqual(["active"]);
         expect(result.snoozedGroups.map((group) => group.root.sessionId)).toEqual([
             "sleep",
@@ -151,7 +149,7 @@ describe("agentSidebarModel", () => {
             { root: metadata({ snoozedAt: 10, snoozedUntil: 2_000 }) },
         );
         expect(result.snoozedGroups).toHaveLength(wakes ? 0 : 1);
-        expect(result.unfiledActiveGroups).toHaveLength(wakes ? 1 : 0);
+        expect(result.activeGroups).toHaveLength(wakes ? 1 : 0);
     });
 
     it("wakes an expired pinned snooze back into pinned", () => {
@@ -178,23 +176,7 @@ describe("agentSidebarModel", () => {
             { new: metadata({ completedAt: 200 }) },
         );
         expect(old.completedGroups).toHaveLength(1);
-        expect(newer.unfiledActiveGroups).toHaveLength(1);
-    });
-
-    it("keeps folder membership without duplicating non-active groups", () => {
-        const result = project(
-            [session("foldered"), session("pinned")],
-            {
-                foldered: metadata({ folderId: "folder" }),
-                pinned: metadata({ folderId: "folder", pinnedAt: 1 }),
-            },
-        );
-        expect(result.activeFolders[0].groups.map((group) => group.root.sessionId)).toEqual([
-            "foldered",
-        ]);
-        expect(result.pinnedGroups.map((group) => group.root.sessionId)).toEqual([
-            "pinned",
-        ]);
+        expect(newer.activeGroups).toHaveLength(1);
     });
 
     it("honors preferred ids, drops stale ids, and appends keyless roots", () => {
@@ -204,7 +186,7 @@ describe("agentSidebarModel", () => {
             session("manual", "idle", 0),
         ]);
         const ordered = applyPreferredAgentOrder(
-            projection.unfiledActiveGroups,
+            projection.activeGroups,
             ["stale", "manual"],
         );
         expect(ordered.map((group) => group.root.sessionId)).toEqual([
@@ -224,9 +206,9 @@ describe("agentSidebarModel", () => {
             session("older", "streaming", 1),
         ]);
         expect(
-            working.unfiledActiveGroups.map((group) => group.root.sessionId),
+            working.activeGroups.map((group) => group.root.sessionId),
         ).toEqual(
-            idle.unfiledActiveGroups.map((group) => group.root.sessionId),
+            idle.activeGroups.map((group) => group.root.sessionId),
         );
     });
 
@@ -249,7 +231,6 @@ describe("agentSidebarModel", () => {
             metadataBySessionId: {
                 root: metadata({ completedAt: 10 }),
             },
-            folders: [],
             filterText: "needle",
             now: 100,
         });
