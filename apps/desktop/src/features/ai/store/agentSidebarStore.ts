@@ -9,26 +9,16 @@ import {
     reorderVisiblePinnedAgents,
 } from "../agentSidebarOrder";
 
-export interface ChatFolder {
-    id: string;
-    name: string;
-    createdAt: number;
-}
-
 export interface AgentSidebarSessionMetadata {
     pinnedAt: number | null;
     completedAt: number | null;
     snoozedAt: number | null;
     snoozedUntil: number | null;
-    folderId: string | null;
     lastVisitedAt: number | null;
 }
 
 export interface PersistedAgentSidebarStateV1 {
     version: 1;
-    folders: Record<string, ChatFolder>;
-    folderOrder: string[];
-    collapsedFolderIds: string[];
     collapsedParentSessionIds: string[];
     pinnedOrder: string[];
     activeOrder: string[];
@@ -42,12 +32,6 @@ interface AgentSidebarStore extends PersistedAgentSidebarStateV1 {
     legacyMigrationPending: boolean;
     setVaultPath: (vaultPath: string | null) => void;
     migrateLegacyMetadata: (rootSessionIds: Iterable<string>) => void;
-    createFolder: (name: string) => string | null;
-    renameFolder: (folderId: string, name: string) => void;
-    deleteFolder: (folderId: string) => void;
-    reorderFolder: (folderId: string, destinationIndex: number) => void;
-    moveSessionToFolder: (sessionId: string, folderId: string | null) => void;
-    toggleFolderCollapsed: (folderId: string) => void;
     toggleParentCollapsed: (sessionId: string) => void;
     setSnoozedShelfExpanded: (expanded: boolean) => void;
     setCompletedShelfExpanded: (expanded: boolean) => void;
@@ -76,16 +60,12 @@ interface AgentSidebarStore extends PersistedAgentSidebarStateV1 {
 }
 
 const STORAGE_PREFIX = "neverwrite.agents.sidebar.v1";
-const LEGACY_FOLDERS_PREFIX = "neverwrite.chats.folders";
 const LEGACY_PINNED_KEY = "neverwrite.chats.pinnedIds";
 const LEGACY_COLLAPSED_PARENTS_KEY =
     "neverwrite.ai.agentsSidebar.collapsedParents";
 
 export const EMPTY_AGENT_SIDEBAR_STATE: PersistedAgentSidebarStateV1 = {
     version: 1,
-    folders: {},
-    folderOrder: [],
-    collapsedFolderIds: [],
     collapsedParentSessionIds: [],
     pinnedOrder: [],
     activeOrder: [],
@@ -99,7 +79,6 @@ const EMPTY_SESSION_METADATA: AgentSidebarSessionMetadata = {
     completedAt: null,
     snoozedAt: null,
     snoozedUntil: null,
-    folderId: null,
     lastVisitedAt: null,
 };
 
@@ -133,59 +112,24 @@ function uniqueStrings(value: unknown, allowed?: ReadonlySet<string>) {
     return result;
 }
 
-function normalizeFolderName(name: string) {
-    return name.trim().replace(/\s+/g, " ").slice(0, 80);
-}
-
-function orderedFolderIds(
-    folders: Record<string, ChatFolder>,
-    requestedOrder: unknown,
-) {
-    const known = new Set(Object.keys(folders));
-    const requested = uniqueStrings(requestedOrder, known);
-    const fallback = Object.values(folders)
-        .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
-        .map((folder) => folder.id);
-    return [...requested, ...fallback.filter((id) => !requested.includes(id))];
-}
-
 function normalizePersistedState(value: unknown): PersistedAgentSidebarStateV1 {
     if (!value || typeof value !== "object") return EMPTY_AGENT_SIDEBAR_STATE;
     const candidate = value as Partial<PersistedAgentSidebarStateV1>;
-    const folders: Record<string, ChatFolder> = {};
-    for (const [id, folder] of Object.entries(candidate.folders ?? {})) {
-        const name = normalizeFolderName(folder?.name ?? "");
-        if (!id || !name) continue;
-        folders[id] = {
-            id,
-            name,
-            createdAt: finiteTimestamp(folder?.createdAt) ?? 0,
-        };
-    }
-    const folderIds = new Set(Object.keys(folders));
     const sessionMetadata: Record<string, AgentSidebarSessionMetadata> = {};
     for (const [sessionId, metadata] of Object.entries(
         candidate.sessionMetadata ?? {},
     )) {
         if (!sessionId || !metadata || typeof metadata !== "object") continue;
-        const folderId =
-            typeof metadata.folderId === "string" && folderIds.has(metadata.folderId)
-                ? metadata.folderId
-                : null;
         sessionMetadata[sessionId] = {
             pinnedAt: finiteTimestamp(metadata.pinnedAt),
             completedAt: finiteTimestamp(metadata.completedAt),
             snoozedAt: finiteTimestamp(metadata.snoozedAt),
             snoozedUntil: finiteTimestamp(metadata.snoozedUntil),
-            folderId,
             lastVisitedAt: finiteTimestamp(metadata.lastVisitedAt),
         };
     }
     return {
         version: 1,
-        folders,
-        folderOrder: orderedFolderIds(folders, candidate.folderOrder),
-        collapsedFolderIds: uniqueStrings(candidate.collapsedFolderIds, folderIds),
         collapsedParentSessionIds: uniqueStrings(
             candidate.collapsedParentSessionIds,
         ),
@@ -200,7 +144,7 @@ function normalizePersistedState(value: unknown): PersistedAgentSidebarStateV1 {
 function readState(vaultPath: string | null) {
     if (!vaultPath) return { state: EMPTY_AGENT_SIDEBAR_STATE, exists: false };
     const raw = safeStorageGetItem(getAgentSidebarStorageKey(vaultPath));
-    if (!raw) return { state: readLegacyFolders(vaultPath), exists: false };
+    if (!raw) return { state: EMPTY_AGENT_SIDEBAR_STATE, exists: false };
     try {
         return { state: normalizePersistedState(JSON.parse(raw)), exists: true };
     } catch (error) {
@@ -211,45 +155,9 @@ function readState(vaultPath: string | null) {
     }
 }
 
-function readLegacyFolders(vaultPath: string): PersistedAgentSidebarStateV1 {
-    const raw =
-        safeStorageGetItem(
-            `${LEGACY_FOLDERS_PREFIX}:${encodeURIComponent(vaultPath)}`,
-        ) ?? safeStorageGetItem(LEGACY_FOLDERS_PREFIX);
-    if (!raw) return EMPTY_AGENT_SIDEBAR_STATE;
-    try {
-        const legacy = JSON.parse(raw) as {
-            folders?: Record<string, ChatFolder>;
-            folderOrder?: string[];
-            sessionFolderIds?: Record<string, string>;
-            collapsedFolderIds?: string[];
-        };
-        const base = normalizePersistedState({
-            version: 1,
-            folders: legacy.folders,
-            folderOrder: legacy.folderOrder,
-            collapsedFolderIds: legacy.collapsedFolderIds,
-        });
-        const metadata = { ...base.sessionMetadata };
-        for (const [sessionId, folderId] of Object.entries(
-            legacy.sessionFolderIds ?? {},
-        )) {
-            if (base.folders[folderId]) {
-                metadata[sessionId] = { ...EMPTY_SESSION_METADATA, folderId };
-            }
-        }
-        return { ...base, sessionMetadata: metadata };
-    } catch {
-        return EMPTY_AGENT_SIDEBAR_STATE;
-    }
-}
-
 function persistedSnapshot(state: AgentSidebarStore): PersistedAgentSidebarStateV1 {
     return {
         version: 1,
-        folders: state.folders,
-        folderOrder: state.folderOrder,
-        collapsedFolderIds: state.collapsedFolderIds,
         collapsedParentSessionIds: state.collapsedParentSessionIds,
         pinnedOrder: state.pinnedOrder,
         activeOrder: state.activeOrder,
@@ -355,83 +263,6 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                 const next = mutate(state, { sessionMetadata });
                 return { ...next, legacyMigrationPending: false };
             }
-        }),
-    createFolder: (rawName) => {
-        const name = normalizeFolderName(rawName);
-        if (!name) return null;
-        const id = crypto.randomUUID();
-        set((state) =>
-            mutate(state, {
-                folders: {
-                    ...state.folders,
-                    [id]: { id, name, createdAt: Date.now() },
-                },
-                folderOrder: [...orderedFolderIds(state.folders, state.folderOrder), id],
-            }),
-        );
-        return id;
-    },
-    renameFolder: (folderId, rawName) =>
-        set((state) => {
-            const folder = state.folders[folderId];
-            const name = normalizeFolderName(rawName);
-            if (!folder || !name || folder.name === name) return state;
-            return mutate(state, {
-                folders: { ...state.folders, [folderId]: { ...folder, name } },
-            });
-        }),
-    deleteFolder: (folderId) =>
-        set((state) => {
-            if (!state.folders[folderId]) return state;
-            const folders = { ...state.folders };
-            delete folders[folderId];
-            const sessionMetadata = Object.fromEntries(
-                Object.entries(state.sessionMetadata).map(([id, metadata]) => [
-                    id,
-                    metadata.folderId === folderId
-                        ? { ...metadata, folderId: null }
-                        : metadata,
-                ]),
-            );
-            return mutate(state, {
-                folders,
-                folderOrder: state.folderOrder.filter((id) => id !== folderId),
-                collapsedFolderIds: state.collapsedFolderIds.filter(
-                    (id) => id !== folderId,
-                ),
-                sessionMetadata,
-            });
-        }),
-    reorderFolder: (folderId, destinationIndex) =>
-        set((state) => {
-            if (!state.folders[folderId]) return state;
-            const folderOrder = moveInOrder(
-                orderedFolderIds(state.folders, state.folderOrder),
-                folderId,
-                destinationIndex,
-            );
-            return mutate(state, { folderOrder });
-        }),
-    moveSessionToFolder: (sessionId, folderId) =>
-        set((state) => {
-            if (folderId && !state.folders[folderId]) return state;
-            const current = metadataFor(state, sessionId);
-            if (current.folderId === folderId) return state;
-            return mutate(state, {
-                sessionMetadata: {
-                    ...state.sessionMetadata,
-                    [sessionId]: { ...current, folderId },
-                },
-                activeOrder: state.activeOrder.filter((id) => id !== sessionId),
-            });
-        }),
-    toggleFolderCollapsed: (folderId) =>
-        set((state) => {
-            if (!state.folders[folderId]) return state;
-            const collapsed = new Set(state.collapsedFolderIds);
-            if (collapsed.has(folderId)) collapsed.delete(folderId);
-            else collapsed.add(folderId);
-            return mutate(state, { collapsedFolderIds: [...collapsed] });
         }),
     toggleParentCollapsed: (sessionId) =>
         set((state) => {

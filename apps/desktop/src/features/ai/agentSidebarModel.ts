@@ -7,10 +7,7 @@ import {
     buildAiSessionHierarchyGroups,
     type AiSessionHierarchyGroup,
 } from "./sessionHierarchy";
-import type {
-    AgentSidebarSessionMetadata,
-    ChatFolder,
-} from "./store/agentSidebarStore";
+import type { AgentSidebarSessionMetadata } from "./store/agentSidebarStore";
 import type { AIChatMessage, AIChatSession } from "./types";
 
 export type AgentSidebarStatus =
@@ -29,17 +26,11 @@ export interface AgentSidebarGroup extends AiSessionHierarchyGroup {
     lastCompletedAt: number | null;
 }
 
-export interface AgentSidebarFolderGroup {
-    folder: ChatFolder;
-    groups: AgentSidebarGroup[];
-}
-
 export interface AgentSidebarProjectionInput {
     sessions: readonly AIChatSession[];
     metadataBySessionId: Readonly<
         Record<string, AgentSidebarSessionMetadata | undefined>
     >;
-    folders: readonly ChatFolder[];
     pinnedOrder?: readonly string[];
     activeOrder?: readonly string[];
     filterText?: string;
@@ -50,8 +41,7 @@ export interface AgentSidebarProjectionInput {
 export interface AgentSidebarProjection {
     rootSessionIds: string[];
     pinnedGroups: AgentSidebarGroup[];
-    activeFolders: AgentSidebarFolderGroup[];
-    unfiledActiveGroups: AgentSidebarGroup[];
+    activeGroups: AgentSidebarGroup[];
     snoozedGroups: AgentSidebarGroup[];
     completedGroups: AgentSidebarGroup[];
     searchResults: AgentSidebarGroup[];
@@ -62,7 +52,6 @@ const EMPTY_METADATA: AgentSidebarSessionMetadata = {
     completedAt: null,
     snoozedAt: null,
     snoozedUntil: null,
-    folderId: null,
     lastVisitedAt: null,
 };
 
@@ -282,7 +271,6 @@ function groupMatchesFilter(group: AgentSidebarGroup, normalizedFilter: string) 
 export function buildAgentSidebarProjection({
     sessions,
     metadataBySessionId,
-    folders,
     pinnedOrder = [],
     activeOrder = [],
     filterText = "",
@@ -301,8 +289,7 @@ export function buildAgentSidebarProjection({
         return {
             rootSessionIds: hierarchy.rootSessionIds,
             pinnedGroups: [],
-            activeFolders: [],
-            unfiledActiveGroups: [],
+            activeGroups: [],
             snoozedGroups: [],
             completedGroups: [],
             searchResults: filteredHierarchy.groups
@@ -330,25 +317,10 @@ export function buildAgentSidebarProjection({
         }
     }
 
-    const orderedActive = applyPreferredAgentOrder(active, activeOrder);
-    const activeByFolder = new Map<string, AgentSidebarGroup[]>();
-    for (const folder of folders) activeByFolder.set(folder.id, []);
-    const unfiledActiveGroups: AgentSidebarGroup[] = [];
-    for (const group of orderedActive) {
-        const folderId = metadataBySessionId[group.root.sessionId]?.folderId;
-        const folderGroups = folderId ? activeByFolder.get(folderId) : null;
-        if (folderGroups) folderGroups.push(group);
-        else unfiledActiveGroups.push(group);
-    }
-
     return {
         rootSessionIds: hierarchy.rootSessionIds,
         pinnedGroups: applyPreferredAgentOrder(pinned, pinnedOrder),
-        activeFolders: folders.map((folder) => ({
-            folder,
-            groups: activeByFolder.get(folder.id) ?? [],
-        })),
-        unfiledActiveGroups,
+        activeGroups: applyPreferredAgentOrder(active, activeOrder),
         snoozedGroups: snoozed.sort((left, right) => {
             const leftWake =
                 metadataBySessionId[left.root.sessionId]?.snoozedUntil ?? Infinity;

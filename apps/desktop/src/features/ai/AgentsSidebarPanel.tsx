@@ -5,7 +5,6 @@ import {
     useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
-    type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { confirm } from "@neverwrite/runtime";
@@ -46,10 +45,7 @@ import {
     isClaudeTerminalAgentSession,
 } from "./claudeTerminalAgentSession";
 import { useChatStore } from "./store/chatStore";
-import {
-    useAgentSidebarStore,
-    type ChatFolder,
-} from "./store/agentSidebarStore";
+import { useAgentSidebarStore } from "./store/agentSidebarStore";
 import type { AIChatSession } from "./types";
 import {
     CLAUDE_TERMINAL_RUNTIME_ID,
@@ -91,21 +87,6 @@ type AgentDragPreview = {
     title: string;
     runtimeId: string;
 };
-
-type EditingFolder = {
-    folderId: string;
-    name: string;
-};
-
-type FolderDropTarget = {
-    folderId: string;
-    position: "before" | "after";
-};
-
-type ChatSidebarDropTarget =
-    | { kind: "folder"; folderId: string }
-    | { kind: "unfiled" }
-    | null;
 
 type AgentRowDropTarget = {
     sessionId: string;
@@ -203,27 +184,6 @@ function isSubagentSession(session: AIChatSession) {
 
 function scaleMetric(base: number, scale: number, min: number) {
     return Math.max(min, Math.round(base * scale * 10) / 10);
-}
-
-function getChatSidebarDropTargetAtPoint(
-    clientX: number,
-    clientY: number,
-): ChatSidebarDropTarget {
-    if (
-        typeof document === "undefined" ||
-        typeof document.elementFromPoint !== "function"
-    ) {
-        return null;
-    }
-    const target = document.elementFromPoint(clientX, clientY);
-    if (!(target instanceof Element)) return null;
-    if (target.closest("[data-agent-session-id]")) return null;
-    const folderId = target.closest<HTMLElement>("[data-chat-folder-id]")
-        ?.dataset.chatFolderId;
-    if (folderId) return { kind: "folder", folderId };
-    return target.closest("[data-chat-unfiled-drop-zone]")
-        ? { kind: "unfiled" }
-        : null;
 }
 
 function getAgentRowDropTargetAtPoint(
@@ -327,37 +287,13 @@ export function AgentsSidebarPanel() {
             ),
         [sessionMetadata],
     );
-    const sessionFolderIds = useMemo(
-        () =>
-            Object.fromEntries(
-                Object.entries(sessionMetadata).flatMap(([sessionId, metadata]) =>
-                    metadata.folderId ? [[sessionId, metadata.folderId]] : [],
-                ),
-            ),
-        [sessionMetadata],
-    );
     const togglePinnedChat = useAgentSidebarStore((state) => state.togglePin);
     const unpinChat = useAgentSidebarStore((state) => state.unpinSession);
-    const chatFolders = useAgentSidebarStore((state) => state.folders);
-    const collapsedFolderIds = useAgentSidebarStore(
-        (state) => state.collapsedFolderIds,
-    );
     const collapsedParentSessionIds = useAgentSidebarStore(
         (state) => state.collapsedParentSessionIds,
     );
-    const folderOrder = useAgentSidebarStore((state) => state.folderOrder);
     const pinnedOrder = useAgentSidebarStore((state) => state.pinnedOrder);
     const activeOrder = useAgentSidebarStore((state) => state.activeOrder);
-    const createFolder = useAgentSidebarStore((state) => state.createFolder);
-    const renameFolder = useAgentSidebarStore((state) => state.renameFolder);
-    const deleteFolder = useAgentSidebarStore((state) => state.deleteFolder);
-    const reorderFolder = useAgentSidebarStore((state) => state.reorderFolder);
-    const moveSessionToFolder = useAgentSidebarStore(
-        (state) => state.moveSessionToFolder,
-    );
-    const toggleFolderCollapsed = useAgentSidebarStore(
-        (state) => state.toggleFolderCollapsed,
-    );
     const toggleCollapsedParent = useAgentSidebarStore(
         (state) => state.toggleParentCollapsed,
     );
@@ -429,25 +365,11 @@ export function AgentsSidebarPanel() {
     const normalizedFilter = filterText.trim().toLowerCase();
     const hasFilter = normalizedFilter.length > 0;
     const [now, setNow] = useState(() => Date.now());
-    const orderedFolders = useMemo(() => {
-        const unordered = Object.values(chatFolders).sort(
-            (left, right) => left.createdAt - right.createdAt,
-        );
-        const byId = new Map(unordered.map((folder) => [folder.id, folder]));
-        const ordered = folderOrder.flatMap((id) => {
-            const folder = byId.get(id);
-            if (!folder) return [];
-            byId.delete(id);
-            return [folder];
-        });
-        return [...ordered, ...unordered.filter((folder) => byId.has(folder.id))];
-    }, [chatFolders, folderOrder]);
     const projection = useMemo(
         () =>
             buildAgentSidebarProjection({
                 sessions,
                 metadataBySessionId: sessionMetadata,
-                folders: orderedFolders,
                 pinnedOrder,
                 activeOrder,
                 filterText,
@@ -461,7 +383,6 @@ export function AgentsSidebarPanel() {
             focusedTerminalAgentSessionId,
             focusedWorkspaceChatSessionId,
             now,
-            orderedFolders,
             pinnedOrder,
             sessionMetadata,
             sessions,
@@ -470,8 +391,7 @@ export function AgentsSidebarPanel() {
     const allProjectedGroups = useMemo(
         () => [
             ...projection.pinnedGroups,
-            ...projection.activeFolders.flatMap((folder) => folder.groups),
-            ...projection.unfiledActiveGroups,
+            ...projection.activeGroups,
             ...projection.snoozedGroups,
             ...projection.completedGroups,
             ...projection.searchResults,
@@ -527,19 +447,9 @@ export function AgentsSidebarPanel() {
         sessionInventoryLoaded,
     ]);
     const pinnedGroups = projection.pinnedGroups;
-    const folderGroups = useMemo(
-        () =>
-            new Map(
-                projection.activeFolders.map(({ folder, groups }) => [
-                    folder.id,
-                    groups,
-                ]),
-            ),
-        [projection.activeFolders],
-    );
-    const unfiledGroups = hasFilter
+    const activeGroups = hasFilter
         ? projection.searchResults
-        : projection.unfiledActiveGroups;
+        : projection.activeGroups;
 
     const totalCount = sessions.length;
     const filteredCount = (hasFilter
@@ -621,19 +531,9 @@ export function AgentsSidebarPanel() {
     >(null);
     const [newChatMenu, setNewChatMenu] =
         useState<ContextMenuState<void> | null>(null);
-    const [folderMenu, setFolderMenu] = useState<
-        ContextMenuState<ChatFolder> | null
-    >(null);
-    const [editingFolder, setEditingFolder] = useState<EditingFolder | null>(
-        null,
-    );
     const [dragPreview, setDragPreview] = useState<AgentDragPreview | null>(
         null,
     );
-    const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(
-        null,
-    );
-    const [isDraggingOverUnfiled, setIsDraggingOverUnfiled] = useState(false);
     const [rowDropTarget, setRowDropTarget] =
         useState<AgentRowDropTarget | null>(null);
     const [keyboardSort, setKeyboardSort] = useState<{
@@ -642,147 +542,6 @@ export function AgentsSidebarPanel() {
         originalOrder: string[];
     } | null>(null);
     const [sortAnnouncement, setSortAnnouncement] = useState("");
-    const folderDragRef = useRef<{
-        pointerId: number;
-        folderId: string;
-        startX: number;
-        startY: number;
-        active: boolean;
-        folderIds: string[];
-    } | null>(null);
-    const folderDragCleanupRef = useRef<(() => void) | null>(null);
-    const suppressFolderClickRef = useRef(false);
-    const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
-    const [folderDropTarget, setFolderDropTarget] =
-        useState<FolderDropTarget | null>(null);
-
-    useEffect(
-        () => () => {
-            folderDragCleanupRef.current?.();
-            folderDragCleanupRef.current = null;
-        },
-        [],
-    );
-
-    const clearFolderDrag = useCallback(() => {
-        folderDragRef.current = null;
-        folderDragCleanupRef.current?.();
-        folderDragCleanupRef.current = null;
-        setDraggedFolderId(null);
-        setFolderDropTarget(null);
-    }, []);
-
-    const handleFolderPointerDown = useCallback(
-        (event: ReactPointerEvent<HTMLElement>, folderId: string) => {
-            if (event.button !== 0 || editingFolder?.folderId === folderId) return;
-
-            const target = event.target;
-            if (target instanceof Element && target.closest("input,button")) return;
-
-            folderDragCleanupRef.current?.();
-            const state = {
-                pointerId: event.pointerId,
-                folderId,
-                startX: event.clientX,
-                startY: event.clientY,
-                active: false,
-                folderIds: orderedFolders.map((folder) => folder.id),
-            };
-            folderDragRef.current = state;
-
-            const updateTarget = (moveEvent: PointerEvent) => {
-                const current = folderDragRef.current;
-                if (!current || current.pointerId !== moveEvent.pointerId) return;
-                if (!current.active) {
-                    if (
-                        Math.hypot(
-                            moveEvent.clientX - current.startX,
-                            moveEvent.clientY - current.startY,
-                        ) < 5
-                    ) {
-                        return;
-                    }
-                    current.active = true;
-                    setDraggedFolderId(current.folderId);
-                }
-                moveEvent.preventDefault();
-                const element = document.elementFromPoint(
-                    moveEvent.clientX,
-                    moveEvent.clientY,
-                );
-                const header = element?.closest<HTMLElement>(
-                    "[data-chat-folder-header]",
-                );
-                const targetFolderId = header?.dataset.chatFolderHeader;
-                if (!targetFolderId || targetFolderId === current.folderId) {
-                    setFolderDropTarget(null);
-                    return;
-                }
-                const rect = header.getBoundingClientRect();
-                setFolderDropTarget({
-                    folderId: targetFolderId,
-                    position:
-                        moveEvent.clientY < rect.top + rect.height / 2
-                            ? "before"
-                            : "after",
-                });
-            };
-            const finish = (upEvent: PointerEvent, cancelled = false) => {
-                const current = folderDragRef.current;
-                if (!current || current.pointerId !== upEvent.pointerId) return;
-                // Calculate from the final pointer position instead of React
-                // state, which can be stale inside this window listener.
-                const element = document.elementFromPoint(
-                    upEvent.clientX,
-                    upEvent.clientY,
-                );
-                const header = element?.closest<HTMLElement>(
-                    "[data-chat-folder-header]",
-                );
-                const targetFolderId = header?.dataset.chatFolderHeader;
-                const rect = header?.getBoundingClientRect();
-                const finalTarget =
-                    targetFolderId && targetFolderId !== current.folderId && rect
-                        ? {
-                              folderId: targetFolderId,
-                              position:
-                                  upEvent.clientY < rect.top + rect.height / 2
-                                      ? ("before" as const)
-                                      : ("after" as const),
-                          }
-                        : null;
-                const wasActive = current.active;
-                clearFolderDrag();
-                if (!wasActive || cancelled || !finalTarget) return;
-
-                const remainingIds = current.folderIds.filter(
-                    (id) => id !== current.folderId,
-                );
-                const targetIndex = remainingIds.indexOf(finalTarget.folderId);
-                if (targetIndex < 0) return;
-                reorderFolder(
-                    current.folderId,
-                    targetIndex + (finalTarget.position === "after" ? 1 : 0),
-                );
-                suppressFolderClickRef.current = true;
-                window.requestAnimationFrame(() => {
-                    suppressFolderClickRef.current = false;
-                });
-            };
-            const onMove = (moveEvent: PointerEvent) => updateTarget(moveEvent);
-            const onUp = (upEvent: PointerEvent) => finish(upEvent);
-            const onCancel = (cancelEvent: PointerEvent) => finish(cancelEvent, true);
-            window.addEventListener("pointermove", onMove);
-            window.addEventListener("pointerup", onUp);
-            window.addEventListener("pointercancel", onCancel);
-            folderDragCleanupRef.current = () => {
-                window.removeEventListener("pointermove", onMove);
-                window.removeEventListener("pointerup", onUp);
-                window.removeEventListener("pointercancel", onCancel);
-            };
-        },
-        [clearFolderDrag, editingFolder?.folderId, orderedFolders, reorderFolder],
-    );
 
     const newChatMenuEntries = useMemo<ContextMenuEntry[]>(() => {
         return [
@@ -820,45 +579,6 @@ export function AgentsSidebarPanel() {
         [],
     );
 
-    const handleCreateFolder = useCallback(() => {
-        const folderId = createFolder("New Folder");
-        if (folderId) {
-            setEditingFolder({
-                folderId,
-                name: "New Folder",
-            });
-        }
-    }, [createFolder]);
-
-    const commitFolderRename = useCallback(() => {
-        if (!editingFolder) return;
-        const name = editingFolder.name.trim();
-        if (name) renameFolder(editingFolder.folderId, name);
-        setEditingFolder(null);
-    }, [editingFolder, renameFolder]);
-
-    const startFolderRename = useCallback((folder: ChatFolder) => {
-        setEditingFolder({
-            folderId: folder.id,
-            name: folder.name,
-        });
-    }, []);
-
-    const handleFolderContextMenu = useCallback(
-        (event: ReactMouseEvent<HTMLElement>, folder: ChatFolder) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setContextMenu(null);
-            setNewChatMenu(null);
-            setFolderMenu({
-                x: event.clientX,
-                y: event.clientY,
-                payload: folder,
-            });
-        },
-        [],
-    );
-
     const activeSidebarId =
         focusedWorkspaceChatSessionId ??
         (focusedTerminalAgentSessionId &&
@@ -891,19 +611,7 @@ export function AgentsSidebarPanel() {
         if (scope === "pinned") {
             return projection.pinnedGroups.map((group) => group.root.sessionId);
         }
-        if (scope === "active:unfiled") {
-            return projection.unfiledActiveGroups.map(
-                (group) => group.root.sessionId,
-            );
-        }
-        const folderId = scope.startsWith("active:folder:")
-            ? scope.slice("active:folder:".length)
-            : null;
-        return (
-            projection.activeFolders.find(
-                ({ folder }) => folder.id === folderId,
-            )?.groups ?? []
-        ).map((group) => group.root.sessionId);
+        return projection.activeGroups.map((group) => group.root.sessionId);
     };
 
     const applyScopedReorder = (
@@ -1022,23 +730,14 @@ export function AgentsSidebarPanel() {
                 runtimeId: session.runtimeId,
             });
         };
-        const updateFolderDropTarget = (clientX: number, clientY: number) => {
-            const target = canPin
-                ? getChatSidebarDropTargetAtPoint(clientX, clientY)
-                : null;
-            setDragOverFolderId(
-                target?.kind === "folder" ? target.folderId : null,
-            );
-            setIsDraggingOverUnfiled(target?.kind === "unfiled");
+        const updateRowDropTarget = (clientX: number, clientY: number) => {
             setRowDropTarget(
-                target
-                    ? null
-                    : getAgentRowDropTargetAtPoint(
-                          clientX,
-                          clientY,
-                          session.sessionId,
-                          options?.reorderScope,
-                      ),
+                getAgentRowDropTargetAtPoint(
+                    clientX,
+                    clientY,
+                    session.sessionId,
+                    options?.reorderScope,
+                ),
             );
         };
 
@@ -1106,7 +805,7 @@ export function AgentsSidebarPanel() {
                 onContextMenu={(event) => handleContextMenu(event, session)}
                 onDragStart={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
-                    updateFolderDropTarget(clientX, clientY);
+                    updateRowDropTarget(clientX, clientY);
                     emitAgentSidebarDrag({
                         phase: "start",
                         x: clientX,
@@ -1117,7 +816,7 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragMove={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
-                    updateFolderDropTarget(clientX, clientY);
+                    updateRowDropTarget(clientX, clientY);
                     emitAgentSidebarDrag({
                         phase: "move",
                         x: clientX,
@@ -1128,24 +827,14 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragEnd={({ clientX, clientY }) => {
                     setDragPreview(null);
-                    const target = canPin
-                        ? getChatSidebarDropTargetAtPoint(clientX, clientY)
-                        : null;
-                    const reorderTarget = target
-                        ? null
-                        : getAgentRowDropTargetAtPoint(
-                              clientX,
-                              clientY,
-                              session.sessionId,
-                              options?.reorderScope,
-                          );
-                    const movedWithinSidebar =
-                        target !== null || reorderTarget !== null;
-                    if (target?.kind === "folder") {
-                        moveSessionToFolder(session.sessionId, target.folderId);
-                    } else if (target?.kind === "unfiled") {
-                        moveSessionToFolder(session.sessionId, null);
-                    } else if (reorderTarget && options?.reorderScope) {
+                    const reorderTarget = getAgentRowDropTargetAtPoint(
+                        clientX,
+                        clientY,
+                        session.sessionId,
+                        options?.reorderScope,
+                    );
+                    const movedWithinSidebar = reorderTarget !== null;
+                    if (reorderTarget && options?.reorderScope) {
                         const scopeIds = getReorderScopeIds(options.reorderScope);
                         const remaining = scopeIds.filter(
                             (id) => id !== session.sessionId,
@@ -1162,8 +851,6 @@ export function AgentsSidebarPanel() {
                             );
                         }
                     }
-                    setDragOverFolderId(null);
-                    setIsDraggingOverUnfiled(false);
                     setRowDropTarget(null);
                     emitAgentSidebarDrag({
                         // Sidebar drops belong to the sidebar; prevent the
@@ -1177,8 +864,6 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragCancel={() => {
                     setDragPreview(null);
-                    setDragOverFolderId(null);
-                    setIsDraggingOverUnfiled(false);
                     setRowDropTarget(null);
                     emitAgentSidebarDrag({
                         phase: "cancel",
@@ -1288,9 +973,7 @@ export function AgentsSidebarPanel() {
                             ? rootMetadata?.pinnedAt !== null &&
                               rootMetadata?.pinnedAt !== undefined
                                 ? "pinned"
-                                : rootMetadata?.folderId
-                                  ? `active:folder:${rootMetadata.folderId}`
-                                  : "active:unfiled"
+                                : "active"
                             : undefined,
                     onToggleCollapse:
                         group.children.length > 0
@@ -1310,166 +993,6 @@ export function AgentsSidebarPanel() {
                       )
                     : null}
             </div>
-        );
-    };
-
-    const renderFolder = (folder: ChatFolder) => {
-        const groups = folderGroups.get(folder.id) ?? [];
-        const collapsed = collapsedFolderIds.includes(folder.id);
-        const isRenaming = editingFolder?.folderId === folder.id;
-        return (
-            <section
-                key={folder.id}
-                data-chat-folder-id={folder.id}
-                className="mt-1 flex flex-col rounded"
-                style={{
-                    backgroundColor:
-                        dragOverFolderId === folder.id
-                            ? "color-mix(in srgb, var(--accent) 10%, transparent)"
-                            : "transparent",
-                    outline:
-                        dragOverFolderId === folder.id
-                            ? "1px solid color-mix(in srgb, var(--accent) 55%, transparent)"
-                            : "1px solid transparent",
-                    borderTop:
-                        folderDropTarget?.folderId === folder.id &&
-                        folderDropTarget.position === "before"
-                            ? "2px solid var(--accent)"
-                            : "2px solid transparent",
-                    borderBottom:
-                        folderDropTarget?.folderId === folder.id &&
-                        folderDropTarget.position === "after"
-                            ? "2px solid var(--accent)"
-                            : "2px solid transparent",
-                    opacity: draggedFolderId === folder.id ? 0.55 : 1,
-                }}
-            >
-                <div
-                    data-chat-folder-header={folder.id}
-                    role="button"
-                    tabIndex={0}
-                    className="flex items-center gap-1.5 px-2 text-left text-[10px] font-semibold uppercase tracking-[0.09em]"
-                    style={{
-                        color: "var(--text-secondary)",
-                        opacity: 0.8,
-                        fontSize: metrics.header.fontSize,
-                        padding: `${scaleMetric(4, agentsSidebarScale / 100, 3)}px ${metrics.header.paddingX}px ${scaleMetric(3, agentsSidebarScale / 100, 2)}px`,
-                    }}
-                    title={collapsed ? "Expand folder" : "Collapse folder"}
-                    onClick={() => {
-                        if (suppressFolderClickRef.current) return;
-                        toggleFolderCollapsed(folder.id);
-                    }}
-                    onPointerDown={(event) =>
-                        handleFolderPointerDown(event, folder.id)
-                    }
-                    onContextMenu={(event) =>
-                        handleFolderContextMenu(event, folder)
-                    }
-                    onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            toggleFolderCollapsed(folder.id);
-                        }
-                    }}
-                >
-                    <svg
-                        width="9"
-                        height="9"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{
-                            transform: collapsed
-                                ? "rotate(-90deg)"
-                                : "rotate(0)",
-                            transition: "transform 120ms ease",
-                        }}
-                    >
-                        <path d="m4 6 4 4 4-4" />
-                    </svg>
-                    <svg
-                        data-chat-folder-icon
-                        aria-hidden="true"
-                        width="12"
-                        height="12"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="shrink-0"
-                    >
-                        <path d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h3l1.4 1.75h5.1a1.5 1.5 0 0 1 1.5 1.5v5.25a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5Z" />
-                    </svg>
-                    {isRenaming ? (
-                        <input
-                            autoFocus
-                            aria-label="Folder name"
-                            className="min-w-0 flex-1 rounded px-1 py-0.5 text-[10px] font-semibold normal-case tracking-normal outline-none"
-                            style={{
-                                color: "var(--text-primary)",
-                                backgroundColor: "var(--bg-primary)",
-                                border: "1px solid var(--accent)",
-                            }}
-                            value={editingFolder.name}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={(event) =>
-                                setEditingFolder((current) =>
-                                    current
-                                        ? {
-                                              ...current,
-                                              name: event.target.value,
-                                          }
-                                        : current,
-                                )
-                            }
-                            onBlur={commitFolderRename}
-                            onKeyDown={(event) => {
-                                event.stopPropagation();
-                                if (event.key === "Enter") {
-                                    event.preventDefault();
-                                    commitFolderRename();
-                                } else if (event.key === "Escape") {
-                                    event.preventDefault();
-                                    setEditingFolder(null);
-                                }
-                            }}
-                        />
-                    ) : (
-                        <span className="truncate">{folder.name}</span>
-                    )}
-                    <span style={{ opacity: 0.7 }}>{groups.length}</span>
-                </div>
-                {!collapsed ? (
-                    <div
-                        data-chat-folder-contents={folder.id}
-                        className="flex min-w-0 flex-col gap-0.5"
-                        style={{
-                            marginLeft: scaleMetric(
-                                8,
-                                agentsSidebarScale / 100,
-                                7,
-                            ),
-                        }}
-                    >
-                        {groups.length > 0 ? (
-                            groups.map((group) => renderGroup(group))
-                        ) : (
-                            <p
-                                className="px-3 py-1 text-[10.5px]"
-                                style={{ color: "var(--text-secondary)" }}
-                            >
-                                Drop chats here from their menu.
-                            </p>
-                        )}
-                    </div>
-                ) : null}
-            </section>
         );
     };
 
@@ -1526,34 +1049,6 @@ export function AgentsSidebarPanel() {
                           : `${totalCount} threads`}
                 </span>
                 <div className="flex items-center gap-1">
-                    <button
-                        type="button"
-                        onClick={handleCreateFolder}
-                        title="New folder"
-                        aria-label="New folder"
-                        className="ub-chrome-btn flex h-5 w-5 cursor-pointer items-center justify-center rounded"
-                        style={{
-                            width: metrics.actionButtonSize,
-                            height: metrics.actionButtonSize,
-                            color: "var(--text-secondary)",
-                            background: "transparent",
-                            border: "1px solid transparent",
-                        }}
-                    >
-                        <svg
-                            width={metrics.actionIconSize}
-                            height={metrics.actionIconSize}
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="M2.5 4.5h4l1.2 1.5h5.8v6.5h-11Z" />
-                            <path d="M8 8v4M6 10h4" />
-                        </svg>
-                    </button>
                     <button
                         type="button"
                         onClick={(event) => {
@@ -1632,10 +1127,10 @@ export function AgentsSidebarPanel() {
                     hasFilter ? (
                         <AgentsSidebarSection
                             title="Results"
-                            count={unfiledGroups.length}
+                            count={activeGroups.length}
                             headerMetrics={metrics.header}
                         >
-                            {unfiledGroups.map((group) => renderGroup(group))}
+                            {activeGroups.map((group) => renderGroup(group))}
                         </AgentsSidebarSection>
                     ) : (
                         <>
@@ -1652,17 +1147,13 @@ export function AgentsSidebarPanel() {
                                     style={{ background: "var(--border)" }}
                                 />
                             ) : null}
-                            {orderedFolders.map(renderFolder)}
                             <AgentsSidebarSection
                                 title="Active"
-                                count={unfiledGroups.length}
-                                showHeader={orderedFolders.length > 0}
-                                showWhenEmpty={orderedFolders.length > 0}
+                                count={activeGroups.length}
                                 dropTarget="all"
-                                isDropTarget={isDraggingOverUnfiled}
                                 headerMetrics={metrics.header}
                             >
-                                {unfiledGroups.map((group) => renderGroup(group))}
+                                {activeGroups.map((group) => renderGroup(group))}
                             </AgentsSidebarSection>
                             <AgentsSidebarShelf
                                 title="Snoozed"
@@ -1794,51 +1285,6 @@ export function AgentsSidebarPanel() {
                             action: () =>
                                 handleStartRename(contextMenu.payload),
                         },
-                        {
-                            label: "Move to Folder",
-                            disabled: isSubagentSession(contextMenu.payload),
-                            children: [
-                                {
-                                    label: "New Folder…",
-                                    action: () => {
-                                        const folderId = createFolder("New Folder");
-                                        if (!folderId) return;
-                                        moveSessionToFolder(
-                                            contextMenu.payload.sessionId,
-                                            folderId,
-                                        );
-                                        setEditingFolder({
-                                            folderId,
-                                            name: "New Folder",
-                                        });
-                                    },
-                                },
-                                { type: "separator" },
-                                {
-                                    label: "No Folder",
-                                    disabled: !sessionFolderIds[
-                                        contextMenu.payload.sessionId
-                                    ],
-                                    action: () =>
-                                        moveSessionToFolder(
-                                            contextMenu.payload.sessionId,
-                                            null,
-                                        ),
-                                },
-                                ...orderedFolders.map((folder) => ({
-                                    label: folder.name,
-                                    disabled:
-                                        sessionFolderIds[
-                                            contextMenu.payload.sessionId
-                                        ] === folder.id,
-                                    action: () =>
-                                        moveSessionToFolder(
-                                            contextMenu.payload.sessionId,
-                                            folder.id,
-                                        ),
-                                })),
-                            ],
-                        },
                         ...(isClaudeTerminalAgentSession(contextMenu.payload)
                             ? []
                             : [
@@ -1879,25 +1325,6 @@ export function AgentsSidebarPanel() {
                     onClose={() => setNewChatMenu(null)}
                     entries={newChatMenuEntries}
                     minWidth={132}
-                />
-            )}
-            {folderMenu && (
-                <ContextMenu
-                    menu={folderMenu}
-                    onClose={() => setFolderMenu(null)}
-                    entries={[
-                        {
-                            label: "Rename Folder",
-                            action: () => startFolderRename(folderMenu.payload),
-                        },
-                        { type: "separator" },
-                        {
-                            label: "Delete Folder",
-                            danger: true,
-                            action: () =>
-                                deleteFolder(folderMenu.payload.id),
-                        },
-                    ]}
                 />
             )}
             {dragPreview && typeof document !== "undefined"
