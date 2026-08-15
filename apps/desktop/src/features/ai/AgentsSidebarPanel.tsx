@@ -58,6 +58,7 @@ import { useInlineRename } from "./components/useInlineRename";
 import {
     AgentsSidebarItem,
     type AgentsSidebarItemMetrics,
+    type AgentSidebarTone,
 } from "./components/AgentsSidebarItem";
 import { AIProviderIcon } from "./components/AIProviderIcon";
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection";
@@ -257,7 +258,7 @@ function buildAgentsSidebarMetrics(scalePercent: number): {
             pinButtonSize: scaleMetric(16, scale, 14),
             pinIconSize: scaleMetric(11, scale, 10),
             cardMinHeight: scaleMetric(78, scale, 66),
-            cardRadius: scaleMetric(9, scale, 7),
+            cardRadius: scaleMetric(7, scale, 6),
         },
         header: {
             fontSize: scaleMetric(10, scale, 9),
@@ -959,6 +960,7 @@ export function AgentsSidebarPanel() {
             canPin?: boolean;
             canRename?: boolean;
             status?: AgentSidebarStatus;
+            tone?: AgentSidebarTone;
             workingStartedAt?: number | null;
             variant?: "card" | "slim";
             quickActionLabel?: string;
@@ -1027,6 +1029,7 @@ export function AgentsSidebarPanel() {
                 timestampLabel={timestampLabel}
                 status={status}
                 statusLabel={statusLabel}
+                tone={options?.tone}
                 variant={options?.variant ?? "card"}
                 isActive={activeSidebarId === session.sessionId}
                 isPinned={canPin && isPinned}
@@ -1204,6 +1207,14 @@ export function AgentsSidebarPanel() {
                     childCount: group.children.length,
                     isCollapsed: collapsed && !forceChildrenVisible,
                     status: group.status,
+                    // Lifecycle outranks status in the shelves: a snoozed row
+                    // advertises its return ticket, a completed one its rest.
+                    tone:
+                        lifecycle === "snoozed"
+                            ? "snoozed"
+                            : lifecycle === "completed"
+                              ? "done"
+                              : undefined,
                     workingStartedAt: group.workingStartedAt,
                     variant: lifecycle === "active" ? "card" : "slim",
                     quickActionLabel:

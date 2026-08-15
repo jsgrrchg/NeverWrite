@@ -6,6 +6,7 @@ import {
 import type { AgentSidebarStatus } from "../agentSidebarModel";
 import type { AIChatSession } from "../types";
 import { AIProviderIcon } from "./AIProviderIcon";
+import { getRuntimeDisplayName } from "../utils/runtimeMetadata";
 
 export interface AgentsSidebarItemMetrics {
     rowPaddingX: number;
@@ -32,6 +33,8 @@ export interface AgentsSidebarItemProps {
     timestampLabel: string;
     status?: AgentSidebarStatus;
     statusLabel?: string;
+    /** Overrides the hue/glyph when the row's lifecycle outranks its status. */
+    tone?: AgentSidebarTone;
     variant?: "card" | "slim";
     isActive: boolean;
     isPinned: boolean;
@@ -95,18 +98,41 @@ function safelyReleasePointerCapture(
     }
 }
 
-function statusColor(status: AgentSidebarStatus | undefined) {
-    switch (status) {
+// Snoozed rows advertise when they come BACK, not what they were doing, so
+// the wake label owns a hue of its own instead of borrowing the status color.
+export type AgentSidebarTone = AgentSidebarStatus | "snoozed";
+
+// t3code's rows are anchored by a full-color project favicon. NeverWrite has
+// no per-project mark, so the provider is the row's identity — brand hues let
+// you pick a runtime out of a long list without reading a word. Scoped to the
+// sidebar on purpose: tabs and the model picker keep the monochrome mark.
+function providerBrandColor(runtimeId: string) {
+    if (runtimeId.includes("claude")) return "#d97757";
+    if (runtimeId.includes("codex") || runtimeId.includes("openai")) {
+        return "#10a37f";
+    }
+    if (runtimeId.includes("opencode")) return "#f59e0b";
+    if (runtimeId.includes("grok")) return "#64748b";
+    if (runtimeId.includes("kilo")) return "#8b5cf6";
+    return "var(--text-secondary)";
+}
+
+function statusColor(tone: AgentSidebarTone | undefined) {
+    switch (tone) {
         case "review":
+            return "var(--agent-status-review)";
         case "approval":
+            return "var(--agent-status-approval)";
         case "input":
-            return "var(--diff-warn, #d97706)";
+            return "var(--agent-status-input)";
         case "working":
-            return "var(--accent)";
+            return "var(--agent-status-working)";
         case "failed":
-            return "var(--diff-remove, #f43f5e)";
+            return "var(--agent-status-failed)";
         case "done":
-            return "var(--diff-add, #22c55e)";
+            return "var(--agent-status-done)";
+        case "snoozed":
+            return "var(--agent-status-snoozed)";
         default:
             return "var(--text-secondary)";
     }
@@ -130,12 +156,123 @@ function PinIcon({ filled, size }: { filled: boolean; size: number }) {
     );
 }
 
+function ClockIcon({ size }: { size: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <circle cx="8" cy="8" r="6" />
+            <path d="M8 5.2v3l2 1.3" />
+        </svg>
+    );
+}
+
+function CheckCircleIcon({ size }: { size: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <circle cx="8" cy="8" r="6" />
+            <path d="M5.4 8.2 7 9.8l3.6-4" />
+        </svg>
+    );
+}
+
+function WorkingIcon({ size }: { size: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+        >
+            <circle cx="8" cy="8" r="6" strokeDasharray="2 2.6" />
+        </svg>
+    );
+}
+
+function AlarmIcon({ size }: { size: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <circle cx="8" cy="9" r="5" />
+            <path d="M8 6.6v2.4l1.6 1M2.6 3.6l1.8-1.6M13.4 3.6l-1.8-1.6" />
+        </svg>
+    );
+}
+
+// A filled dot is the loudest a glyph gets without becoming an icon set:
+// the attention states (review/approval/input/failed) all mean "blocked on
+// you", so they share one shape and let the hue say which kind of blocked.
+function AttentionDot({ size }: { size: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor">
+            <circle cx="8" cy="8" r="3.4" />
+        </svg>
+    );
+}
+
+// Every state carries a glyph so the sidebar reads as color + shape rather
+// than a column of grey text. Shapes are deliberately few: progress, done,
+// rest, wake, and one shared dot for everything blocked on you.
+function StatusGlyph({
+    tone,
+    size,
+}: {
+    tone: AgentSidebarTone | undefined;
+    size: number;
+}) {
+    switch (tone) {
+        case "working":
+            return <WorkingIcon size={size} />;
+        case "done":
+            return <CheckCircleIcon size={size} />;
+        case "ready":
+            return <ClockIcon size={size} />;
+        case "snoozed":
+            return <AlarmIcon size={size} />;
+        case "review":
+        case "approval":
+        case "input":
+        case "failed":
+            return <AttentionDot size={size} />;
+        default:
+            return null;
+    }
+}
+
 export function AgentsSidebarItem({
     session,
     title,
     timestampLabel,
     status = "ready",
     statusLabel,
+    tone,
     variant = "card",
     isActive,
     isPinned,
@@ -185,6 +322,14 @@ export function AgentsSidebarItem({
     const globalDragCleanupRef = useRef<(() => void) | null>(null);
     const suppressClickRef = useRef(false);
     const hasChildren = childCount > 0;
+    const statusIconSize = Math.max(9, Math.round(metrics.timestampFontSize + 1));
+    const effectiveTone: AgentSidebarTone = tone ?? status;
+    const toneColor = statusColor(effectiveTone);
+    const brandColor = providerBrandColor(session.runtimeId);
+    const runtimeName = getRuntimeDisplayName(session.runtimeId);
+    // A "ready" row has nothing to announce, and its timestamp already lives on
+    // the detail line — showing it twice is what made the card read as noise.
+    const showStatusLabel = effectiveTone !== "ready";
 
     useEffect(() => {
         dragCallbacksRef.current = {
@@ -408,7 +553,7 @@ export function AgentsSidebarItem({
             className={`flex shrink-0 items-center justify-center rounded transition-opacity ${
                 isPinned
                     ? "opacity-100"
-                    : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 focus:opacity-100"
+                    : "opacity-0 group-hover/row:opacity-100 group-focus-visible/row:opacity-100 focus:opacity-100"
             }`}
             style={{
                 width: metrics.pinButtonSize,
@@ -456,20 +601,33 @@ export function AgentsSidebarItem({
     const quickAction = quickActionLabel && onQuickAction ? (
         <button
             type="button"
-            className="rounded px-1.5 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 focus:opacity-100"
-            style={{ color: "var(--text-secondary)", fontSize: metrics.timestampFontSize }}
+            className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 font-medium"
+            style={{
+                // The quick action is the row's one affirmative verb, so it
+                // borrows the hue of the state it moves the thread into.
+                color:
+                    quickActionLabel === "Complete"
+                        ? "var(--agent-status-done)"
+                        : "var(--agent-status-snoozed)",
+                fontSize: metrics.timestampFontSize,
+            }}
             onClick={(event) => {
                 event.stopPropagation();
                 onQuickAction();
             }}
         >
+            {quickActionLabel === "Complete" ? (
+                <CheckCircleIcon size={statusIconSize} />
+            ) : (
+                <AlarmIcon size={statusIconSize} />
+            )}
             {quickActionLabel}
         </button>
     ) : null;
     const secondaryAction = secondaryActionLabel && onSecondaryAction ? (
         <button
             type="button"
-            className="rounded px-1.5 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 focus:opacity-100"
+            className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 py-0.5"
             style={{ color: "var(--text-secondary)", fontSize: metrics.timestampFontSize }}
             onClick={(event) => {
                 event.stopPropagation();
@@ -480,42 +638,72 @@ export function AgentsSidebarItem({
         </button>
     ) : null;
 
+    // Status and hover actions share one right-hand slot, as they do in
+    // t3code: whichever is hidden leaves the flow entirely. Keeping both in
+    // flow is what squeezed slim titles down to an ellipsis, and reserving
+    // width for invisible buttons is dead space on every row that has none.
+    const hasHoverActions = Boolean(quickAction || secondaryAction);
+    const renderStatusSlot = (showLabel: boolean) => (
+        <span className="relative ml-auto flex shrink-0 items-center justify-end">
+            {showLabel ? (
+                <span
+                    data-agent-status={status}
+                    className={`inline-flex shrink-0 items-center gap-1 font-medium transition-opacity ${
+                        hasHoverActions
+                            ? "group-hover/row:absolute group-hover/row:right-0 group-hover/row:opacity-0"
+                            : ""
+                    }`}
+                    style={{
+                        color: toneColor,
+                        fontSize: metrics.timestampFontSize,
+                        opacity: effectiveTone === "ready" ? 0.75 : 1,
+                    }}
+                >
+                    <StatusGlyph tone={effectiveTone} size={statusIconSize} />
+                    {statusLabel || timestampLabel}
+                </span>
+            ) : null}
+            {hasHoverActions ? (
+                // focus-visible rather than focus-within: a click leaves the
+                // button focused, and focus-within would pin the actions over
+                // the status once the pointer leaves instead of fading back.
+                <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100 group-hover/row:pointer-events-auto group-hover/row:static group-hover/row:opacity-100">
+                    {quickAction}
+                    {secondaryAction}
+                </span>
+            ) : null}
+        </span>
+    );
+
     if (variant === "slim") {
         return (
             <div
                 {...commonProps}
-                className="group flex w-full cursor-pointer items-center rounded-md outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+                className={`group/row flex w-full cursor-pointer items-center rounded-md outline-none transition-colors duration-100 focus-visible:ring-1 focus-visible:ring-[var(--accent)] ${
+                    isActive
+                        ? "bg-[color-mix(in_srgb,var(--accent)_16%,transparent)]"
+                        : "bg-transparent hover:bg-[color-mix(in_srgb,var(--text-primary)_6%,transparent)]"
+                }`}
                 style={{
                     gap: metrics.inlineGap,
                     padding: `${metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
                     paddingLeft: metrics.rowPaddingLeft + depth * 14,
-                    backgroundColor: isActive
-                        ? "color-mix(in srgb, var(--accent) 14%, transparent)"
-                        : "transparent",
                     borderTop: dropPosition === "before" ? "2px solid var(--accent)" : "2px solid transparent",
                     borderBottom: dropPosition === "after" ? "2px solid var(--accent)" : "2px solid transparent",
                 }}
             >
-                <AIProviderIcon
-                    runtimeId={session.runtimeId}
-                    size={metrics.providerIconSize}
-                    className="shrink-0 opacity-70"
-                />
+                <span className="flex shrink-0" style={{ color: brandColor }}>
+                    <AIProviderIcon
+                        runtimeId={session.runtimeId}
+                        size={metrics.providerIconSize}
+                        className="shrink-0"
+                    />
+                </span>
                 {titleNode}
                 {collapseButton}
                 {pinButton}
-                {quickAction}
-                {secondaryAction}
-                <span
-                    className="shrink-0"
-                    style={{
-                        color: statusColor(status),
-                        fontSize: metrics.timestampFontSize,
-                        opacity: 0.82,
-                    }}
-                >
-                    {statusLabel || timestampLabel}
-                </span>
+                {/* Slim rows have no detail line, so the label always shows. */}
+                {renderStatusSlot(true)}
             </div>
         );
     }
@@ -523,7 +711,11 @@ export function AgentsSidebarItem({
     return (
         <div
             {...commonProps}
-            className="group relative flex w-full cursor-pointer flex-col outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+            className={`group/row relative flex w-full cursor-pointer flex-col justify-center outline-none transition-colors duration-100 focus-visible:ring-1 focus-visible:ring-[var(--accent)] ${
+                isActive
+                    ? "bg-[color-mix(in_srgb,var(--accent)_16%,transparent)]"
+                    : "bg-transparent hover:bg-[color-mix(in_srgb,var(--text-primary)_6%,transparent)]"
+            }`}
             style={{
                 minHeight: metrics.cardMinHeight,
                 gap: metrics.inlineGap,
@@ -531,40 +723,64 @@ export function AgentsSidebarItem({
                 marginLeft: depth * 10,
                 width: depth > 0 ? `calc(100% - ${depth * 10}px)` : "100%",
                 borderRadius: metrics.cardRadius,
-                backgroundColor: isActive
-                    ? "color-mix(in srgb, var(--accent) 24%, var(--bg-secondary))"
-                    : "transparent",
-                transition: "background-color 100ms ease, box-shadow 100ms ease",
                 borderTop: dropPosition === "before" ? "2px solid var(--accent)" : "2px solid transparent",
                 borderBottom: dropPosition === "after" ? "2px solid var(--accent)" : "2px solid transparent",
             }}
         >
-            <div className="flex min-h-4 items-center justify-end gap-1.5">
+            {/* Identity line — t3code anchors this slot with a colored project
+                favicon and the project name. An agent's equivalent identity is
+                the runtime it runs on, so the brand mark and its name take the
+                slot and the status sits opposite, as it does there. */}
+            <div className="flex min-h-4 items-center gap-1.5">
+                <span className="flex shrink-0" style={{ color: brandColor }}>
+                    <AIProviderIcon
+                        runtimeId={session.runtimeId}
+                        size={metrics.providerIconSize}
+                        className="shrink-0"
+                    />
+                </span>
                 <span
-                    data-agent-status={status}
-                    className="truncate text-right font-medium"
+                    className="min-w-0 flex-1 truncate"
                     style={{
-                        color: statusColor(status),
+                        color: "var(--text-secondary)",
                         fontSize: metrics.timestampFontSize,
-                        opacity: status === "ready" ? 0.72 : 0.95,
                     }}
                 >
-                    {statusLabel || timestampLabel}
+                    {runtimeName}
                 </span>
-                {quickAction}
-                {secondaryAction}
+                {pinButton}
+                {renderStatusSlot(showStatusLabel)}
             </div>
             <div className="flex min-w-0 flex-1 items-center">{titleNode}</div>
-            <div className="flex min-h-4 items-end justify-between gap-1">
-                <div className="flex items-center gap-0.5">
-                    {collapseButton}
-                    {pinButton}
-                </div>
-                <AIProviderIcon
-                    runtimeId={session.runtimeId}
-                    size={metrics.providerIconSize}
-                    className="shrink-0 opacity-80"
-                />
+            {/* Detail line — the branch slot in t3code. Agents have no branch,
+                so it carries the "when", which the identity line only shows
+                while a live status isn't occupying that spot. */}
+            <div className="flex min-h-4 items-center gap-1.5">
+                {collapseButton}
+                <span
+                    className="inline-flex min-w-0 shrink items-center gap-1 truncate"
+                    style={{
+                        color: "var(--text-secondary)",
+                        fontSize: metrics.timestampFontSize,
+                        opacity: 0.85,
+                    }}
+                >
+                    <ClockIcon size={statusIconSize} />
+                    {timestampLabel}
+                </span>
+                {hasChildren ? (
+                    <span
+                        className="shrink-0 rounded px-1"
+                        style={{
+                            color: "var(--text-secondary)",
+                            backgroundColor:
+                                "color-mix(in srgb, var(--text-primary) 8%, transparent)",
+                            fontSize: metrics.timestampFontSize,
+                        }}
+                    >
+                        {childCount === 1 ? "1 agent" : `${childCount} agents`}
+                    </span>
+                ) : null}
             </div>
         </div>
     );

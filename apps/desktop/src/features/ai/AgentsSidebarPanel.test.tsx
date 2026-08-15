@@ -489,7 +489,7 @@ describe("AgentsSidebarPanel", () => {
         renderComponent(<AgentsSidebarPanel />);
 
         const card = screen.getByTestId("agent-sidebar-item");
-        expect(card).toHaveStyle({ minHeight: "78px", borderRadius: "9px" });
+        expect(card).toHaveStyle({ minHeight: "78px", borderRadius: "7px" });
         expect(card.querySelector('[data-agent-status="working"]')).toHaveTextContent(
             "Working 3m",
         );

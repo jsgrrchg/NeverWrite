@@ -280,6 +280,17 @@
     --diff-warn: #92400e;
     --diff-move: #a16207;
 
+    /* Agent status colors — one hue per lifecycle state so a thread reads
+       the same color everywhere it surfaces. Light theme sits in the 600/700
+       band for contrast against light backgrounds. */
+    --agent-status-working: #0284c7;
+    --agent-status-review: #9333ea;
+    --agent-status-approval: #b45309;
+    --agent-status-input: #4f46e5;
+    --agent-status-failed: #b91c1c;
+    --agent-status-done: #047857;
+    --agent-status-snoozed: #2563eb;
+
     /* Syntax highlight anchors — defaults aligned with `default` theme light.
        `applyThemeColors` overwrites these at runtime for the active theme. */
     --code-comment: #737373;
@@ -335,6 +346,16 @@
     --diff-update: #60a5fa;
     --diff-warn: #fbbf24;
     --diff-move: #fcd34d;
+
+    /* Agent status colors — same hues lifted into the 300/400 band so they
+       stay legible on dark surfaces without glowing. */
+    --agent-status-working: #38bdf8;
+    --agent-status-review: #d8b4fe;
+    --agent-status-approval: #fcd34d;
+    --agent-status-input: #a5b4fc;
+    --agent-status-failed: #fca5a5;
+    --agent-status-done: #6ee7b7;
+    --agent-status-snoozed: #60a5fa;
 
     /* Syntax highlight anchors — defaults aligned with `default` theme dark. */
     --code-comment: #8a8a8a;

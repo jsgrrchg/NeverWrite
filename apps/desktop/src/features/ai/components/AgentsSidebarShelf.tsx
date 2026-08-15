@@ -50,8 +50,8 @@ export function AgentsSidebarShelf<T extends ShelfGroup>({
         <section className="mt-3" data-agent-shelf={title.toLowerCase()}>
             <button
                 type="button"
-                className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left uppercase tracking-[0.09em]"
-                style={{ color: "var(--text-secondary)", fontSize: 10 }}
+                className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left font-medium uppercase tracking-[0.06em] transition-colors hover:bg-[color-mix(in_srgb,var(--text-primary)_6%,transparent)]"
+                style={{ color: "var(--text-secondary)", fontSize: 10, opacity: 0.75 }}
                 aria-expanded={expanded}
                 onClick={() => onExpandedChange(!expanded)}
             >
@@ -69,7 +69,7 @@ export function AgentsSidebarShelf<T extends ShelfGroup>({
                     <path d="m4 6 4 4 4-4" />
                 </svg>
                 <span>{title}</span>
-                <span style={{ opacity: 0.7 }}>{groups.length}</span>
+                <span style={{ opacity: 0.75 }}>{groups.length}</span>
             </button>
             {visibleGroups.length > 0 ? (
                 <div className="flex flex-col gap-0.5">
