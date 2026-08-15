@@ -4,6 +4,7 @@ import { GoalRequest, GoalControlResponse, GoalSnapshot } from "./goal-extension
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
+import { type SessionFailureState } from "./session-failure-extension.js";
 import { TaskState } from "./tools.js";
 import { Pushable } from "./utils.js";
 export declare const CLAUDE_CONFIG_DIR: string;
@@ -238,6 +239,11 @@ type Session = {
      *  cancel() routes orphan accounting to `orphanCommands` (exact, per-uuid)
      *  instead of `pendingOrphanResults` (count, coalescing-blind). */
     msgLifecycleV1?: boolean;
+    /** Latched from `system`/init `terminal_slash_commands` (CLI 2.1.232+):
+     *  names of advertised slash commands whose UX is bound to the CLI's own
+     *  terminal (e.g. /doctor, /color). ACP clients aren't that terminal, so
+     *  these are filtered out of `available_commands_update` payloads. */
+    terminalSlashCommands?: string[];
     /** The long-lived consumer task. Lazily started on the first `prompt()` and
      *  kept alive for the session so between-turn/background messages are still
      *  drained and forwarded. */
@@ -469,6 +475,10 @@ type Session = {
      *  NOT READ YET — recorded now so the mapping exists if/when we wire up
      *  fork/rewind. */
     messageIdToUuid: Map<string, string>;
+    /** Durable-for-this-consumer failure state shared with session/load replay.
+     *  Keeping it on the Session lets replay seed a failure that the persistent
+     *  consumer can later clear with the same id and a higher revision. */
+    sessionFailureState: SessionFailureState;
 };
 export type SDKMessageFilter = {
     type: string;
@@ -553,6 +563,8 @@ export type ToolUpdateMeta = {
         nonExecutionKind?: string;
         userFeedback?: string;
         subagent?: true;
+        skill?: string;
+        skillPath?: string;
     };
     terminal_info?: {
         terminal_id: string;
@@ -650,9 +662,7 @@ export declare class ClaudeAcpAgent {
     clientCapabilities?: ClientCapabilities;
     logger: Logger;
     gatewayAuthRequest?: GatewayAuthRequest;
-    /** Client-managed LLM routing set via `providers/set`. Process-scoped and
-     *  never persisted to disk (see the Configurable LLM Providers RFD). When
-     *  set, it takes precedence over {@link gatewayAuthRequest}. */
+    /** Set while ACP overrides the agent's native provider configuration. */
     providerConfig?: ProviderConfig;
     /** Grace period before a `session/cancel` forces a wedged prompt loop to
      *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
@@ -672,14 +682,6 @@ export declare class ClaudeAcpAgent {
      *  the title is best-effort and another turn will retry. */
     private maybeUpdateSessionTitle;
     authenticate(_params: AuthenticateRequest): Promise<void>;
-    /**
-     * `providers/list` — returns the single client-configurable custom gateway
-     * provider (`main`). `current` carries only non-secret routing (never headers,
-     * which may hold secrets); only `apiType`/`baseUrl` are surfaced for UI
-     * display, and is `null` when the provider is not configured/disabled. The
-     * provider is optional (`required: false`): while disabled/unconfigured the
-     * agent falls back to its own default routing (normal Claude login).
-     */
     unstable_listProviders(_params: ListProvidersRequest): Promise<ListProvidersResponse>;
     /**
      * `providers/set` — replace the full configuration for the `main` provider.
@@ -689,23 +691,17 @@ export declare class ClaudeAcpAgent {
      */
     unstable_setProvider(params: SetProviderRequest): Promise<SetProviderResponse>;
     /**
-     * `providers/disable` — disabling the `main` provider clears any client-managed
-     * routing (both a `providers/set` config and the legacy gateway auth request),
-     * so the agent reverts to its own default routing and `providers/list` reports
-     * `current: null`. Disabling any other (unknown) ID is treated as a successful
-     * no-op per the RFD's idempotency rule.
+     * `providers/disable` ends ACP ownership of the single mutually exclusive
+     * backend slot and restores the agent's native routing state.
      */
     unstable_disableProvider(params: DisableProviderRequest): Promise<DisableProviderResponse>;
-    /**
-     * Resolve the effective client-managed routing config. `providers/set` takes
-     * precedence; otherwise fall back to the legacy gateway auth request. Returns
-     * `null` when neither is configured.
-     */
     resolveProviderConfig(): ProviderConfig | null;
+    private defaultProviderConfig;
     logout(_params: LogoutRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
     goal(params: GoalRequest): Promise<GoalControlResponse>;
     private publishGoal;
+    private publishTaskPlan;
     private publishGoalFromPrompt;
     private publishRuntimeGoal;
     /** Steer the session per the ACP steering wire protocol: inject a follow-up
