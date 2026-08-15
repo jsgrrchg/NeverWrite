@@ -1687,6 +1687,31 @@ body.dragging-tab * {
     pointer-events: auto;
 }
 
+/* The model picker stays visible in compact composer layouts. When the
+   remaining footer width becomes too narrow for individual trait and access
+   selectors, their existing ACP options move into one overflow menu. */
+.nw-agent-controls {
+    container-type: inline-size;
+}
+
+.nw-agent-controls-expanded-only {
+    display: contents;
+}
+
+.nw-agent-controls-compact {
+    display: none;
+}
+
+@container (max-width: 330px) {
+    .nw-agent-controls-expanded-only {
+        display: none !important;
+    }
+
+    .nw-agent-controls-compact {
+        display: flex;
+    }
+}
+
 @supports not (backdrop-filter: blur(1px)) {
     .nw-chat-translucent-surface,
     .nw-chat-glass-menu {
