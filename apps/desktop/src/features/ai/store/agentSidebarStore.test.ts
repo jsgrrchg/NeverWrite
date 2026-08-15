@@ -41,7 +41,6 @@ describe("agentSidebarStore", () => {
                 collapsedFolderIds: ["research", "missing", 2],
                 collapsedParentSessionIds: ["root", "root", null],
                 pinnedOrder: ["root", "root", 2],
-                activeOrder: ["active", "active"],
                 completedShelfExpanded: true,
                 extra: "ignored",
                 sessionMetadata: {
@@ -57,7 +56,6 @@ describe("agentSidebarStore", () => {
             version: 1,
             collapsedParentSessionIds: ["root"],
             pinnedOrder: ["root"],
-            activeOrder: ["active"],
             completedShelfExpanded: true,
             sessionMetadata: {
                 root: metadata({ pinnedAt: 4 }),
@@ -178,13 +176,24 @@ describe("agentSidebarStore", () => {
 
         useAgentSidebarStore.getState().completeSession("a", 3);
         expect(useAgentSidebarStore.getState()).toMatchObject({
-            pinnedOrder: [],
-            activeOrder: [],
-            sessionMetadata: { a: metadata({ completedAt: 3 }) },
+            pinnedOrder: ["a"],
+            sessionMetadata: { a: metadata({ pinnedAt: 1, completedAt: 3 }) },
         });
 
         useAgentSidebarStore.getState().reopenSession("a");
-        expect(useAgentSidebarStore.getState().sessionMetadata.a).toEqual(metadata());
+        expect(useAgentSidebarStore.getState().sessionMetadata.a).toEqual(
+            metadata({ pinnedAt: 1 }),
+        );
+    });
+
+    it("appends new pins without disturbing the saved visual order", () => {
+        useAgentSidebarStore.getState().setVaultPath(VAULT_A);
+        useAgentSidebarStore.getState().pinSession("first", 1);
+        useAgentSidebarStore.getState().pinSession("second", 2);
+        expect(useAgentSidebarStore.getState().pinnedOrder).toEqual([
+            "first",
+            "second",
+        ]);
     });
 
     it("moves all metadata and normalized orders when a session id changes", () => {
@@ -199,7 +208,6 @@ describe("agentSidebarStore", () => {
                 }),
             },
             pinnedOrder: ["pending", "live"],
-            activeOrder: ["pending"],
             collapsedParentSessionIds: ["pending"],
         });
         useAgentSidebarStore.getState().replaceSessionId("pending", "live");
@@ -214,7 +222,6 @@ describe("agentSidebarStore", () => {
                 }),
             },
             pinnedOrder: ["live"],
-            activeOrder: ["live"],
             collapsedParentSessionIds: ["live"],
         });
     });
@@ -226,7 +233,6 @@ describe("agentSidebarStore", () => {
                 stale: metadata({ pinnedAt: 2 }),
             },
             pinnedOrder: ["history", "stale"],
-            activeOrder: ["stale"],
         });
         useAgentSidebarStore.getState().reconcile(["persisted:history"]);
         expect(useAgentSidebarStore.getState()).toMatchObject({
@@ -234,7 +240,6 @@ describe("agentSidebarStore", () => {
                 "persisted:history": metadata({ pinnedAt: 1 }),
             },
             pinnedOrder: [],
-            activeOrder: [],
         });
     });
 });

@@ -3,7 +3,6 @@ import {
     insertAgentIntoOrder,
     normalizeAgentOrder,
     removeAgentFromOrder,
-    reorderAgentScope,
     reorderVisiblePinnedAgents,
 } from "./agentSidebarOrder";
 
@@ -13,17 +12,6 @@ describe("agentSidebarOrder", () => {
         expect(removeAgentFromOrder(["a", "b"], "a")).toEqual(["b"]);
         expect(insertAgentIntoOrder(["a", "b"], "b", -1)).toEqual(["b", "a"]);
         expect(insertAgentIntoOrder(["a"], "b", 99)).toEqual(["a", "b"]);
-    });
-
-    it("materializes keyless ids only inside the reordered active scope", () => {
-        expect(
-            reorderAgentScope(
-                ["folder-a", "other-folder"],
-                ["folder-new", "folder-a"],
-                "folder-new",
-                0,
-            ),
-        ).toEqual(["folder-new", "folder-a", "other-folder"]);
     });
 
     it("preserves hidden pinned slots while visible pins move", () => {

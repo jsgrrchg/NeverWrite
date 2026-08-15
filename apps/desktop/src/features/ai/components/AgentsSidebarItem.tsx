@@ -109,13 +109,13 @@ export type AgentSidebarTone = AgentSidebarStatus | "snoozed";
 // you pick a runtime out of a long list without reading a word. Scoped to the
 // sidebar on purpose: tabs and the model picker keep the monochrome mark.
 function providerBrandColor(runtimeId: string) {
-    if (runtimeId.includes("claude")) return "#d97757";
+    if (runtimeId.includes("claude")) return "#c77f68";
     if (runtimeId.includes("codex") || runtimeId.includes("openai")) {
-        return "#10a37f";
+        return "#3f927d";
     }
-    if (runtimeId.includes("opencode")) return "#f59e0b";
+    if (runtimeId.includes("opencode")) return "#c18a32";
     if (runtimeId.includes("grok")) return "#64748b";
-    if (runtimeId.includes("kilo")) return "#8b5cf6";
+    if (runtimeId.includes("kilo")) return "#8068bd";
     return "var(--text-secondary)";
 }
 

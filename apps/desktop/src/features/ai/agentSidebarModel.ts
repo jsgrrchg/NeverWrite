@@ -32,7 +32,6 @@ export interface AgentSidebarProjectionInput {
         Record<string, AgentSidebarSessionMetadata | undefined>
     >;
     pinnedOrder?: readonly string[];
-    activeOrder?: readonly string[];
     filterText?: string;
     focusedSessionId?: string | null;
     now: number;
@@ -218,6 +217,13 @@ function fallbackComparison(left: AgentSidebarGroup, right: AgentSidebarGroup) {
     );
 }
 
+function activityComparison(left: AgentSidebarGroup, right: AgentSidebarGroup) {
+    return (
+        right.latestActivityAt - left.latestActivityAt ||
+        fallbackComparison(left, right)
+    );
+}
+
 export function applyPreferredAgentOrder(
     groups: readonly AgentSidebarGroup[],
     preferredIds: readonly string[],
@@ -272,7 +278,6 @@ export function buildAgentSidebarProjection({
     sessions,
     metadataBySessionId,
     pinnedOrder = [],
-    activeOrder = [],
     filterText = "",
     now,
 }: AgentSidebarProjectionInput): AgentSidebarProjection {
@@ -308,10 +313,10 @@ export function buildAgentSidebarProjection({
             metadataBySessionId[group.root.sessionId] ?? EMPTY_METADATA;
         if (isEffectivelySnoozed(group, metadata, now)) {
             snoozed.push(group);
-        } else if (metadata.pinnedAt !== null) {
-            pinned.push(group);
         } else if (isEffectivelyCompleted(group, metadata)) {
             completed.push(group);
+        } else if (metadata.pinnedAt !== null) {
+            pinned.push(group);
         } else {
             active.push(group);
         }
@@ -320,7 +325,7 @@ export function buildAgentSidebarProjection({
     return {
         rootSessionIds: hierarchy.rootSessionIds,
         pinnedGroups: applyPreferredAgentOrder(pinned, pinnedOrder),
-        activeGroups: applyPreferredAgentOrder(active, activeOrder),
+        activeGroups: active.sort(activityComparison),
         snoozedGroups: snoozed.sort((left, right) => {
             const leftWake =
                 metadataBySessionId[left.root.sessionId]?.snoozedUntil ?? Infinity;

@@ -4,10 +4,7 @@ import {
     safeStorageSetItem,
 } from "../../../app/utils/safeStorage";
 import { logWarn } from "../../../app/utils/runtimeLog";
-import {
-    reorderAgentScope,
-    reorderVisiblePinnedAgents,
-} from "../agentSidebarOrder";
+import { reorderVisiblePinnedAgents } from "../agentSidebarOrder";
 
 export interface AgentSidebarSessionMetadata {
     pinnedAt: number | null;
@@ -21,7 +18,6 @@ export interface PersistedAgentSidebarStateV1 {
     version: 1;
     collapsedParentSessionIds: string[];
     pinnedOrder: string[];
-    activeOrder: string[];
     snoozedShelfExpanded: boolean;
     completedShelfExpanded: boolean;
     sessionMetadata: Record<string, AgentSidebarSessionMetadata>;
@@ -47,13 +43,8 @@ interface AgentSidebarStore extends PersistedAgentSidebarStateV1 {
         destinationIndex: number,
         visibleSessionIds?: readonly string[],
     ) => void;
-    reorderActiveSession: (
-        sessionId: string,
-        destinationIndex: number,
-        scopeSessionIds?: readonly string[],
-    ) => void;
     resetPinnedOrder: () => void;
-    resetActiveOrder: () => void;
+    restorePinnedOrder: (sessionIds: readonly string[]) => void;
     replaceSessionId: (fromSessionId: string, toSessionId: string) => void;
     markSessionVisited: (sessionId: string, visitedAt?: number) => void;
     reconcile: (rootSessionIds: Iterable<string>) => void;
@@ -68,7 +59,6 @@ export const EMPTY_AGENT_SIDEBAR_STATE: PersistedAgentSidebarStateV1 = {
     version: 1,
     collapsedParentSessionIds: [],
     pinnedOrder: [],
-    activeOrder: [],
     snoozedShelfExpanded: false,
     completedShelfExpanded: false,
     sessionMetadata: {},
@@ -134,7 +124,6 @@ function normalizePersistedState(value: unknown): PersistedAgentSidebarStateV1 {
             candidate.collapsedParentSessionIds,
         ),
         pinnedOrder: uniqueStrings(candidate.pinnedOrder),
-        activeOrder: uniqueStrings(candidate.activeOrder),
         snoozedShelfExpanded: candidate.snoozedShelfExpanded === true,
         completedShelfExpanded: candidate.completedShelfExpanded === true,
         sessionMetadata,
@@ -160,7 +149,6 @@ function persistedSnapshot(state: AgentSidebarStore): PersistedAgentSidebarState
         version: 1,
         collapsedParentSessionIds: state.collapsedParentSessionIds,
         pinnedOrder: state.pinnedOrder,
-        activeOrder: state.activeOrder,
         snoozedShelfExpanded: state.snoozedShelfExpanded,
         completedShelfExpanded: state.completedShelfExpanded,
         sessionMetadata: state.sessionMetadata,
@@ -292,10 +280,9 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                     [sessionId]: { ...current, pinnedAt: at, completedAt: null },
                 },
                 pinnedOrder: [
-                    sessionId,
                     ...state.pinnedOrder.filter((id) => id !== sessionId),
+                    sessionId,
                 ],
-                activeOrder: state.activeOrder.filter((id) => id !== sessionId),
             });
         }),
     unpinSession: (sessionId) =>
@@ -318,14 +305,11 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                     ...state.sessionMetadata,
                     [sessionId]: {
                         ...current,
-                        pinnedAt: null,
                         completedAt: at,
                         snoozedAt: null,
                         snoozedUntil: null,
                     },
                 },
-                pinnedOrder: state.pinnedOrder.filter((id) => id !== sessionId),
-                activeOrder: state.activeOrder.filter((id) => id !== sessionId),
             });
         }),
     reopenSession: (sessionId) =>
@@ -356,10 +340,6 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                         snoozedUntil,
                     },
                 },
-                activeOrder:
-                    current.pinnedAt === null
-                        ? state.activeOrder.filter((id) => id !== sessionId)
-                        : state.activeOrder,
             });
         }),
     wakeSession: (sessionId) =>
@@ -393,25 +373,11 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                       ),
             }),
         ),
-    reorderActiveSession: (sessionId, destinationIndex, scopeSessionIds) =>
-        set((state) =>
-            mutate(state, {
-                activeOrder: scopeSessionIds
-                    ? reorderAgentScope(
-                          state.activeOrder,
-                          scopeSessionIds,
-                          sessionId,
-                          destinationIndex,
-                      )
-                    : moveInOrder(
-                          state.activeOrder,
-                          sessionId,
-                          destinationIndex,
-                      ),
-            }),
-        ),
     resetPinnedOrder: () => set((state) => mutate(state, { pinnedOrder: [] })),
-    resetActiveOrder: () => set((state) => mutate(state, { activeOrder: [] })),
+    restorePinnedOrder: (sessionIds) =>
+        set((state) =>
+            mutate(state, { pinnedOrder: uniqueStrings(sessionIds) }),
+        ),
     replaceSessionId: (fromSessionId, toSessionId) =>
         set((state) => {
             if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) {
@@ -419,7 +385,7 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
             }
             const source = state.sessionMetadata[fromSessionId];
             const collapsed = state.collapsedParentSessionIds.includes(fromSessionId);
-            if (!source && !collapsed && !state.pinnedOrder.includes(fromSessionId) && !state.activeOrder.includes(fromSessionId)) {
+            if (!source && !collapsed && !state.pinnedOrder.includes(fromSessionId)) {
                 return state;
             }
             const sessionMetadata = { ...state.sessionMetadata };
@@ -430,7 +396,6 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
             return mutate(state, {
                 sessionMetadata,
                 pinnedOrder: replaceInOrder(state.pinnedOrder, fromSessionId, toSessionId),
-                activeOrder: replaceInOrder(state.activeOrder, fromSessionId, toSessionId),
                 collapsedParentSessionIds: replaceInOrder(
                     state.collapsedParentSessionIds,
                     fromSessionId,
@@ -466,7 +431,6 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
                 }
             }
             const pinnedOrder = state.pinnedOrder.filter((id) => roots.has(id));
-            const activeOrder = state.activeOrder.filter((id) => roots.has(id));
             const collapsedParentSessionIds =
                 state.collapsedParentSessionIds.filter((id) => roots.has(id));
             const metadataEntries = Object.entries(sessionMetadata);
@@ -483,7 +447,6 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
             if (
                 metadataUnchanged &&
                 sameOrder(pinnedOrder, state.pinnedOrder) &&
-                sameOrder(activeOrder, state.activeOrder) &&
                 sameOrder(
                     collapsedParentSessionIds,
                     state.collapsedParentSessionIds,
@@ -494,7 +457,6 @@ export const useAgentSidebarStore = create<AgentSidebarStore>((set) => ({
             return mutate(state, {
                 sessionMetadata,
                 pinnedOrder,
-                activeOrder,
                 collapsedParentSessionIds,
             });
         }),

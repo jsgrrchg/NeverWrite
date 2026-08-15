@@ -216,7 +216,7 @@ preferences, workspace state, or privacy-relevant local state.
 | `neverwrite:file-tree-expanded-folders:<vault-path>` | Per-vault file tree state | None | `FileTree.tsx` | Expanded folder paths. |
 | `neverwrite.fileTree.clipboard` | Global transient state | None | `fileTreeClipboard.ts` | File tree copy/cut payload. |
 | `neverwrite.search.history` | Global preference/state | `[]` | `searchHistory.ts` | Recent search queries. |
-| `neverwrite.agents.sidebar.v1:<encoded-vault-path>` | Per-vault Agents state | Empty lifecycle, orders, visit state, and collapsed shelves/groups | `agentSidebarStore.ts` | Versioned source of truth for Pinned, Active, Snoozed, Completed, explicit order, shelf expansion, and parent collapse. This device-local organization is independent of workspace tabs and chat transcript storage. |
+| `neverwrite.agents.sidebar.v1:<encoded-vault-path>` | Per-vault Agents state | Empty lifecycle, pin order, visit state, and collapsed shelves/groups | `agentSidebarStore.ts` | Versioned source of truth for Pinned, Active, Snoozed, Completed, explicit pin order, shelf expansion, and parent collapse. Active agents retain automatic activity order. This device-local organization is independent of workspace tabs and chat transcript storage. |
 | `neverwrite.ai.runtime-catalog` | Global cache | `{}` | `chatStore.ts` | Cached runtime models, modes, and config option catalogs. |
 | `neverwrite:debug-log-scopes` | Global developer preference | None | `runtimeLog.ts` | Enables scoped debug logging. |
 | `neverwrite:perf-probe` | Global developer preference | `false` | `perfInstrumentation.ts` | Enables performance probe instrumentation. |

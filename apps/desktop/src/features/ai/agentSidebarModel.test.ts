@@ -60,7 +60,6 @@ function project(
         sessions,
         metadataBySessionId,
         pinnedOrder: [],
-        activeOrder: [],
         now,
     });
 }
@@ -177,6 +176,32 @@ describe("agentSidebarModel", () => {
         );
         expect(old.completedGroups).toHaveLength(1);
         expect(newer.activeGroups).toHaveLength(1);
+    });
+
+    it("keeps a completed pin hidden until it becomes active again", () => {
+        const completed = project(
+            [session("root", "idle", 100)],
+            { root: metadata({ pinnedAt: 1, completedAt: 200 }) },
+        );
+        expect(completed.pinnedGroups).toHaveLength(0);
+        expect(completed.completedGroups[0].root.sessionId).toBe("root");
+
+        const reactivated = project(
+            [session("root", "idle", 300)],
+            { root: metadata({ pinnedAt: 1, completedAt: 200 }) },
+        );
+        expect(reactivated.pinnedGroups[0].root.sessionId).toBe("root");
+    });
+
+    it("keeps unpinned agents in automatic activity order", () => {
+        const result = project([
+            session("older", "idle", 100),
+            session("newer", "idle", 300),
+        ]);
+        expect(result.activeGroups.map((group) => group.root.sessionId)).toEqual([
+            "newer",
+            "older",
+        ]);
     });
 
     it("honors preferred ids, drops stale ids, and appends keyless roots", () => {

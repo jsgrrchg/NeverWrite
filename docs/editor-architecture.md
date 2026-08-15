@@ -55,9 +55,9 @@ otherwise change the lifetime of the underlying agent. Explicit session deletion
 is the operation that removes matching physical tabs and prunes that session
 from the history of other chat tabs.
 
-Agents is a movable auxiliary view and may be hosted by either sidebar. It projects each vault's root conversations into the mutually exclusive `Pinned`, `Active`, `Snoozed`, and `Completed` lifecycle sections. Pinned and Active use explicit manual ordering, while folders organize only Active conversations. A status change can change a card's attention state, but it does not reorder the card.
+Agents is a movable auxiliary view and may be hosted by either sidebar. It projects each vault's root conversations into the mutually exclusive `Pinned`, `Active`, `Snoozed`, and `Completed` lifecycle sections. Pinned uses explicit device-local ordering, while Active follows automatic activity order. Snoozing or completing a pinned conversation hides it without discarding its pin slot, so waking or reactivating it restores the prior position.
 
-This organization is local, versioned metadata scoped to the vault under `neverwrite.agents.sidebar.v1:<encoded-vault-path>`. It includes pins, collapsed groups, lifecycle timestamps, visit timestamps, shelf expansion, and manual order. It is not written into the ACP transcript or `session-meta.json`, and it must follow a session ID when that ID becomes durable. NeverWrite deliberately keeps one vault per window: Agents must not introduce project switching, project labels, folders, branches, worktrees, PR metadata, or remote synchronization semantics.
+This organization is local, versioned metadata scoped to the vault under `neverwrite.agents.sidebar.v1:<encoded-vault-path>`. It includes pins, collapsed groups, lifecycle timestamps, visit timestamps, shelf expansion, and pin order. It is not written into the ACP transcript or `session-meta.json`, and it must follow a session ID when that ID becomes durable. NeverWrite deliberately keeps one vault per window: Agents must not introduce project switching, project labels, folders, branches, worktrees, PR metadata, or remote synchronization semantics.
 
 `Complete` and `Snooze` only change the sidebar projection. They do not close a tab, alter its Back/Forward history, stop an agent, accept or reject review changes, or delete transcript data. Completed conversations can be reopened. Snoozed conversations wake at their deadline or early when they require review, permission, user input, or failed-state attention.
 
@@ -69,7 +69,7 @@ view instead. Each chat history entry stores the live session ID, optional saved
 history session ID, and title; the workspace session serializer persists the
 history and current index.
 
-Session IDs can change when a temporary or restored session becomes durable. That migration must update every workspace history entry as well as all session-keyed Agents metadata, including lifecycle, visit state, manual order, pinning, and folder membership. Likewise, deleting a session must clean all panes and its vault-scoped Agents metadata without leaving stale Back/Forward entries or empty panes behind.
+Session IDs can change when a temporary or restored session becomes durable. That migration must update every workspace history entry as well as all session-keyed Agents metadata, including lifecycle, visit state, pin order, and pinning. Likewise, deleting a session must clean all panes and its vault-scoped Agents metadata without leaving stale Back/Forward entries or empty panes behind.
 
 Claude Code terminal agents are an intentional exception to this ownership
 model. They have no ACP backend session. A live terminal is their durable owner,

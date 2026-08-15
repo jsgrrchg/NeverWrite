@@ -415,7 +415,7 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
-    it("reorders active cards with the keyboard and announces the move", async () => {
+    it("reorders pinned cards with the keyboard and announces the move", async () => {
         const first = createSession("first", "First", "idle", 300);
         const second = createSession("second", "Second", "idle", 200);
         const third = createSession("third", "Third", "idle", 100);
@@ -424,6 +424,12 @@ describe("AgentsSidebarPanel", () => {
             sessionsById: { first, second, third },
             sessionOrder: ["first", "second", "third"],
         }));
+        useAgentSidebarStore
+            .getState()
+            .migrateLegacyMetadata(["first", "second", "third"]);
+        useAgentSidebarStore.getState().pinSession("first", 1);
+        useAgentSidebarStore.getState().pinSession("second", 2);
+        useAgentSidebarStore.getState().pinSession("third", 3);
         renderComponent(<AgentsSidebarPanel />);
 
         const firstRow = document.querySelector<HTMLElement>(
@@ -440,14 +446,14 @@ describe("AgentsSidebarPanel", () => {
             expect(labels).toEqual(["second", "first", "third"]);
         });
         expect(screen.getByText("Agent position saved.")).toBeInTheDocument();
-        expect(useAgentSidebarStore.getState().activeOrder).toEqual([
+        expect(useAgentSidebarStore.getState().pinnedOrder).toEqual([
             "second",
             "first",
             "third",
         ]);
     });
 
-    it("reorders active cards by pointer", async () => {
+    it("reorders pinned cards by pointer", async () => {
         const first = createSession("first", "First", "idle", 200);
         const second = createSession("second", "Second", "idle", 100);
         useChatStore.setState((state) => ({
@@ -455,6 +461,11 @@ describe("AgentsSidebarPanel", () => {
             sessionsById: { first, second },
             sessionOrder: ["first", "second"],
         }));
+        useAgentSidebarStore
+            .getState()
+            .migrateLegacyMetadata(["first", "second"]);
+        useAgentSidebarStore.getState().pinSession("first", 1);
+        useAgentSidebarStore.getState().pinSession("second", 2);
         renderComponent(<AgentsSidebarPanel />);
         const source = document.querySelector<HTMLElement>(
             '[data-agent-session-id="first"]',
@@ -498,7 +509,7 @@ describe("AgentsSidebarPanel", () => {
         });
 
         await waitFor(() => {
-            expect(useAgentSidebarStore.getState().activeOrder).toEqual([
+            expect(useAgentSidebarStore.getState().pinnedOrder).toEqual([
                 "second",
                 "first",
             ]);
@@ -514,16 +525,25 @@ describe("AgentsSidebarPanel", () => {
             sessionsById: { first, second },
             sessionOrder: ["first", "second"],
         }));
+        useAgentSidebarStore
+            .getState()
+            .migrateLegacyMetadata(["first", "second"]);
+        useAgentSidebarStore.getState().pinSession("first", 1);
+        useAgentSidebarStore.getState().pinSession("second", 2);
         renderComponent(<AgentsSidebarPanel />);
         const row = document.querySelector<HTMLElement>(
             '[data-agent-session-id="first"]',
         )!;
         fireEvent.keyDown(row, { key: " " });
+        await screen.findByText("Picked up agent 1 of 2.");
         fireEvent.keyDown(row, { key: "ArrowDown" });
         fireEvent.keyDown(row, { key: "Escape" });
 
         await waitFor(() => {
-            expect(useAgentSidebarStore.getState().activeOrder).toEqual([]);
+            expect(useAgentSidebarStore.getState().pinnedOrder).toEqual([
+                "first",
+                "second",
+            ]);
         });
         expect(screen.getByText("Agent move cancelled.")).toBeInTheDocument();
     });
@@ -966,9 +986,7 @@ describe("AgentsSidebarPanel", () => {
 
         await waitFor(() => {
             expect(confirm).toHaveBeenCalledWith(
-                expect.stringContaining(
-                    "1 subagent will stay in the sidebar as a detached agent.",
-                ),
+                'Delete "Parent task"?',
                 expect.objectContaining({ title: "Delete thread?" }),
             );
         });

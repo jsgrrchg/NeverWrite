@@ -26,35 +26,6 @@ export function insertAgentIntoOrder(
     return next;
 }
 
-export function reorderAgentScope(
-    fullOrder: readonly string[],
-    scopeIds: readonly string[],
-    sessionId: string,
-    destinationIndex: number,
-) {
-    const normalizedFull = normalizeAgentOrder(fullOrder);
-    const normalizedScope = normalizeAgentOrder(scopeIds);
-    if (!normalizedScope.includes(sessionId)) return normalizedFull;
-    const scopeSet = new Set(normalizedScope);
-    const preferredScope = [
-        ...normalizedFull.filter((id) => scopeSet.has(id)),
-        ...normalizedScope.filter((id) => !normalizedFull.includes(id)),
-    ];
-    const reorderedScope = insertAgentIntoOrder(
-        preferredScope,
-        sessionId,
-        destinationIndex,
-    );
-    const firstScopeIndex = normalizedFull.findIndex((id) => scopeSet.has(id));
-    const remaining = normalizedFull.filter((id) => !scopeSet.has(id));
-    remaining.splice(
-        firstScopeIndex < 0 ? remaining.length : firstScopeIndex,
-        0,
-        ...reorderedScope,
-    );
-    return remaining;
-}
-
 export function reorderVisiblePinnedAgents(
     fullOrder: readonly string[],
     visibleIds: readonly string[],

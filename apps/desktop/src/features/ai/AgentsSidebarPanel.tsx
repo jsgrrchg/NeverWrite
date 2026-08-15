@@ -37,7 +37,6 @@ import {
     getSessionTitleText,
     getSessionUpdatedAt,
 } from "./sessionPresentation";
-import { countAiSessionChildren } from "./sessionHierarchy";
 import {
     claudeTerminalAgentSessionId,
     closeClaudeTerminalAgentSession,
@@ -293,7 +292,6 @@ export function AgentsSidebarPanel() {
         (state) => state.collapsedParentSessionIds,
     );
     const pinnedOrder = useAgentSidebarStore((state) => state.pinnedOrder);
-    const activeOrder = useAgentSidebarStore((state) => state.activeOrder);
     const toggleCollapsedParent = useAgentSidebarStore(
         (state) => state.toggleParentCollapsed,
     );
@@ -325,14 +323,11 @@ export function AgentsSidebarPanel() {
     const reorderPinnedSession = useAgentSidebarStore(
         (state) => state.reorderPinnedSession,
     );
-    const reorderActiveSession = useAgentSidebarStore(
-        (state) => state.reorderActiveSession,
-    );
     const resetPinnedOrder = useAgentSidebarStore(
         (state) => state.resetPinnedOrder,
     );
-    const resetActiveOrder = useAgentSidebarStore(
-        (state) => state.resetActiveOrder,
+    const restorePinnedOrder = useAgentSidebarStore(
+        (state) => state.restorePinnedOrder,
     );
 
     const focusedWorkspaceChatSessionId = useEditorStore(
@@ -371,14 +366,12 @@ export function AgentsSidebarPanel() {
                 sessions,
                 metadataBySessionId: sessionMetadata,
                 pinnedOrder,
-                activeOrder,
                 filterText,
                 focusedSessionId:
                     focusedWorkspaceChatSessionId ?? focusedTerminalAgentSessionId,
                 now,
             }),
         [
-            activeOrder,
             filterText,
             focusedTerminalAgentSessionId,
             focusedWorkspaceChatSessionId,
@@ -486,17 +479,7 @@ export function AgentsSidebarPanel() {
     const handleDelete = useCallback(
         async (session: AIChatSession) => {
             const title = getSessionTitleText(session);
-            const childCount = countAiSessionChildren(session, sessions);
-            const preservedAgents =
-                childCount === 1
-                    ? "1 subagent will stay in the sidebar as a detached agent."
-                    : `${childCount} subagents will stay in the sidebar as detached agents.`;
-            const message =
-                childCount > 0
-                    ? `Delete "${title}"?\n\nThis deletes only this thread's history and workspace snapshot. ${preservedAgents}\n\nThis cannot be undone.`
-                    : `Delete "${title}"?\n\nThis deletes the thread history and workspace snapshot.\n\nThis cannot be undone.`;
-
-            const approved = await confirm(message, {
+            const approved = await confirm(`Delete "${title}"?`, {
                 title: "Delete thread?",
                 kind: "warning",
             });
@@ -505,7 +488,7 @@ export function AgentsSidebarPanel() {
             unpinChat(session.sessionId);
             await deleteSession(session.sessionId);
         },
-        [deleteSession, sessions, unpinChat],
+        [deleteSession, unpinChat],
     );
 
     const handleCloseClaudeTerminal = useCallback(
@@ -608,10 +591,9 @@ export function AgentsSidebarPanel() {
     );
 
     const getReorderScopeIds = (scope: string) => {
-        if (scope === "pinned") {
-            return projection.pinnedGroups.map((group) => group.root.sessionId);
-        }
-        return projection.activeGroups.map((group) => group.root.sessionId);
+        return scope === "pinned"
+            ? projection.pinnedGroups.map((group) => group.root.sessionId)
+            : [];
     };
 
     const applyScopedReorder = (
@@ -622,8 +604,6 @@ export function AgentsSidebarPanel() {
         const scopeIds = getReorderScopeIds(scope);
         if (scope === "pinned") {
             reorderPinnedSession(sessionId, destinationIndex, scopeIds);
-        } else {
-            reorderActiveSession(sessionId, destinationIndex, scopeIds);
         }
     };
 
@@ -640,9 +620,7 @@ export function AgentsSidebarPanel() {
                 setKeyboardSort({
                     sessionId,
                     scope,
-                    originalOrder: [
-                        ...(scope === "pinned" ? pinnedOrder : activeOrder),
-                    ],
+                    originalOrder: [...pinnedOrder],
                 });
                 const scopeIds = getReorderScopeIds(scope);
                 setSortAnnouncement(
@@ -653,12 +631,7 @@ export function AgentsSidebarPanel() {
         }
         if (keyboardSort?.sessionId !== sessionId) return;
         if (action === "cancel") {
-            if (scope === "pinned") resetPinnedOrder();
-            else resetActiveOrder();
-            keyboardSort.originalOrder.forEach((id, index) => {
-                if (scope === "pinned") reorderPinnedSession(id, index);
-                else reorderActiveSession(id, index);
-            });
+            restorePinnedOrder(keyboardSort.originalOrder);
             setKeyboardSort(null);
             setSortAnnouncement("Agent move cancelled.");
             return;
@@ -855,7 +828,10 @@ export function AgentsSidebarPanel() {
                     emitAgentSidebarDrag({
                         // Sidebar drops belong to the sidebar; prevent the
                         // workspace pane drop handler from acting as well.
-                        phase: movedWithinSidebar ? "cancel" : "end",
+                        phase:
+                            movedWithinSidebar || options?.reorderScope === "pinned"
+                                ? "cancel"
+                                : "end",
                         x: clientX,
                         y: clientY,
                         sessionId: session.sessionId,
@@ -969,11 +945,10 @@ export function AgentsSidebarPanel() {
                               )
                             : undefined,
                     reorderScope:
-                        lifecycle === "active"
-                            ? rootMetadata?.pinnedAt !== null &&
-                              rootMetadata?.pinnedAt !== undefined
-                                ? "pinned"
-                                : "active"
+                        lifecycle === "active" &&
+                        rootMetadata?.pinnedAt !== null &&
+                        rootMetadata?.pinnedAt !== undefined
+                            ? "pinned"
                             : undefined,
                     onToggleCollapse:
                         group.children.length > 0
@@ -1270,15 +1245,7 @@ export function AgentsSidebarPanel() {
                                       action: resetPinnedOrder,
                                   },
                               ]
-                            : contextOrderKind === "active" &&
-                                activeOrder.length > 0
-                              ? [
-                                    {
-                                        label: "Reset active order",
-                                        action: resetActiveOrder,
-                                    },
-                                ]
-                              : []),
+                            : []),
                         {
                             label: "Rename",
                             disabled: isSubagentSession(contextMenu.payload),
