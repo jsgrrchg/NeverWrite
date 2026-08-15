@@ -1677,6 +1677,61 @@ body.dragging-tab * {
         saturate(var(--nw-glass-saturation));
 }
 
+.nw-prompt-ring {
+    display: none;
+    opacity: 0;
+    transition: opacity 150ms ease;
+}
+
+@media (pointer: fine) {
+    .nw-prompt-ring {
+        display: block;
+    }
+}
+
+.nw-prompt-ring[data-persistent-gutter="true"],
+.nw-prompt-ring:hover,
+.nw-prompt-ring:focus-within {
+    opacity: 1;
+}
+
+.nw-prompt-ring-strip {
+    width: 8px;
+    background-color: color-mix(
+        in srgb,
+        var(--text-secondary) 35%,
+        transparent
+    );
+    transition:
+        width 150ms ease,
+        background-color 150ms ease;
+}
+
+.nw-prompt-ring-strip[data-active-distance="0"] {
+    width: 24px;
+    background-color: color-mix(
+        in srgb,
+        var(--text-secondary) 75%,
+        transparent
+    );
+}
+
+.nw-prompt-ring-strip[data-active-distance="1"] {
+    width: 16px;
+}
+
+.nw-prompt-ring-strip[data-active-distance="2"] {
+    width: 10px;
+}
+
+.nw-prompt-ring-strip[data-in-view="true"] {
+    background-color: color-mix(
+        in srgb,
+        var(--text-primary) 90%,
+        transparent
+    );
+}
+
 /* Layout-only host. Visual elevation belongs to the centered glass surface so
    the dock does not paint a false full-width panel above the transcript. */
 .nw-chat-bottom-dock {

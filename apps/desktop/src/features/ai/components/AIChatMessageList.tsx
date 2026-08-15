@@ -50,6 +50,11 @@ import {
     getActivityTimelineRowKey,
     type ActivityTimelineSegmentRow,
 } from "./activityTimelinePresentation";
+import { ChatPromptRing } from "./ChatPromptRing";
+import {
+    buildChatPromptRingItems,
+    resolveChatPromptRingLayout,
+} from "./ChatPromptRing.logic";
 
 interface AIChatMessageListProps {
     sessionId?: string | null;
@@ -409,6 +414,13 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     const aiChatContentWidth = useSettingsStore((s) => s.aiChatContentWidth);
     const containerRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
+    const [promptRingStripMap] = useState(
+        () => new Map<string, HTMLSpanElement>(),
+    );
+    const [promptRingLayout, setPromptRingLayout] = useState({
+        hasPersistentGutter: false,
+        hitStripWidth: 0,
+    });
     const findHighlightOwnerId = useId();
     const [findQuery, setFindQuery] = useState("");
     const [findCaseSensitive, setFindCaseSensitive] = useState(false);
@@ -623,6 +635,35 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         timelineActivityDisplayMode,
         visiblePinnedPlanId,
     ]);
+    const promptRingItems = useMemo(
+        () => buildChatPromptRingItems(messages),
+        [messages],
+    );
+    const navigateToPrompt = useCallback((messageId: string) => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const target = Array.from(
+            container.querySelectorAll<HTMLElement>("[data-chat-message-id]"),
+        ).find((node) => node.dataset.chatMessageId === messageId);
+        if (!target) return;
+
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const top = Math.max(
+            0,
+            container.scrollTop + targetRect.top - containerRect.top - 24,
+        );
+
+        wasNearBottomRef.current = false;
+        setOutlineHighlightedMessageId(messageId);
+        if (typeof container.scrollTo === "function") {
+            container.scrollTo({ top, behavior: "smooth" });
+        } else {
+            container.scrollTop = top;
+        }
+        syncScrollButton();
+    }, [syncScrollButton]);
     const rowRenderOptions = useMemo(
         () => ({
             sessionId,
@@ -706,6 +747,76 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         wasNearBottomRef.current = pendingState.nearBottom;
         syncScrollButton();
     }, [syncScrollButton, timelineRows, viewStateScope]);
+
+    useLayoutEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const syncInViewStrips = () => {
+            const containerRect = container.getBoundingClientRect();
+            const rows = Array.from(
+                container.querySelectorAll<HTMLElement>(
+                    "[data-chat-message-id]",
+                ),
+            );
+
+            for (const item of promptRingItems) {
+                const strip = promptRingStripMap.get(item.id);
+                if (!strip) continue;
+                const row = rows.find(
+                    (candidate) => candidate.dataset.chatMessageId === item.id,
+                );
+                if (!row) {
+                    strip.dataset.inView = "false";
+                    continue;
+                }
+                const rowRect = row.getBoundingClientRect();
+                strip.dataset.inView =
+                    rowRect.top < containerRect.bottom &&
+                    rowRect.bottom > containerRect.top
+                        ? "true"
+                        : "false";
+            }
+        };
+
+        const frame = window.requestAnimationFrame(syncInViewStrips);
+        container.addEventListener("scroll", syncInViewStrips, {
+            passive: true,
+        });
+        return () => {
+            window.cancelAnimationFrame(frame);
+            container.removeEventListener("scroll", syncInViewStrips);
+        };
+    }, [promptRingItems, promptRingStripMap, timelineRows]);
+
+    useLayoutEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const measure = () => {
+            const width =
+                container.getBoundingClientRect().width ||
+                container.clientWidth;
+            const next = resolveChatPromptRingLayout(
+                width,
+                aiChatContentWidth,
+            );
+            setPromptRingLayout((current) =>
+                current.hasPersistentGutter === next.hasPersistentGutter &&
+                current.hitStripWidth === next.hitStripWidth
+                    ? current
+                    : next,
+            );
+        };
+
+        const frame = window.requestAnimationFrame(measure);
+        const observer = new ResizeObserver(measure);
+        observer.observe(container);
+        return () => {
+            window.cancelAnimationFrame(frame);
+            observer.disconnect();
+        };
+    }, [aiChatContentWidth, promptRingItems.length]);
 
     useLayoutEffect(() => {
         const container = containerRef.current;
@@ -1023,6 +1134,15 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                         </div>
                     </div>
                 </div>
+                <ChatPromptRing
+                    hasPersistentGutter={
+                        promptRingLayout.hasPersistentGutter
+                    }
+                    hitStripWidth={promptRingLayout.hitStripWidth}
+                    items={promptRingItems}
+                    stripMap={promptRingStripMap}
+                    onSelect={(item) => navigateToPrompt(item.id)}
+                />
                 {showScrollButton && (
                     <button
                         type="button"
