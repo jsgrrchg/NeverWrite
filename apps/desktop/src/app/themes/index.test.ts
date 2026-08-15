@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
     applyThemeColors,
+    getAgentStatusColors,
     themes,
+    type AgentStatusColors,
     type CodeColorAnchors,
     type ThemeName,
 } from "./index";
@@ -25,6 +27,20 @@ const CODE_CSS_VAR_MAP = {
 const CODE_CSS_VAR_ENTRIES = Object.entries(CODE_CSS_VAR_MAP) as Array<
     [keyof CodeColorAnchors, string]
 >;
+
+const AGENT_STATUS_CSS_VAR_MAP = {
+    working: "--agent-status-working",
+    review: "--agent-status-review",
+    approval: "--agent-status-approval",
+    input: "--agent-status-input",
+    failed: "--agent-status-failed",
+    done: "--agent-status-done",
+    snoozed: "--agent-status-snoozed",
+} satisfies Record<keyof AgentStatusColors, string>;
+
+const AGENT_STATUS_CSS_VAR_ENTRIES = Object.entries(
+    AGENT_STATUS_CSS_VAR_MAP,
+) as Array<[keyof AgentStatusColors, string]>;
 
 const TERMINAL_ANSI_CSS_VARS = [
     "--terminal-ansi-black",
@@ -82,6 +98,41 @@ describe("applyThemeColors", () => {
         expect(themes.tokyoNight.light.codeAnchors.keyword).not.toBe(
             themes.gruvbox.light.codeAnchors.keyword,
         );
+    });
+
+    it("publishes theme-aware agent status colors for every theme and mode", () => {
+        for (const themeName of Object.keys(themes) as ThemeName[]) {
+            for (const isDark of [false, true]) {
+                applyThemeColors(themeName, isDark);
+                const expected = getAgentStatusColors(themeName, isDark);
+
+                for (const [key, cssVar] of AGENT_STATUS_CSS_VAR_ENTRIES) {
+                    expect(
+                        document.documentElement.style.getPropertyValue(cssVar),
+                    ).toBe(expected[key]);
+                }
+            }
+        }
+    });
+
+    it("replaces agent status colors when the bundled theme changes", () => {
+        applyThemeColors("gruvbox", true);
+        const gruvboxDone = document.documentElement.style.getPropertyValue(
+            "--agent-status-done",
+        );
+
+        applyThemeColors("tokyoNight", true);
+
+        expect(
+            document.documentElement.style.getPropertyValue(
+                "--agent-status-done",
+            ),
+        ).toBe(getAgentStatusColors("tokyoNight", true).done);
+        expect(
+            document.documentElement.style.getPropertyValue(
+                "--agent-status-done",
+            ),
+        ).not.toBe(gruvboxDone);
     });
 
     it("publishes terminal ANSI vars for every theme and mode", () => {

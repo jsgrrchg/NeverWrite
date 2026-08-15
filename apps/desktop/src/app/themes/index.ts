@@ -19,7 +19,10 @@ import { everforestTheme } from "./everforest";
 import { synthwave84Theme } from "./synthwave84";
 import { claudeTheme } from "./claude";
 import { codexTheme } from "./codex";
-import { applyTerminalPalette } from "./terminalPalettes";
+import {
+    applyTerminalPalette,
+    getTerminalPalette,
+} from "./terminalPalettes";
 
 // 12 syntax-highlighting anchor colors that drive per-theme code and
 // markdown coloring across CodeMirror and the static highlighter. Each
@@ -142,6 +145,46 @@ const CODE_CSS_VAR_MAP: Record<keyof CodeColorAnchors, string> = {
     variable: "--code-variable",
 };
 
+export interface AgentStatusColors {
+    working: string;
+    review: string;
+    approval: string;
+    input: string;
+    failed: string;
+    done: string;
+    snoozed: string;
+}
+
+const AGENT_STATUS_CSS_VAR_MAP: Record<keyof AgentStatusColors, string> = {
+    working: "--agent-status-working",
+    review: "--agent-status-review",
+    approval: "--agent-status-approval",
+    input: "--agent-status-input",
+    failed: "--agent-status-failed",
+    done: "--agent-status-done",
+    snoozed: "--agent-status-snoozed",
+};
+
+// Every bundled theme already owns a curated ANSI palette with semantic hues.
+// Reusing it keeps agent lifecycle colors theme-aware while preserving the
+// meaning of red/green/yellow across palettes. Dark themes use their lifted
+// variants for readable contrast on sidebar surfaces.
+export function getAgentStatusColors(
+    name: ThemeName,
+    isDark: boolean,
+): AgentStatusColors {
+    const ansi = getTerminalPalette(name, isDark);
+    return {
+        working: isDark ? ansi.brightCyan : ansi.cyan,
+        review: isDark ? ansi.brightMagenta : ansi.magenta,
+        approval: isDark ? ansi.brightYellow : ansi.yellow,
+        input: isDark ? ansi.brightBlue : ansi.blue,
+        failed: isDark ? ansi.brightRed : ansi.red,
+        done: isDark ? ansi.brightGreen : ansi.green,
+        snoozed: isDark ? ansi.brightBlue : ansi.blue,
+    };
+}
+
 export function applyThemeColors(name: ThemeName, isDark: boolean) {
     if (typeof document === "undefined") return;
     const palette = themes[name];
@@ -156,6 +199,14 @@ export function applyThemeColors(name: ThemeName, isDark: boolean) {
         el.style.setProperty(
             cssVar,
             colors.codeAnchors[key as keyof CodeColorAnchors],
+        );
+    }
+
+    const agentStatusColors = getAgentStatusColors(name, isDark);
+    for (const [key, cssVar] of Object.entries(AGENT_STATUS_CSS_VAR_MAP)) {
+        el.style.setProperty(
+            cssVar,
+            agentStatusColors[key as keyof AgentStatusColors],
         );
     }
 

@@ -280,9 +280,8 @@
     --diff-warn: #92400e;
     --diff-move: #a16207;
 
-    /* Agent status colors — one hue per lifecycle state so a thread reads
-       the same color everywhere it surfaces. Light theme sits in the 600/700
-       band for contrast against light backgrounds. */
+    /* Agent status startup fallbacks. `applyThemeColors` replaces these from
+       the active bundled theme's semantic palette during hydration. */
     --agent-status-working: #0284c7;
     --agent-status-review: #9333ea;
     --agent-status-approval: #b45309;
@@ -347,8 +346,7 @@
     --diff-warn: #fbbf24;
     --diff-move: #fcd34d;
 
-    /* Agent status colors — same hues lifted into the 300/400 band so they
-       stay legible on dark surfaces without glowing. */
+    /* Dark-mode startup fallbacks; active themes replace these at runtime. */
     --agent-status-working: #38bdf8;
     --agent-status-review: #d8b4fe;
     --agent-status-approval: #fcd34d;

@@ -851,9 +851,13 @@ const SLOT_TO_CSS: Record<keyof AnsiPalette, string> = {
     brightWhite:   "--terminal-ansi-bright-white",
 };
 
+export function getTerminalPalette(name: ThemeName, isDark: boolean) {
+    return isDark ? PALETTES[name].dark : PALETTES[name].light;
+}
+
 export function applyTerminalPalette(name: ThemeName, isDark: boolean) {
     if (typeof document === "undefined") return;
-    const palette = isDark ? PALETTES[name].dark : PALETTES[name].light;
+    const palette = getTerminalPalette(name, isDark);
     const style = document.documentElement.style;
     for (const [slot, cssVar] of Object.entries(SLOT_TO_CSS) as [keyof AnsiPalette, string][]) {
         style.setProperty(cssVar, palette[slot]);
