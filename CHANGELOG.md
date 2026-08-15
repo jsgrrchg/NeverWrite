@@ -34,11 +34,28 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [Unreleased]
+## [0.7.2] - 2026-08-14
 
 ### Added
 
+- Added canonical AI conversations with durable conversation identities and persisted provider bindings, allowing chat state, transcripts, and provider configuration to survive reloads, reconnects, and history migration.
+- Added a unified ACP provider and model picker with provider-specific model catalogs, model-aware reasoning and service-tier controls, staged selections, and setup and availability feedback.
+- Added Claude subscription authentication to AI provider setup.
 - Added bidirectional placement for the Files and Agents sidebar views, with accessible context-menu and command-palette actions, persistent layout preferences, side-aware reveal and drag behavior, and adaptive right-sidebar sizing.
+
+### Changed
+
+- Updated the embedded Codex ACP runtime to `0.147.0`, including the `codex-acp` executable as the default Codex runtime and improved support for subagent lifecycle events.
+- Changed ACP conversation routing to select the appropriate continuation strategy, including bounded transcript handoff when a runtime cannot continue a native session, while preserving canonical conversation and provider state across turns.
+- Locked provider changes after a conversation begins and kept staged model and configuration choices scoped to the active conversation.
+- Refined AI provider and model controls with anchored popovers, clearer model labels, and improved keyboard and focus behavior.
+
+### Fixed
+
+- Fixed restored and migrated AI sessions losing provider bindings, model or configuration selections, and canonical conversation identity.
+- Fixed AI activity and change-review event handling across runtime upgrades, reconnects, persisted sessions, and subagent lifecycle changes.
+- Fixed subagent activity being duplicated or attached to stale child sessions, and preserved authoritative activity timestamps across restored sessions.
+- Fixed Claude subscription authentication status handling when OAuth sessions expire or status probes stall.
 
 ## [0.7.1] - 2026-08-09
 

@@ -327,6 +327,40 @@ describe("SettingsPanel", () => {
         expect(useSettingsStore.getState().aiChatContentWidth).toBe(800);
     });
 
+    it("sets the interface font from Appearance", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+        const label = screen.getByText("Interface font");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        fireEvent.click(
+            within(row as HTMLElement).getByRole("button", {
+                name: "System",
+            }),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Geist" }));
+
+        expect(useSettingsStore.getState().uiFontFamily).toBe("geist");
+
+        fireEvent.click(
+            within(row as HTMLElement).getByRole("button", {
+                name: "Geist",
+            }),
+        );
+        expect(
+            screen.getByRole("button", { name: "Geist Mono" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "JetBrains Mono" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "IBM Plex Mono" }),
+        ).toBeInTheDocument();
+    });
+
     it("filters recent vaults in a scrollable list", () => {
         localStorage.setItem(
             "neverwrite:recentVaults",

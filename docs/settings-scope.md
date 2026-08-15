@@ -66,6 +66,7 @@ the same Settings stores.
 | General / Tabs | `tabOpenBehavior` | Per-vault | `history` | `neverwrite:settings:<vault-path>` | Valid values are `history` and `new_tab`. |
 | Appearance / Mode | `mode` | Per-vault, legacy global fallback | `system` | `neverwrite:theme:<vault-path>` | Valid values are `system`, `light`, and `dark`. |
 | Appearance / Mode | `themeName` | Per-vault, legacy global fallback | `default` | `neverwrite:theme:<vault-path>` | `isDark` is derived from `mode` plus OS preference. |
+| Appearance / Interface | `uiFontFamily` | Per-vault | `system` | `neverwrite:settings:<vault-path>` | Font used for app controls and navigation. Editor, chat, composer, terminal, and code surfaces keep their own font settings. |
 | Appearance / Navigation | `fileTreeScale` | Per-vault | `114` | `neverwrite:settings:<vault-path>` | Clamped to `90..140`. |
 | Appearance / Navigation | `agentsSidebarScale` | Per-vault | `100` | `neverwrite:settings:<vault-path>` | Clamped to `90..140`. |
 | Appearance / Navigation | `fileTreeStickyFolders` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Controls sticky parent folders in the file tree. |
