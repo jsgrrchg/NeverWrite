@@ -723,17 +723,15 @@ describe("AIChatSessionView", () => {
         );
         expect(expandedRegion).toHaveClass(
             "absolute",
-            "inset-0",
+            "inset-2",
         );
         expect(expandedRegion).not.toHaveClass(
             "nw-chat-translucent-surface",
         );
         expect(screen.getByTestId("chat-glass-surface")).toHaveClass(
             "nw-chat-translucent-surface",
-            "flex-1",
-        );
-        expect(screen.getByTestId("chat-glass-surface")).not.toHaveClass(
             "nw-chat-floating-surface",
+            "flex-1",
         );
         expect(screen.getByTestId("chat-message-list")).toBeInTheDocument();
         expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(

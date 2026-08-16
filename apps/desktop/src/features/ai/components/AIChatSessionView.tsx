@@ -1238,17 +1238,17 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                             ? "chat-expanded-composer-region"
                             : "chat-bottom-dock"
                     }
-                    className={
-                        composerExpanded
-                            ? "absolute inset-0 z-20 flex min-h-0 flex-col"
-                            : "nw-chat-bottom-dock absolute inset-x-0 bottom-0 z-20 flex max-h-full flex-col px-2 pb-2"
-                    }
+                        className={
+                            composerExpanded
+                                ? "absolute inset-2 z-20 flex min-h-0 flex-col"
+                                : "nw-chat-bottom-dock absolute inset-x-0 bottom-0 z-20 flex max-h-full flex-col px-2 pb-2"
+                        }
                 >
                     <div
                         data-testid="chat-glass-surface"
                         className={
                             composerExpanded
-                                ? "nw-chat-translucent-surface flex min-h-0 flex-1 flex-col"
+                                ? "nw-chat-translucent-surface nw-chat-floating-surface flex min-h-0 flex-1 flex-col"
                                 : "nw-chat-translucent-surface nw-chat-floating-surface flex min-h-0 max-h-full flex-col"
                         }
                         style={
