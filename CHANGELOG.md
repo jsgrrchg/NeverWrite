@@ -34,6 +34,30 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.7.3] - 2026-08-16
+
+### Added
+
+- Added per-vault interface font selection for app controls and navigation, with support for system, sans, mono, rounded, and accessibility-focused font families.
+- Added configurable glass opacity for translucent interface surfaces, including the composer and menus.
+- Added document status filtering to the file tree, including filters for each known status and documents without a status.
+- Added a prompt history minimap to the chat transcript for quickly locating and navigating between prompts.
+
+### Changed
+
+- Refined chat glass surfaces across the composer, plan banner, menus, scroll controls, and other chat overlays, with clearer translucency, blur, borders, and spacing in compact and expanded layouts.
+- Consolidated compact composer mode, reasoning, service-tier, and other configuration controls into a dedicated options menu to preserve space in narrow chat panes.
+- Updated the embedded Claude ACP runtime to `0.68.0` and aligned its Claude Agent SDK dependencies with the upstream release.
+
+### Fixed
+
+- Fixed ACP mode and configuration synchronization after model changes so stale or unavailable selections are reconciled before a turn is sent.
+- Fixed chat pane minimum-width handling and expanded composer rounded margins so the composer and surrounding glass surfaces retain consistent geometry.
+
+### Security
+
+- Patched the Nano ID zero-size generator vulnerability by updating the Excalidraw-pinned `nanoid` dependency to `3.3.18`.
+
 ## [0.7.2] - 2026-08-14
 
 ### Added
