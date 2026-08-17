@@ -344,6 +344,50 @@ describe("AIChatComposer mention picker", () => {
         });
     });
 
+    it("exposes file-tree drag state to the visible composer surface", () => {
+        renderComposer();
+
+        const dropZone = document.querySelector(
+            '[data-ai-composer-drop-zone="true"]',
+        );
+        expect(dropZone).not.toHaveAttribute(
+            "data-ai-composer-drop-active",
+        );
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "start",
+                        x: 0,
+                        y: 0,
+                        notes: [],
+                    },
+                }),
+            );
+        });
+        expect(dropZone).toHaveAttribute(
+            "data-ai-composer-drop-active",
+            "true",
+        );
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "cancel",
+                        x: 0,
+                        y: 0,
+                        notes: [],
+                    },
+                }),
+            );
+        });
+        expect(dropZone).not.toHaveAttribute(
+            "data-ai-composer-drop-active",
+        );
+    });
+
     it("reserves top spacing only when the context bar is present", () => {
         renderComposer({
             contextBar: <div data-testid="test-context-bar">Context</div>,
