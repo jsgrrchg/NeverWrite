@@ -514,18 +514,6 @@ function UserTextMessage({
 }) {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<UserMentionContextMenuPayload> | null>(null);
-    const [copied, setCopied] = useState(false);
-    const formattedTime = formatUserMessageTime(message.timestamp);
-    const canCopy = message.content.trim().length > 0;
-
-    const copyMessage = () => {
-        if (!canCopy) return;
-
-        void navigator.clipboard.writeText(message.content).then(() => {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
-        });
-    };
 
     return (
         <div
@@ -560,32 +548,7 @@ function UserTextMessage({
                 )}
                 <UserMessageAttachments attachments={message.attachments} />
             </div>
-            <div
-                className="mt-1 flex min-h-5 items-center justify-end gap-1.5 px-0.5 text-text-secondary opacity-0 transition-opacity group-hover:opacity-[0.72] group-has-[:focus-visible]:opacity-[0.72]"
-                data-user-message-metadata="true"
-                style={{
-                    fontFamily: "var(--font-mono), ui-monospace, monospace",
-                    fontSize: "10px",
-                }}
-            >
-                {formattedTime ? (
-                    <time dateTime={new Date(message.timestamp).toISOString()}>
-                        {formattedTime}
-                    </time>
-                ) : null}
-                {canCopy ? (
-                    <button
-                        aria-label={copied ? "Message copied" : "Copy message"}
-                        className="flex h-5 w-5 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--accent)]"
-                        onClick={copyMessage}
-                        style={copied ? { color: "var(--diff-add)" } : undefined}
-                        title={copied ? "Copied" : "Copy message"}
-                        type="button"
-                    >
-                        {copied ? <CopySuccessIcon /> : <CopyMessageIcon />}
-                    </button>
-                ) : null}
-            </div>
+            <MessageMetadata message={message} placement="user" />
             {contextMenu ? (
                 <ContextMenu
                     menu={contextMenu}
@@ -638,7 +601,78 @@ function UserTextMessage({
     );
 }
 
-function formatUserMessageTime(timestamp: number) {
+function MessageMetadata({
+    message,
+    placement,
+    available = true,
+}: {
+    message: AIChatMessage;
+    placement: "assistant" | "user";
+    available?: boolean;
+}) {
+    const [copied, setCopied] = useState(false);
+    const formattedTime = formatMessageTime(message.timestamp);
+    const canCopy = available && message.content.trim().length > 0;
+
+    const copyMessage = () => {
+        if (!canCopy) return;
+
+        void navigator.clipboard.writeText(message.content).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+        });
+    };
+
+    const time = formattedTime ? (
+        <time dateTime={new Date(message.timestamp).toISOString()}>
+            {formattedTime}
+        </time>
+    ) : null;
+    const copyButton = canCopy ? (
+        <button
+            aria-label={copied ? "Message copied" : "Copy message"}
+            className="flex h-5 w-5 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--accent)]"
+            onClick={copyMessage}
+            style={copied ? { color: "var(--diff-add)" } : undefined}
+            title={copied ? "Copied" : "Copy message"}
+            type="button"
+        >
+            {copied ? <CopySuccessIcon /> : <CopyMessageIcon />}
+        </button>
+    ) : null;
+
+    return (
+        <div
+            className={`mt-1 flex min-h-5 items-center gap-1.5 px-0.5 text-text-secondary opacity-0 transition-opacity ${placement === "user" ? "justify-end" : "justify-start"} ${available ? "group-hover:opacity-[0.72] group-has-[:focus-visible]:opacity-[0.72]" : ""}`}
+            data-assistant-message-metadata={
+                placement === "assistant" ? "true" : undefined
+            }
+            data-user-message-metadata={
+                placement === "user" ? "true" : undefined
+            }
+            style={{
+                fontFamily: "var(--font-mono), ui-monospace, monospace",
+                fontSize: "10px",
+            }}
+        >
+            {available ? (
+                placement === "assistant" ? (
+                    <>
+                        {copyButton}
+                        {time}
+                    </>
+                ) : (
+                    <>
+                        {time}
+                        {copyButton}
+                    </>
+                )
+            ) : null}
+        </div>
+    );
+}
+
+function formatMessageTime(timestamp: number) {
     if (!Number.isFinite(timestamp)) {
         return null;
     }
@@ -647,6 +681,41 @@ function formatUserMessageTime(timestamp: number) {
         hour: "numeric",
         minute: "2-digit",
     }).format(timestamp);
+}
+
+function AssistantTextMessage({
+    message,
+    pillMetrics,
+    chatFontSize,
+}: {
+    message: AIChatMessage;
+    pillMetrics: ChatPillMetrics;
+    chatFontSize: number;
+}) {
+    return (
+        <div
+            className="group min-w-0 max-w-full"
+            data-assistant-message="true"
+            style={{
+                color: "var(--text-primary)",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+            }}
+        >
+            <MarkdownContent
+                content={message.content}
+                live={message.inProgress === true}
+                pillMetrics={pillMetrics}
+                chatFontSize={chatFontSize}
+                fileReferenceAppearance="link"
+            />
+            <MessageMetadata
+                available={message.inProgress !== true}
+                message={message}
+                placement="assistant"
+            />
+        </div>
+    );
 }
 
 function CopyMessageIcon() {
@@ -3414,21 +3483,10 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
 
     // Assistant text — flat, no card
     return (
-        <div
-            className="min-w-0 max-w-full"
-            style={{
-                color: "var(--text-primary)",
-                overflowWrap: "anywhere",
-                wordBreak: "break-word",
-            }}
-        >
-            <MarkdownContent
-                content={message.content}
-                live={message.inProgress === true}
-                pillMetrics={pillMetrics}
-                chatFontSize={chatFontSize}
-                fileReferenceAppearance="link"
-            />
-        </div>
+        <AssistantTextMessage
+            message={message}
+            pillMetrics={pillMetrics}
+            chatFontSize={chatFontSize}
+        />
     );
 });
