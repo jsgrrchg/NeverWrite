@@ -1653,12 +1653,31 @@ body.dragging-tab * {
     border: 1px solid var(--nw-glass-outline);
     border-radius: 20px;
     box-shadow: 0 14px 32px -22px color-mix(in srgb, black 52%, transparent);
+    transition:
+        border-color 150ms ease,
+        box-shadow 150ms ease;
 }
 
 .dark .nw-chat-floating-surface {
     box-shadow:
         inset 0 1px color-mix(in srgb, white 4%, transparent),
         0 18px 40px -26px color-mix(in srgb, black 82%, transparent);
+}
+
+/* The floating glass surface owns the composer's visible edge. Paint the drop
+   affordance here so its glow is not clipped by the surface's overflow mask. */
+.nw-chat-floating-surface:has(
+        [data-ai-composer-drop-active="true"]
+    ) {
+    border-color: color-mix(
+        in srgb,
+        var(--accent) 62%,
+        var(--nw-glass-outline)
+    );
+    box-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent),
+        0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent),
+        0 16px 38px -22px color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
 /* Portalled menus use a slightly denser recipe than the composer. The extra
