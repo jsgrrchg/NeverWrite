@@ -529,7 +529,7 @@ function UserTextMessage({
 
     return (
         <div
-            className="min-w-0 w-full max-w-full"
+            className="group min-w-0 w-full max-w-full"
             data-user-message="true"
         >
             <div
@@ -561,12 +561,11 @@ function UserTextMessage({
                 <UserMessageAttachments attachments={message.attachments} />
             </div>
             <div
-                className="mt-1 flex min-h-5 items-center justify-end gap-1.5 px-0.5 text-text-secondary"
+                className="mt-1 flex min-h-5 items-center justify-end gap-1.5 px-0.5 text-text-secondary opacity-0 transition-opacity group-hover:opacity-[0.72] group-has-[:focus-visible]:opacity-[0.72]"
                 data-user-message-metadata="true"
                 style={{
                     fontFamily: "var(--font-mono), ui-monospace, monospace",
                     fontSize: "10px",
-                    opacity: 0.72,
                 }}
             >
                 {formattedTime ? (
