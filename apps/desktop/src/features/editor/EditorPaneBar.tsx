@@ -49,6 +49,13 @@ import {
     getChromeIconButtonStyle,
     getChromeNavigationButtonStyle,
 } from "./workspaceChromeControls";
+import {
+    getWorkspaceTabBarStyle,
+    getWorkspaceTabCloseButtonStyle,
+    getWorkspaceTabDragPreviewStyle,
+    getWorkspaceTabInsertionIndicatorStyle,
+    getWorkspaceTabStyle,
+} from "./workspaceTabChrome";
 
 function getTabLabel(
     tab: Tab,
@@ -447,13 +454,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         <>
             <div
                 className="drag flex items-center shrink-0"
-                style={{
-                    height: 33,
-                    minHeight: 33,
-                    boxSizing: "border-box",
-                    borderBottom: "1px solid var(--border)",
-                    background: "var(--bg-secondary)",
-                }}
+                style={getWorkspaceTabBarStyle()}
                 data-pane-empty={hasTabs ? undefined : "true"}
             >
                 {showHistoryNavigationButtons && (
@@ -536,7 +537,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             data-pane-tab-overflowing={
                                 tabLayout.overflow || undefined
                             }
-                            className="relative flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-end"
+                            className="relative flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-center"
                             style={{
                                 gap: tabLayout.stripGap,
                                 padding: `0 ${tabLayout.stripPaddingX}px`,
@@ -647,45 +648,15 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                     payload: { tabId: tab.id },
                                                 });
                                             }}
-                                            style={{
-                                                width: isPinned
-                                                    ? 34
-                                                    : tabLayout.tabWidth,
-                                                minWidth: isPinned
-                                                    ? 34
-                                                    : tabLayout.tabWidth,
-                                                maxWidth: isPinned ? 34 : 240,
-                                                height: 33,
-                                                flexShrink: 0,
-                                                justifyContent: isPinned
-                                                    ? "center"
-                                                    : undefined,
-                                                boxSizing: "border-box",
-                                                gap: isPinned
-                                                    ? 0
-                                                    : tabLayout.tabGap,
-                                                padding: isPinned
-                                                    ? 0
-                                                    : `0 ${tabLayout.tabPaddingX}px`,
-                                                borderRight:
-                                                    "1px solid color-mix(in srgb, var(--border) 45%, transparent)",
-                                                background: isActive
-                                                    ? "var(--bg-primary)"
-                                                    : "transparent",
-                                                color: isActive
-                                                    ? "var(--text-primary)"
-                                                    : "var(--text-secondary)",
-                                                boxShadow: isActive
-                                                    ? "inset 0 -2px 0 0 var(--accent)"
-                                                    : "none",
-                                                zIndex: isActive ? 10 : 0,
-                                                opacity: isDragging ? 0.35 : 1,
-                                                cursor: isDragging
-                                                    ? "grabbing"
-                                                    : "pointer",
-                                                transition:
-                                                    "background 150ms, color 150ms",
-                                            }}
+                                            style={getWorkspaceTabStyle({
+                                                isActive,
+                                                isDragging,
+                                                isPinned,
+                                                tabWidth: tabLayout.tabWidth,
+                                                tabGap: tabLayout.tabGap,
+                                                tabPaddingX:
+                                                    tabLayout.tabPaddingX,
+                                            })}
                                         >
                                             {renderEditorTabLeadingIcon(
                                                 tab,
@@ -749,6 +720,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                     style={{
                                                         fontSize:
                                                             tabLayout.titleFontSize,
+                                                        fontWeight: isActive
+                                                            ? 600
+                                                            : 500,
                                                     }}
                                                 >
                                                     {tabLabel}
@@ -764,19 +738,16 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                             tab.id,
                                                         );
                                                     }}
-                                                    className={`ml-0.5 inline-flex shrink-0 items-center justify-center rounded-md transition-[background-color,opacity,transform] duration-150 ease-out hover:bg-gray-500/30 active:bg-gray-500/55 active:scale-90 ${
+                                                    className={`ml-0.5 inline-flex shrink-0 items-center justify-center transition-[background-color,opacity,transform] duration-150 ease-out hover:bg-gray-500/25 active:bg-gray-500/50 active:scale-90 ${
                                                         isActive
                                                             ? "opacity-70 hover:opacity-100"
                                                             : "opacity-0 group-hover:opacity-65 hover:opacity-100"
                                                     }`}
-                                                    style={{
-                                                        width: 20,
-                                                        height: 20,
-                                                        color: "var(--text-secondary)",
-                                                        // Match UnifiedBar tab close: sit closer to the
-                                                        // right edge of the tab.
-                                                        marginRight: -6,
-                                                    }}
+                                                    style={getWorkspaceTabCloseButtonStyle(
+                                                        {
+                                                            size: tabLayout.closeButtonSize,
+                                                        },
+                                                    )}
                                                 >
                                                     <svg
                                                         width={13}
@@ -799,20 +770,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             <div
                                 ref={insertionIndicatorRef}
                                 aria-hidden="true"
-                                className="rounded-full"
-                                style={{
-                                    position: "absolute",
-                                    top: "50%",
-                                    left: 0,
-                                    width: 3,
-                                    height: 20,
-                                    backgroundColor: "var(--accent)",
-                                    boxShadow:
-                                        "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
-                                    pointerEvents: "none",
-                                    zIndex: 20,
-                                    display: "none",
-                                }}
+                                style={getWorkspaceTabInsertionIndicatorStyle()}
                             />
                         </div>
                         )
@@ -1074,26 +1032,10 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                       <div
                           ref={dragPreviewNodeRef}
                           data-pane-tab-drag-preview="true"
-                          style={{
-                              position: "fixed",
-                              left: 0,
-                              top: 0,
-                              display: "flex",
-                              alignItems: "center",
-                              gap: tabLayout.tabGap,
-                              maxWidth: 288,
-                              height: 33,
-                              padding: `0 ${tabLayout.tabPaddingX}px`,
-                              borderRadius: 4,
-                              border: "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
-                              background: "var(--bg-primary)",
-                              color: "var(--text-primary)",
-                              boxShadow:
-                                  "inset 0 -2px 0 0 var(--accent), 0 10px 24px rgba(15, 23, 42, 0.15)",
-                              pointerEvents: "none",
-                              zIndex: 9999,
-                              willChange: "transform",
-                          }}
+                          style={getWorkspaceTabDragPreviewStyle({
+                              tabGap: tabLayout.tabGap,
+                              tabPaddingX: tabLayout.tabPaddingX,
+                          })}
                       >
                           {renderEditorTabLeadingIcon(
                               draggedPreviewTab,

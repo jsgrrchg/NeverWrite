@@ -33,6 +33,7 @@ import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
 import { createWorkspaceTabExternalDragHandlers } from "./tabDragAttachments";
+import { getWorkspaceTabDragPreviewStyle } from "./workspaceTabChrome";
 
 const LazyExcalidrawTabView = React.lazy(() =>
     import("../maps/ExcalidrawTabView").then((m) => ({
@@ -569,25 +570,11 @@ export function StackedPaneContent({
                       <div
                           ref={dragPreviewNodeRef}
                           data-pane-tab-drag-preview="true"
-                          style={{
-                              position: "fixed",
-                              left: 0,
-                              top: 0,
+                          style={getWorkspaceTabDragPreviewStyle({
+                              tabGap: 6,
+                              tabPaddingX: 10,
                               maxWidth: 240,
-                              height: 28,
-                              padding: "0 10px",
-                              display: "flex",
-                              alignItems: "center",
-                              borderRadius: 4,
-                              border: "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
-                              background: "var(--bg-primary)",
-                              color: "var(--text-primary)",
-                              boxShadow:
-                                  "inset 0 -2px 0 0 var(--accent), 0 10px 24px rgba(15, 23, 42, 0.15)",
-                              pointerEvents: "none",
-                              zIndex: 9999,
-                              willChange: "transform",
-                          }}
+                          })}
                       >
                           <span
                               style={{

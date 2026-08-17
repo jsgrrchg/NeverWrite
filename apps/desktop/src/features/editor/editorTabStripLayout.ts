@@ -18,8 +18,8 @@ export interface EditorTabLayout {
 
 export const EDITOR_TAB_MAX_WIDTH = 160;
 export const EDITOR_TAB_MIN_WIDTH = 96;
-export const EDITOR_TAB_STRIP_GAP = 0;
-export const EDITOR_TAB_STRIP_PADDING_X = 0;
+export const EDITOR_TAB_STRIP_GAP = 3;
+export const EDITOR_TAB_STRIP_PADDING_X = 5;
 
 const COMFORTABLE_WIDTH = 144;
 const COMPACT_WIDTH = 118;

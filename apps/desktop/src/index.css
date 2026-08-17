@@ -430,8 +430,13 @@ textarea,
    Excludes stacked-tab columns, which reuse data-pane-tab-id only for drop
    hit-testing and must not get the small-tab hover background. */
 [data-pane-tab-id]:not([aria-selected="true"]):not([data-stacked-column-id]):hover {
-    background: var(--bg-tertiary) !important;
+    background: color-mix(
+        in srgb,
+        var(--text-primary) 7%,
+        transparent
+    ) !important;
     color: var(--text-primary) !important;
+    border-color: color-mix(in srgb, var(--border) 58%, transparent) !important;
 }
 
 /* Native WebKit drag region: works at the OS level, not in JS. */
@@ -1920,11 +1925,11 @@ body.dragging-tab * {
 .ub-tab:not([data-active="true"]):hover {
     background-color: color-mix(
         in srgb,
-        var(--bg-primary) 62%,
+        var(--text-primary) 7%,
         transparent
     ) !important;
     color: var(--text-primary) !important;
-    border-color: color-mix(in srgb, var(--border) 66%, transparent) !important;
+    border-color: color-mix(in srgb, var(--border) 58%, transparent) !important;
 }
 
 .settings-range-slider {

@@ -67,6 +67,11 @@ import {
     getChromeIconButtonStyle,
     getChromeNavigationButtonStyle,
 } from "./workspaceChromeControls";
+import {
+    getWorkspaceTabCloseButtonStyle,
+    getWorkspaceTabDragPreviewStyle,
+    getWorkspaceTabStyle,
+} from "./workspaceTabChrome";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
 import { logError } from "../../app/utils/runtimeLog";
@@ -1139,7 +1144,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                         tabStripOverflowState.hasOverflow ||
                                         undefined
                                     }
-                                    className="no-drag relative flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-end self-stretch"
+                                    className="no-drag relative flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-center self-stretch"
                                     style={{
                                         gap: tabLayout.stripGap,
                                         padding: `0 ${tabLayout.stripPaddingX}px`,
@@ -1169,8 +1174,8 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                             aria-hidden="true"
                                             className="shrink-0 rounded-full"
                                             style={{
-                                                width: 3,
-                                                height: 22,
+                                                width: 2,
+                                                height: 18,
                                                 backgroundColor:
                                                     "var(--accent)",
                                                 boxShadow:
@@ -1272,40 +1277,30 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         isDragging || undefined
                                                     }
                                                     style={{
-                                                        width: tabLayout.tabWidth,
-                                                        minWidth:
-                                                            tabLayout.tabWidth,
-                                                        maxWidth: 240,
-                                                        height: 33,
-                                                        flexShrink: 0,
-                                                        boxSizing: "border-box",
-                                                        gap: tabLayout.tabGap,
-                                                        padding: `0 ${tabLayout.tabPaddingX}px`,
-                                                        borderRight:
-                                                            "1px solid color-mix(in srgb, var(--border) 45%, transparent)",
-                                                        background: isActive
-                                                            ? "var(--bg-primary)"
-                                                            : "transparent",
-                                                        color: isActive
-                                                            ? "var(--text-primary)"
-                                                            : "var(--text-secondary)",
-                                                        boxShadow: isActive
-                                                            ? "inset 0 -2px 0 0 var(--accent)"
-                                                            : "none",
+                                                        ...getWorkspaceTabStyle(
+                                                            {
+                                                                isActive,
+                                                                isDragging,
+                                                                tabWidth:
+                                                                    tabLayout.tabWidth,
+                                                                tabGap: tabLayout.tabGap,
+                                                                tabPaddingX:
+                                                                    tabLayout.tabPaddingX,
+                                                                draggingOpacity:
+                                                                    DRAGGING_TAB_PLACEHOLDER_OPACITY,
+                                                            },
+                                                        ),
                                                         zIndex: isActive
                                                             ? 10
                                                             : isDragging
                                                               ? 20
                                                               : 0,
-                                                        opacity: isDragging
-                                                            ? DRAGGING_TAB_PLACEHOLDER_OPACITY
-                                                            : 1,
                                                         transform: isDragging
                                                             ? `translateX(${dragOffsetX}px)`
                                                             : undefined,
                                                         transition: isDragging
                                                             ? "none"
-                                                            : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background 150ms ease, color 150ms ease, box-shadow 150ms ease",
+                                                            : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background 160ms ease, color 160ms ease, border-color 160ms ease, box-shadow 160ms ease",
                                                         willChange: isDragging
                                                             ? "transform"
                                                             : undefined,
@@ -1324,6 +1319,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         style={{
                                                             fontSize:
                                                                 tabLayout.titleFontSize,
+                                                            fontWeight: isActive
+                                                                ? 600
+                                                                : 500,
                                                         }}
                                                     >
                                                         {isSearchTab(tab)
@@ -1351,19 +1349,16 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                                 tab.id,
                                                             );
                                                         }}
-                                                        className={`no-drag shrink-0 rounded-md flex items-center justify-center transition-[background-color,opacity,transform] duration-150 ease-out hover:bg-gray-500/30 active:bg-gray-500/55 active:scale-90 ${
+                                                        className={`no-drag shrink-0 flex items-center justify-center transition-[background-color,opacity,transform] duration-150 ease-out hover:bg-gray-500/25 active:bg-gray-500/50 active:scale-90 ${
                                                             isActive
                                                                 ? "opacity-70 hover:opacity-100"
                                                                 : "opacity-0 group-hover:opacity-65 hover:opacity-100!"
                                                         }`}
-                                                        style={{
-                                                            width: tabLayout.closeButtonSize,
-                                                            height: tabLayout.closeButtonSize,
-                                                            // Eat into the tab's right padding so the
-                                                            // close button sits closer to the right edge
-                                                            // without losing its clickable area.
-                                                            marginRight: -6,
-                                                        }}
+                                                        style={getWorkspaceTabCloseButtonStyle(
+                                                            {
+                                                                size: tabLayout.closeButtonSize,
+                                                            },
+                                                        )}
                                                     >
                                                         <svg
                                                             width={
@@ -1389,8 +1384,8 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         aria-hidden="true"
                                                         className="shrink-0 rounded-full"
                                                         style={{
-                                                            width: 3,
-                                                            height: 22,
+                                                            width: 2,
+                                                            height: 18,
                                                             backgroundColor:
                                                                 "var(--accent)",
                                                             boxShadow:
@@ -1479,26 +1474,14 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                       ref={dragPreviewNodeRef}
                                       data-tab-drag-preview="true"
                                       style={{
-                                          position: "fixed",
-                                          left: 0,
-                                          top: 0,
+                                          ...getWorkspaceTabDragPreviewStyle({
+                                              tabGap: tabLayout.tabGap,
+                                              tabPaddingX:
+                                                  tabLayout.tabPaddingX,
+                                              maxWidth: tabLayout.tabWidth,
+                                          }),
                                           width: tabLayout.tabWidth,
                                           minWidth: tabLayout.tabWidth,
-                                          height: 30,
-                                          display: "flex",
-                                          alignItems: "center",
-                                          gap: tabLayout.tabGap,
-                                          padding: `0 ${tabLayout.tabPaddingX}px`,
-                                          borderRadius: 9,
-                                          border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
-                                          background:
-                                              "color-mix(in srgb, var(--bg-primary) 94%, white 6%)",
-                                          color: "var(--text-primary)",
-                                          boxShadow:
-                                              "0 14px 32px rgba(15, 23, 42, 0.18)",
-                                          pointerEvents: "none",
-                                          zIndex: 9999,
-                                          willChange: "transform",
                                       }}
                                   >
                                       {renderEditorTabLeadingIcon(
