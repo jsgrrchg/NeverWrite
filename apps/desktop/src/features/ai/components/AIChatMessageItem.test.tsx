@@ -412,7 +412,7 @@ describe("AIChatMessageItem user image attachments", () => {
         );
     });
 
-    it("shows sent time and copies the user message", async () => {
+    it("reveals reserved user metadata on hover or focus and copies the message", async () => {
         const timestamp = Date.parse("2026-07-11T15:42:00Z");
         const view = renderMessage({
             id: "user:copy",
@@ -422,6 +422,17 @@ describe("AIChatMessageItem user image attachments", () => {
             timestamp,
         });
 
+        expect(view.container.querySelector("[data-user-message]")).toHaveClass(
+            "group",
+        );
+        expect(
+            view.container.querySelector("[data-user-message-metadata]"),
+        ).toHaveClass(
+            "min-h-5",
+            "opacity-0",
+            "group-hover:opacity-[0.72]",
+            "group-has-[:focus-visible]:opacity-[0.72]",
+        );
         expect(
             view.container.querySelector("[data-user-message-metadata] time"),
         ).toHaveAttribute("dateTime", new Date(timestamp).toISOString());
