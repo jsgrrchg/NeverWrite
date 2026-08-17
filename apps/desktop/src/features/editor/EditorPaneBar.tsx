@@ -139,6 +139,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     );
     const tabOpenBehavior = useSettingsStore((state) => state.tabOpenBehavior);
     const vaultPath = useVaultStore((state) => state.vaultPath);
+    const notes = useVaultStore((state) => state.notes);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
         tabId: string;
     }> | null>(null);
@@ -925,6 +926,12 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                         const targetTabIndex = pane.tabs.findIndex(
                             (candidate) => candidate.id === targetTab.id,
                         );
+                        const targetNotePath =
+                            isNoteTab(targetTab) && !isSearchTab(targetTab)
+                                ? (notes.find(
+                                      (note) => note.id === targetTab.noteId,
+                                  )?.path ?? null)
+                                : null;
 
                         const entries: ContextMenuEntry[] = [
                             {
@@ -932,6 +939,17 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 action: () =>
                                     togglePaneTabPinned(paneId, targetTab.id),
                             },
+                            ...(targetNotePath
+                                ? [
+                                      {
+                                          label: "Copy Path",
+                                          action: () =>
+                                              void navigator.clipboard.writeText(
+                                                  targetNotePath,
+                                              ),
+                                      },
+                                  ]
+                                : []),
                             {
                                 label: "Close",
                                 action: () =>
