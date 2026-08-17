@@ -2141,7 +2141,7 @@ export function AIChatComposer({
                                 : "var(--text-secondary)",
                             backgroundColor: canRunPrimaryAction
                                 ? primaryAction === "stop"
-                                    ? "#b91c1c"
+                                    ? "var(--diff-remove)"
                                     : "var(--accent)"
                                 : "transparent",
                             border: "none",
