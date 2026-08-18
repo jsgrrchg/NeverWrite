@@ -1289,6 +1289,7 @@ export function AgentsSidebarPanel() {
                             <AgentsSidebarSection
                                 title="Pinned"
                                 count={pinnedGroups.length}
+                                showHeader={false}
                                 headerMetrics={metrics.header}
                             >
                                 {pinnedGroups.map((group) => renderGroup(group))}
@@ -1302,6 +1303,7 @@ export function AgentsSidebarPanel() {
                             <AgentsSidebarSection
                                 title="Active"
                                 count={activeGroups.length}
+                                showHeader={false}
                                 dropTarget="all"
                                 headerMetrics={metrics.header}
                             >
