@@ -15339,6 +15339,183 @@ describe("chatStore", () => {
         ).toHaveLength(1);
     });
 
+    it("normalizes a queued mode removed after applying the selected model", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const runtimeId = "provider-with-model-specific-modes";
+        const modelOption = {
+            id: "model",
+            runtime_id: runtimeId,
+            category: "model" as const,
+            label: "Model",
+            type: "select" as const,
+            value: "sonnet",
+            options: [
+                { value: "sonnet", label: "Sonnet" },
+                { value: "haiku", label: "Haiku" },
+            ],
+        };
+        const modeOption = {
+            id: "mode",
+            runtime_id: runtimeId,
+            category: "mode" as const,
+            label: "Approval Mode",
+            type: "select" as const,
+            value: "auto",
+            options: [
+                { value: "auto", label: "Auto" },
+                { value: "default", label: "Default" },
+            ],
+        };
+        const models = [
+            {
+                id: "sonnet",
+                runtime_id: runtimeId,
+                name: "Sonnet",
+                description: "Supports auto mode.",
+            },
+            {
+                id: "haiku",
+                runtime_id: runtimeId,
+                name: "Haiku",
+                description: "Supports default mode only.",
+            },
+        ];
+        const modes = [
+            {
+                id: "auto",
+                runtime_id: runtimeId,
+                name: "Auto",
+                description: "Automatic approval.",
+                disabled: false,
+            },
+            {
+                id: "default",
+                runtime_id: runtimeId,
+                name: "Default",
+                description: "Default approval.",
+                disabled: false,
+            },
+        ];
+        const liveSession = {
+            session_id: "model-specific-mode-session",
+            runtime_id: runtimeId,
+            model_id: "sonnet",
+            mode_id: "auto",
+            status: "idle" as const,
+            models,
+            modes,
+            config_options: [modelOption, modeOption],
+        };
+        const haikuSession = {
+            ...liveSession,
+            model_id: "haiku",
+            mode_id: "default",
+            modes: [modes[1]],
+            config_options: [
+                { ...modelOption, value: "haiku" },
+                {
+                    ...modeOption,
+                    value: "default",
+                    options: [{ value: "default", label: "Default" }],
+                },
+            ],
+        };
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Model-specific Mode Provider",
+                        description: "Provider with model-specific modes.",
+                        capabilities: ["create_session"],
+                    },
+                    models: models.map((model) => ({
+                        id: model.id,
+                        runtimeId,
+                        name: model.name,
+                        description: model.description,
+                    })),
+                    modes: modes.map((mode) => ({
+                        id: mode.id,
+                        runtimeId,
+                        name: mode.name,
+                        description: mode.description,
+                        disabled: mode.disabled,
+                    })),
+                    configOptions: [modelOption, modeOption].map((option) => ({
+                        ...option,
+                        runtimeId,
+                    })),
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                [runtimeId]: {
+                    ...readySetupStatusState,
+                    runtimeId,
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") return liveSession;
+            if (command === "ai_set_config_option") {
+                expect(args).toMatchObject({
+                    input: { option_id: "model", value: "haiku" },
+                });
+                return haikuSession;
+            }
+            if (command === "ai_set_mode") {
+                throw new Error("The removed auto mode must not be sent.");
+            }
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: runtimeId,
+                        session_id: liveSession.session_id,
+                        selection: {
+                            runtime_id: runtimeId,
+                            model_id: "haiku",
+                            mode_id: "default",
+                            options: { model: "haiku", mode: "default" },
+                        },
+                    },
+                });
+                return null;
+            }
+            if (command === "ai_send_message") {
+                return { ...haikuSession, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId,
+            modelId: "haiku",
+            modeId: "auto",
+            options: { model: "haiku", mode: "auto" },
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Use Haiku"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_set_mode",
+            ),
+        ).toHaveLength(0);
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_start_conversation_turn",
+            ),
+        ).toHaveLength(1);
+    });
+
     it("applies an ACP option exposed only after selecting the target model", async () => {
         await useChatStore.getState().initialize();
 

@@ -1,6 +1,6 @@
 import { PlanEntry, ToolCallContent, ToolCallLocation, ToolKind } from "@agentclientprotocol/sdk";
 import { HookCallback } from "@anthropic-ai/claude-agent-sdk";
-import { TaskCreateInput, TaskCreateOutput, TaskUpdateInput } from "@anthropic-ai/claude-agent-sdk/sdk-tools.js";
+import { TaskCreateInput, TaskCreateOutput, TaskListOutput, TaskUpdateInput, TaskUpdateOutput } from "@anthropic-ai/claude-agent-sdk/sdk-tools.js";
 import { ToolResultBlockParam, WebSearchToolResultBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaBashCodeExecutionToolResultBlockParam, BetaCodeExecutionToolResultBlockParam, BetaRequestMCPToolResultBlockParam, BetaTextEditorCodeExecutionToolResultBlockParam, BetaToolResultBlockParam, BetaToolSearchToolResultBlockParam, BetaWebFetchToolResultBlockParam, BetaWebSearchToolResultBlockParam } from "@anthropic-ai/sdk/resources/beta.mjs";
 interface ToolInfo {
@@ -57,14 +57,12 @@ export type TaskEntry = {
     description?: string;
 };
 export type TaskState = Map<string, TaskEntry>;
-/**
- * Best-effort parse of a TaskCreate tool_result content into the structured
- * TaskCreateOutput. The SDK delivers tool outputs either as a string or as
- * an array of TextBlockParam-like blocks containing JSON text; try both.
- */
 export declare function parseTaskCreateOutput(content: unknown): TaskCreateOutput | undefined;
+export declare function parseTaskListOutput(content: unknown): TaskListOutput | undefined;
+export declare function parseTaskUpdateOutput(content: unknown, expectedTaskId?: string): TaskUpdateOutput | undefined;
 export declare function applyTaskCreate(state: TaskState, input: TaskCreateInput | undefined, output: TaskCreateOutput | undefined): void;
 export declare function applyTaskUpdate(state: TaskState, input: TaskUpdateInput | undefined): void;
+export declare function applyTaskList(state: TaskState, output: TaskListOutput): void;
 export declare function taskStateToPlanEntries(state: TaskState): PlanEntry[];
 export declare function markdownEscape(text: string): string;
 /**

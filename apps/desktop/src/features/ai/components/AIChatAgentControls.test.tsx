@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
@@ -423,7 +423,7 @@ describe("AIChatAgentControls", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows contextual safety help only for Codex Full Access", () => {
+  it("keeps the Full Access description in the approval menu", () => {
     const fullAccessDescription =
       "Codex can edit files outside this workspace and access the internet without asking for approval. Exercise caution when using.";
     const modes = [
@@ -442,7 +442,7 @@ describe("AIChatAgentControls", () => {
         disabled: false,
       },
     ];
-    const view = renderComponent(
+    renderComponent(
       <AIChatAgentControls
         runtimeId="codex-acp"
         modelId=""
@@ -457,48 +457,12 @@ describe("AIChatAgentControls", () => {
       />,
     );
 
-    const help = screen.getByRole("button", {
-      name: "Full Access safety policy",
-    });
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-
-    fireEvent.mouseEnter(help);
-    expect(screen.getByRole("tooltip")).toHaveTextContent(
-      "Some destructive command forms may still be blocked by Codex safety policy.",
-    );
-    fireEvent.mouseLeave(help);
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-
-    fireEvent.focus(help);
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
-    fireEvent.blur(help);
-
     fireEvent.click(screen.getByTitle("Approval Preset"));
     const fullAccessOption = screen
       .getAllByRole("button", { name: "Full Access" })
       .find((option) => option.getAttribute("title") === fullAccessDescription);
     expect(fullAccessOption).toHaveAttribute("title", fullAccessDescription);
 
-    view.unmount();
-    renderComponent(
-      <AIChatAgentControls
-        runtimeId="codex-acp"
-        modelId=""
-        modeId="auto"
-        effortsByModel={{}}
-        models={[]}
-        modes={modes}
-        configOptions={[]}
-        onModelChange={() => {}}
-        onModeChange={() => {}}
-        onConfigOptionChange={() => {}}
-      />,
-    );
-    expect(
-      screen.queryByRole("button", {
-        name: "Full Access safety policy",
-      }),
-    ).not.toBeInTheDocument();
   });
 
   it("filters reasoning efforts to the selected model", () => {
@@ -613,7 +577,8 @@ describe("AIChatAgentControls", () => {
       />,
     );
 
-    expect(screen.getByTitle("Reasoning and Service Tier")).toBeInTheDocument();
+    expect(screen.getByTitle("Reasoning")).toBeInTheDocument();
+    expect(screen.queryByTitle("Service Tier")).not.toBeInTheDocument();
     expect(screen.getByText("Medium")).toBeInTheDocument();
   });
 
@@ -739,6 +704,106 @@ describe("AIChatAgentControls", () => {
     expect(onConfigOptionChange).toHaveBeenCalledWith("service_tier", "fast");
   });
 
+  it("exposes reasoning and access through the compact composer overflow menu", () => {
+    const onConfigOptionChange = vi.fn();
+    const onModeChange = vi.fn();
+
+    renderComponent(
+      <AIChatAgentControls
+        runtimeId="codex-acp"
+        modelId="gpt-5.6"
+        modeId="auto"
+        effortsByModel={{}}
+        models={[]}
+        modes={[
+          {
+            id: "auto",
+            runtimeId: "codex-acp",
+            name: "Auto",
+            description: "Ask before potentially destructive actions.",
+            disabled: false,
+          },
+          {
+            id: "full-access",
+            runtimeId: "codex-acp",
+            name: "Full Access",
+            description: "Allow unrestricted workspace access.",
+            disabled: false,
+          },
+        ]}
+        configOptions={[
+          {
+            id: "reasoning_effort",
+            runtimeId: "codex-acp",
+            category: "reasoning",
+            label: "Reasoning Effort",
+            type: "select",
+            value: "medium",
+            options: [
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+            ],
+          },
+        ]}
+        onModelChange={() => {}}
+        onModeChange={onModeChange}
+        onConfigOptionChange={onConfigOptionChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByTitle("Composer options"));
+
+    const menu = screen.getByText("Reasoning").closest(".nw-chat-glass-menu");
+    expect(menu).not.toBeNull();
+    const menuElement = menu as HTMLElement;
+    expect(within(menuElement).getByText("Access")).toBeInTheDocument();
+
+    fireEvent.click(within(menuElement).getByRole("button", { name: "High" }));
+    expect(onConfigOptionChange).toHaveBeenCalledWith("reasoning_effort", "high");
+
+    fireEvent.click(screen.getByTitle("Composer options"));
+    const reopenedMenu = screen.getByText("Access").closest(".nw-chat-glass-menu");
+    expect(reopenedMenu).not.toBeNull();
+    const reopenedMenuElement = reopenedMenu as HTMLElement;
+    fireEvent.click(
+      within(reopenedMenuElement).getByRole("button", { name: "Full Access" }),
+    );
+    expect(onModeChange).toHaveBeenCalledWith("full-access");
+  });
+
+  it("keeps an active fast tier visible on the compact composer trigger", () => {
+    renderComponent(
+      <AIChatAgentControls
+        runtimeId="codex-acp"
+        modelId="gpt-5.6"
+        modeId="auto"
+        effortsByModel={{}}
+        models={[]}
+        modes={[]}
+        configOptions={[
+          {
+            id: "service_tier",
+            runtimeId: "codex-acp",
+            category: "service_tier",
+            label: "Service Tier",
+            type: "select",
+            value: "fast",
+            options: [
+              { value: "standard", label: "Standard" },
+              { value: "fast", label: "Fast" },
+            ],
+          },
+        ]}
+        onModelChange={() => {}}
+        onModeChange={() => {}}
+        onConfigOptionChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByTitle("Composer options")).toHaveTextContent("Fast");
+  });
+
   it("presents a legacy Claude fast option as a service tier", () => {
     const onConfigOptionChange = vi.fn();
 
@@ -754,7 +819,7 @@ describe("AIChatAgentControls", () => {
           {
             id: "fast",
             runtimeId: "claude-acp",
-            category: "other",
+            category: "service_tier",
             label: "Fast mode",
             type: "select",
             value: "off",
@@ -785,12 +850,11 @@ describe("AIChatAgentControls", () => {
     expect(onConfigOptionChange).toHaveBeenCalledWith("fast", "on");
   });
 
-  it("shows Claude service tier and gates Fast by the selected model", () => {
-    const onConfigOptionChange = vi.fn();
-    const { rerender } = renderComponent(
+  it("does not synthesize Claude service tier without an ACP option", () => {
+    renderComponent(
       <AIChatAgentControls
         runtimeId="claude-acp"
-        modelId="default"
+        modelId="claude-haiku-4-5"
         modeId="default"
         models={[]}
         modes={[]}
@@ -810,44 +874,14 @@ describe("AIChatAgentControls", () => {
         ]}
         onModelChange={() => {}}
         onModeChange={() => {}}
-        onConfigOptionChange={onConfigOptionChange}
+        onConfigOptionChange={() => {}}
       />,
     );
 
-    fireEvent.click(screen.getByTitle("Reasoning and Service Tier"));
-    expect(screen.getByRole("button", { name: "Fast" })).toBeDisabled();
-    fireEvent.click(screen.getByTitle("Reasoning and Service Tier"));
-
-    rerender(
-      <AIChatAgentControls
-        runtimeId="claude-acp"
-        modelId="opus"
-        modeId="default"
-        models={[]}
-        modes={[]}
-        configOptions={[
-          {
-            id: "effort",
-            runtimeId: "claude-acp",
-            category: "reasoning",
-            label: "Effort",
-            type: "select",
-            value: "high",
-            options: [
-              { value: "low", label: "Low" },
-              { value: "high", label: "High" },
-            ],
-          },
-        ]}
-        onModelChange={() => {}}
-        onModeChange={() => {}}
-        onConfigOptionChange={onConfigOptionChange}
-      />,
-    );
-
-    fireEvent.click(screen.getByTitle("Reasoning and Service Tier"));
-    fireEvent.click(screen.getByRole("button", { name: "Fast" }));
-    expect(onConfigOptionChange).toHaveBeenCalledWith("fast", "on");
+    expect(screen.getByTitle("Reasoning")).toBeInTheDocument();
+    expect(screen.queryByTitle("Service Tier")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("Reasoning"));
+    expect(screen.queryByRole("button", { name: "Fast" })).not.toBeInTheDocument();
   });
 
   it("does not reinterpret an unrelated fast option from another ACP", () => {

@@ -508,15 +508,11 @@ describe("StackedPaneContent", () => {
         const composerDropZone = container.querySelector(
             '[data-ai-composer-drop-zone="true"]',
         ) as HTMLElement | null;
-        const composerShell = composerDropZone?.querySelector(
-            '[data-testid="chat-composer-shell"]',
-        ) as HTMLElement | null;
 
         expect(sourceColumn).not.toBeNull();
         expect(secondColumn).not.toBeNull();
         expect(sourceSpine).not.toBeNull();
         expect(composerDropZone).not.toBeNull();
-        expect(composerShell).not.toBeNull();
 
         vi.spyOn(tablist, "getBoundingClientRect").mockReturnValue(
             rect({ left: 100, top: 10, width: 600, height: 300 }),
@@ -578,7 +574,10 @@ describe("StackedPaneContent", () => {
         await waitFor(() => {
             expect(sourceColumn).toHaveStyle({ opacity: "0.5" });
         });
-        expect(composerShell!.style.boxShadow).toContain("color-mix");
+        expect(composerDropZone).toHaveAttribute(
+            "data-ai-composer-drop-active",
+            "true",
+        );
 
         await act(async () => {
             dispatchPointerEvent(window, "pointerup", {
@@ -671,15 +670,11 @@ describe("StackedPaneContent", () => {
         const composerDropZone = container.querySelector(
             '[data-ai-composer-drop-zone="true"]',
         ) as HTMLElement | null;
-        const composerShell = composerDropZone?.querySelector(
-            '[data-testid="chat-composer-shell"]',
-        ) as HTMLElement | null;
 
         expect(sourceColumn).not.toBeNull();
         expect(activeColumn).not.toBeNull();
         expect(rightColumn).not.toBeNull();
         expect(composerDropZone).not.toBeNull();
-        expect(composerShell).not.toBeNull();
 
         vi.spyOn(tablist, "getBoundingClientRect").mockReturnValue(
             rect({ left: 100, top: 10, width: 600, height: 300 }),
@@ -755,7 +750,10 @@ describe("StackedPaneContent", () => {
         await waitFor(() => {
             expect(sourceColumn).toHaveStyle({ opacity: "0.5" });
         });
-        expect(composerShell!.style.boxShadow).toContain("color-mix");
+        expect(composerDropZone).toHaveAttribute(
+            "data-ai-composer-drop-active",
+            "true",
+        );
 
         await act(async () => {
             dispatchPointerEvent(window, "pointerup", {

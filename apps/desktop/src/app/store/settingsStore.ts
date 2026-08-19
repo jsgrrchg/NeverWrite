@@ -14,6 +14,7 @@ export interface Settings {
 
     // Appearance
     uiFontFamily: EditorFontFamily;
+    glassOpacity: number; // 10–100 (percentage)
 
     // Editor
     editorFontSize: number; // 10–24
@@ -72,11 +73,16 @@ const SETTINGS_KEY_PREFIX = "neverwrite:settings:";
 const SETTINGS_KEY_FALLBACK = "neverwrite:settings";
 const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
 const GLOBAL_SETTING_KEYS = [
+    "glassOpacity",
     "vimModeEnabled",
     "vimRelativeLineNumbers",
     "hoverPreviewEnabled",
     "hoverPreviewDelayMs",
 ] as const;
+
+export const MIN_GLASS_OPACITY = 10;
+export const MAX_GLASS_OPACITY = 100;
+export const DEFAULT_GLASS_OPACITY = 40;
 
 type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
 
@@ -207,6 +213,7 @@ export const UI_FONT_FAMILY_OPTIONS: {
 const defaults: Settings = {
     openLastVaultOnLaunch: true,
     uiFontFamily: "system",
+    glassOpacity: DEFAULT_GLASS_OPACITY,
     editorFontSize: 14,
     editorFontFamily: "system",
     editorLineHeight: 175,
@@ -485,6 +492,12 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 parsed.state.openLastVaultOnLaunch ??
                 defaults.openLastVaultOnLaunch,
             uiFontFamily: normalizeEditorFontFamily(parsed.state.uiFontFamily),
+            glassOpacity: normalizeIntInRange(
+                parsed.state.glassOpacity,
+                defaults.glassOpacity,
+                MIN_GLASS_OPACITY,
+                MAX_GLASS_OPACITY,
+            ),
             editorFontSize: normalizeIntInRange(
                 parsed.state.editorFontSize,
                 defaults.editorFontSize,
@@ -656,6 +669,7 @@ function pickSettings(state: SettingsStore): Settings {
     return {
         openLastVaultOnLaunch: state.openLastVaultOnLaunch,
         uiFontFamily: state.uiFontFamily,
+        glassOpacity: state.glassOpacity,
         editorFontSize: state.editorFontSize,
         editorFontFamily: state.editorFontFamily,
         editorLineHeight: state.editorLineHeight,
@@ -710,6 +724,7 @@ function pickGlobalSettings(
     settings: Settings,
 ): Pick<Settings, GlobalSettingKey> {
     return {
+        glassOpacity: settings.glassOpacity,
         vimModeEnabled: settings.vimModeEnabled,
         vimRelativeLineNumbers: settings.vimRelativeLineNumbers,
         hoverPreviewEnabled: settings.hoverPreviewEnabled,
@@ -919,6 +934,17 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
             if (key === "aiChatContentWidth") {
                 return {
                     aiChatContentWidth: normalizeAiChatContentWidth(value),
+                };
+            }
+
+            if (key === "glassOpacity") {
+                return {
+                    glassOpacity: normalizeIntInRange(
+                        value,
+                        defaults.glassOpacity,
+                        MIN_GLASS_OPACITY,
+                        MAX_GLASS_OPACITY,
+                    ),
                 };
             }
 

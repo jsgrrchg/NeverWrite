@@ -1689,6 +1689,7 @@ export function AIChatComposer({
             ref={shellRef}
             data-ai-composer-drop-zone="true"
             data-ai-composer-session-id={sessionId}
+            data-ai-composer-drop-active={externalDragActive || undefined}
             className={
                 expanded
                     ? "flex h-full min-h-0 flex-1 flex-col"
@@ -1720,13 +1721,9 @@ export function AIChatComposer({
                 }
                 style={{
                     border: "none",
-                    borderTop: "1px solid var(--border)",
+                    borderTop: "none",
                     borderRadius: 0,
                     backgroundColor: "transparent",
-                    boxShadow: externalDragActive
-                        ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
-                        : "none",
-                    transition: "box-shadow 0.15s ease",
                     maxHeight: "100%",
                     ...(expanded || customHeight == null
                         ? {}
@@ -2144,7 +2141,7 @@ export function AIChatComposer({
                                 : "var(--text-secondary)",
                             backgroundColor: canRunPrimaryAction
                                 ? primaryAction === "stop"
-                                    ? "#b91c1c"
+                                    ? "var(--diff-remove)"
                                     : "var(--accent)"
                                 : "transparent",
                             border: "none",

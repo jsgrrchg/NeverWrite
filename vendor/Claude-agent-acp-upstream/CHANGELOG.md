@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.68.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.67.0...v0.68.0) (2026-08-14)
+
+
+### Features
+
+* align typed session failures with AIR protocol ([#992](https://github.com/agentclientprotocol/claude-agent-acp/issues/992)) ([0581b9c](https://github.com/agentclientprotocol/claude-agent-acp/commit/0581b9cf397ffd88f2830db721c2d8e3689045e4))
+
+## [0.67.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.66.0...v0.67.0) (2026-08-14)
+
+
+### Features
+
+* **deps:** Update to @anthropic-ai/claude-agent-sdk v0.3.232 ([#993](https://github.com/agentclientprotocol/claude-agent-acp/issues/993)) ([de0d0e2](https://github.com/agentclientprotocol/claude-agent-acp/commit/de0d0e2b7d185c521c3d1ac7b86e4312c919abfe))
+* expose typed session failures for AIR ([#979](https://github.com/agentclientprotocol/claude-agent-acp/issues/979)) ([8157ee1](https://github.com/agentclientprotocol/claude-agent-acp/commit/8157ee113e705750be4eb6cc787bdd12f1db84ff))
+* publish the model fallback as a warning advisory ([#990](https://github.com/agentclientprotocol/claude-agent-acp/issues/990)) ([35aaddb](https://github.com/agentclientprotocol/claude-agent-acp/commit/35aaddb3d5b14eca316582ab285af8a660150dae))
+* surface resolved model name in default model option description ([#982](https://github.com/agentclientprotocol/claude-agent-acp/issues/982)) ([ec73cd8](https://github.com/agentclientprotocol/claude-agent-acp/commit/ec73cd8560be7d5e8b9741e404d7d45e17336996))
+* surface Skill tool calls with name and kind in _meta ([#986](https://github.com/agentclientprotocol/claude-agent-acp/issues/986)) ([1f09e9a](https://github.com/agentclientprotocol/claude-agent-acp/commit/1f09e9a3cae787b0effdfae0e7205ef7fe22b9dc))
+
+
+### Bug Fixes
+
+* preserve task plans across prompts ([#974](https://github.com/agentclientprotocol/claude-agent-acp/issues/974)) ([1afa940](https://github.com/agentclientprotocol/claude-agent-acp/commit/1afa940a2c8c0f4c610f4f64d30c0961642907b0))
+* show a pending title while Claude prepares a file ([#978](https://github.com/agentclientprotocol/claude-agent-acp/issues/978)) ([3df1ede](https://github.com/agentclientprotocol/claude-agent-acp/commit/3df1ede89f217312bc237124dc1eccc10c860f99))
+
 ## [0.66.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.65.0...v0.66.0) (2026-08-07)
 
 

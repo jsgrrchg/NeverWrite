@@ -184,6 +184,7 @@ import {
     getConversationSelection,
     getConversationProviderSelectionBlocker,
     hasConversationHistory,
+    normalizeConversationSelectionForSession,
     serializeConversationBindings,
     updateConversationBindingsFromLegacySession,
 } from "../conversationModel";
@@ -8870,24 +8871,41 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         session = get().sessionsById[sessionId] ?? session;
         if (!session) return null;
 
+        const modeOptionForSelection = getModeConfigOption(session);
+        const normalizedModeId = normalizeConversationSelectionForSession(
+            session,
+            {
+                runtimeId: session.runtimeId,
+                modelId:
+                    getModelConfigOption(session)?.value ?? session.modelId,
+                modeId: queuedItem.modeId ?? session.modeId,
+                options: {},
+            },
+        ).modeId;
+        const normalizedModeIsAvailable = modeOptionForSelection
+            ? modeOptionForSelection.options.some(
+                  (option) => option.value === normalizedModeId,
+              )
+            : session.modes.some(
+                  (mode) => mode.id === normalizedModeId && !mode.disabled,
+              );
         if (
-            queuedItem.modeId &&
-            queuedItem.modeId !== session.modeId &&
-            session.modes.some(
-                (mode) => mode.id === queuedItem.modeId && !mode.disabled,
-            )
+            normalizedModeId &&
+            normalizedModeId !== session.modeId &&
+            normalizedModeIsAvailable
         ) {
-            session = await aiSetMode(sessionId, queuedItem.modeId);
+            session = await aiSetMode(sessionId, normalizedModeId);
             get().upsertSession(session);
         }
 
         session = get().sessionsById[sessionId] ?? session;
         if (!session) return null;
 
+        const modeOptionId = getModeConfigOption(session)?.id ?? null;
         const modelOptionId = getModelConfigOption(session)?.id ?? null;
         for (const option of session.configOptions) {
             if (
-                option.category === "mode" ||
+                option.id === modeOptionId ||
                 option.id === modelOptionId ||
                 !(option.id in queuedItem.optionsSnapshot)
             ) {
@@ -8910,7 +8928,43 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             if (!session) return null;
         }
 
-        return session;
+        const normalizedSelection = normalizeConversationSelectionForSession(
+            session,
+            {
+                runtimeId: session.runtimeId,
+                modelId:
+                    getModelConfigOption(session)?.value ?? session.modelId,
+                modeId: queuedItem.modeId ?? session.modeId,
+                options: {},
+            },
+        );
+        const modeOption = getModeConfigOption(session);
+        const nextOptionsSnapshot = modeOption
+            ? {
+                  ...queuedItem.optionsSnapshot,
+                  [modeOption.id]: normalizedSelection.modeId,
+              }
+            : queuedItem.optionsSnapshot;
+        const nextQueuedItem =
+            queuedItem.modeId === normalizedSelection.modeId &&
+            (!modeOption ||
+                queuedItem.optionsSnapshot[modeOption.id] ===
+                    normalizedSelection.modeId)
+                ? queuedItem
+                : {
+                      ...queuedItem,
+                      modeId: normalizedSelection.modeId,
+                      optionsSnapshot: nextOptionsSnapshot,
+                  };
+        if (nextQueuedItem !== queuedItem) {
+            updateActiveQueuedMessage(sessionId, (deferredMessage) =>
+                deferredMessage.item.id === queuedItem.id
+                    ? { ...deferredMessage, item: nextQueuedItem }
+                    : deferredMessage,
+            );
+        }
+
+        return { session, queuedItem: nextQueuedItem };
     }
 
     async function configureConversationTurnSession(
@@ -8936,20 +8990,41 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                   )
                 : await aiSetModel(session.sessionId, selection.modelId);
         }
+        const normalizedSelection = normalizeConversationSelectionForSession(
+            session,
+            selection,
+        );
+        const modeOptionForSelection = getModeConfigOption(session);
+        const normalizedModeIsAvailable = modeOptionForSelection
+            ? modeOptionForSelection.options.some(
+                  (option) => option.value === normalizedSelection.modeId,
+              )
+            : session.modes.some(
+                  (mode) =>
+                      mode.id === normalizedSelection.modeId &&
+                      !mode.disabled,
+              );
         if (
-            selection.modeId &&
-            selection.modeId !== session.modeId &&
-            session.modes.some(
-                (mode) => mode.id === selection.modeId && !mode.disabled,
-            )
+            normalizedSelection.modeId &&
+            normalizedSelection.modeId !== session.modeId &&
+            normalizedModeIsAvailable
         ) {
-            session = await aiSetMode(session.sessionId, selection.modeId);
+            session = await aiSetMode(
+                session.sessionId,
+                normalizedSelection.modeId,
+            );
         }
+        const modeOption = getModeConfigOption(session);
 
         const effectiveSelection = {
-            ...selection,
+            ...normalizedSelection,
             options: Object.fromEntries(
-                Object.entries(selection.options).filter(([optionId]) => {
+                Object.entries({
+                    ...normalizedSelection.options,
+                    ...(modeOption
+                        ? { [modeOption.id]: normalizedSelection.modeId }
+                        : {}),
+                }).filter(([optionId]) => {
                     const isAvailable = session.configOptions.some(
                         (option) => option.id === optionId,
                     );
@@ -9483,12 +9558,13 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             }
 
             if (!initialProviderChangeRequested) {
-                session =
-                    (await syncQueuedMessageConfig(
-                        activeSessionId,
-                        currentItem,
-                    )) ?? session;
-                if (!session) return;
+                const synced = await syncQueuedMessageConfig(
+                    activeSessionId,
+                    currentItem,
+                );
+                if (!synced) return;
+                session = synced.session;
+                currentItem = synced.queuedItem;
             }
 
             const transcriptIsPersistedButUnloaded =

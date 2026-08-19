@@ -11,6 +11,8 @@ import { getCurrentWebviewWindow } from "@neverwrite/runtime";
 import { openPath, openUrl, revealItemInDir } from "@neverwrite/runtime";
 import {
     EDITOR_FONT_FAMILY_OPTIONS,
+    MAX_GLASS_OPACITY,
+    MIN_GLASS_OPACITY,
     PDF_DEFAULT_ZOOM_STEPS,
     UI_FONT_FAMILY_OPTIONS,
     useSettingsStore,
@@ -986,6 +988,7 @@ function AppearanceSettings({
         agentsSidebarScale,
         fileTreeStickyFolders,
         aiChatContentWidth,
+        glassOpacity,
         uiFontFamily,
         setSetting,
     } = useSettingsStore();
@@ -1041,6 +1044,13 @@ function AppearanceSettings({
                     option.value,
                     option.label,
                 ]),
+            ],
+            [
+                "Glass opacity",
+                "Control how solid translucent interface surfaces appear. Lower values reveal more content behind the composer and menus.",
+                "Transparency",
+                "Composer",
+                "Menus",
             ],
         ],
     );
@@ -1118,6 +1128,25 @@ function AppearanceSettings({
                                 value as EditorFontFamily,
                             )
                         }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Interface"
+                label="Glass opacity"
+                description="Control how solid translucent interface surfaces appear. Lower values reveal more content behind the composer and menus."
+                keywords={["Transparency", "Composer", "Menus"]}
+                control={
+                    <SliderField
+                        value={glassOpacity}
+                        min={MIN_GLASS_OPACITY}
+                        max={MAX_GLASS_OPACITY}
+                        step={5}
+                        onChange={(value) =>
+                            setSetting("glassOpacity", value)
+                        }
+                        formatValue={(value) => `${value}%`}
                     />
                 }
             />

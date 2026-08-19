@@ -1147,6 +1147,7 @@ function useDynamicScrollbars() {
 
 export default function App() {
     const uiFontFamily = useSettingsStore((s) => s.uiFontFamily);
+    const glassOpacity = useSettingsStore((s) => s.glassOpacity);
     const editorPaneSizes = useLayoutStore((s) => s.editorPaneSizes);
     const setEditorPaneSizes = useLayoutStore((s) => s.setEditorPaneSizes);
     const restoreVault = useVaultStore((s) => s.restoreVault);
@@ -1184,7 +1185,11 @@ export default function App() {
     useLayoutEffect(() => {
         const root = document.documentElement;
         const previousFont = root.style.getPropertyValue("--font-ui");
+        const previousGlassOpacity = root.style.getPropertyValue(
+            "--nw-glass-opacity",
+        );
         root.style.setProperty("--font-ui", resolveFontFamily(uiFontFamily));
+        root.style.setProperty("--nw-glass-opacity", `${glassOpacity}%`);
 
         return () => {
             if (previousFont) {
@@ -1192,8 +1197,16 @@ export default function App() {
             } else {
                 root.style.removeProperty("--font-ui");
             }
+            if (previousGlassOpacity) {
+                root.style.setProperty(
+                    "--nw-glass-opacity",
+                    previousGlassOpacity,
+                );
+            } else {
+                root.style.removeProperty("--nw-glass-opacity");
+            }
         };
-    }, [uiFontFamily]);
+    }, [glassOpacity, uiFontFamily]);
     const pendingNoteReloadsRef = useRef<
         Map<string, ReturnType<typeof setTimeout>>
     >(new Map());

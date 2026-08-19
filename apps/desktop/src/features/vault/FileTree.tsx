@@ -65,9 +65,11 @@ import {
 import { FileTypeIcon } from "../../components/icons/FileTypeIcon";
 import { FolderTypeIcon } from "../../components/icons/FolderTypeIcon";
 import {
+    KNOWN_STATUSES,
     normalizeDocumentStatus,
     statusDotColor,
     statusLabel,
+    type KnownDocumentStatus,
 } from "../okf/status";
 import {
     EXTERNAL_FILE_TREE_DRAG_EVENT,
@@ -204,6 +206,8 @@ type MovePickerState = {
     targets: MoveTargets;
 };
 
+type DocumentStatusFilter = KnownDocumentStatus | "none" | null;
+
 function getSelectableRowKey(row: FlatTreeRow): string | null {
     if (row.kind === "folder") {
         return `folder:${row.path}`;
@@ -228,14 +232,44 @@ function getFlatTreeRowFilterText(row: FlatTreeRow): string {
     return "";
 }
 
-function filterFlatTreeRows(rows: FlatTreeRow[], normalizedFilter: string) {
-    if (!normalizedFilter) return rows;
+function filterFlatTreeRows(
+    rows: FlatTreeRow[],
+    normalizedFilter: string,
+    statusFilter: DocumentStatusFilter,
+) {
+    if (!normalizedFilter && statusFilter === null) return rows;
 
     const keepExactPaths = new Set<string>();
     const keepSubtreePrefixes: string[] = [];
+    const matchingFolderPrefixes = normalizedFilter
+        ? rows
+              .filter(
+                  (row) =>
+                      row.kind === "folder" &&
+                      getFlatTreeRowFilterText(row).includes(normalizedFilter),
+              )
+              .map((row) => `${row.path}/`)
+        : [];
     for (const row of rows) {
         if (row.kind === "create") continue;
-        if (!getFlatTreeRowFilterText(row).includes(normalizedFilter)) {
+        const textMatches =
+            !normalizedFilter ||
+            getFlatTreeRowFilterText(row).includes(normalizedFilter) ||
+            matchingFolderPrefixes.some((prefix) => row.path.startsWith(prefix));
+        if (!textMatches) {
+            continue;
+        }
+        if (row.kind === "folder" && statusFilter !== null) continue;
+        if (statusFilter !== null && row.kind !== "note") {
+            continue;
+        }
+        if (
+            row.kind === "note" &&
+            statusFilter !== null &&
+            (statusFilter === "none"
+                ? normalizeDocumentStatus(row.note.status) !== null
+                : normalizeDocumentStatus(row.note.status) !== statusFilter)
+        ) {
             continue;
         }
         keepExactPaths.add(row.path);
@@ -243,7 +277,7 @@ function filterFlatTreeRows(rows: FlatTreeRow[], normalizedFilter: string) {
         for (let i = 1; i < parts.length; i++) {
             keepExactPaths.add(parts.slice(0, i).join("/"));
         }
-        if (row.kind === "folder") {
+        if (row.kind === "folder" && statusFilter === null) {
             keepSubtreePrefixes.push(`${row.path}/`);
         }
     }
@@ -2210,6 +2244,10 @@ export function FileTree() {
     const [, setClipboardVersion] = useState(0);
     const [focusedFolderPath, setFocusedFolderPath] = useState("");
     const [filterText, setFilterText] = useState("");
+    const [statusFilter, setStatusFilter] =
+        useState<DocumentStatusFilter>(null);
+    const [statusFilterMenu, setStatusFilterMenu] =
+        useState<ContextMenuState | null>(null);
     const [keyboardCursorKey, setKeyboardCursorKey] = useState<string | null>(
         null,
     );
@@ -2319,25 +2357,27 @@ export function FileTree() {
     );
     const flatRows = useMemo(() => {
         // Without a filter, honor the user's expansion state as usual.
-        if (!normalizedFilter) {
+        if (!normalizedFilter && statusFilter === null) {
             return flattenTreeRows(tree, visibleExpandedFolders, sortMode);
         }
         // Active filter: walk the whole tree (all folders expanded) so hits
         // buried inside collapsed folders surface. Then keep only rows that
         // match directly, their ancestor folders (to preserve hierarchy),
         // and — if a folder itself matches — all of its descendants.
-        return filterFlatTreeRows(fullyExpandedRows, normalizedFilter);
+        return filterFlatTreeRows(fullyExpandedRows, normalizedFilter, statusFilter);
     }, [
         fullyExpandedRows,
         normalizedFilter,
+        statusFilter,
         sortMode,
         tree,
         visibleExpandedFolders,
     ]);
     flatRowsRef.current = flatRows;
     const shortcutNavigableRows = useMemo(
-        () => filterFlatTreeRows(fullyExpandedRows, normalizedFilter),
-        [fullyExpandedRows, normalizedFilter],
+        () =>
+            filterFlatTreeRows(fullyExpandedRows, normalizedFilter, statusFilter),
+        [fullyExpandedRows, normalizedFilter, statusFilter],
     );
     shortcutNavigableRowsRef.current = shortcutNavigableRows;
     const displayRows = useMemo(() => {
@@ -2466,7 +2506,7 @@ export function FileTree() {
     const stickyFolders = useMemo(() => {
         // Filtering already rewrites the visible hierarchy around matches;
         // sticky headers add visual noise and can obscure filtered results.
-        if (normalizedFilter) return [];
+        if (normalizedFilter || statusFilter !== null) return [];
         if (!fileTreeStickyFolders) return [];
         if (displayRows.length === 0) return [];
 
@@ -2524,6 +2564,7 @@ export function FileTree() {
         displayRows,
         fileTreeStickyFolders,
         normalizedFilter,
+        statusFilter,
         scrollTop,
         metrics.rowHeight,
         folderLastDescendant,
@@ -2648,6 +2689,8 @@ export function FileTree() {
         expandedFoldersVaultPathRef.current = vaultPath;
         skipExpandedFoldersPersistRef.current = true;
         setExpandedFolders(readExpandedFolders(vaultPath));
+        setStatusFilter(null);
+        setStatusFilterMenu(null);
     }, [vaultPath]);
 
     useEffect(() => {
@@ -5677,11 +5720,95 @@ export function FileTree() {
                 left-sidebar panels so the bar reads identical across the
                 whole sidebar. */}
             <div className="shrink-0 px-2 pt-2 pb-2">
-                <SidebarFilterInput
-                    value={filterText}
-                    onChange={setFilterText}
-                    placeholder="Filter files..."
-                />
+                <div className="flex items-center gap-1">
+                    <div className="flex-1 min-w-0">
+                        <SidebarFilterInput
+                            value={filterText}
+                            onChange={setFilterText}
+                            placeholder="Filter files..."
+                        />
+                    </div>
+                    <button
+                        type="button"
+                        aria-label="Filter by document status"
+                        aria-haspopup="menu"
+                        aria-expanded={statusFilterMenu !== null}
+                        title={
+                            statusFilter === null
+                                ? "Filter by document status"
+                                : statusFilter === "none"
+                                  ? "Document status: No status"
+                                  : `Document status: ${statusLabel(statusFilter)}`
+                        }
+                        onClick={(event) => {
+                            const rect = event.currentTarget.getBoundingClientRect();
+                            setStatusFilterMenu({
+                                x: rect.left,
+                                y: rect.bottom + 4,
+                                payload: undefined,
+                            });
+                        }}
+                        className="shrink-0 flex items-center justify-center rounded"
+                        style={{
+                            width: metrics.toolbarButton,
+                            height: metrics.toolbarButton,
+                            color:
+                                statusFilter === null
+                                    ? "var(--text-secondary)"
+                                    : "var(--accent)",
+                            background:
+                                statusFilter === null
+                                    ? "transparent"
+                                    : "color-mix(in srgb, var(--accent) 14%, transparent)",
+                        }}
+                    >
+                        <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M3 4h10M3 8h10M3 12h10"
+                                stroke="currentColor"
+                                strokeWidth="1.2"
+                                strokeLinecap="round"
+                            />
+                            <path
+                                d="M6 2.5v3M10 6.5v3M7 10.5v3"
+                                stroke="currentColor"
+                                strokeWidth="1.2"
+                                strokeLinecap="round"
+                            />
+                        </svg>
+                    </button>
+                </div>
+                {statusFilterMenu && (
+                    <ContextMenu
+                        menu={statusFilterMenu}
+                        onClose={() => setStatusFilterMenu(null)}
+                        minWidth={160}
+                        entries={[
+                            {
+                                label: "All statuses",
+                                action: () => setStatusFilter(null),
+                                disabled: statusFilter === null,
+                            },
+                            { type: "separator" },
+                            ...KNOWN_STATUSES.map((status) => ({
+                                label: `${statusFilter === status ? "✓ " : ""}${statusLabel(status)}`,
+                                action: () => setStatusFilter(status),
+                            })),
+                            { type: "separator" },
+                            {
+                                label: `${statusFilter === "none" ? "✓ " : ""}No status`,
+                                action: () => setStatusFilter("none"),
+                                danger: true,
+                            },
+                        ]}
+                    />
+                )}
             </div>
 
             {/* Tree (virtualized) */}
@@ -5734,7 +5861,9 @@ export function FileTree() {
                             fontSize: metrics.fontSize,
                         }}
                     >
-                        {normalizedFilter
+                        {statusFilter !== null
+                            ? "No files match the selected status"
+                            : normalizedFilter
                             ? `No files match "${filterText}"`
                             : "No notes"}
                     </p>

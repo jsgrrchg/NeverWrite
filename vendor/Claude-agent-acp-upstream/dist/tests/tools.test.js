@@ -1,6 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { toAcpNotifications } from "../acp-agent.js";
-import { toolUpdateFromToolResult, createPostToolUseHook, createTaskHook, toolInfoFromToolUse, planEntries, applyTaskCreate, applyTaskUpdate, parseTaskCreateOutput, taskStateToPlanEntries, } from "../tools.js";
+import { toolUpdateFromToolResult, createPostToolUseHook, createTaskHook, toolInfoFromToolUse, planEntries, applyTaskCreate, applyTaskList, applyTaskUpdate, parseTaskCreateOutput, parseTaskListOutput, taskStateToPlanEntries, } from "../tools.js";
 describe("rawOutput in tool call updates", () => {
     const mockClient = {};
     const mockLogger = { log: () => { }, error: () => { } };
@@ -1382,6 +1385,11 @@ describe("planEntries - undefined input regression", () => {
             { content: "Task 2", status: "completed", priority: "medium" },
         ]);
     });
+    it("uses activeForm while a todo is in progress", () => {
+        expect(planEntries({
+            todos: [{ content: "Run tests", status: "in_progress", activeForm: "Running tests" }],
+        })).toEqual([{ content: "Running tests", status: "in_progress", priority: "medium" }]);
+    });
 });
 describe("toAcpNotifications - TodoWrite with undefined input regression", () => {
     const mockClient = {};
@@ -1425,6 +1433,18 @@ describe("parseTaskCreateOutput", () => {
         ]);
         expect(parsed).toEqual({ task: { id: "2", subject: "Y" } });
     });
+    it("continues past unrelated JSON blocks", () => {
+        const parsed = parseTaskCreateOutput([
+            { type: "text", text: JSON.stringify({ metadata: "unrelated" }) },
+            { type: "text", text: JSON.stringify({ task: { id: "2", subject: "Y" } }) },
+        ]);
+        expect(parsed).toEqual({ task: { id: "2", subject: "Y" } });
+    });
+    it("parses the human-readable TaskCreate format used in session history", () => {
+        expect(parseTaskCreateOutput("Task #42 created successfully: Run tests")).toEqual({
+            task: { id: "42", subject: "Run tests" },
+        });
+    });
     it("returns undefined for non-JSON content", () => {
         expect(parseTaskCreateOutput("not json")).toBeUndefined();
         expect(parseTaskCreateOutput([{ type: "text", text: "not json" }])).toBeUndefined();
@@ -1451,11 +1471,11 @@ describe("applyTaskCreate / applyTaskUpdate", () => {
     });
     it("updates fields by task ID and keeps insertion order in plan entries", () => {
         const state = new Map();
-        applyTaskCreate(state, { subject: "A", description: "" }, { task: { id: "1", subject: "A" } });
+        applyTaskCreate(state, { subject: "A", description: "", activeForm: "Working on A" }, { task: { id: "1", subject: "A" } });
         applyTaskCreate(state, { subject: "B", description: "" }, { task: { id: "2", subject: "B" } });
         applyTaskUpdate(state, { taskId: "1", status: "in_progress" });
         expect(taskStateToPlanEntries(state)).toEqual([
-            { content: "A", status: "in_progress", priority: "medium" },
+            { content: "Working on A", status: "in_progress", priority: "medium" },
             { content: "B", status: "pending", priority: "medium" },
         ]);
     });
@@ -1481,6 +1501,81 @@ describe("applyTaskCreate / applyTaskUpdate", () => {
         // Without a subject we'd render an empty-content plan entry, so the
         // update is dropped instead of synthesizing a blank placeholder.
         expect(state.has("5")).toBe(false);
+    });
+    it("rebuilds task state from TaskList while preserving richer local fields", () => {
+        const state = new Map([
+            [
+                "1",
+                {
+                    subject: "Old subject",
+                    status: "pending",
+                    activeForm: "Running the task",
+                    description: "Details",
+                },
+            ],
+            ["deleted", { subject: "Stale", status: "pending" }],
+        ]);
+        const output = parseTaskListOutput(JSON.stringify({
+            tasks: [
+                { id: "1", subject: "Current subject", status: "in_progress", blockedBy: [] },
+                { id: "2", subject: "New task", status: "pending", blockedBy: [] },
+            ],
+        }));
+        expect(output).toBeDefined();
+        applyTaskList(state, output);
+        expect([...state.entries()]).toEqual([
+            [
+                "1",
+                {
+                    subject: "Current subject",
+                    status: "in_progress",
+                    activeForm: "Running the task",
+                    description: "Details",
+                },
+            ],
+            [
+                "2",
+                {
+                    subject: "New task",
+                    status: "pending",
+                    activeForm: undefined,
+                    description: undefined,
+                },
+            ],
+        ]);
+    });
+    it("finds a TaskList snapshot after an unrelated JSON block", () => {
+        expect(parseTaskListOutput([
+            { type: "text", text: JSON.stringify({ metadata: "unrelated" }) },
+            {
+                type: "text",
+                text: JSON.stringify({
+                    tasks: [{ id: "1", subject: "Recovered", status: "pending", blockedBy: [] }],
+                }),
+            },
+        ])).toEqual({
+            tasks: [{ id: "1", subject: "Recovered", status: "pending", blockedBy: [] }],
+        });
+    });
+    it("parses the human-readable TaskList format used in session history", () => {
+        expect(parseTaskListOutput("#1 [in_progress] Run tests\n#2 [pending] Write release notes (release-bot) [blocked by #1, #3]")).toEqual({
+            tasks: [
+                { id: "1", subject: "Run tests", status: "in_progress", blockedBy: [] },
+                {
+                    id: "2",
+                    subject: "Write release notes",
+                    status: "pending",
+                    owner: "release-bot",
+                    blockedBy: ["1", "3"],
+                },
+            ],
+        });
+        expect(parseTaskListOutput("No tasks found")).toEqual({ tasks: [] });
+    });
+    it("handles a long malformed blocked-by suffix without regex backtracking", () => {
+        const subject = `${"x".repeat(20_000)} [blocked by ${"#1, ".repeat(5_000)}x`;
+        const output = parseTaskListOutput(`#1 [pending] ${subject}`);
+        expect(output?.tasks).toEqual([{ id: "1", subject, status: "pending", blockedBy: [] }]);
     });
 });
 describe("toAcpNotifications - Task* tools", () => {
@@ -1579,20 +1674,82 @@ describe("toAcpNotifications - Task* tools", () => {
             entries: [{ content: "First", status: "completed", priority: "medium" }],
         });
     });
-    it("suppresses TaskList and TaskGet tool_result without touching task state", () => {
+    it("uses the structured TaskList result as an authoritative plan snapshot", () => {
         const toolUseCache = {
             "list-1": { type: "tool_use", id: "list-1", name: "TaskList", input: {} },
-            "get-1": { type: "tool_use", id: "get-1", name: "TaskGet", input: { taskId: "1" } },
         };
         const taskState = new Map([
             ["1", { subject: "Existing", status: "in_progress" }],
         ]);
         const notifications = toAcpNotifications([
-            { type: "tool_result", tool_use_id: "list-1", content: "...", is_error: false },
-            { type: "tool_result", tool_use_id: "get-1", content: "...", is_error: false },
+            {
+                type: "tool_result",
+                tool_use_id: "list-1",
+                content: "#2 [pending] Recovered",
+                is_error: false,
+            },
+        ], "user", "test-session", toolUseCache, mockClient, mockLogger, {
+            taskState,
+            toolUseResult: {
+                tasks: [{ id: "2", subject: "Recovered", status: "pending", blockedBy: [] }],
+            },
+        });
+        expect(notifications).toHaveLength(1);
+        expect(notifications[0].update).toMatchObject({
+            sessionUpdate: "plan",
+            entries: [{ content: "Recovered", status: "pending", priority: "medium" }],
+        });
+        expect([...taskState.keys()]).toEqual(["2"]);
+    });
+    it("does not apply a logically failed TaskUpdate", () => {
+        const toolUseCache = {
+            "update-1": {
+                type: "tool_use",
+                id: "update-1",
+                name: "TaskUpdate",
+                input: { taskId: "1", status: "completed" },
+            },
+        };
+        const taskState = new Map([["1", { subject: "Existing", status: "pending" }]]);
+        const notifications = toAcpNotifications([
+            {
+                type: "tool_result",
+                tool_use_id: "update-1",
+                content: "Task #1 not found",
+                is_error: false,
+            },
+        ], "user", "test-session", toolUseCache, mockClient, mockLogger, {
+            taskState,
+            toolUseResult: {
+                success: false,
+                taskId: "1",
+                updatedFields: [],
+                error: "Task not found",
+            },
+        });
+        expect(notifications).toHaveLength(0);
+        expect(taskState.get("1")).toEqual({ subject: "Existing", status: "pending" });
+    });
+    it("does not apply a replayed TaskUpdate failure without structured output", () => {
+        const toolUseCache = {
+            "update-1": {
+                type: "tool_use",
+                id: "update-1",
+                name: "TaskUpdate",
+                input: { taskId: "1", status: "completed" },
+            },
+        };
+        const taskState = new Map([["1", { subject: "Existing", status: "pending" }]]);
+        const notifications = toAcpNotifications([
+            {
+                type: "tool_result",
+                tool_use_id: "update-1",
+                content: "Task #1 not found",
+                is_error: false,
+            },
         ], "user", "test-session", toolUseCache, mockClient, mockLogger, { taskState });
         expect(notifications).toHaveLength(0);
-        expect(taskState.get("1")).toEqual({ subject: "Existing", status: "in_progress" });
+        expect(taskState.get("1")).toEqual({ subject: "Existing", status: "pending" });
     });
     it("does not apply TaskCreate/TaskUpdate when the tool_result reports an error", () => {
         const toolUseCache = {
@@ -2240,6 +2397,104 @@ describe("structured tool_use_result rendering (Read/Bash/WebSearch)", () => {
                 results: [{ tool_use_id: "srvtoolu_1", content: [{ error_code: "provider_error" }] }],
             });
             expect((update.content?.[0]).content.text).toContain("Web search results for query");
+        });
+    });
+});
+describe("Skill tool rendering", () => {
+    const mockLogger = { log: () => { }, error: () => { } };
+    describe("toolInfoFromToolUse", () => {
+        it("sets title to 'Load skill: <name>' and returns empty content", () => {
+            const info = toolInfoFromToolUse({ name: "Skill", id: "toolu_1", input: { skill: "commits" } }, false);
+            expect(info.title).toBe("Load skill: commits");
+            expect(info.kind).toBe("other");
+            expect(info.content).toEqual([]);
+        });
+        it("falls back to 'Load skill' when skill name is absent", () => {
+            const info = toolInfoFromToolUse({ name: "Skill", id: "toolu_2", input: {} }, false);
+            expect(info.title).toBe("Load skill");
+            expect(info.content).toEqual([]);
+        });
+        it("does not throw when input is undefined", () => {
+            const info = toolInfoFromToolUse({ name: "Skill", id: "toolu_3", input: undefined }, false);
+            expect(info.title).toBe("Load skill");
+            expect(info.content).toEqual([]);
+        });
+    });
+    describe("toolUpdateFromToolResult", () => {
+        it("suppresses the raw 'Launching skill' result text", () => {
+            const toolUse = {
+                type: "tool_use",
+                id: "toolu_4",
+                name: "Skill",
+                input: { skill: "commits" },
+            };
+            const toolResult = {
+                type: "tool_result",
+                tool_use_id: "toolu_4",
+                content: "Launching skill: commits",
+                is_error: false,
+            };
+            const update = toolUpdateFromToolResult(toolResult, toolUse, false);
+            expect(update).toEqual({});
+        });
+    });
+    describe("_meta.claudeCode.skill in tool_call notification", () => {
+        it("includes skill name in _meta.claudeCode when Skill tool is invoked", () => {
+            const notifications = toAcpNotifications([
+                { type: "tool_use", id: "toolu_5", name: "Skill", input: { skill: "commits", args: "" } },
+            ], "assistant", "test-session", {}, {}, mockLogger);
+            expect(notifications[0]?.update).toMatchObject({
+                sessionUpdate: "tool_call",
+                _meta: { claudeCode: { toolName: "Skill", skill: "commits" } },
+            });
+        });
+        it("omits skill from _meta.claudeCode when skill name is missing", () => {
+            const notifications = toAcpNotifications([{ type: "tool_use", id: "toolu_6", name: "Skill", input: {} }], "assistant", "test-session", {}, {}, mockLogger);
+            const meta = notifications[0]?.update?._meta?.claudeCode;
+            expect(meta).toBeDefined();
+            expect(meta.skill).toBeUndefined();
+        });
+    });
+    describe("_meta.claudeCode.skillPath", () => {
+        const skillMeta = (skill, cwd) => toAcpNotifications([{ type: "tool_use", id: "toolu_skill_path", name: "Skill", input: { skill } }], "assistant", "test-session", {}, {}, mockLogger, cwd ? { cwd } : undefined)[0]?.update?._meta?.claudeCode;
+        let root;
+        beforeEach(() => {
+            root = mkdtempSync(path.join(tmpdir(), "acp-skill-path-"));
+        });
+        afterEach(() => {
+            rmSync(root, { recursive: true, force: true });
+        });
+        const writeSkill = (relativeDir) => {
+            const dir = path.join(root, relativeDir);
+            mkdirSync(dir, { recursive: true });
+            const file = path.join(dir, "SKILL.md");
+            writeFileSync(file, "# skill\n");
+            return file;
+        };
+        it("resolves a project-level .claude/skills skill", () => {
+            const file = writeSkill(".claude/skills/commits");
+            expect(skillMeta("commits", root).skillPath).toBe(file);
+        });
+        it("resolves a project-level .agents/skills skill", () => {
+            const file = writeSkill(".agents/skills/commits");
+            expect(skillMeta("commits", root).skillPath).toBe(file);
+        });
+        it("resolves a directory-scoped skill spelled prefix:name", () => {
+            const file = writeSkill("apps/web/.claude/skills/deploy");
+            expect(skillMeta("apps/web:deploy", root).skillPath).toBe(file);
+        });
+        it("resolves a plugin skill spelled plugin:name", () => {
+            const file = writeSkill(".claude/plugins/reviewer/skills/audit");
+            expect(skillMeta("reviewer:audit", root).skillPath).toBe(file);
+        });
+        it("omits skillPath when no known layout holds the skill", () => {
+            const meta = skillMeta("nonexistent", root);
+            expect(meta.skill).toBe("nonexistent");
+            expect(meta.skillPath).toBeUndefined();
+        });
+        it("omits skillPath when the session has no cwd", () => {
+            writeSkill(".claude/skills/commits");
+            expect(skillMeta("commits").skillPath).toBeUndefined();
         });
     });
 });

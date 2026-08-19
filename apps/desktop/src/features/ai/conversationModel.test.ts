@@ -268,6 +268,75 @@ describe("canonical conversation model", () => {
         expect(updated.providerBindings[0].modelId).toBe("sonnet");
     });
 
+    it("normalizes a staged mode removed by the active model catalog", () => {
+        const legacy = createLegacySession({
+            modelId: "haiku",
+            modeId: "default",
+            models: [
+                {
+                    id: "haiku",
+                    runtimeId: "claude-acp",
+                    name: "Haiku",
+                    description: "",
+                },
+            ],
+            modes: [
+                {
+                    id: "default",
+                    runtimeId: "claude-acp",
+                    name: "Default",
+                    description: "",
+                },
+            ],
+            configOptions: [
+                {
+                    id: "model",
+                    runtimeId: "claude-acp",
+                    category: "model",
+                    label: "Model",
+                    type: "select",
+                    value: "haiku",
+                    options: [{ value: "haiku", label: "Haiku" }],
+                },
+                {
+                    id: "mode",
+                    runtimeId: "claude-acp",
+                    category: "mode",
+                    label: "Mode",
+                    type: "select",
+                    value: "default",
+                    options: [{ value: "default", label: "Default" }],
+                },
+            ],
+        });
+        const state = createConversationBindingsFromLegacySession(legacy);
+        state.providerBindings[0].modelId = "sonnet";
+        state.providerBindings[0].modeId = "auto";
+        state.providerBindings[0].modes = [
+            {
+                id: "auto",
+                runtimeId: "claude-acp",
+                name: "Auto",
+                description: "",
+            },
+        ];
+        state.preferredSelection = {
+            ...state.preferredSelection,
+            modelId: "haiku",
+            modeId: "auto",
+        };
+
+        const updated = updateConversationBindingsFromLegacySession({
+            ...legacy,
+            conversationBindings: state,
+        });
+
+        expect(updated.preferredSelection).toMatchObject({
+            modelId: "haiku",
+            modeId: "default",
+        });
+    });
+
     it("resets each provider cursor when forking a canonical conversation", () => {
         const source = createConversationBindingsFromLegacySession(
             createLegacySession(),

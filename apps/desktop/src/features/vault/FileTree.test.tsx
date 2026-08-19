@@ -3876,6 +3876,47 @@ describe("FileTree", () => {
     });
 });
 
+describe("FileTree — document status filter", () => {
+    it("filters by the selected status and restores every status", async () => {
+        const user = userEvent.setup();
+        setVaultNotes([
+            {
+                id: "notes/draft",
+                path: "/vault/notes/draft.md",
+                title: "Draft note",
+                modified_at: 1,
+                created_at: 1,
+                status: "draft",
+            },
+            {
+                id: "notes/published",
+                path: "/vault/notes/published.md",
+                title: "Published note",
+                modified_at: 1,
+                created_at: 1,
+                status: "published",
+            },
+        ]);
+        renderComponent(<FileTree />);
+
+        await user.click(
+            screen.getByRole("button", { name: "Filter by document status" }),
+        );
+        await user.click(screen.getByRole("button", { name: "Published" }));
+
+        expect(screen.getByText("Published note")).toBeInTheDocument();
+        expect(screen.queryByText("Draft note")).not.toBeInTheDocument();
+
+        await user.click(
+            screen.getByRole("button", { name: "Filter by document status" }),
+        );
+        await user.click(screen.getByRole("button", { name: "All statuses" }));
+
+        await expandFolder(user, "notes");
+        expect(screen.getByText("Draft note")).toBeInTheDocument();
+    });
+});
+
 describe("FileTree — document status dot", () => {
     function statusNote(
         overrides: Partial<{

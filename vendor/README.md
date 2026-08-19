@@ -64,10 +64,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty/`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.66.0`
-  - upstream tag: `v0.66.0`
-  - upstream commit: `6b405138fc82be947964612fac04e56654827b66`
-  - dependencies match the upstream `0.66.0` release (`@agentclientprotocol/sdk` `1.3.0`, `@anthropic-ai/claude-agent-sdk` `0.3.220`, `@anthropic-ai/sdk` `0.115.0`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.68.0`
+  - upstream tag: `v0.68.0`
+  - upstream commit: `5de5d4a2c8363e6462c231380c9fc17d80c568cc`
+  - dependencies match the upstream `0.68.0` release (`@agentclientprotocol/sdk` `1.3.0`, `@anthropic-ai/claude-agent-sdk` `0.3.232`, `@anthropic-ai/sdk` `0.117.1`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 - `acp12/`
   - local package names: `agent-client-protocol-legacy` and
@@ -178,13 +178,15 @@ The desktop backend supports a mixed ACP world: current ACP integration for Clau
 
 ## Current Claude Delta
 
-The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.66.0` at commit `6b405138fc82be947964612fac04e56654827b66`, with no NeverWrite-specific runtime source delta.
+The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.68.0` at commit `5de5d4a2c8363e6462c231380c9fc17d80c568cc`, with no NeverWrite-specific runtime source delta.
 
-The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.66.0` retains the linear-time ReDoS protection and its whole-line matching, so no local runtime patch needs to be reapplied.
+The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.68.0` retains the linear-time ReDoS protection and its whole-line matching, so no local runtime patch needs to be reapplied.
 
-Upstream `0.66.0` includes an opt-in `subagent-transcript` client capability. NeverWrite does not advertise that capability, so Claude keeps the legacy behavior that filters nested subagent text and thinking from the top-level feed. Rich nested transcript integration remains intentionally out of scope.
+Upstream `0.68.0` includes an opt-in `subagent-transcript` client capability. NeverWrite does not advertise that capability, so Claude keeps the legacy behavior that filters nested subagent text and thinking from the top-level feed. Rich nested transcript integration remains intentionally out of scope.
 
-Upstream `0.66.0` also publishes the provider-neutral `_meta.goal` extension. NeverWrite does not yet consume goal snapshots or expose goal controls; that product integration is tracked separately in issue `#377` and is intentionally out of scope for this vendor update.
+Upstream `0.68.0` also publishes the provider-neutral `_meta.goal` extension. NeverWrite does not yet consume goal snapshots or expose goal controls; that product integration is tracked separately in issue `#377` and is intentionally out of scope for this vendor update.
+
+Upstream `0.68.0` aligns the opt-in typed session-failure extension with the AIR transcript protocol and restores native provider routing after an ACP provider override is disabled. NeverWrite does not advertise the AIR session-failure capability; its current provider bridge remains compatible with the `providers/list`, `providers/set`, and `providers/disable` behavior.
 
 The `dist/` directory is rebuilt from the vendored source snapshot because the
 desktop packaging flow stages the compiled runtime files, while upstream does

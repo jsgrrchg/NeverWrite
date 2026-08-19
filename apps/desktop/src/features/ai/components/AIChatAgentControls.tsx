@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -54,6 +53,9 @@ interface DropdownFieldProps {
   displayValue?: string;
   menuMinWidth?: number;
   leadingIcon?: ReactNode;
+  compact?: boolean;
+  compactLabel?: string;
+  trailingIcon?: ReactNode;
   onChange?: (value: string) => void;
   onOptionChange?: (value: string, option: DropdownOption) => void;
 }
@@ -69,55 +71,8 @@ interface TraitMenuSection {
 
 const SEARCHABLE_MODEL_RUNTIME_IDS = new Set(["kilo-acp", "opencode-acp"]);
 const GROK_RUNTIME_ID = "grok-acp";
-const CLAUDE_RUNTIME_ID = "claude-acp";
-const CLAUDE_FAST_OPTION_ID = "fast";
-const CODEX_RUNTIME_ID = "codex-acp";
 const CODEX_FULL_ACCESS_MODE_ID = "full-access";
-const CODEX_FULL_ACCESS_POLICY_HELP =
-  "Some destructive command forms may still be blocked by Codex safety policy.";
-
-function FullAccessPolicyHelp() {
-  const [open, setOpen] = useState(false);
-  const descriptionId = useId();
-
-  return (
-    <div className="relative flex shrink-0 items-center">
-      <button
-        aria-describedby={open ? descriptionId : undefined}
-        aria-label="Full Access safety policy"
-        className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold"
-        onBlur={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        style={{
-          backgroundColor: "transparent",
-          border: "1px solid var(--border)",
-          color: "var(--text-secondary)",
-        }}
-        type="button"
-      >
-        ?
-      </button>
-      {open ? (
-        <div
-          className="absolute bottom-full left-0 z-50 mb-1 w-72 rounded-lg px-3 py-2 text-xs"
-          id={descriptionId}
-          role="tooltip"
-          style={{
-            backgroundColor: "var(--bg-secondary)",
-            border: "1px solid var(--border)",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-            color: "var(--text-primary)",
-            lineHeight: 1.4,
-          }}
-        >
-          {CODEX_FULL_ACCESS_POLICY_HELP}
-        </div>
-      ) : null}
-    </div>
-  );
-}
+const COMPOSER_MODE_OPTION_ID = "composer-mode";
 
 function shouldUseSearchableModelMenu(runtimeId?: string) {
   return runtimeId !== undefined && SEARCHABLE_MODEL_RUNTIME_IDS.has(runtimeId);
@@ -157,6 +112,9 @@ function DropdownField({
   displayValue: displayValueOverride,
   menuMinWidth,
   leadingIcon,
+  compact = false,
+  compactLabel,
+  trailingIcon,
   onChange,
   onOptionChange,
 }: DropdownFieldProps) {
@@ -255,7 +213,14 @@ function DropdownField({
           rememberFocusedElement();
           setOpen(true);
         }}
-        className="nw-control-trigger flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-xs"
+        aria-label={compact ? label : undefined}
+        className={`nw-control-trigger flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-xs${
+          compact
+            ? compactLabel
+              ? " h-7"
+              : " h-7 w-7 justify-center px-0"
+            : ""
+        }`}
         data-open={open ? "true" : undefined}
         style={{
           color: "var(--text-secondary)",
@@ -267,24 +232,31 @@ function DropdownField({
         disabled={isDisabled}
       >
         {leadingIcon}
-        <span className="truncate">{displayValue}</span>
-        <svg
-          width="10"
-          height="10"
-          viewBox="0 0 10 10"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{
-            opacity: 0.5,
-            transform: open ? "rotate(180deg)" : "none",
-            transition: "transform 0.1s ease",
-          }}
-        >
-          <path d="M2.5 4L5 6.5L7.5 4" />
-        </svg>
+        {compact ? (
+          compactLabel ? <span className="truncate">{compactLabel}</span> : null
+        ) : (
+          <span className="truncate">{displayValue}</span>
+        )}
+        {compact ? trailingIcon : null}
+        {compact ? null : (
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 10 10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{
+              opacity: 0.5,
+              transform: open ? "rotate(180deg)" : "none",
+              transition: "transform 0.1s ease",
+            }}
+          >
+            <path d="M2.5 4L5 6.5L7.5 4" />
+          </svg>
+        )}
       </button>
       {open && options.length > 0
         ? createPortal(
@@ -509,6 +481,22 @@ function FastModeIcon() {
   );
 }
 
+function ComposerOptionsIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      fill="currentColor"
+      height="16"
+      viewBox="0 0 16 16"
+      width="16"
+    >
+      <circle cx="3" cy="8" r="1.25" />
+      <circle cx="8" cy="8" r="1.25" />
+      <circle cx="13" cy="8" r="1.25" />
+    </svg>
+  );
+}
+
 function PermissionModeIcon({ fullAccess }: { fullAccess: boolean }) {
   return (
     <svg
@@ -631,7 +619,6 @@ function normalizeConfigOptionId(value: string) {
 }
 
 function configPresentationCategory(
-  runtimeId: string | undefined,
   option: AIConfigOption,
 ) {
   if (option.category === "reasoning") {
@@ -644,8 +631,7 @@ function configPresentationCategory(
   const normalizedId = normalizeConfigOptionId(option.id);
   if (
     normalizedId === "servicetier" ||
-    normalizedId === "fastmode" ||
-    (runtimeId === CLAUDE_RUNTIME_ID && option.id === CLAUDE_FAST_OPTION_ID)
+    normalizedId === "fastmode"
   ) {
     return "service_tier" as const;
   }
@@ -681,11 +667,6 @@ function defaultServiceTierValues(options: DropdownOption[]) {
       ),
     )
     .map((item) => item.value);
-}
-
-function claudeModelSupportsFastMode(modelId: string) {
-  const normalized = normalizeConfigOptionId(modelId);
-  return normalized === "opus" || normalized.includes("claudeopus");
 }
 
 export function AIChatAgentControls({
@@ -774,14 +755,14 @@ export function AIChatAgentControls({
       extraConfigs
         .map((option) => ({
           option,
-          presentationCategory: configPresentationCategory(runtimeId, option),
+          presentationCategory: configPresentationCategory(option),
           // Session config options are the ACP's authoritative view
           // for the selected model. `effortsByModel` is discovery
           // metadata and can be empty or stale during a handoff.
           options: mapConfigOption(option),
         }))
         .filter(({ options }) => options.length > 0),
-    [extraConfigs, runtimeId],
+    [extraConfigs],
   );
   const traitSections = useMemo<TraitMenuSection[]>(() => {
     // Reasoning effort and service tier are separate ACP options, but they
@@ -816,40 +797,8 @@ export function AIChatAgentControls({
             : [],
       }));
 
-    if (
-      runtimeId === CLAUDE_RUNTIME_ID &&
-      !sections.some((section) => section.kind === "service_tier")
-    ) {
-      // Claude only advertises `fast` after selecting a compatible model
-      // (currently Opus). Showing the stable Standard/Fast section avoids the
-      // control disappearing across model changes while still preventing an
-      // unsupported Fast selection.
-      const fastSupported = claudeModelSupportsFastMode(selectedModelId);
-      sections.push({
-        kind: "service_tier",
-        optionId: CLAUDE_FAST_OPTION_ID,
-        label: "Service Tier",
-        value: "off",
-        options: [
-          {
-            value: "off",
-            label: "Standard",
-          },
-          {
-            value: "on",
-            label: "Fast",
-            disabled: !fastSupported,
-            description: fastSupported
-              ? "Use Claude Fast mode."
-              : "Fast is unavailable for the selected Claude model.",
-          },
-        ],
-        defaultValues: ["off"],
-      });
-    }
-
     return sections;
-  }, [runtimeId, selectedModelId, visibleConfigs]);
+  }, [visibleConfigs]);
   const traitDropdown = useMemo(() => {
     const reasoningSection = traitSections.find(
       (section) => section.kind === "reasoning",
@@ -905,8 +854,36 @@ export function AIChatAgentControls({
         })),
     [visibleConfigs],
   );
-  const showFullAccessPolicyHelp =
-    runtimeId === CODEX_RUNTIME_ID && modeId === CODEX_FULL_ACCESS_MODE_ID;
+  const compactOptions = useMemo<DropdownOption[]>(() => {
+    const options: DropdownOption[] = traitDropdown
+      ? [...traitDropdown.options]
+      : [];
+
+    for (const { option, label, options: configOptions } of visibleExtraConfigs) {
+      options.push(
+        ...configOptions.map((configOption) => ({
+          ...configOption,
+          configOptionId: option.id,
+          groupLabel: label,
+          selected: configOption.value === option.value,
+        })),
+      );
+    }
+
+    options.push(
+      ...modes.map((mode) => ({
+        value: mode.id,
+        label: formatFallbackLabel(mode.name),
+        description: mode.description,
+        disabled: mode.disabled,
+        configOptionId: COMPOSER_MODE_OPTION_ID,
+        groupLabel: "Access",
+        selected: mode.id === modeId,
+      })),
+    );
+
+    return options;
+  }, [modeId, modes, traitDropdown, visibleExtraConfigs]);
   const showProviderPicker =
     providers.length > 0 && Boolean(runtimeId && onProviderModelChange);
   const showLegacyModelPicker =
@@ -914,7 +891,7 @@ export function AIChatAgentControls({
   const hasControlBeforeExtras = showProviderPicker || showLegacyModelPicker;
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1">
+    <div className="nw-agent-controls flex min-w-0 w-full flex-wrap items-center gap-1">
       {showProviderPicker && runtimeId && onProviderModelChange ? (
         <AIProviderModelPicker
           disabled={disabled}
@@ -942,8 +919,9 @@ export function AIChatAgentControls({
           }
         />
       ) : null}
-      {traitDropdown ? (
-        <>
+      <div className="nw-agent-controls-expanded-only contents">
+        {traitDropdown ? (
+          <>
           {hasControlBeforeExtras ? <ControlSeparator /> : null}
           <DropdownField
             disabled={disabled}
@@ -961,9 +939,9 @@ export function AIChatAgentControls({
               }
             }}
           />
-        </>
-      ) : null}
-      {visibleExtraConfigs.map(({ option, label, options }, index) => (
+          </>
+        ) : null}
+        {visibleExtraConfigs.map(({ option, label, options }, index) => (
         <div className="contents" key={option.id}>
           {hasControlBeforeExtras || traitSections.length > 0 || index > 0 ? (
             <ControlSeparator />
@@ -976,9 +954,9 @@ export function AIChatAgentControls({
             onChange={(value) => onConfigOptionChange(option.id, value)}
           />
         </div>
-      ))}
-      {modes.length > 0 ? (
-        <>
+        ))}
+        {modes.length > 0 ? (
+          <>
           {hasControlBeforeExtras ||
           traitSections.length > 0 ||
           visibleExtraConfigs.length > 0 ? (
@@ -1001,9 +979,38 @@ export function AIChatAgentControls({
             }))}
             onChange={onModeChange}
           />
-        </>
+          </>
+        ) : null}
+      </div>
+      {compactOptions.length > 0 ? (
+        <div className="nw-agent-controls-compact items-center">
+          {hasControlBeforeExtras ? <ControlSeparator /> : null}
+          <DropdownField
+            compact
+            disabled={disabled}
+            label="Composer options"
+            compactLabel={
+              traitDropdown?.fastModeEnabled ? "Fast" : undefined
+            }
+            leadingIcon={
+              traitDropdown?.fastModeEnabled ? <FastModeIcon /> : undefined
+            }
+            menuMinWidth={220}
+            options={compactOptions}
+            trailingIcon={<ComposerOptionsIcon />}
+            value=""
+            onOptionChange={(value, option) => {
+              if (option.configOptionId === COMPOSER_MODE_OPTION_ID) {
+                onModeChange(value);
+                return;
+              }
+              if (option.configOptionId) {
+                onConfigOptionChange(option.configOptionId, value);
+              }
+            }}
+          />
+        </div>
       ) : null}
-      {showFullAccessPolicyHelp ? <FullAccessPolicyHelp /> : null}
     </div>
   );
 }
