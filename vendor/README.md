@@ -178,9 +178,13 @@ The desktop backend supports a mixed ACP world: current ACP integration for Clau
 
 ## Current Claude Delta
 
-The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.68.0` at commit `5de5d4a2c8363e6462c231380c9fc17d80c568cc`, with no NeverWrite-specific runtime source delta.
+The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.68.0` at commit `5de5d4a2c8363e6462c231380c9fc17d80c568cc`, with a bounded NeverWrite-specific runtime source delta.
 
-The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.68.0` retains the linear-time ReDoS protection and its whole-line matching, so no local runtime patch needs to be reapplied.
+The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.68.0` retains that protection, so the old trailer patch does not need to be reapplied.
+
+NeverWrite additionally replaces the ambiguous textual `TaskList` fallback regex with linear string parsing. The local parser preserves task owners and dependency lists, treats malformed suffixes as subject text, and prevents adversarial tool output from causing excessive regex backtracking. The delta is limited to `src/tools.ts`, its regression coverage in `src/tests/tools.test.ts`, and the generated `dist/` output.
+
+This `TaskList` hardening is tracked upstream in [issue #1005](https://github.com/agentclientprotocol/claude-agent-acp/issues/1005) and [pull request #1006](https://github.com/agentclientprotocol/claude-agent-acp/pull/1006). Until an upstream release contains an equivalent fix and regression coverage, vendor refreshes must reapply this delta rather than replacing the source tree verbatim.
 
 Upstream `0.68.0` includes an opt-in `subagent-transcript` client capability. NeverWrite does not advertise that capability, so Claude keeps the legacy behavior that filters nested subagent text and thinking from the top-level feed. Rich nested transcript integration remains intentionally out of scope.
 
@@ -188,9 +192,7 @@ Upstream `0.68.0` also publishes the provider-neutral `_meta.goal` extension. Ne
 
 Upstream `0.68.0` aligns the opt-in typed session-failure extension with the AIR transcript protocol and restores native provider routing after an ACP provider override is disabled. NeverWrite does not advertise the AIR session-failure capability; its current provider bridge remains compatible with the `providers/list`, `providers/set`, and `providers/disable` behavior.
 
-The `dist/` directory is rebuilt from the vendored source snapshot because the
-desktop packaging flow stages the compiled runtime files, while upstream does
-not track generated output in git.
+The `dist/` directory is rebuilt from the locally modified vendored source because the desktop packaging flow stages the compiled runtime files, while upstream does not track generated output in git.
 
 Electron release packaging treats the staged Claude runtime as incomplete unless
 the packaged resources include:
@@ -200,7 +202,7 @@ the packaged resources include:
 - `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
 - `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
 
-The only expected local non-source delta is generated `dist/`, which upstream does not commit. The vendor `.gitignore` matches upstream, so newly generated files must be force-added when the snapshot is refreshed.
+The expected local source delta is the `TaskList` parser and its regression tests. The expected non-source delta is generated `dist/`, which upstream does not commit. The vendor `.gitignore` matches upstream, so newly generated files must be force-added when the snapshot is refreshed.
 
 NeverWrite advertises ACP client capabilities through the native backend, not by
 patching the vendored Claude runtime. The active capability matrix for the

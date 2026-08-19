@@ -311,8 +311,10 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.68.0` (`5de5d4a2c8363e6462c231380c9fc17d80c568cc`) with generated `dist/` runtime files required by desktop packaging |
-| `dist/`               | Generated from the exact vendored source and force-added because upstream ignores build output |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.68.0` (`5de5d4a2c8363e6462c231380c9fc17d80c568cc`) with the bounded NeverWrite modifications listed below |
+| `src/tools.ts`        | Replaced the ambiguous textual `TaskList` fallback regex with linear string parsing to prevent excessive backtracking while preserving owners, dependencies, and malformed suffixes as subject text |
+| `src/tests/tools.test.ts` | Added regression coverage for owner/dependency parsing and adversarial malformed `TaskList` output |
+| `dist/`               | Generated from the locally modified vendored source and force-added because upstream ignores build output |
 
 > All original copyright notices and license headers have been preserved.
 > The full text of the Apache-2.0 license is available at
