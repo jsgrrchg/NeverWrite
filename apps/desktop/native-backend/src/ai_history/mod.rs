@@ -39,6 +39,8 @@ const COMMANDS: &[&str] = &[
 ];
 
 pub(crate) const AI_HISTORY_STORAGE_CHANGED_EVENT: &str = "ai_history_storage_changed";
+pub(crate) const ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR: &str =
+    "Switch to another vault before removing this one from Recents. Active AI sessions could recreate its device-local data.";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(
@@ -237,15 +239,26 @@ impl AiHistoryStorageService {
         COMMANDS.contains(&command)
     }
 
-    pub(crate) fn forget_device_data(&self, vault_path: &Path) -> Result<(), String> {
+    pub(crate) fn forget_device_data(
+        &self,
+        vault_path: &Path,
+        active_vault_path: Option<&Path>,
+    ) -> Result<(), String> {
+        let target_identity = storage::resolve_known_vault_identity(vault_path)?;
+        if let Some(active_vault_path) = active_vault_path {
+            let active_identity = storage::resolve_known_vault_identity(active_vault_path)?;
+            if active_identity.normalized_path == target_identity.normalized_path {
+                return Err(ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR.to_string());
+            }
+        }
         if migration::has_pending(&self.app_data_root)? {
             return Err(
                 "AI history recovery must finish before local device data can be forgotten."
                     .to_string(),
             );
         }
-        let vault_key =
-            storage::remove_device_namespace_for_known_path(&self.app_data_root, vault_path)?;
+        storage::remove_device_namespace_for_known_identity(&self.app_data_root, &target_identity)?;
+        let vault_key = target_identity.vault_key;
         log_storage_event(&vault_key, None, "housekeeping", "forget_device_data");
         self.validated_scopes
             .lock()
@@ -1884,7 +1897,7 @@ mod tests {
         .unwrap();
         let layout = storage::resolve_layout(app_data.path(), vault.path()).unwrap();
 
-        service.forget_device_data(vault.path()).unwrap();
+        service.forget_device_data(vault.path(), None).unwrap();
 
         assert!(!layout.namespace.exists());
         assert_eq!(
@@ -1893,6 +1906,29 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn forgetting_recents_data_succeeds_after_the_vault_path_disappears() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let vault = parent.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        service
+            .invoke(
+                "ai_save_session_history",
+                &vault,
+                json!({ "history": text_history("device", "local") }),
+            )
+            .unwrap();
+        let layout = storage::resolve_layout(app_data.path(), &vault).unwrap();
+        let known_path = vault.canonicalize().unwrap();
+        fs::remove_dir_all(&vault).unwrap();
+
+        service.forget_device_data(&known_path, None).unwrap();
+
+        assert!(!layout.namespace.exists());
     }
 
     #[test]

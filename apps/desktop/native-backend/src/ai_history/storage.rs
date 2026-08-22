@@ -37,6 +37,12 @@ pub(super) struct ScopeLayout {
     pub managed: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct KnownVaultIdentity {
+    pub normalized_path: String,
+    pub vault_key: String,
+}
+
 impl ScopeLayout {
     pub(super) fn transaction_layout(&self) -> RootLayout {
         RootLayout {
@@ -496,11 +502,9 @@ pub(super) fn device_scope_for_key(
     })
 }
 
-pub(super) fn remove_device_namespace_for_known_path(
-    app_data_root: &Path,
+pub(super) fn resolve_known_vault_identity(
     vault_path: &Path,
-) -> Result<String, String> {
-    ensure_private_app_data_root(app_data_root)?;
+) -> Result<KnownVaultIdentity, String> {
     let known_path = match vault_path.canonicalize() {
         Ok(canonical) => canonical,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => vault_path.to_path_buf(),
@@ -516,14 +520,25 @@ pub(super) fn remove_device_namespace_for_known_path(
     {
         return Err("The stored vault path is not an absolute normalized path.".to_string());
     }
-    let vault_key = hex_sha256(normalized_vault_path(&known_path).as_bytes());
+    let normalized_path = normalized_vault_path(&known_path);
+    let vault_key = hex_sha256(normalized_path.as_bytes());
+    Ok(KnownVaultIdentity {
+        normalized_path,
+        vault_key,
+    })
+}
+
+pub(super) fn remove_device_namespace_for_known_identity(
+    app_data_root: &Path,
+    identity: &KnownVaultIdentity,
+) -> Result<(), String> {
+    ensure_private_app_data_root(app_data_root)?;
     let namespace = app_data_root
         .join("ai-history")
         .join("v1")
         .join("vaults")
-        .join(&vault_key);
-    remove_device_namespace_by_key(&namespace, &vault_key)?;
-    Ok(vault_key)
+        .join(&identity.vault_key);
+    remove_device_namespace_by_key(&namespace, &identity.vault_key)
 }
 
 fn remove_device_namespace_by_key(namespace: &Path, vault_key: &str) -> Result<(), String> {
@@ -950,10 +965,10 @@ mod tests {
         let known_path = vault.canonicalize().unwrap();
         fs::remove_dir_all(&vault).unwrap();
 
-        let removed_key =
-            remove_device_namespace_for_known_path(app_data.path(), &known_path).unwrap();
+        let identity = resolve_known_vault_identity(&known_path).unwrap();
+        remove_device_namespace_for_known_identity(app_data.path(), &identity).unwrap();
 
-        assert_eq!(removed_key, layout.vault_key);
+        assert_eq!(identity.vault_key, layout.vault_key);
         assert!(!layout.namespace.exists());
     }
 
@@ -975,10 +990,22 @@ mod tests {
         )
         .unwrap();
 
-        let removed_key = remove_device_namespace_for_known_path(app_data.path(), &alias).unwrap();
+        let identity = resolve_known_vault_identity(&alias).unwrap();
+        remove_device_namespace_for_known_identity(app_data.path(), &identity).unwrap();
 
-        assert_eq!(removed_key, layout.vault_key);
+        assert_eq!(identity.vault_key, layout.vault_key);
         assert!(!layout.namespace.exists());
+    }
+
+    #[test]
+    fn missing_known_vault_identity_rejects_relative_components() {
+        let error = resolve_known_vault_identity(Path::new("missing-vault"))
+            .expect_err("relative paths must not identify device-local data");
+
+        assert_eq!(
+            error,
+            "The stored vault path is not an absolute normalized path."
+        );
     }
 
     #[test]
