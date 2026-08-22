@@ -157,9 +157,7 @@ days so a crash between promotion and history persistence does not create a
 broken message reference. Managed blobs referenced by retained histories are
 deleted only after their last retained reference is removed.
 
-Removing a vault from Recents clears local registration, drafts, and
-device-local AI history. It never deletes sessions or managed blobs stored
-inside the vault; deleting those requires the explicit Chat History action.
+Removing a vault from Recents clears local registration, drafts, and device-local AI history. It never deletes sessions or managed blobs stored inside the vault; deleting those requires the explicit Chat History action. If the vault folder no longer exists, its stored canonical path still identifies the device-local data that NeverWrite owns and removes.
 
 ## App Logs
 
