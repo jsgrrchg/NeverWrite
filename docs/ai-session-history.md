@@ -178,9 +178,7 @@ send a new message so NeverWrite can continue with the stored transcript.
 - `transcript.jsonl` is stored as local plaintext JSONL while retained.
 - Deleting a conversation from `Chat History` deletes its saved history and
   only managed blobs that no retained history references.
-- Removing a vault from Recents clears local registration, drafts, and
-  device-local history; it never deletes history or managed blobs inside the
-  vault.
+- Removing a vault from Recents clears local registration, drafts, and device-local history; it never deletes history or managed blobs inside the vault. The stored canonical path still identifies this device-local data when the original vault folder no longer exists.
 - If a recovered chat is missing, confirm you reopened the same vault and that the retention window did not prune the conversation.
 - Pasted screenshot drafts and managed blobs are plaintext local image files;
   review them before sharing app data or a vault archive.

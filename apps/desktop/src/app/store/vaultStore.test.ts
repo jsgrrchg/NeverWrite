@@ -99,21 +99,49 @@ describe("vaultStore", () => {
         ]);
     });
 
-    it("forgets only device-local AI data when a vault is removed from Recents", async () => {
+    it("cleans per-vault state after device-local cleanup succeeds", async () => {
         const invoke = mockInvoke();
         invoke.mockResolvedValue(undefined);
         useVaultStore.setState({ vaultPath: null });
+        const perVaultKeys = [
+            "neverwrite.session.tabs:/missing-vault",
+            "neverwrite:theme:/missing-vault",
+            "neverwrite:settings:/missing-vault",
+            "neverwrite.chat.tabs:/missing-vault",
+            "neverwrite:bookmarks:/missing-vault",
+        ];
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([
+                { path: "/missing-vault", name: "Missing" },
+                { path: "/other-vault", name: "Other" },
+            ]),
+        );
+        localStorage.setItem("neverwrite:lastVaultPath", "/missing-vault");
+        for (const key of perVaultKeys) {
+            localStorage.setItem(key, "persisted");
+        }
 
-        await removeVaultFromList("/vault");
+        await removeVaultFromList("/missing-vault");
 
         expect(invoke).toHaveBeenCalledWith("forget_ai_history_device_data", {
-            vaultPath: "/vault",
+            vaultPath: "/missing-vault",
             activeVaultPath: null,
         });
         expect(invoke).not.toHaveBeenCalledWith(
             "ai_delete_all_session_histories",
             expect.anything(),
         );
+        expect(invoke).toHaveBeenCalledWith("delete_vault_snapshot", {
+            vaultPath: "/missing-vault",
+        });
+        expect(getRecentVaults()).toEqual([
+            { path: "/other-vault", name: "Other" },
+        ]);
+        expect(localStorage.getItem("neverwrite:lastVaultPath")).toBeNull();
+        for (const key of perVaultKeys) {
+            expect(localStorage.getItem(key)).toBeNull();
+        }
         vi.clearAllMocks();
 
         clearRecentVaults();
