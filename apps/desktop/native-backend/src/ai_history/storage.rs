@@ -74,7 +74,7 @@ impl VaultStorageLayout {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CanonicalState {
     version: u32,
@@ -84,7 +84,7 @@ pub(super) struct CanonicalState {
     pub kind: CanonicalStateKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum CanonicalStateKind {
     Ready { scope: AIStorageScope },
@@ -110,6 +110,20 @@ impl CanonicalState {
             vault_path: layout.canonical_vault_path.clone(),
             kind: CanonicalStateKind::RecoveryRequired,
         }
+    }
+
+    pub(super) fn adopt_filesystem_identity(
+        mut self,
+        layout: &VaultStorageLayout,
+    ) -> Result<Self, String> {
+        if self.version != STATE_VERSION
+            || self.vault_key != layout.vault_key
+            || self.vault_path != layout.canonical_vault_path
+        {
+            return Err("AI history state cannot be adopted by this vault.".to_string());
+        }
+        self.filesystem_identity = layout.filesystem_identity.clone();
+        Ok(self)
     }
 }
 
