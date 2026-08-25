@@ -117,6 +117,7 @@ impl CanonicalState {
 pub(super) enum StateRead {
     Missing,
     Valid(CanonicalState),
+    FilesystemIdentityChanged(CanonicalState),
     Invalid(String),
 }
 
@@ -242,9 +243,7 @@ pub(super) fn read_state(layout: &VaultStorageLayout) -> StateRead {
         return StateRead::Invalid("AI history state belongs to another vault path.".to_string());
     }
     if state.filesystem_identity != layout.filesystem_identity {
-        return StateRead::Invalid(
-            "AI history state belongs to a previous vault at this path.".to_string(),
-        );
+        return StateRead::FilesystemIdentityChanged(state);
     }
     StateRead::Valid(state)
 }
@@ -881,6 +880,36 @@ mod tests {
         value["version"] = serde_json::json!(2);
         fs::write(&layout.state_file, serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(matches!(read_state(&layout), StateRead::Invalid(_)));
+    }
+
+    #[test]
+    fn state_classifies_only_a_filesystem_identity_change_as_recoverable() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let vault = parent.path().join("vault");
+        let replacement = parent.path().join("replacement");
+        fs::create_dir(&vault).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        let original_layout = resolve_layout(app_data.path(), &vault).unwrap();
+        write_state(
+            &original_layout,
+            &CanonicalState::ready(&original_layout, AIStorageScope::Device),
+        )
+        .unwrap();
+
+        fs::remove_dir(&vault).unwrap();
+        fs::rename(&replacement, &vault).unwrap();
+        let current_layout = resolve_layout(app_data.path(), &vault).unwrap();
+
+        let StateRead::FilesystemIdentityChanged(state) = read_state(&current_layout) else {
+            panic!("expected a typed filesystem identity change");
+        };
+        assert_eq!(state.vault_key, current_layout.vault_key);
+        assert_eq!(state.vault_path, current_layout.canonical_vault_path);
+        assert_ne!(
+            state.filesystem_identity,
+            current_layout.filesystem_identity
+        );
     }
 
     #[test]
