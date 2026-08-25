@@ -19,6 +19,7 @@ describe("AIHistoryStorageControl", () => {
             },
             refreshAiHistoryStorageStatus: vi.fn(async () => undefined),
             changeAiHistoryStorage: vi.fn(async () => true),
+            adoptAiHistoryStorageIdentity: vi.fn(async () => true),
         });
     });
 
@@ -116,6 +117,7 @@ describe("AIHistoryStorageControl", () => {
                 reason: "multiple_local_roots",
                 message: "Manual recovery required.",
                 canReconcile: false,
+                canAdoptIdentity: false,
                 conflictingSessionIds: [],
                 conflictingAttachmentIds: [],
                 roots: [
@@ -135,6 +137,7 @@ describe("AIHistoryStorageControl", () => {
                         hasData: true,
                     },
                 ],
+                identityChange: null,
             };
         });
         useChatStore.setState({
@@ -146,6 +149,7 @@ describe("AIHistoryStorageControl", () => {
                     reason: "multiple_local_roots",
                     message: "Manual recovery required.",
                     canReconcile: false,
+                    canAdoptIdentity: false,
                     conflictingSessionIds: [],
                     conflictingAttachmentIds: [],
                     renamedDeviceHistory: false,
@@ -191,5 +195,124 @@ describe("AIHistoryStorageControl", () => {
                 "/previous-local-history",
             ),
         );
+    });
+
+    it("confirms the exact filesystem identity transition before restoring access", async () => {
+        vi.mocked(invoke).mockResolvedValue({
+            reason: "filesystem_identity_changed",
+            message:
+                "The vault folder identity changed. Confirm that this is the same vault to restore access to AI chats.",
+            canReconcile: false,
+            canAdoptIdentity: true,
+            conflictingSessionIds: [],
+            conflictingAttachmentIds: [],
+            roots: [
+                {
+                    id: "device",
+                    label: "Device data",
+                    hasData: true,
+                },
+            ],
+            identityChange: {
+                previousFilesystemIdentity: "previous-identity",
+                currentFilesystemIdentity: "current-identity",
+                scope: "device",
+            },
+        });
+        useChatStore.setState({
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 2,
+                status: "recovery_required",
+                details: {
+                    reason: "filesystem_identity_changed",
+                    message:
+                        "The vault folder identity changed. Confirm that this is the same vault to restore access to AI chats.",
+                    canReconcile: false,
+                    canAdoptIdentity: true,
+                    conflictingSessionIds: [],
+                    conflictingAttachmentIds: [],
+                    renamedDeviceHistory: false,
+                },
+            },
+        });
+
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
+
+        const restore = await screen.findByRole("button", {
+            name: "Restore access to AI chats",
+        });
+        expect(
+            screen.queryByRole("button", { name: "Use this device" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Use this vault" }),
+        ).not.toBeInTheDocument();
+        fireEvent.click(restore);
+
+        await waitFor(() =>
+            expect(confirm).toHaveBeenCalledWith(
+                "NeverWrite will attach the existing AI chat history to this folder without moving or deleting any chats. Continue only if this is the same vault.",
+                {
+                    title: "Trust this vault at its current location?",
+                    kind: "warning",
+                    okLabel: "Trust and restore chats",
+                    cancelLabel: "Cancel",
+                },
+            ),
+        );
+        expect(
+            useChatStore.getState().adoptAiHistoryStorageIdentity,
+        ).toHaveBeenCalledWith(
+            "/vault",
+            "previous-identity",
+            "current-identity",
+        );
+    });
+
+    it("leaves identity recovery untouched when the user cancels", async () => {
+        vi.mocked(confirm).mockResolvedValue(false);
+        vi.mocked(invoke).mockResolvedValue({
+            reason: "filesystem_identity_changed",
+            message: "Identity changed.",
+            canReconcile: false,
+            canAdoptIdentity: true,
+            conflictingSessionIds: [],
+            conflictingAttachmentIds: [],
+            roots: [],
+            identityChange: {
+                previousFilesystemIdentity: "previous-identity",
+                currentFilesystemIdentity: "current-identity",
+                scope: "device",
+            },
+        });
+        useChatStore.setState({
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 2,
+                status: "recovery_required",
+                details: {
+                    reason: "filesystem_identity_changed",
+                    message: "Identity changed.",
+                    canReconcile: false,
+                    canAdoptIdentity: true,
+                    conflictingSessionIds: [],
+                    conflictingAttachmentIds: [],
+                    renamedDeviceHistory: false,
+                },
+            },
+        });
+
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
+        fireEvent.click(
+            await screen.findByRole("button", {
+                name: "Restore access to AI chats",
+            }),
+        );
+        await waitFor(() => expect(confirm).toHaveBeenCalled());
+
+        expect(
+            useChatStore.getState().adoptAiHistoryStorageIdentity,
+        ).not.toHaveBeenCalled();
     });
 });

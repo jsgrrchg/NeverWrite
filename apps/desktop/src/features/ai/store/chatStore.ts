@@ -38,6 +38,7 @@ import {
     aiSetModel,
     aiUpdateSetup,
     aiRegisterFileBaseline,
+    adoptAiHistoryStorageIdentity as adoptAiHistoryStorageIdentityApi,
     getAiHistoryStorageStatus,
     reconcileAiHistoryStorage,
     listenToAiHistoryStorageChanged,
@@ -1673,6 +1674,11 @@ interface ChatStore {
         vaultPath: string,
         targetScope: AIStorageScope,
         sourceVaultKey?: string,
+    ) => Promise<boolean>;
+    adoptAiHistoryStorageIdentity: (
+        vaultPath: string,
+        expectedPreviousFilesystemIdentity: string,
+        expectedCurrentFilesystemIdentity: string,
     ) => Promise<boolean>;
     reconcileRestoredWorkspaceTabs: (
         tabs: Array<{
@@ -10223,6 +10229,37 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 logWarn(
                     "chat-store",
                     "Failed to change AI history storage",
+                    error,
+                );
+                return false;
+            }
+        },
+
+        adoptAiHistoryStorageIdentity: async (
+            vaultPath,
+            expectedPreviousFilesystemIdentity,
+            expectedCurrentFilesystemIdentity,
+        ) => {
+            activateAiHistoryStorageContext(vaultPath);
+            try {
+                const snapshot = await adoptAiHistoryStorageIdentityApi(
+                    vaultPath,
+                    expectedPreviousFilesystemIdentity,
+                    expectedCurrentFilesystemIdentity,
+                );
+                applyAiHistoryStorageSnapshot(snapshot, vaultPath);
+                if (
+                    snapshot.status === "ready" &&
+                    useVaultStore.getState().vaultPath === vaultPath
+                ) {
+                    await refreshPersistedHistoryInventory(vaultPath);
+                }
+                return true;
+            } catch (error) {
+                await get().refreshAiHistoryStorageStatus(vaultPath);
+                logWarn(
+                    "chat-store",
+                    "Failed to restore AI history storage identity",
                     error,
                 );
                 return false;
