@@ -444,6 +444,64 @@ describe("SettingsPanel", () => {
         );
     });
 
+    it("removes an unavailable vault after device-local cleanup succeeds", async () => {
+        const invoke = mockInvoke().mockResolvedValue(undefined);
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([
+                { path: "/missing-vault", name: "Missing Vault" },
+            ]),
+        );
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Vault" }));
+        fireEvent.click(
+            screen.getByRole("button", {
+                name: "Remove Missing Vault from Recents",
+            }),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+        await waitFor(() => {
+            expect(screen.queryByText("Missing Vault")).not.toBeInTheDocument();
+        });
+        expect(screen.getByText("No recent vaults.")).toBeInTheDocument();
+        expect(invoke).toHaveBeenCalledWith("forget_ai_history_device_data", {
+            vaultPath: "/missing-vault",
+            activeVaultPath: null,
+        });
+    });
+
+    it("keeps an unavailable vault visible when device-local cleanup fails", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "forget_ai_history_device_data") {
+                throw new Error("cleanup blocked");
+            }
+            return undefined;
+        });
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([
+                { path: "/missing-vault", name: "Missing Vault" },
+            ]),
+        );
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Vault" }));
+        fireEvent.click(
+            screen.getByRole("button", {
+                name: "Remove Missing Vault from Recents",
+            }),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+            "Could not delete device-local data. The vault remains in Recents so you can retry.",
+        );
+        expect(screen.getByText("Missing Vault")).toBeInTheDocument();
+        expect(screen.getByText("1/1")).toBeInTheDocument();
+    });
+
     it("searches settings by row content and switches to the matching panel", () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 

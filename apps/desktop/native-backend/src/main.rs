@@ -43,9 +43,6 @@ const DEFAULT_GRAPH_MAX_LINKS_GLOBAL: usize = 24_000;
 const DEFAULT_GRAPH_MAX_NODES_LOCAL: usize = 2_500;
 const DEFAULT_GRAPH_MAX_LINKS_LOCAL: usize = 12_000;
 const DEFAULT_LOCAL_GRAPH_HUB_NEIGHBOR_LIMIT: usize = 512;
-const ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR: &str =
-    "Switch to another vault before removing this one from Recents. Active AI sessions could recreate its device-local data.";
-
 #[derive(Debug, Deserialize)]
 struct RpcRequest {
     id: Value,
@@ -904,16 +901,11 @@ impl NativeBackend {
             "ai_register_file_baseline" => self.ai.register_file_baseline(&args),
             "forget_ai_history_device_data" => {
                 let vault_path = required_string(&args, &["vaultPath", "vault_path"])?;
-                let target_root = normalize_vault_path(&vault_path)?;
-                if let Some(active_vault_path) =
+                let active_vault_path =
                     optional_nullable_string(&args, &["activeVaultPath", "active_vault_path"])
-                {
-                    if normalize_vault_path(&active_vault_path)? == target_root {
-                        return Err(ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR.to_string());
-                    }
-                }
+                        .map(PathBuf::from);
                 self.ai_history
-                    .forget_device_data(Path::new(&target_root))?;
+                    .forget_device_data(Path::new(&vault_path), active_vault_path.as_deref())?;
                 Ok(json!(null))
             }
             command if AiHistoryStorageService::handles(command) => {
@@ -3424,7 +3416,49 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error, ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR);
+        assert_eq!(error, ai_history::ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR);
+    }
+
+    #[test]
+    fn forgets_recent_cleanup_after_the_vault_path_disappears() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let parent = tempfile::tempdir().unwrap();
+        let vault_path = parent.path().join("missing-vault");
+
+        let result = invoke(
+            &backend,
+            "forget_ai_history_device_data",
+            json!({
+                "vaultPath": vault_path,
+                "activeVaultPath": null,
+            }),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn refuses_recent_cleanup_for_an_active_vault_after_its_path_disappears() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let parent = tempfile::tempdir().unwrap();
+        let vault_path = parent.path().join("vault");
+        fs::create_dir(&vault_path).unwrap();
+        let known_path = vault_path.canonicalize().unwrap();
+        fs::remove_dir_all(&vault_path).unwrap();
+
+        let error = invoke(
+            &backend,
+            "forget_ai_history_device_data",
+            json!({
+                "vaultPath": known_path,
+                "activeVaultPath": known_path,
+            }),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, ai_history::ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR);
     }
 
     #[test]
