@@ -192,6 +192,38 @@ describe("EditorPaneBar", () => {
         ).not.toBeNull();
     });
 
+    it("copies the full note path from the tab context menu", async () => {
+        const user = userEvent.setup();
+        const writeText = vi
+            .spyOn(navigator.clipboard, "writeText")
+            .mockResolvedValue(undefined);
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/a",
+                    path: "/vault/notes/a.md",
+                    title: "Alpha",
+                    modified_at: 1,
+                    created_at: 1,
+                },
+            ],
+        });
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-a"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+        await user.click(
+            await screen.findByRole("button", { name: "Copy Path" }),
+        );
+
+        expect(writeText).toHaveBeenCalledWith("/vault/notes/a.md");
+    });
+
     it("shows pane history navigation buttons when open behavior uses history", () => {
         useSettingsStore.getState().setSetting("tabOpenBehavior", "history");
 

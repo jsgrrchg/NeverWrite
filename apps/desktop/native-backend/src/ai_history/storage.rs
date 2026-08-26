@@ -37,6 +37,12 @@ pub(super) struct ScopeLayout {
     pub managed: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct KnownVaultIdentity {
+    pub normalized_path: String,
+    pub vault_key: String,
+}
+
 impl ScopeLayout {
     pub(super) fn transaction_layout(&self) -> RootLayout {
         RootLayout {
@@ -68,7 +74,7 @@ impl VaultStorageLayout {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CanonicalState {
     version: u32,
@@ -78,7 +84,7 @@ pub(super) struct CanonicalState {
     pub kind: CanonicalStateKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum CanonicalStateKind {
     Ready { scope: AIStorageScope },
@@ -105,12 +111,27 @@ impl CanonicalState {
             kind: CanonicalStateKind::RecoveryRequired,
         }
     }
+
+    pub(super) fn adopt_filesystem_identity(
+        mut self,
+        layout: &VaultStorageLayout,
+    ) -> Result<Self, String> {
+        if self.version != STATE_VERSION
+            || self.vault_key != layout.vault_key
+            || self.vault_path != layout.canonical_vault_path
+        {
+            return Err("AI history state cannot be adopted by this vault.".to_string());
+        }
+        self.filesystem_identity = layout.filesystem_identity.clone();
+        Ok(self)
+    }
 }
 
 #[derive(Debug)]
 pub(super) enum StateRead {
     Missing,
     Valid(CanonicalState),
+    FilesystemIdentityChanged(CanonicalState),
     Invalid(String),
 }
 
@@ -236,9 +257,7 @@ pub(super) fn read_state(layout: &VaultStorageLayout) -> StateRead {
         return StateRead::Invalid("AI history state belongs to another vault path.".to_string());
     }
     if state.filesystem_identity != layout.filesystem_identity {
-        return StateRead::Invalid(
-            "AI history state belongs to a previous vault at this path.".to_string(),
-        );
+        return StateRead::FilesystemIdentityChanged(state);
     }
     StateRead::Valid(state)
 }
@@ -496,11 +515,9 @@ pub(super) fn device_scope_for_key(
     })
 }
 
-pub(super) fn remove_device_namespace_for_known_path(
-    app_data_root: &Path,
+pub(super) fn resolve_known_vault_identity(
     vault_path: &Path,
-) -> Result<String, String> {
-    ensure_private_app_data_root(app_data_root)?;
+) -> Result<KnownVaultIdentity, String> {
     let known_path = match vault_path.canonicalize() {
         Ok(canonical) => canonical,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => vault_path.to_path_buf(),
@@ -516,14 +533,25 @@ pub(super) fn remove_device_namespace_for_known_path(
     {
         return Err("The stored vault path is not an absolute normalized path.".to_string());
     }
-    let vault_key = hex_sha256(normalized_vault_path(&known_path).as_bytes());
+    let normalized_path = normalized_vault_path(&known_path);
+    let vault_key = hex_sha256(normalized_path.as_bytes());
+    Ok(KnownVaultIdentity {
+        normalized_path,
+        vault_key,
+    })
+}
+
+pub(super) fn remove_device_namespace_for_known_identity(
+    app_data_root: &Path,
+    identity: &KnownVaultIdentity,
+) -> Result<(), String> {
+    ensure_private_app_data_root(app_data_root)?;
     let namespace = app_data_root
         .join("ai-history")
         .join("v1")
         .join("vaults")
-        .join(&vault_key);
-    remove_device_namespace_by_key(&namespace, &vault_key)?;
-    Ok(vault_key)
+        .join(&identity.vault_key);
+    remove_device_namespace_by_key(&namespace, &identity.vault_key)
 }
 
 fn remove_device_namespace_by_key(namespace: &Path, vault_key: &str) -> Result<(), String> {
@@ -869,6 +897,36 @@ mod tests {
     }
 
     #[test]
+    fn state_classifies_only_a_filesystem_identity_change_as_recoverable() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let vault = parent.path().join("vault");
+        let replacement = parent.path().join("replacement");
+        fs::create_dir(&vault).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        let original_layout = resolve_layout(app_data.path(), &vault).unwrap();
+        write_state(
+            &original_layout,
+            &CanonicalState::ready(&original_layout, AIStorageScope::Device),
+        )
+        .unwrap();
+
+        fs::remove_dir(&vault).unwrap();
+        fs::rename(&replacement, &vault).unwrap();
+        let current_layout = resolve_layout(app_data.path(), &vault).unwrap();
+
+        let StateRead::FilesystemIdentityChanged(state) = read_state(&current_layout) else {
+            panic!("expected a typed filesystem identity change");
+        };
+        assert_eq!(state.vault_key, current_layout.vault_key);
+        assert_eq!(state.vault_path, current_layout.canonical_vault_path);
+        assert_ne!(
+            state.filesystem_identity,
+            current_layout.filesystem_identity
+        );
+    }
+
+    #[test]
     fn state_promotes_a_complete_temporary_file_after_an_interrupted_write() {
         let app_data = tempfile::tempdir().unwrap();
         let vault = tempfile::tempdir().unwrap();
@@ -950,10 +1008,10 @@ mod tests {
         let known_path = vault.canonicalize().unwrap();
         fs::remove_dir_all(&vault).unwrap();
 
-        let removed_key =
-            remove_device_namespace_for_known_path(app_data.path(), &known_path).unwrap();
+        let identity = resolve_known_vault_identity(&known_path).unwrap();
+        remove_device_namespace_for_known_identity(app_data.path(), &identity).unwrap();
 
-        assert_eq!(removed_key, layout.vault_key);
+        assert_eq!(identity.vault_key, layout.vault_key);
         assert!(!layout.namespace.exists());
     }
 
@@ -975,10 +1033,22 @@ mod tests {
         )
         .unwrap();
 
-        let removed_key = remove_device_namespace_for_known_path(app_data.path(), &alias).unwrap();
+        let identity = resolve_known_vault_identity(&alias).unwrap();
+        remove_device_namespace_for_known_identity(app_data.path(), &identity).unwrap();
 
-        assert_eq!(removed_key, layout.vault_key);
+        assert_eq!(identity.vault_key, layout.vault_key);
         assert!(!layout.namespace.exists());
+    }
+
+    #[test]
+    fn missing_known_vault_identity_rejects_relative_components() {
+        let error = resolve_known_vault_identity(Path::new("missing-vault"))
+            .expect_err("relative paths must not identify device-local data");
+
+        assert_eq!(
+            error,
+            "The stored vault path is not an absolute normalized path."
+        );
     }
 
     #[test]

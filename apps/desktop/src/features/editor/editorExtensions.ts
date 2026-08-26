@@ -76,7 +76,7 @@ export const baseTheme = EditorView.theme({
         minWidth: 0,
         boxSizing: "border-box",
         padding: `24px ${editorHorizontalInset} 120px`,
-        caretColor: "var(--text-primary)",
+        caretColor: "var(--accent)",
         lineHeight: "var(--text-input-line-height)",
         minHeight: "calc(100vh - 220px)",
     },
@@ -120,7 +120,7 @@ export const baseTheme = EditorView.theme({
             textDecoration: "none",
         },
     ".cm-cursor": {
-        borderLeftColor: "var(--text-primary)",
+        borderLeftColor: "var(--accent)",
         borderLeftWidth: "2px",
         marginLeft: "-1px",
         padding: "2px 0",

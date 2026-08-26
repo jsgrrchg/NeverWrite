@@ -30,6 +30,9 @@ export function AIHistoryStorageControl({
     const changeStorage = useChatStore(
         (state) => state.changeAiHistoryStorage,
     );
+    const adoptStorageIdentity = useChatStore(
+        (state) => state.adoptAiHistoryStorageIdentity,
+    );
     const [changing, setChanging] = useState(false);
     const [recoveryActionPending, setRecoveryActionPending] = useState(false);
     const [recoveryDiagnostic, setRecoveryDiagnostic] =
@@ -162,6 +165,36 @@ export function AIHistoryStorageControl({
         }
     }, [recoveryActionPending, refreshStatus, vaultPath]);
 
+    const adoptIdentity = useCallback(async () => {
+        const identityChange = recoveryDiagnostic?.identityChange;
+        if (!vaultPath || !identityChange || recoveryActionPending) return;
+        const accepted = await confirm(
+            "NeverWrite will attach the existing AI chat history to this folder without moving or deleting any chats. Continue only if this is the same vault.",
+            {
+                title: "Trust this vault at its current location?",
+                kind: "warning",
+                okLabel: "Trust and restore chats",
+                cancelLabel: "Cancel",
+            },
+        );
+        if (!accepted) return;
+        setRecoveryActionPending(true);
+        try {
+            await adoptStorageIdentity(
+                vaultPath,
+                identityChange.previousFilesystemIdentity,
+                identityChange.currentFilesystemIdentity,
+            );
+        } finally {
+            setRecoveryActionPending(false);
+        }
+    }, [
+        adoptStorageIdentity,
+        recoveryActionPending,
+        recoveryDiagnostic,
+        vaultPath,
+    ]);
+
     if (!vaultPath) return null;
 
     const isMoving =
@@ -254,6 +287,23 @@ export function AIHistoryStorageControl({
                     {conflictingIds.length > 0 ? (
                         <div className="mt-1 font-mono">
                             Conflicts: {conflictingIds.join(", ")}
+                        </div>
+                    ) : null}
+                    {recovery.canAdoptIdentity &&
+                    recoveryDiagnostic?.identityChange ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                disabled={isMoving}
+                                onClick={() => void adoptIdentity()}
+                                className="rounded px-2 py-1 text-[11px]"
+                                style={{
+                                    color: "var(--text-primary)",
+                                    border: "1px solid var(--border)",
+                                }}
+                            >
+                                Restore access to AI chats
+                            </button>
                         </div>
                     ) : null}
                     {recovery.canReconcile ? (

@@ -1073,6 +1073,135 @@ describe("chatStore", () => {
         });
     });
 
+    it("applies an adopted identity snapshot before reloading persisted history", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageVaultPath: "/vault",
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 1,
+                status: "recovery_required",
+                details: {
+                    reason: "filesystem_identity_changed",
+                    message: "Identity changed.",
+                    canReconcile: false,
+                    canAdoptIdentity: true,
+                    conflictingSessionIds: [],
+                    conflictingAttachmentIds: [],
+                    renamedDeviceHistory: false,
+                },
+            },
+        });
+        invokeMock.mockImplementation((command) => {
+            if (command === "ai_adopt_history_storage_identity") {
+                return Promise.resolve({
+                    vaultKey: "vault-key",
+                    generation: 2,
+                    status: "ready",
+                    scope: "device",
+                    orphanedDeviceHistories: [],
+                });
+            }
+            if (command === "ai_load_session_histories") {
+                return Promise.resolve([]);
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await expect(
+            useChatStore
+                .getState()
+                .adoptAiHistoryStorageIdentity(
+                    "/vault",
+                    "previous-identity",
+                    "current-identity",
+                ),
+        ).resolves.toBe(true);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_adopt_history_storage_identity",
+            {
+                vaultPath: "/vault",
+                expectedPreviousFilesystemIdentity: "previous-identity",
+                expectedCurrentFilesystemIdentity: "current-identity",
+            },
+        );
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 2,
+            status: "ready",
+            scope: "device",
+        });
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_load_session_histories",
+            { vaultPath: "/vault", includeMessages: false },
+        );
+    });
+
+    it("refreshes identity recovery after a stale adoption fails", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageVaultPath: "/vault",
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 1,
+                status: "recovery_required",
+                details: {
+                    reason: "filesystem_identity_changed",
+                    message: "Identity changed.",
+                    canReconcile: false,
+                    canAdoptIdentity: true,
+                    conflictingSessionIds: [],
+                    conflictingAttachmentIds: [],
+                    renamedDeviceHistory: false,
+                },
+            },
+        });
+        invokeMock.mockImplementation((command) => {
+            if (command === "ai_adopt_history_storage_identity") {
+                return Promise.reject(new Error("stale identity"));
+            }
+            if (command === "ai_get_history_storage_status") {
+                return Promise.resolve({
+                    vaultKey: "vault-key",
+                    generation: 2,
+                    status: "recovery_required",
+                    details: {
+                        reason: "filesystem_identity_changed",
+                        message: "Identity changed again.",
+                        canReconcile: false,
+                        canAdoptIdentity: true,
+                        conflictingSessionIds: [],
+                        conflictingAttachmentIds: [],
+                        renamedDeviceHistory: false,
+                    },
+                });
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await expect(
+            useChatStore
+                .getState()
+                .adoptAiHistoryStorageIdentity(
+                    "/vault",
+                    "previous-identity",
+                    "current-identity",
+                ),
+        ).resolves.toBe(false);
+
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 2,
+            status: "recovery_required",
+            details: { message: "Identity changed again." },
+        });
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_load_session_histories",
+            expect.anything(),
+        );
+    });
+
     it("ignores a completed storage move after switching vaults", async () => {
         disposeChatStoreRuntime();
         useVaultStore.setState({ vaultPath: "/vault" });

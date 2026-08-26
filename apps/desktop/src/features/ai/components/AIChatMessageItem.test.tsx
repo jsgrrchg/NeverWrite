@@ -175,6 +175,71 @@ describe("AIChatMessageItem assistant references", () => {
     });
 });
 
+describe("AIChatMessageItem assistant metadata", () => {
+    it("shows copy before the timestamp after the response completes", async () => {
+        const timestamp = Date.parse("2026-07-11T15:42:00Z");
+        const view = renderMessage({
+            content: "Completed response",
+            id: "assistant:metadata",
+            kind: "text",
+            role: "assistant",
+            timestamp,
+            inProgress: false,
+        });
+
+        expect(
+            view.container.querySelector("[data-assistant-message]"),
+        ).toHaveClass("group");
+        const metadata = view.container.querySelector(
+            "[data-assistant-message-metadata]",
+        );
+        expect(metadata).toHaveClass(
+            "min-h-5",
+            "justify-start",
+            "opacity-0",
+            "group-hover:opacity-[0.72]",
+            "group-has-[:focus-visible]:opacity-[0.72]",
+        );
+        expect(metadata?.children[0]).toHaveAttribute(
+            "aria-label",
+            "Copy message",
+        );
+        expect(metadata?.children[1]).toHaveAttribute(
+            "dateTime",
+            new Date(timestamp).toISOString(),
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+
+        await waitFor(() => {
+            expect(getClipboardMock().writeText).toHaveBeenCalledWith(
+                "Completed response",
+            );
+        });
+    });
+
+    it("reserves metadata space without exposing controls while streaming", () => {
+        const view = renderMessage({
+            content: "Streaming response",
+            id: "assistant:streaming-metadata",
+            kind: "text",
+            role: "assistant",
+            timestamp: Date.now(),
+            inProgress: true,
+        });
+
+        const metadata = view.container.querySelector(
+            "[data-assistant-message-metadata]",
+        );
+        expect(metadata).toHaveClass("min-h-5", "opacity-0");
+        expect(metadata).not.toHaveClass("group-hover:opacity-[0.72]");
+        expect(metadata).toBeEmptyDOMElement();
+        expect(
+            screen.queryByRole("button", { name: "Copy message" }),
+        ).not.toBeInTheDocument();
+    });
+});
+
 describe("AIChatMessageItem reasoning", () => {
     it("renders reasoning with the same compact activity language", () => {
         renderMessage({
@@ -412,7 +477,7 @@ describe("AIChatMessageItem user image attachments", () => {
         );
     });
 
-    it("shows sent time and copies the user message", async () => {
+    it("reveals reserved user metadata on hover or focus and copies the message", async () => {
         const timestamp = Date.parse("2026-07-11T15:42:00Z");
         const view = renderMessage({
             id: "user:copy",
@@ -422,6 +487,17 @@ describe("AIChatMessageItem user image attachments", () => {
             timestamp,
         });
 
+        expect(view.container.querySelector("[data-user-message]")).toHaveClass(
+            "group",
+        );
+        expect(
+            view.container.querySelector("[data-user-message-metadata]"),
+        ).toHaveClass(
+            "min-h-5",
+            "opacity-0",
+            "group-hover:opacity-[0.72]",
+            "group-has-[:focus-visible]:opacity-[0.72]",
+        );
         expect(
             view.container.querySelector("[data-user-message-metadata] time"),
         ).toHaveAttribute("dateTime", new Date(timestamp).toISOString());

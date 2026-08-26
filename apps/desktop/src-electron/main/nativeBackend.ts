@@ -104,6 +104,7 @@ const SUPPORTED_COMMANDS = new Set([
     "ai_get_history_recovery_diagnostic",
     "ai_reveal_history_recovery_root",
     "ai_retry_history_recovery",
+    "ai_adopt_history_storage_identity",
     "reconcile_ai_history_storage",
     "forget_ai_history_device_data",
     "ai_register_file_baseline",

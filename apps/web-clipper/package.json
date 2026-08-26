@@ -25,7 +25,7 @@
         "postinstall": "wxt prepare"
     },
     "dependencies": {
-        "defuddle": "^0.14.0",
+        "defuddle": "^0.19.1",
         "dompurify": "^3.4.13",
         "react": "^19.2.5",
         "react-dom": "^19.2.5"

@@ -35,10 +35,13 @@ const COMMANDS: &[&str] = &[
     "ai_get_history_recovery_diagnostic",
     "ai_reveal_history_recovery_root",
     "ai_retry_history_recovery",
+    "ai_adopt_history_storage_identity",
     "reconcile_ai_history_storage",
 ];
 
 pub(crate) const AI_HISTORY_STORAGE_CHANGED_EVENT: &str = "ai_history_storage_changed";
+pub(crate) const ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR: &str =
+    "Switch to another vault before removing this one from Recents. Active AI sessions could recreate its device-local data.";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(
@@ -78,6 +81,7 @@ struct RecoveryDetails {
     reason: String,
     message: String,
     can_reconcile: bool,
+    can_adopt_identity: bool,
     conflicting_session_ids: Vec<String>,
     conflicting_attachment_ids: Vec<String>,
     renamed_device_history: bool,
@@ -89,9 +93,19 @@ struct RecoveryDiagnostic {
     reason: String,
     message: String,
     can_reconcile: bool,
+    can_adopt_identity: bool,
     conflicting_session_ids: Vec<String>,
     conflicting_attachment_ids: Vec<String>,
     roots: Vec<RecoveryDiagnosticRoot>,
+    identity_change: Option<IdentityChangeDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityChangeDiagnostic {
+    previous_filesystem_identity: String,
+    current_filesystem_identity: String,
+    scope: Option<storage::AIStorageScope>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +143,9 @@ enum RecoveryPlan {
     MultipleLocalRoots {
         source: storage::ScopeLayout,
     },
+    FilesystemIdentityChange {
+        state: storage::CanonicalState,
+    },
 }
 
 impl RecoveryPlan {
@@ -136,7 +153,7 @@ impl RecoveryPlan {
         match self {
             Self::Roots { inspection } => inspection.can_reconcile(),
             Self::RenamedDevice { .. } => true,
-            Self::MultipleLocalRoots { .. } => false,
+            Self::MultipleLocalRoots { .. } | Self::FilesystemIdentityChange { .. } => false,
         }
     }
 }
@@ -237,15 +254,26 @@ impl AiHistoryStorageService {
         COMMANDS.contains(&command)
     }
 
-    pub(crate) fn forget_device_data(&self, vault_path: &Path) -> Result<(), String> {
+    pub(crate) fn forget_device_data(
+        &self,
+        vault_path: &Path,
+        active_vault_path: Option<&Path>,
+    ) -> Result<(), String> {
+        let target_identity = storage::resolve_known_vault_identity(vault_path)?;
+        if let Some(active_vault_path) = active_vault_path {
+            let active_identity = storage::resolve_known_vault_identity(active_vault_path)?;
+            if active_identity.normalized_path == target_identity.normalized_path {
+                return Err(ACTIVE_VAULT_DEVICE_DATA_FORGET_ERROR.to_string());
+            }
+        }
         if migration::has_pending(&self.app_data_root)? {
             return Err(
                 "AI history recovery must finish before local device data can be forgotten."
                     .to_string(),
             );
         }
-        let vault_key =
-            storage::remove_device_namespace_for_known_path(&self.app_data_root, vault_path)?;
+        storage::remove_device_namespace_for_known_identity(&self.app_data_root, &target_identity)?;
+        let vault_key = target_identity.vault_key;
         log_storage_event(&vault_key, None, "housekeeping", "forget_device_data");
         self.validated_scopes
             .lock()
@@ -417,6 +445,9 @@ impl AiHistoryStorageService {
         &self,
         layout: &storage::VaultStorageLayout,
     ) -> Result<CanonicalResolution, String> {
+        if let storage::StateRead::FilesystemIdentityChanged(state) = storage::read_state(layout) {
+            return self.inspect_filesystem_identity_change(layout, state);
+        }
         self.recover_pending_operation(layout)?;
         match storage::read_state(layout) {
             storage::StateRead::Missing => self.initialize_missing_state(layout),
@@ -425,12 +456,16 @@ impl AiHistoryStorageService {
                     reason: "invalid_state".to_string(),
                     message,
                     can_reconcile: false,
+                    can_adopt_identity: false,
                     conflicting_session_ids: Vec::new(),
                     conflicting_attachment_ids: Vec::new(),
                     renamed_device_history: false,
                 },
                 None,
             )),
+            storage::StateRead::FilesystemIdentityChanged(state) => {
+                self.inspect_filesystem_identity_change(layout, state)
+            }
             storage::StateRead::Valid(state) => match state.kind {
                 storage::CanonicalStateKind::Ready { scope } => {
                     self.validate_active_scope_once(layout, scope)?;
@@ -441,6 +476,74 @@ impl AiHistoryStorageService {
                 }
             },
         }
+    }
+
+    fn inspect_filesystem_identity_change(
+        &self,
+        layout: &storage::VaultStorageLayout,
+        state: storage::CanonicalState,
+    ) -> Result<CanonicalResolution, String> {
+        let operation_pending = self.identity_change_operation_pending(layout)?;
+        let validation = Self::validate_identity_change_storage(layout, &state);
+        let (reason, message, can_adopt_identity) = if operation_pending {
+            (
+                "filesystem_identity_changed_during_operation".to_string(),
+                "The vault folder identity changed while an AI history transaction was pending. Automatic recovery is paused."
+                    .to_string(),
+                false,
+            )
+        } else if let Err(error) = validation {
+            (
+                "filesystem_identity_changed".to_string(),
+                format!(
+                    "The vault folder identity changed, but the saved AI history could not be validated: {error}"
+                ),
+                false,
+            )
+        } else {
+            (
+                "filesystem_identity_changed".to_string(),
+                "The vault folder identity changed. Confirm that this is the same vault to restore access to AI chats."
+                    .to_string(),
+                true,
+            )
+        };
+        Ok(CanonicalResolution::Recovery(
+            RecoveryDetails {
+                reason,
+                message,
+                can_reconcile: false,
+                can_adopt_identity,
+                conflicting_session_ids: Vec::new(),
+                conflicting_attachment_ids: Vec::new(),
+                renamed_device_history: false,
+            },
+            Some(RecoveryPlan::FilesystemIdentityChange { state }),
+        ))
+    }
+
+    fn validate_identity_change_storage(
+        layout: &storage::VaultStorageLayout,
+        state: &storage::CanonicalState,
+    ) -> Result<(), String> {
+        match &state.kind {
+            storage::CanonicalStateKind::Ready { scope } => {
+                migration::inspect_layout(&layout.scope(*scope).transaction_layout()).map(|_| ())
+            }
+            storage::CanonicalStateKind::RecoveryRequired => {
+                migration::inspect_layout(&layout.device.transaction_layout())
+                    .and_then(|_| migration::inspect_layout(&layout.vault.transaction_layout()))
+                    .map(|_| ())
+            }
+        }
+    }
+
+    fn identity_change_operation_pending(
+        &self,
+        layout: &storage::VaultStorageLayout,
+    ) -> Result<bool, String> {
+        Ok(storage::read_operation(layout)?.is_some()
+            || migration::has_pending(&self.app_data_root)?)
     }
 
     fn initialize_missing_state(
@@ -462,6 +565,7 @@ impl AiHistoryStorageService {
                         reason: "unreadable_storage".to_string(),
                         message,
                         can_reconcile: false,
+                        can_adopt_identity: false,
                         conflicting_session_ids: Vec::new(),
                         conflicting_attachment_ids: Vec::new(),
                         renamed_device_history: false,
@@ -481,6 +585,7 @@ impl AiHistoryStorageService {
                             reason: "multiple_local_roots".to_string(),
                             message: "Local AI history from the previous vault path exists alongside current storage.".to_string(),
                             can_reconcile: false,
+                            can_adopt_identity: false,
                             conflicting_session_ids: Vec::new(),
                             conflicting_attachment_ids: Vec::new(),
                             renamed_device_history: true,
@@ -498,6 +603,7 @@ impl AiHistoryStorageService {
                             "Local AI chats from this vault's previous path are ready to import."
                                 .to_string(),
                         can_reconcile: true,
+                        can_adopt_identity: false,
                         conflicting_session_ids: Vec::new(),
                         conflicting_attachment_ids: Vec::new(),
                         renamed_device_history: true,
@@ -585,6 +691,7 @@ impl AiHistoryStorageService {
                             "Local AI chats from this vault's previous path are ready to import."
                                 .to_string(),
                         can_reconcile: true,
+                        can_adopt_identity: false,
                         conflicting_session_ids: Vec::new(),
                         conflicting_attachment_ids: Vec::new(),
                         renamed_device_history: true,
@@ -610,6 +717,7 @@ impl AiHistoryStorageService {
                             .or_else(|| vault.err())
                             .unwrap_or_else(|| "AI history storage is not readable.".to_string()),
                         can_reconcile: false,
+                        can_adopt_identity: false,
                         conflicting_session_ids: Vec::new(),
                         conflicting_attachment_ids: Vec::new(),
                         renamed_device_history: false,
@@ -625,6 +733,7 @@ impl AiHistoryStorageService {
                     message: "AI history recovery is still required before chats can be loaded."
                         .to_string(),
                     can_reconcile: false,
+                    can_adopt_identity: false,
                     conflicting_session_ids: Vec::new(),
                     conflicting_attachment_ids: Vec::new(),
                     renamed_device_history: false,
@@ -651,6 +760,7 @@ impl AiHistoryStorageService {
                     .to_string()
             },
             can_reconcile,
+            can_adopt_identity: false,
             conflicting_session_ids: inspection.conflicting_session_ids.clone(),
             conflicting_attachment_ids: inspection.conflicting_attachment_ids.clone(),
             renamed_device_history: false,
@@ -698,11 +808,12 @@ impl AiHistoryStorageService {
         let CanonicalResolution::Recovery(details, plan) = resolution else {
             return Err("AI history recovery is not required.".to_string());
         };
-        let device = migration::inspect_layout(&layout.device.transaction_layout())?;
-        let vault = migration::inspect_layout(&layout.vault.transaction_layout())?;
         let mut roots = Vec::new();
+        let mut identity_change = None;
         match plan {
             Some(RecoveryPlan::Roots { .. }) => {
+                let device = migration::inspect_layout(&layout.device.transaction_layout())?;
+                let vault = migration::inspect_layout(&layout.vault.transaction_layout())?;
                 roots.push(RecoveryDiagnosticRoot {
                     id: RecoveryRootId::Device,
                     label: "Device data",
@@ -724,6 +835,8 @@ impl AiHistoryStorageService {
             }
             Some(RecoveryPlan::MultipleLocalRoots { source }) => {
                 let previous = migration::inspect_layout(&source.transaction_layout())?;
+                let device = migration::inspect_layout(&layout.device.transaction_layout())?;
+                let vault = migration::inspect_layout(&layout.vault.transaction_layout())?;
                 roots.push(RecoveryDiagnosticRoot {
                     id: RecoveryRootId::PreviousDevice,
                     label: "Previous local data",
@@ -740,17 +853,60 @@ impl AiHistoryStorageService {
                     has_data: !vault.empty,
                 });
             }
+            Some(RecoveryPlan::FilesystemIdentityChange { state }) => {
+                let scope = match state.kind {
+                    storage::CanonicalStateKind::Ready { scope } => {
+                        let inspection =
+                            migration::inspect_layout(&layout.scope(scope).transaction_layout())?;
+                        let (id, label) = match scope {
+                            storage::AIStorageScope::Device => {
+                                (RecoveryRootId::Device, "Device data")
+                            }
+                            storage::AIStorageScope::Vault => (RecoveryRootId::Vault, "Vault data"),
+                        };
+                        roots.push(RecoveryDiagnosticRoot {
+                            id,
+                            label,
+                            has_data: !inspection.empty,
+                        });
+                        Some(scope)
+                    }
+                    storage::CanonicalStateKind::RecoveryRequired => {
+                        let device =
+                            migration::inspect_layout(&layout.device.transaction_layout())?;
+                        let vault = migration::inspect_layout(&layout.vault.transaction_layout())?;
+                        roots.push(RecoveryDiagnosticRoot {
+                            id: RecoveryRootId::Device,
+                            label: "Device data",
+                            has_data: !device.empty,
+                        });
+                        roots.push(RecoveryDiagnosticRoot {
+                            id: RecoveryRootId::Vault,
+                            label: "Vault data",
+                            has_data: !vault.empty,
+                        });
+                        None
+                    }
+                };
+                identity_change = Some(IdentityChangeDiagnostic {
+                    previous_filesystem_identity: state.filesystem_identity,
+                    current_filesystem_identity: layout.filesystem_identity.clone(),
+                    scope,
+                });
+            }
             None => {}
         }
         Ok(RecoveryDiagnostic {
             reason: details.reason,
             message: details.message,
             can_reconcile: details.can_reconcile,
+            can_adopt_identity: details.can_adopt_identity,
             conflicting_session_ids: details.conflicting_session_ids,
             conflicting_attachment_ids: details.conflicting_attachment_ids,
             // Paths remain backend-only. The UI receives stable root IDs that
             // can be resolved by the reveal command without leaking locations.
             roots,
+            identity_change,
         })
     }
 
@@ -779,6 +935,30 @@ impl AiHistoryStorageService {
                     "The previous local data root is not part of this recovery state.".to_string(),
                 ),
             },
+            CanonicalResolution::Recovery(
+                _,
+                Some(RecoveryPlan::FilesystemIdentityChange { state }),
+            ) => match (state.kind, root) {
+                (
+                    storage::CanonicalStateKind::Ready {
+                        scope: storage::AIStorageScope::Device,
+                    },
+                    RecoveryRootId::Device,
+                )
+                | (storage::CanonicalStateKind::RecoveryRequired, RecoveryRootId::Device) => {
+                    Ok(layout.device.histories.clone())
+                }
+                (
+                    storage::CanonicalStateKind::Ready {
+                        scope: storage::AIStorageScope::Vault,
+                    },
+                    RecoveryRootId::Vault,
+                )
+                | (storage::CanonicalStateKind::RecoveryRequired, RecoveryRootId::Vault) => {
+                    Ok(layout.vault.histories.clone())
+                }
+                _ => Err("This data root is not part of the identity recovery state.".to_string()),
+            },
             CanonicalResolution::Recovery(_, _) => {
                 Err("This recovery state does not have a safe data location to reveal.".to_string())
             }
@@ -792,6 +972,12 @@ impl AiHistoryStorageService {
         &self,
         layout: &storage::VaultStorageLayout,
     ) -> Result<StorageStatusSnapshot, String> {
+        if matches!(
+            storage::read_state(layout),
+            storage::StateRead::FilesystemIdentityChanged(_)
+        ) {
+            return Ok(self.storage_status(layout));
+        }
         self.recover_pending_operation(layout)?;
         if !matches!(
             storage::read_state(layout),
@@ -833,6 +1019,117 @@ impl AiHistoryStorageService {
         let status = self.snapshot_for_resolution(layout, CanonicalResolution::Ready(scope))?;
         self.emit_snapshot(&status);
         Ok(status)
+    }
+
+    fn adopt_filesystem_identity(
+        &self,
+        vault_root: &Path,
+        expected_previous_identity: &str,
+        expected_current_identity: &str,
+    ) -> Result<StorageStatusSnapshot, String> {
+        let initial_layout = storage::resolve_layout(&self.app_data_root, vault_root)?;
+        log_storage_event(
+            &initial_layout.vault_key,
+            None,
+            "identity_adoption",
+            "started",
+        );
+        let result = (|| {
+            let storage::StateRead::FilesystemIdentityChanged(initial_state) =
+                storage::read_state(&initial_layout)
+            else {
+                return Err(
+                    "AI history does not have a filesystem identity change to restore.".to_string(),
+                );
+            };
+            if initial_state.filesystem_identity != expected_previous_identity
+                || initial_layout.filesystem_identity != expected_current_identity
+            {
+                return Err(
+                    "The vault folder identity changed again. Refresh recovery details and retry."
+                        .to_string(),
+                );
+            }
+            if self.identity_change_operation_pending(&initial_layout)? {
+                return Err(
+                    "AI history identity cannot be restored while a storage transaction is pending."
+                        .to_string(),
+                );
+            }
+            Self::validate_identity_change_storage(&initial_layout, &initial_state)?;
+
+            // Resolve and validate again immediately before the state commit so
+            // the confirmation cannot approve a stale cloud rematerialization.
+            let verified_layout = storage::resolve_layout(&self.app_data_root, vault_root)?;
+            if verified_layout.vault_key != initial_layout.vault_key
+                || verified_layout.canonical_vault_path != initial_layout.canonical_vault_path
+                || verified_layout.filesystem_identity != expected_current_identity
+            {
+                return Err(
+                    "The vault folder identity changed again. Refresh recovery details and retry."
+                        .to_string(),
+                );
+            }
+            let storage::StateRead::FilesystemIdentityChanged(verified_state) =
+                storage::read_state(&verified_layout)
+            else {
+                return Err(
+                    "AI history recovery state changed. Refresh recovery details and retry."
+                        .to_string(),
+                );
+            };
+            if verified_state != initial_state
+                || verified_state.filesystem_identity != expected_previous_identity
+            {
+                return Err(
+                    "AI history recovery state changed. Refresh recovery details and retry."
+                        .to_string(),
+                );
+            }
+            if self.identity_change_operation_pending(&verified_layout)? {
+                return Err(
+                    "AI history identity cannot be restored while a storage transaction is pending."
+                        .to_string(),
+                );
+            }
+            Self::validate_identity_change_storage(&verified_layout, &verified_state)?;
+
+            let target_state = verified_state.adopt_filesystem_identity(&verified_layout)?;
+            let target_kind = target_state.kind.clone();
+            self.validated_scopes
+                .lock()
+                .map_err(|error| format!("AI history validation state error: {error}"))?
+                .remove(&verified_layout.vault_key);
+            storage::write_state(&verified_layout, &target_state)?;
+
+            let resolution = match target_kind {
+                storage::CanonicalStateKind::Ready { scope } => {
+                    self.validate_active_scope_once(&verified_layout, scope)?;
+                    CanonicalResolution::Ready(scope)
+                }
+                storage::CanonicalStateKind::RecoveryRequired => {
+                    self.inspect_recovery_state(&verified_layout)?
+                }
+            };
+            let status = self.snapshot_for_resolution(&verified_layout, resolution)?;
+            self.emit_snapshot(&status);
+            Ok(status)
+        })();
+        let outcome = match &result {
+            Ok(_) => "completed",
+            Err(error) if error.contains("changed again") || error.contains("state changed") => {
+                "stale"
+            }
+            Err(error) if error.contains("transaction is pending") => "blocked",
+            Err(_) => "failed",
+        };
+        log_storage_event(
+            &initial_layout.vault_key,
+            None,
+            "identity_adoption",
+            outcome,
+        );
+        result
     }
 
     fn reconcile_storage(
@@ -888,6 +1185,10 @@ impl AiHistoryStorageService {
                     ),
                     RecoveryPlan::MultipleLocalRoots { .. } => {
                         return Err("Multiple local AI history roots require manual resolution."
+                            .to_string());
+                    }
+                    RecoveryPlan::FilesystemIdentityChange { .. } => {
+                        return Err("The vault folder identity must be restored before AI history storage can change."
                             .to_string());
                     }
                 }
@@ -988,6 +1289,28 @@ impl AiHistoryStorageService {
         if command == "ai_retry_history_recovery" {
             return serde_json::to_value(self.retry_recovery(&layout)?)
                 .map_err(|error| error.to_string());
+        }
+        if command == "ai_adopt_history_storage_identity" {
+            let previous_identity = required_string(
+                &args,
+                &[
+                    "expectedPreviousFilesystemIdentity",
+                    "expected_previous_filesystem_identity",
+                ],
+            )?;
+            let current_identity = required_string(
+                &args,
+                &[
+                    "expectedCurrentFilesystemIdentity",
+                    "expected_current_filesystem_identity",
+                ],
+            )?;
+            return serde_json::to_value(self.adopt_filesystem_identity(
+                vault_root,
+                &previous_identity,
+                &current_identity,
+            )?)
+            .map_err(|error| error.to_string());
         }
         if command == "reconcile_ai_history_storage" {
             let target: storage::AIStorageScope = serde_json::from_value(
@@ -1884,7 +2207,7 @@ mod tests {
         .unwrap();
         let layout = storage::resolve_layout(app_data.path(), vault.path()).unwrap();
 
-        service.forget_device_data(vault.path()).unwrap();
+        service.forget_device_data(vault.path(), None).unwrap();
 
         assert!(!layout.namespace.exists());
         assert_eq!(
@@ -1893,6 +2216,29 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn forgetting_recents_data_succeeds_after_the_vault_path_disappears() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let vault = parent.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        service
+            .invoke(
+                "ai_save_session_history",
+                &vault,
+                json!({ "history": text_history("device", "local") }),
+            )
+            .unwrap();
+        let layout = storage::resolve_layout(app_data.path(), &vault).unwrap();
+        let known_path = vault.canonicalize().unwrap();
+        fs::remove_dir_all(&vault).unwrap();
+
+        service.forget_device_data(&known_path, None).unwrap();
+
+        assert!(!layout.namespace.exists());
     }
 
     #[test]
@@ -1999,7 +2345,7 @@ mod tests {
     }
 
     #[test]
-    fn recreating_a_vault_path_never_reuses_its_device_history_namespace() {
+    fn recreating_a_vault_path_requires_explicit_identity_recovery() {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let vault = parent.path().join("vault");
@@ -2024,14 +2370,286 @@ mod tests {
             .invoke("ai_get_history_storage_status", &vault, json!({}))
             .unwrap();
         assert_eq!(status["status"], "recovery_required");
-        assert_eq!(status["details"]["reason"], "invalid_state");
-        assert!(status["details"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("previous vault"));
+        assert_eq!(status["details"]["reason"], "filesystem_identity_changed");
+        assert_eq!(status["details"]["canAdoptIdentity"], true);
         assert!(service
             .invoke("ai_load_session_histories", &vault, json!({}))
             .is_err());
+
+        let current_layout = storage::resolve_layout(app_data.path(), &vault).unwrap();
+        let diagnostic = service
+            .invoke("ai_get_history_recovery_diagnostic", &vault, json!({}))
+            .unwrap();
+        assert_eq!(diagnostic["canAdoptIdentity"], true);
+        assert_eq!(diagnostic["identityChange"]["scope"], "device");
+        assert_eq!(
+            diagnostic["identityChange"]["currentFilesystemIdentity"],
+            current_layout.filesystem_identity
+        );
+        assert_ne!(
+            diagnostic["identityChange"]["previousFilesystemIdentity"],
+            diagnostic["identityChange"]["currentFilesystemIdentity"]
+        );
+        assert_eq!(diagnostic["roots"][0]["id"], "device");
+        assert_eq!(diagnostic["roots"][0]["hasData"], true);
+
+        let previous_identity = diagnostic["identityChange"]["previousFilesystemIdentity"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let current_identity = diagnostic["identityChange"]["currentFilesystemIdentity"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(service
+            .invoke(
+                "ai_adopt_history_storage_identity",
+                &vault,
+                json!({
+                    "expectedPreviousFilesystemIdentity": "stale-identity",
+                    "expectedCurrentFilesystemIdentity": current_identity,
+                }),
+            )
+            .is_err());
+
+        let adopted = service
+            .invoke(
+                "ai_adopt_history_storage_identity",
+                &vault,
+                json!({
+                    "expectedPreviousFilesystemIdentity": previous_identity,
+                    "expectedCurrentFilesystemIdentity": current_identity,
+                }),
+            )
+            .unwrap();
+        assert_eq!(adopted["status"], "ready");
+        assert_eq!(adopted["scope"], "device");
+        let histories = service
+            .invoke("ai_load_session_histories", &vault, json!({}))
+            .unwrap();
+        assert_eq!(histories[0]["session_id"], "original");
+        let storage::StateRead::Valid(adopted_state) = storage::read_state(&current_layout) else {
+            panic!("expected the adopted state to be valid");
+        };
+        assert_eq!(
+            adopted_state.filesystem_identity,
+            current_layout.filesystem_identity
+        );
+    }
+
+    #[test]
+    fn identity_change_pauses_a_pending_storage_operation_without_mutating_it() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let vault = parent.path().join("vault");
+        let replacement = parent.path().join("replacement");
+        fs::create_dir(&vault).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        service
+            .invoke(
+                "ai_save_session_history",
+                &vault,
+                json!({ "history": text_history("original", "before replacement") }),
+            )
+            .unwrap();
+
+        fs::remove_dir_all(&vault).unwrap();
+        fs::rename(&replacement, &vault).unwrap();
+        let layout = storage::resolve_layout(app_data.path(), &vault).unwrap();
+        let operation = storage::PendingOperation::new(
+            &layout,
+            uuid::Uuid::new_v4().simple().to_string(),
+            storage::AIStorageScope::Device,
+            storage::AIStorageScope::Vault,
+            None,
+        );
+        storage::write_operation(&layout, &operation).unwrap();
+        let state_before = fs::read(&layout.state_file).unwrap();
+        let operation_before = fs::read(&layout.operation_file).unwrap();
+
+        let status = service
+            .invoke("ai_get_history_storage_status", &vault, json!({}))
+            .unwrap();
+        assert_eq!(
+            status["details"]["reason"],
+            "filesystem_identity_changed_during_operation"
+        );
+        assert_eq!(status["details"]["canAdoptIdentity"], false);
+
+        let retried = service
+            .invoke("ai_retry_history_recovery", &vault, json!({}))
+            .unwrap();
+        assert_eq!(
+            retried["details"]["reason"],
+            "filesystem_identity_changed_during_operation"
+        );
+        assert_eq!(fs::read(&layout.state_file).unwrap(), state_before);
+        assert_eq!(fs::read(&layout.operation_file).unwrap(), operation_before);
+        let storage::StateRead::FilesystemIdentityChanged(state) = storage::read_state(&layout)
+        else {
+            panic!("expected identity recovery to remain pending");
+        };
+        assert!(service
+            .invoke(
+                "ai_adopt_history_storage_identity",
+                &vault,
+                json!({
+                    "expectedPreviousFilesystemIdentity": state.filesystem_identity,
+                    "expectedCurrentFilesystemIdentity": layout.filesystem_identity,
+                }),
+            )
+            .is_err());
+        assert_eq!(fs::read(&layout.state_file).unwrap(), state_before);
+        assert_eq!(fs::read(&layout.operation_file).unwrap(), operation_before);
+    }
+
+    #[test]
+    fn adopting_a_rematerialized_vault_scope_preserves_its_canonical_scope() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let vault = parent.path().join("vault");
+        let replacement = parent.path().join("replacement");
+        fs::create_dir(&vault).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        service
+            .invoke(
+                "ai_save_session_history",
+                &vault,
+                json!({ "history": text_history("vault-session", "vault history") }),
+            )
+            .unwrap();
+        service
+            .invoke(
+                "reconcile_ai_history_storage",
+                &vault,
+                json!({ "targetScope": "vault" }),
+            )
+            .unwrap();
+
+        fs::rename(vault.join(".neverwrite"), replacement.join(".neverwrite")).unwrap();
+        fs::remove_dir_all(&vault).unwrap();
+        fs::rename(&replacement, &vault).unwrap();
+
+        let diagnostic = service
+            .invoke("ai_get_history_recovery_diagnostic", &vault, json!({}))
+            .unwrap();
+        assert_eq!(diagnostic["identityChange"]["scope"], "vault");
+        let adopted = service
+            .invoke(
+                "ai_adopt_history_storage_identity",
+                &vault,
+                json!({
+                    "expectedPreviousFilesystemIdentity": diagnostic["identityChange"]["previousFilesystemIdentity"],
+                    "expectedCurrentFilesystemIdentity": diagnostic["identityChange"]["currentFilesystemIdentity"],
+                }),
+            )
+            .unwrap();
+        assert_eq!(adopted["status"], "ready");
+        assert_eq!(adopted["scope"], "vault");
+        let histories = service
+            .invoke("ai_load_session_histories", &vault, json!({}))
+            .unwrap();
+        assert_eq!(histories[0]["session_id"], "vault-session");
+    }
+
+    #[test]
+    fn identity_adoption_preserves_an_existing_recovery_required_state() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let vault = parent.path().join("vault");
+        let replacement = parent.path().join("replacement");
+        fs::create_dir(&vault).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        service
+            .invoke(
+                "ai_save_session_history",
+                &vault,
+                json!({ "history": text_history("device-session", "device history") }),
+            )
+            .unwrap();
+        let original_layout = storage::resolve_layout(app_data.path(), &vault).unwrap();
+        persistence::save_session_history(
+            &original_layout.vault.histories,
+            &text_history("vault-session", "vault history"),
+        )
+        .unwrap();
+        storage::write_state(
+            &original_layout,
+            &storage::CanonicalState::recovery_required(&original_layout),
+        )
+        .unwrap();
+
+        fs::rename(vault.join(".neverwrite"), replacement.join(".neverwrite")).unwrap();
+        fs::remove_dir_all(&vault).unwrap();
+        fs::rename(&replacement, &vault).unwrap();
+
+        let diagnostic = service
+            .invoke("ai_get_history_recovery_diagnostic", &vault, json!({}))
+            .unwrap();
+        assert_eq!(diagnostic["identityChange"]["scope"], Value::Null);
+        let adopted = service
+            .invoke(
+                "ai_adopt_history_storage_identity",
+                &vault,
+                json!({
+                    "expectedPreviousFilesystemIdentity": diagnostic["identityChange"]["previousFilesystemIdentity"],
+                    "expectedCurrentFilesystemIdentity": diagnostic["identityChange"]["currentFilesystemIdentity"],
+                }),
+            )
+            .unwrap();
+        assert_eq!(adopted["status"], "recovery_required");
+        assert_eq!(adopted["details"]["reason"], "dual_roots");
+        let current_layout = storage::resolve_layout(app_data.path(), &vault).unwrap();
+        assert!(matches!(
+            storage::read_state(&current_layout),
+            storage::StateRead::Valid(storage::CanonicalState {
+                kind: storage::CanonicalStateKind::RecoveryRequired,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn identity_adoption_rejects_an_invalid_canonical_root_without_rewriting_state() {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let vault = parent.path().join("vault");
+        let replacement = parent.path().join("replacement");
+        fs::create_dir(&vault).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        service
+            .invoke(
+                "ai_save_session_history",
+                &vault,
+                json!({ "history": text_history("device-session", "device history") }),
+            )
+            .unwrap();
+
+        fs::remove_dir_all(&vault).unwrap();
+        fs::rename(&replacement, &vault).unwrap();
+        let layout = storage::resolve_layout(app_data.path(), &vault).unwrap();
+        fs::write(layout.device.histories.join("unknown-artifact"), b"invalid").unwrap();
+        let state_before = fs::read(&layout.state_file).unwrap();
+        let storage::StateRead::FilesystemIdentityChanged(state) = storage::read_state(&layout)
+        else {
+            panic!("expected identity recovery to be available");
+        };
+
+        assert!(service
+            .invoke(
+                "ai_adopt_history_storage_identity",
+                &vault,
+                json!({
+                    "expectedPreviousFilesystemIdentity": state.filesystem_identity,
+                    "expectedCurrentFilesystemIdentity": layout.filesystem_identity,
+                }),
+            )
+            .is_err());
+        assert_eq!(fs::read(&layout.state_file).unwrap(), state_before);
     }
 
     #[test]
