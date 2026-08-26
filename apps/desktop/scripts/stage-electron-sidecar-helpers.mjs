@@ -43,6 +43,65 @@ export const CODEX_RUNTIME_COMPONENTS = [
     },
 ];
 
+export const CODEX_RUNTIME_BASELINE = Object.freeze({
+    tag: "rust-v0.150.0",
+    version: "0.150.0",
+    commit: "3b3b4f8fb3f6403e72c2d0533ed0d2f309c59717",
+    v8Version: "150.4.0",
+});
+
+export function validateCodexRuntimeSourceAlignment({
+    adapterManifest,
+    lockfile,
+    ptyManifest,
+}) {
+    const expectedTag = `tag = "${CODEX_RUNTIME_BASELINE.tag}"`;
+    const declaredTags = [
+        ...adapterManifest.matchAll(/tag\s*=\s*"(rust-v[^"]+)"/g),
+    ].map((match) => match[1]);
+    if (
+        declaredTags.length === 0 ||
+        declaredTags.some((tag) => tag !== CODEX_RUNTIME_BASELINE.tag)
+    ) {
+        throw new Error(
+            `Codex runtime dependencies must all use ${expectedTag}`,
+        );
+    }
+
+    const expectedSource = `git+https://github.com/openai/codex?tag=${CODEX_RUNTIME_BASELINE.tag}#${CODEX_RUNTIME_BASELINE.commit}`;
+    const codexSources = [
+        ...lockfile.matchAll(
+            /source = "(git\+https:\/\/github\.com\/openai\/codex\?tag=rust-v[^"]+)"/g,
+        ),
+    ].map((match) => match[1]);
+    if (
+        codexSources.length === 0 ||
+        codexSources.some((source) => source !== expectedSource)
+    ) {
+        throw new Error(
+            `Codex lockfile sources must all resolve to ${expectedSource}`,
+        );
+    }
+
+    const ptyVersion = ptyManifest.match(
+        /\[package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/,
+    )?.[1];
+    if (ptyVersion !== CODEX_RUNTIME_BASELINE.version) {
+        throw new Error(
+            `Codex PTY snapshot must be ${CODEX_RUNTIME_BASELINE.version}; found ${ptyVersion ?? "unknown"}`,
+        );
+    }
+
+    const v8Version = lockfile.match(
+        /\[\[package\]\]\nname = "v8"\nversion = "([^"]+)"/,
+    )?.[1];
+    if (v8Version !== CODEX_RUNTIME_BASELINE.v8Version) {
+        throw new Error(
+            `Codex V8 dependency must remain ${CODEX_RUNTIME_BASELINE.v8Version}; found ${v8Version ?? "unknown"}`,
+        );
+    }
+}
+
 export function executableNameForTarget(baseName, targetTriple) {
     return targetTriple.includes("windows") ? `${baseName}.exe` : baseName;
 }

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 
 import {
@@ -9,9 +11,16 @@ import {
     universalMacLipoVerifyArgs,
     validateCodexRuntimeBundleArchitectures,
     validateCodexRuntimeBundleInputs,
+    validateCodexRuntimeSourceAlignment,
 } from "./stage-electron-sidecar-helpers.mjs";
 
 const workspaceRoot = path.resolve("/workspace");
+const checkedInWorkspaceRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "..",
+);
 
 function existingPaths(...paths) {
     const existing = new Set(paths);
@@ -52,6 +61,48 @@ test("derives runtime binary names from the target platform", () => {
             "x86_64-pc-windows-msvc",
         ),
         "codex-code-mode-host.exe",
+    );
+});
+
+test("keeps runtime, PTY, lock commit, and V8 on one checked-in baseline", async () => {
+    const adapterRoot = path.join(
+        checkedInWorkspaceRoot,
+        "vendor",
+        "codex-acp",
+    );
+    await assert.doesNotReject(async () =>
+        validateCodexRuntimeSourceAlignment({
+            adapterManifest: await fs.readFile(
+                path.join(adapterRoot, "Cargo.toml"),
+                "utf8",
+            ),
+            lockfile: await fs.readFile(
+                path.join(adapterRoot, "Cargo.lock"),
+                "utf8",
+            ),
+            ptyManifest: await fs.readFile(
+                path.join(
+                    adapterRoot,
+                    "vendor",
+                    "codex-utils-pty",
+                    "Cargo.toml",
+                ),
+                "utf8",
+            ),
+        }),
+    );
+});
+
+test("rejects a mixed runtime source baseline before staging", () => {
+    assert.throws(
+        () =>
+            validateCodexRuntimeSourceAlignment({
+                adapterManifest:
+                    '[dependencies]\ncodex-core = { tag = "rust-v0.149.0" }',
+                lockfile: "",
+                ptyManifest: '[package]\nversion = "0.150.0"',
+            }),
+        /must all use tag = "rust-v0\.150\.0"/,
     );
 });
 

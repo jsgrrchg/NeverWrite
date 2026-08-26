@@ -13,6 +13,7 @@ import {
     universalMacLipoVerifyArgs,
     validateCodexRuntimeBundleArchitectures,
     validateCodexRuntimeBundleInputs,
+    validateCodexRuntimeSourceAlignment,
 } from "./stage-electron-sidecar-helpers.mjs";
 import { resolveCodexV8CargoEnvironment } from "./codex-v8-artifacts.mjs";
 
@@ -713,6 +714,27 @@ const codexRuntimePlan = createCodexRuntimeBundlePlan({
     targetTriple,
     workspaceRoot,
     skipBuild: args.skipBuild,
+});
+validateCodexRuntimeSourceAlignment({
+    adapterManifest: await fs.readFile(
+        path.join(workspaceRoot, "vendor", "codex-acp", "Cargo.toml"),
+        "utf8",
+    ),
+    lockfile: await fs.readFile(
+        path.join(workspaceRoot, "vendor", "codex-acp", "Cargo.lock"),
+        "utf8",
+    ),
+    ptyManifest: await fs.readFile(
+        path.join(
+            workspaceRoot,
+            "vendor",
+            "codex-acp",
+            "vendor",
+            "codex-utils-pty",
+            "Cargo.toml",
+        ),
+        "utf8",
+    ),
 });
 
 let stagingNativeBackendPath;
