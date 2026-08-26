@@ -127,6 +127,10 @@ vault also keep separate local scope state. Filesystem changes made by another
 device are treated as external changes and are checked during initialization,
 recovery, and an explicit scope change.
 
+The vault root's filesystem identity is a replacement signal, not a permanent logical identity. Cloud sync, File Provider rematerialization, restore operations, and storage reconnects can replace the root directory while preserving its canonical path and contents. NeverWrite blocks AI history when that identity changes and requires `Restore access to AI chats`; the confirmation updates only the canonical state identity after validating the saved scope, without moving or deleting histories.
+
+A newly created folder at the previous path never inherits device-local AI history automatically. Confirm the recovery action only when the current folder represents the same logical vault. If the identity changed while a storage transaction was pending, automatic recovery remains paused and the diagnostic must be reviewed before any manual repair.
+
 After a crash, freeze, renderer reload, or AI runtime disconnect:
 
 1. Reopen the same vault.
@@ -183,4 +187,4 @@ send a new message so NeverWrite can continue with the stored transcript.
 - Pasted screenshot drafts and managed blobs are plaintext local image files;
   review them before sharing app data or a vault archive.
 
-Last updated: July 19, 2026.
+Last updated: August 25, 2026.

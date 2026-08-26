@@ -120,6 +120,8 @@ than silently reusing a namespace. Separate devices do not share a canonical
 scope state: synced vault changes are treated as external filesystem changes and
 are checked during initialization, recovery, and an explicit scope move.
 
+Cloud sync, restore, and virtual filesystem providers can replace a vault root without changing its canonical path. NeverWrite treats the resulting filesystem identity change as a manual recovery boundary: normal history access remains blocked until the user confirms `Restore access to AI chats` and the backend validates the saved history root. For device scope, this restores the association with private history already held in app data and does not upload that history into the cloud-synced vault. For vault scope, it restores access to the validated `.neverwrite` data already present in the current folder.
+
 ### AI Screenshot Drafts And Managed Blobs
 
 Pasted chat screenshots are written as temporary local drafts before they are

@@ -86,6 +86,7 @@ export interface AIHistoryRecoveryDetails {
     reason: string;
     message: string;
     canReconcile: boolean;
+    canAdoptIdentity: boolean;
     conflictingSessionIds: string[];
     conflictingAttachmentIds: string[];
     renamedDeviceHistory: boolean;
@@ -100,6 +101,7 @@ export interface AIHistoryRecoveryDiagnostic {
     reason: string;
     message: string;
     canReconcile: boolean;
+    canAdoptIdentity: boolean;
     conflictingSessionIds: string[];
     conflictingAttachmentIds: string[];
     roots: Array<{
@@ -107,6 +109,11 @@ export interface AIHistoryRecoveryDiagnostic {
         label: string;
         hasData: boolean;
     }>;
+    identityChange: {
+        previousFilesystemIdentity: string;
+        currentFilesystemIdentity: string;
+        scope: AIStorageScope | null;
+    } | null;
 }
 
 export type AIHistoryStorageStatus =
@@ -1062,6 +1069,21 @@ export async function retryAiHistoryRecovery(
     return invoke<AIHistoryStorageStatus>("ai_retry_history_recovery", {
         vaultPath,
     });
+}
+
+export async function adoptAiHistoryStorageIdentity(
+    vaultPath: string,
+    expectedPreviousFilesystemIdentity: string,
+    expectedCurrentFilesystemIdentity: string,
+): Promise<AIHistoryStorageStatus> {
+    return invoke<AIHistoryStorageStatus>(
+        "ai_adopt_history_storage_identity",
+        {
+            vaultPath,
+            expectedPreviousFilesystemIdentity,
+            expectedCurrentFilesystemIdentity,
+        },
+    );
 }
 
 export async function listenToAiHistoryStorageChanged(

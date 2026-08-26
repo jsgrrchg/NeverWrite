@@ -363,6 +363,8 @@ If a session does not recover:
 
 - Reopen the same vault first. Session history is per-vault.
 - Open `Chat History`, select the saved conversation, and click `Restore`.
+- If Chat History reports that the vault folder identity changed, reveal or export the offered diagnostic root, confirm that the current folder is the same logical vault, and use `Restore access to AI chats`.
+- Do not edit `state.json` or move `.neverwrite` as the first response to an identity warning. A pending storage transaction or invalid history root intentionally prevents automatic adoption.
 - Check whether retention settings or manual deletion removed the conversation.
 - Confirm `.neverwrite/sessions/` exists and is readable.
 - If the UI shows `The AI runtime lost its connection. Reconnecting with saved

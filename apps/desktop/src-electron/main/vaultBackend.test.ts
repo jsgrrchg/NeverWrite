@@ -170,6 +170,7 @@ describe("native backend AI history recovery command support", () => {
         "ai_get_history_recovery_diagnostic",
         "ai_reveal_history_recovery_root",
         "ai_retry_history_recovery",
+        "ai_adopt_history_storage_identity",
     ])("declares %s for the native sidecar", (command) => {
         expect(supportsNativeBackendCommand(command)).toBe(true);
     });
