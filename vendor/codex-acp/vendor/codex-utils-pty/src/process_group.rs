@@ -179,10 +179,9 @@ fn signal_process_group_with_member_fallback(
         if count < 0 {
             return Err(io::Error::last_os_error());
         }
-        // proc_listpgrppids converts proc_listpids' byte count to a PID count.
-        let process_id_count = count as usize;
-        if process_id_count < process_ids.len() {
-            process_ids.truncate(process_id_count);
+        let count = count as usize;
+        if count < process_ids.len() {
+            process_ids.truncate(count);
             break;
         }
         let capacity = process_ids.len().checked_mul(2).ok_or_else(|| {
@@ -190,8 +189,6 @@ fn signal_process_group_with_member_fallback(
         })?;
         process_ids.resize(capacity, 0);
     }
-    // Signal the leader last so its exit cannot change group enumeration before
-    // every still-owned member has received the fallback signal.
     process_ids.sort_unstable_by_key(|process_id| *process_id == process_group_id);
 
     let mut signalled = false;
@@ -263,16 +260,10 @@ pub fn interrupt_process_group(_process_group_id: u32) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(unix)]
 /// Kill a specific process group ID (best-effort).
 pub fn kill_process_group(process_group_id: u32) -> io::Result<()> {
     signal_process_group_id(process_group_id as libc::pid_t, libc::SIGKILL).map(|_| ())
-}
-
-#[cfg(target_os = "macos")]
-/// Kill a process group, retrying a denied SIGKILL against its exact members.
-pub fn kill_process_group(process_group_id: u32) -> io::Result<()> {
-    kill_process_group_with_member_fallback(process_group_id)
 }
 
 #[cfg(target_os = "macos")]

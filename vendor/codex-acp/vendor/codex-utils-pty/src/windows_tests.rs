@@ -77,14 +77,14 @@ async fn assert_terminate_kills_descendant(
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     ));
-    let release_marker = marker.with_extension("release");
     let child_code = format!(
-        "import pathlib,time; marker=pathlib.Path(bytes.fromhex('{}').decode()); release=pathlib.Path(bytes.fromhex('{}').decode()); print('{READY_MARKER}',flush=True); deadline=time.time()+10\nwhile not release.exists() and time.time()<deadline: time.sleep(.025)\nif release.exists(): marker.write_text('survived')",
-        utf8_hex(&marker.to_string_lossy()),
-        utf8_hex(&release_marker.to_string_lossy()),
+        "import pathlib,time; print('{READY_MARKER}',flush=True); time.sleep(1); pathlib.Path(bytes.fromhex('{}').decode()).write_text('survived')",
+        utf8_hex(&marker.to_string_lossy())
     );
+    // Exercise descendants created after the best-effort pipe assignment,
+    // without making the test depend on winning the intentionally accepted race.
     let code = format!(
-        "import subprocess,sys,time; code=bytes.fromhex('{}').decode(); subprocess.Popen([sys.executable,'-u','-c',code]); time.sleep(60)",
+        "import subprocess,sys,time; time.sleep(0.5); code=bytes.fromhex('{}').decode(); subprocess.Popen([sys.executable,'-u','-c',code]); time.sleep(60)",
         utf8_hex(&child_code)
     );
     let args = vec!["-u".to_string(), "-c".to_string(), code];
@@ -110,10 +110,11 @@ async fn assert_terminate_kills_descendant(
         exit_code, -1,
         "{backend} root did not exit after termination"
     );
-    std::fs::write(&release_marker, b"release")?;
-    let survived = wait_for_path(&marker, Duration::from_secs(2)).await;
-    let _ = std::fs::remove_file(&release_marker);
-    let _ = std::fs::remove_file(&marker);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let survived = marker.exists();
+    if survived {
+        std::fs::remove_file(&marker)?;
+    }
     assert!(!survived, "{backend} descendant survived termination");
     Ok(())
 }
@@ -170,7 +171,8 @@ async fn assert_normal_exit_preserves_descendant(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn terminate_kills_descendants_for_atomic_pipe_and_conpty() -> anyhow::Result<()> {
+async fn terminate_kills_descendants_for_best_effort_pipe_and_atomic_conpty() -> anyhow::Result<()>
+{
     let Some(python) = find_python() else {
         eprintln!("python not found; skipping Windows process-tree termination test");
         return Ok(());
@@ -236,6 +238,65 @@ async fn contained_spawn_owns_immediate_descendant() -> anyhow::Result<()> {
 
     job.terminate()?;
     tokio::time::timeout(Duration::from_secs(10), root.wait()).await??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_job_assignment_resumes_existing_job_member() -> anyhow::Result<()> {
+    let Some(python) = find_python() else {
+        eprintln!("python not found; skipping Windows nested-job fallback test");
+        return Ok(());
+    };
+
+    let owning_job = crate::JobObject::create()?;
+    let rejected_job = crate::JobObject::create_without_breakaway()?;
+    let mut occupied_command = Command::new(&python);
+    occupied_command
+        .args(["-c", "import time; time.sleep(60)"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut existing_member = rejected_job.spawn_contained(&mut occupied_command)?;
+
+    let mut command = Command::new(&python);
+    command
+        .args([
+            "-u",
+            "-c",
+            "import time; print('resumed',flush=True); time.sleep(60)",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    rejected_job.prepare_suspended_spawn(&mut command);
+    let mut root = command.spawn()?;
+    let process_handle = root
+        .raw_handle()
+        .ok_or_else(|| anyhow::anyhow!("missing suspended process handle"))?;
+    owning_job.assign_process(process_handle)?;
+    let process_id = root
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("missing suspended process id"))?;
+
+    assert!(
+        !rejected_job.assign_and_resume_process(process_id)?,
+        "unrelated nested job unexpectedly accepted the process"
+    );
+    let stdout = root
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("missing resumed process stdout"))?;
+    let mut stdout = BufReader::new(stdout);
+    let mut marker = String::new();
+    tokio::time::timeout(Duration::from_secs(10), stdout.read_line(&mut marker)).await??;
+    assert_eq!(marker.trim(), "resumed");
+
+    let process_handle = crate::JobObject::open_process_handle(process_id)?;
+    crate::JobObject::terminate_process_handle(&process_handle)?;
+    rejected_job.terminate()?;
+    let status = tokio::time::timeout(Duration::from_secs(10), root.wait()).await??;
+    assert_eq!(status.code(), Some(1));
+    tokio::time::timeout(Duration::from_secs(10), existing_member.wait()).await??;
     Ok(())
 }
 

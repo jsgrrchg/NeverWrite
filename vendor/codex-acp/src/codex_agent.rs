@@ -37,8 +37,9 @@ use codex_login::{
 use codex_protocol::{
     ThreadId,
     mcp::ClientMcpExtensions,
-    protocol::{InitialHistory, SessionConfiguredEvent, SessionSource},
+    protocol::{SessionConfiguredEvent, SessionSource},
 };
+use codex_rollout::InitialHistory;
 use codex_thread_store::{
     ListThreadsParams, SortDirection as StoreSortDirection, ThreadSortKey as StoreThreadSortKey,
     ThreadStore,
@@ -139,7 +140,9 @@ impl CodexAgent {
         // The modern MCP protocol remains outside NeverWrite's ACP 0.14 contract.
         apply_runtime_feature_contracts(&mut config)?;
         let auth_manager =
-            AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await;
+            AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false)
+                .await
+                .map_err(std::io::Error::other)?;
 
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
         let session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>> = Arc::default();
@@ -517,6 +520,7 @@ impl CodexAgent {
                                     Some(headers.into_iter().map(|h| (h.name, h.value)).collect())
                                 },
                                 env_http_headers: None,
+                                http_headers_helper: None,
                             },
                             required: false,
                             enabled: true,
@@ -1104,6 +1108,7 @@ impl CodexAgent {
                 model_providers: None,
                 cwd_filters: cwd.map(|cwd| vec![cwd]),
                 section: None,
+                project_id: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,
@@ -1485,6 +1490,7 @@ mod tests {
                 bearer_token_env_var: None,
                 http_headers: None,
                 env_http_headers: None,
+                http_headers_helper: None,
             },
             auth: McpServerAuth::ChatGpt,
             environment_id: "base-environment".to_string(),

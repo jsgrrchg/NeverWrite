@@ -484,6 +484,14 @@ pub(crate) fn projection_for_collab_item(item: &CollabAgentToolCallItem) -> Suba
         (CollabAgentTool::Wait, false) => "waiting_end",
         (CollabAgentTool::CloseAgent, true) => "close_begin",
         (CollabAgentTool::CloseAgent, false) => "close_end",
+        (CollabAgentTool::SendMessage, true) => "message_begin",
+        (CollabAgentTool::SendMessage, false) => "message_end",
+        (CollabAgentTool::FollowupTask, true) => "followup_begin",
+        (CollabAgentTool::FollowupTask, false) => "followup_end",
+        (CollabAgentTool::InterruptAgent, true) => "interrupt_begin",
+        (CollabAgentTool::InterruptAgent, false) => "interrupt_end",
+        (CollabAgentTool::ListAgents, true) => "list_agents_begin",
+        (CollabAgentTool::ListAgents, false) => "list_agents_end",
     };
     let title = collab_item_title(item, &display_name);
     let detail = collab_item_detail(item);
@@ -573,6 +581,32 @@ fn collab_item_title(item: &CollabAgentToolCallItem, display_name: &str) -> Stri
             format!("Failed to close {display_name}")
         }
         (CollabAgentTool::CloseAgent, _) => format!("Closed {display_name}"),
+        (CollabAgentTool::SendMessage, CollabAgentToolCallStatus::InProgress) => {
+            format!("Messaging {display_name}")
+        }
+        (CollabAgentTool::SendMessage, _) if failed => {
+            format!("Failed to message {display_name}")
+        }
+        (CollabAgentTool::SendMessage, _) => format!("Messaged {display_name}"),
+        (CollabAgentTool::FollowupTask, CollabAgentToolCallStatus::InProgress) => {
+            format!("Following up with {display_name}")
+        }
+        (CollabAgentTool::FollowupTask, _) if failed => {
+            format!("Failed to follow up with {display_name}")
+        }
+        (CollabAgentTool::FollowupTask, _) => format!("Followed up with {display_name}"),
+        (CollabAgentTool::InterruptAgent, CollabAgentToolCallStatus::InProgress) => {
+            format!("Interrupting {display_name}")
+        }
+        (CollabAgentTool::InterruptAgent, _) if failed => {
+            format!("Failed to interrupt {display_name}")
+        }
+        (CollabAgentTool::InterruptAgent, _) => format!("Interrupted {display_name}"),
+        (CollabAgentTool::ListAgents, CollabAgentToolCallStatus::InProgress) => {
+            "Listing agents".to_string()
+        }
+        (CollabAgentTool::ListAgents, _) if failed => "Failed to list agents".to_string(),
+        (CollabAgentTool::ListAgents, _) => "Listed agents".to_string(),
     }
 }
 
@@ -618,7 +652,10 @@ fn collab_item_detail(item: &CollabAgentToolCallItem) -> Option<String> {
 }
 
 fn collab_item_tool_status(item: &CollabAgentToolCallItem) -> ToolCallStatus {
-    if item.status == CollabAgentToolCallStatus::Failed {
+    if matches!(
+        item.status,
+        CollabAgentToolCallStatus::Failed | CollabAgentToolCallStatus::Interrupted
+    ) {
         return ToolCallStatus::Failed;
     }
 
@@ -646,7 +683,11 @@ fn collab_item_breadcrumb_meta(
         receiver.and_then(|receiver| receiver.agent_role),
         status,
     );
-    if item.tool == CollabAgentTool::Wait && !item.agents_states.is_empty() {
+    if matches!(
+        item.tool,
+        CollabAgentTool::Wait | CollabAgentTool::ListAgents
+    ) && !item.agents_states.is_empty()
+    {
         meta.insert(
             CODEX_ACP_AGENT_STATUSES_KEY.to_string(),
             json!(agent_status_values(
@@ -719,6 +760,11 @@ fn project_subagent_activity_fields(
             "activity_interrupted",
             format!("Interrupted {display_name}"),
             "interrupted",
+        ),
+        SubAgentActivityKind::Completed => (
+            "activity_completed",
+            format!("Completed {display_name}"),
+            "completed",
         ),
     };
 
