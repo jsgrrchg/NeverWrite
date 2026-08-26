@@ -10161,6 +10161,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_options_expose_max_and_ultra_from_the_runtime_catalog() -> anyhow::Result<()> {
+        let preset = all_model_presets()
+            .iter()
+            .find(|preset| {
+                preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .any(|effort| effort.effort == ReasoningEffort::Max)
+                    && preset
+                        .supported_reasoning_efforts
+                        .iter()
+                        .any(|effort| effort.effort == ReasoningEffort::Ultra)
+            })
+            .expect("runtime 0.150 catalog should include max and ultra")
+            .clone();
+        let selected_model = preset.model.clone();
+        let (actor, _client, _conversation) = setup_actor(|config| {
+            config.model = Some(selected_model);
+            config.model_reasoning_effort = Some(ReasoningEffort::Ultra);
+        })
+        .await?;
+
+        let options = actor.config_options().await?;
+        let reasoning = options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "reasoning_effort")
+            .expect("reasoning option should be present");
+        let SessionConfigKind::Select(select) = &reasoning.kind else {
+            panic!("reasoning option should be a select");
+        };
+        let SessionConfigSelectOptions::Ungrouped(efforts) = &select.options else {
+            panic!("reasoning options should be ungrouped");
+        };
+        let values = efforts
+            .iter()
+            .map(|effort| effort.value.to_string())
+            .collect::<Vec<_>>();
+        assert!(values.contains(&"max".to_string()), "efforts={values:?}");
+        assert!(values.contains(&"ultra".to_string()), "efforts={values:?}");
+        assert_eq!(select.current_value.0.as_ref(), "ultra");
+        assert_eq!(
+            efforts
+                .iter()
+                .find(|effort| effort.value.0.as_ref() == "max")
+                .map(|effort| effort.name.as_str()),
+            Some("Max")
+        );
+        assert_eq!(
+            efforts
+                .iter()
+                .find(|effort| effort.value.0.as_ref() == "ultra")
+                .map(|effort| effort.name.as_str()),
+            Some("Ultra")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn active_permission_profiles_map_to_neverwrite_session_modes() -> anyhow::Result<()> {
         let mut config = Config::load_with_cli_overrides_and_harness_overrides(
             vec![],

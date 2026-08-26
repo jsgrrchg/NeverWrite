@@ -7695,7 +7695,7 @@ fn strip_effort_suffix(value: &str) -> &str {
     value
 }
 
-const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 fn extract_effort(value: &str) -> Option<&str> {
     let suffix = value.rsplit('/').next()?;
@@ -7708,6 +7708,8 @@ fn extract_effort(value: &str) -> Option<&str> {
 fn reasoning_effort_label(effort: &str) -> String {
     match effort {
         "xhigh" => "Extra High".to_string(),
+        "max" => "Maximum".to_string(),
+        "ultra" => "Ultra".to_string(),
         _ => {
             let mut chars = effort.chars();
             match chars.next() {
@@ -15439,6 +15441,8 @@ mod tests {
                 SessionConfigSelectOption::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
                 SessionConfigSelectOption::new("gpt-5.5/high", "GPT-5.5 (high)"),
                 SessionConfigSelectOption::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
+                SessionConfigSelectOption::new("gpt-5.5/max", "GPT-5.5 (max)"),
+                SessionConfigSelectOption::new("gpt-5.5/ultra", "GPT-5.5 (ultra)"),
             ],
         )
         .category(SessionConfigOptionCategory::Model)];
@@ -15458,7 +15462,9 @@ mod tests {
                 "low".to_string(),
                 "medium".to_string(),
                 "high".to_string(),
-                "xhigh".to_string()
+                "xhigh".to_string(),
+                "max".to_string(),
+                "ultra".to_string()
             ])
         );
 
@@ -15478,8 +15484,17 @@ mod tests {
                 .iter()
                 .map(|option| option.value.as_str())
                 .collect::<Vec<_>>(),
-            vec!["low", "medium", "high", "xhigh"]
+            vec!["low", "medium", "high", "xhigh", "max", "ultra"]
         );
+    }
+
+    #[test]
+    fn extended_and_custom_reasoning_efforts_have_stable_labels() {
+        assert_eq!(reasoning_effort_label("max"), "Maximum");
+        assert_eq!(reasoning_effort_label("ultra"), "Ultra");
+        assert_eq!(reasoning_effort_label("experimental"), "Experimental");
+        assert_eq!(strip_effort_suffix("gpt-5.6-sol/max"), "gpt-5.6-sol");
+        assert_eq!(strip_effort_suffix("gpt-5.6-sol/ultra"), "gpt-5.6-sol");
     }
 
     #[test]
