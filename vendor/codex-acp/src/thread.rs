@@ -9377,6 +9377,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_subagent_activity_updates_the_started_activity_once() -> anyhow::Result<()> {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let (mut prompt_state, session_client, client) =
+            prompt_state_for_projection(parent_thread_id);
+        let agent_path: codex_protocol::AgentPath = "/root/research/explorer"
+            .try_into()
+            .expect("valid agent path");
+        let activity = |kind| {
+            EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                event_id: "stable-activity".to_string(),
+                occurred_at_ms: 1,
+                agent_thread_id: child_thread_id,
+                agent_path: agent_path.clone(),
+                kind,
+            })
+        };
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                activity(codex_protocol::protocol::SubAgentActivityKind::Started),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                activity(codex_protocol::protocol::SubAgentActivityKind::Completed),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                activity(codex_protocol::protocol::SubAgentActivityKind::Completed),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(notification.update, SessionUpdate::ToolCall(_)))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        let updates = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => Some(update),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(updates.len(), 1, "notifications={notifications:?}");
+        assert_eq!(
+            updates[0].tool_call_id.0.as_ref(),
+            "codex-acp:subagent:stable-activity"
+        );
+        assert_eq!(
+            updates[0].fields.title.as_deref(),
+            Some("Completed explorer")
+        );
+        assert_eq!(updates[0].fields.status, Some(ToolCallStatus::Completed));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn specific_subagent_activity_prevents_a_later_turn_item_duplicate() -> anyhow::Result<()>
     {
         let parent_thread_id = ThreadId::new();
