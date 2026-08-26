@@ -16927,7 +16927,28 @@ describe("chatStore", () => {
 
         const persistedSessionId = "persisted:history-native-fallback";
         const historySessionId = "history-native-fallback";
+        const previousRuntimeSessionId = "codex-runtime-before-restart";
         const fallbackSessionId = "codex-fallback-live";
+        let sentContent = "";
+        const persistedSession = {
+            ...createSessionWithTrackedFiles(persistedSessionId, []),
+            historySessionId,
+            runtimeId: "codex-acp",
+            runtimeSessionId: previousRuntimeSessionId,
+            runtimeState: "persisted_only" as const,
+            isPersistedSession: true,
+            persistedMessageCount: 2,
+            loadedPersistedMessageStart: null,
+            resumeContextPending: false,
+        };
+        const conversationBindings =
+            updateConversationBindingsFromLegacySession(persistedSession);
+        conversationBindings.providerBindings[0] = {
+            ...conversationBindings.providerBindings[0],
+            runtimeSessionId: previousRuntimeSessionId,
+            contextCursor: "m2",
+            contextGeneration: 3,
+        };
 
         useChatStore.setState((state) => ({
             ...state,
@@ -16947,22 +16968,8 @@ describe("chatStore", () => {
             ],
             sessionsById: {
                 [persistedSessionId]: {
-                    sessionId: persistedSessionId,
-                    historySessionId,
-                    status: "idle",
-                    runtimeId: "codex-acp",
-                    modelId: "test-model",
-                    modeId: "default",
-                    models: [],
-                    modes: [],
-                    configOptions: [],
-                    messages: [],
-                    attachments: [],
-                    runtimeState: "persisted_only",
-                    isPersistedSession: true,
-                    persistedMessageCount: 2,
-                    loadedPersistedMessageStart: null,
-                    resumeContextPending: false,
+                    ...persistedSession,
+                    conversationBindings,
                 },
             },
             sessionOrder: [persistedSessionId],
@@ -17000,12 +17007,22 @@ describe("chatStore", () => {
                 };
             }
             if (command === "ai_resume_runtime_session") {
-                throw new Error("native resume handle missing");
+                throw new Error(
+                    `thread ${previousRuntimeSessionId} already has an active writer`,
+                );
             }
             if (command === "ai_create_session") {
                 return {
                     ...sessionPayload,
                     session_id: fallbackSessionId,
+                };
+            }
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: fallbackSessionId,
+                    status: "streaming",
                 };
             }
             return defaultInvokeImplementation(command, args);
@@ -17044,6 +17061,31 @@ describe("chatStore", () => {
                 ([command]) => command === "ai_create_session",
             ),
         ).toBe(true);
+
+        useChatStore
+            .getState()
+            .setComposerParts(
+                createTextParts("What were we discussing?"),
+                fallbackSessionId,
+            );
+        await useChatStore.getState().sendMessage(fallbackSessionId);
+
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain("User: Original saved request");
+        expect(sentContent).toContain("Assistant: Original saved answer");
+        expect(sentContent).toContain(
+            "New user message: What were we discussing?",
+        );
+        const recoveredBinding = useChatStore
+            .getState()
+            .sessionsById[fallbackSessionId]?.conversationBindings?.providerBindings.at(
+                0,
+            );
+        expect(recoveredBinding).toMatchObject({
+            runtimeSessionId: fallbackSessionId,
+            contextCursor: "m2",
+            contextGeneration: 4,
+        });
     });
 
     it("does not ask the runtime backend to load an unknown persisted-only session id", async () => {

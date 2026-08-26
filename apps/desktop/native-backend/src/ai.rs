@@ -12258,6 +12258,52 @@ mod tests {
     }
 
     #[test]
+    fn backend_shutdown_stops_each_owned_process_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = AcpSessionHandle {
+            process_id: 91,
+            command_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let mut state = native_ai.inner.lock().unwrap();
+        for session_id in ["parent-session", "child-session"] {
+            state.sessions.insert(
+                session_id.to_string(),
+                ManagedAiSession {
+                    session: new_session_with_id(CODEX_RUNTIME_ID, session_id.to_string()).unwrap(),
+                    vault_root: None,
+                    additional_roots: vec![],
+                    runtime_handle: Some(handle.clone()),
+                    active_turn_id: None,
+                },
+            );
+            state.session_order.push(session_id.to_string());
+        }
+        drop(state);
+
+        let shutdown = thread::spawn(move || match command_rx.blocking_recv() {
+            Some(AcpCommand::Shutdown { response_tx }) => {
+                response_tx.send(Ok(())).unwrap();
+                assert!(command_rx.try_recv().is_err());
+            }
+            _ => panic!("expected one shutdown command for the shared process"),
+        });
+
+        native_ai.shutdown().unwrap();
+        shutdown.join().unwrap();
+
+        let state = native_ai.inner.lock().unwrap();
+        assert!(state.sessions.is_empty());
+        assert!(state.session_order.is_empty());
+        assert!(state.conversation_turn_bindings.is_empty());
+    }
+
+    #[test]
     fn send_transport_disconnect_invalidates_the_affected_session_family() {
         let (event_tx, event_rx) = mpsc::channel();
         let native_ai =
