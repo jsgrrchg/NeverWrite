@@ -5488,12 +5488,16 @@ impl<A: Auth> ThreadActor<A> {
                 .map_err(|e| Error::internal_error().data(e.to_string()))?,
             PromptSubmission::Turn(request) => match self
                 .thread
-                .submit_turn_input(request, TurnInputMode::StartOrSteer)
+                .submit_turn_input(request, TurnInputMode::StartIfIdle)
                 .await
                 .map_err(|e| Error::internal_error().data(e.to_string()))?
             {
-                TurnInputSubmission::Started { turn_id }
-                | TurnInputSubmission::Steered { turn_id } => turn_id,
+                TurnInputSubmission::Started { turn_id } => turn_id,
+                TurnInputSubmission::Steered { turn_id } => {
+                    return Err(Error::internal_error().data(format!(
+                        "runtime unexpectedly steered active turn {turn_id} for a start-if-idle prompt"
+                    )));
+                }
                 TurnInputSubmission::NotSubmitted { reason } => {
                     return Err(Error::invalid_params()
                         .data(format!("runtime declined prompt submission: {reason:?}")));
@@ -7017,10 +7021,75 @@ mod tests {
                     text: "Hi".to_string(),
                     text_elements: vec![]
                 }],
+                mode: TurnInputMode::StartIfIdle,
             }],
             "ops don't match {ops:?}"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn busy_runtime_declines_prompt_without_leaving_a_pending_response() -> anyhow::Result<()>
+    {
+        let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
+        thread.set_next_turn_submission(TurnInputSubmission::NotSubmitted {
+            reason: codex_protocol::turn_input::NotSubmittedReason::NotIdle,
+        });
+        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Prompt {
+            request: PromptRequest::new(session_id, vec!["queued too early".into()]),
+            response_tx: prompt_response_tx,
+        })?;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx).await??;
+        let error = match result {
+            Ok(_) => anyhow::bail!("busy runtime unexpectedly accepted the prompt"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:?}").contains("NotIdle"),
+            "unexpected submission error: {error:?}"
+        );
+        assert!(matches!(
+            thread.ops.lock().unwrap().as_slice(),
+            [RecordedOp::TurnInput {
+                mode: TurnInputMode::StartIfIdle,
+                ..
+            }]
+        ));
+
+        drop(message_tx);
+        drop(local_set.await);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn start_if_idle_rejects_an_unexpected_steered_acknowledgement() -> anyhow::Result<()> {
+        let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
+        thread.set_next_turn_submission(TurnInputSubmission::Steered {
+            turn_id: "active-turn".to_string(),
+        });
+        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Prompt {
+            request: PromptRequest::new(session_id, vec!["must not steer".into()]),
+            response_tx: prompt_response_tx,
+        })?;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx).await??;
+        let error = match result {
+            Ok(_) => anyhow::bail!("start-if-idle unexpectedly accepted a steered prompt"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:?}").contains("unexpectedly steered active turn active-turn"),
+            "unexpected submission error: {error:?}"
+        );
+
+        drop(message_tx);
+        drop(local_set.await);
         Ok(())
     }
 
@@ -7596,6 +7665,7 @@ mod tests {
                     text: INIT_COMMAND_PROMPT.to_string(),
                     text_elements: vec![]
                 }],
+                mode: TurnInputMode::StartIfIdle,
             }],
             "ops don't match {ops:?}"
         );
@@ -7881,6 +7951,7 @@ mod tests {
                     text: "Custom prompt with foo arg.".into(),
                     text_elements: vec![]
                 }],
+                mode: TurnInputMode::StartIfIdle,
             }],
             "ops don't match {ops:?}"
         );
@@ -10609,6 +10680,7 @@ mod tests {
     enum RecordedOp {
         TurnInput {
             items: Vec<UserInput>,
+            mode: TurnInputMode,
         },
         Compact,
         Review {
@@ -10628,6 +10700,7 @@ mod tests {
     struct StubCodexThread {
         current_id: AtomicUsize,
         ops: std::sync::Mutex<Vec<RecordedOp>>,
+        next_turn_submission: std::sync::Mutex<Option<TurnInputSubmission>>,
         op_tx: mpsc::UnboundedSender<Event>,
         op_rx: Mutex<mpsc::UnboundedReceiver<Event>>,
     }
@@ -10638,9 +10711,14 @@ mod tests {
             StubCodexThread {
                 current_id: AtomicUsize::new(0),
                 ops: std::sync::Mutex::default(),
+                next_turn_submission: std::sync::Mutex::default(),
                 op_tx,
                 op_rx: Mutex::new(op_rx),
             }
+        }
+
+        fn set_next_turn_submission(&self, submission: TurnInputSubmission) {
+            *self.next_turn_submission.lock().unwrap() = Some(submission);
         }
     }
 
@@ -10655,9 +10733,10 @@ mod tests {
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
                 let recorded_op = match &op {
-                    Op::TurnInput { request, .. } => match &request.input {
+                    Op::TurnInput { request, mode, .. } => match &request.input {
                         TurnInput::UserInput { content, .. } => RecordedOp::TurnInput {
                             items: content.clone(),
+                            mode: mode.clone(),
                         },
                         input => RecordedOp::Other(format!("turn input: {input:?}")),
                     },
@@ -10686,9 +10765,20 @@ mod tests {
                         let TurnInput::UserInput { content: items, .. } = request.input else {
                             unimplemented!()
                         };
-                        drop(reply.send(Ok(TurnInputSubmission::Started {
-                            turn_id: id.to_string(),
-                        })));
+                        let turn_submission = self
+                            .next_turn_submission
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap_or_else(|| TurnInputSubmission::Started {
+                                turn_id: id.to_string(),
+                            });
+                        let turn_started =
+                            matches!(turn_submission, TurnInputSubmission::Started { .. });
+                        drop(reply.send(Ok(turn_submission)));
+                        if !turn_started {
+                            return Ok(id.to_string());
+                        }
                         let prompt = items
                             .into_iter()
                             .map(|i| match i {
