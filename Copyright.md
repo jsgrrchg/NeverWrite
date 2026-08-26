@@ -137,7 +137,7 @@ dictionary licenses.
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.68.0  | Apache-2.0                      |
+| @agentclientprotocol/claude-agent-acp   | 0.70.0  | Apache-2.0                      |
 | @agentclientprotocol/sdk                | 1.3.0   | Apache-2.0                      |
 | @anthropic-ai/claude-agent-sdk          | 0.3.232 | Anthropic SDK terms in LICENSE.md |
 | @anthropic-ai/claude-agent-sdk-*        | 0.3.232 | Anthropic SDK terms in LICENSE.md |
@@ -311,7 +311,7 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.68.0` (`5de5d4a2c8363e6462c231380c9fc17d80c568cc`) with the bounded NeverWrite modifications listed below |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.70.0` (`d0aafb1ca26427285ffaeac8d8a4452fff28e9c3`) with the bounded NeverWrite modifications listed below |
 | `src/tools.ts`        | Replaced the ambiguous textual `TaskList` fallback regex with linear string parsing to prevent excessive backtracking while preserving owners, dependencies, and malformed suffixes as subject text |
 | `src/tests/tools.test.ts` | Added regression coverage for owner/dependency parsing and adversarial malformed `TaskList` output |
 | `dist/`               | Generated from the locally modified vendored source and force-added because upstream ignores build output |

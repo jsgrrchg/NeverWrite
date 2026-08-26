@@ -109,6 +109,7 @@ function mockSessionState(overrides = {}) {
         owedTrailingIdles: 0,
         messageIdToUuid: new Map(),
         sessionFailureState: { epoch: randomUUID(), revisions: new Map(), active: new Map() },
+        fileChangeReportRequestIds: new Set(),
         ...overrides,
     };
 }
@@ -2120,6 +2121,7 @@ describe("permission request cancellation", () => {
             emittedAssistantText: false,
             owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
+            fileChangeReportRequestIds: new Set(),
         };
         return agent.sessions[sessionId];
     }
@@ -2532,7 +2534,7 @@ describe("tool_call emitted before permission request", () => {
         // still resolve — the eager emission was its only surface — even though the
         // tool name (and thus claudeCode meta) is unknowable here.
         session.emittedToolCalls.add("tool-1");
-        const notifications = toAcpNotifications([{ type: "tool_result", tool_use_id: "tool-1", content: [{ type: "text", text: "x" }] }], "user", "session-1", session.toolUseCache, {}, 
+        const notifications = toAcpNotifications([{ type: "tool_result", tool_use_id: "tool-1", content: [{ type: "text", text: "x" }] }], "user", "session-1", session.toolUseCache, {},
         // Silence the expected "tool result for tool use that wasn't tracked" log.
         { log: () => { }, error: () => { } }, { emittedToolCalls: session.emittedToolCalls });
         expect(session.emittedToolCalls.has("tool-1")).toBe(false);
@@ -4988,7 +4990,7 @@ describe("logout", () => {
         });
         expect(response._meta?.jetbrains?.air).toEqual({
             version: 1,
-            capabilities: ["sessionFailure"],
+            capabilities: ["sessionFailure", "agentFileChangeReport"],
         });
     });
     it("advertises AIR sessionFailure support even before client negotiation", async () => {
@@ -4999,7 +5001,7 @@ describe("logout", () => {
         });
         expect(response._meta?.jetbrains?.air).toEqual({
             version: 1,
-            capabilities: ["sessionFailure"],
+            capabilities: ["sessionFailure", "agentFileChangeReport"],
         });
     });
 });
@@ -5053,6 +5055,7 @@ describe("session/close", () => {
             owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
             sessionFailureState: { epoch: randomUUID(), revisions: new Map(), active: new Map() },
+            fileChangeReportRequestIds: new Set(),
         };
         return agent.sessions[sessionId];
     }
@@ -5130,6 +5133,7 @@ describe("session/delete", () => {
             owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
             sessionFailureState: { epoch: randomUUID(), revisions: new Map(), active: new Map() },
+            fileChangeReportRequestIds: new Set(),
         };
         return agent.sessions[sessionId];
     }
@@ -5221,6 +5225,7 @@ describe("getOrCreateSession param change detection", () => {
             owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
             sessionFailureState: { epoch: randomUUID(), revisions: new Map(), active: new Map() },
+            fileChangeReportRequestIds: new Set(),
         };
         return agent.sessions[sessionId];
     }
@@ -7700,6 +7705,7 @@ describe("post-error recovery", () => {
             owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
             sessionFailureState: { epoch: randomUUID(), revisions: new Map(), active: new Map() },
+            fileChangeReportRequestIds: new Set(),
         };
         return { interrupt };
     }
@@ -11074,6 +11080,7 @@ describe("session/cancel wedge recovery (issue #680)", () => {
             owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
             sessionFailureState: { epoch: randomUUID(), revisions: new Map(), active: new Map() },
+            fileChangeReportRequestIds: new Set(),
         };
         return { interrupt };
     }
@@ -12205,6 +12212,7 @@ describe("agent selection config option", () => {
                 owedTrailingIdles: 0,
                 messageIdToUuid: new Map(),
                 sessionFailureState: { epoch: randomUUID(), revisions: new Map(), active: new Map() },
+                fileChangeReportRequestIds: new Set(),
             };
             return { session: agent.sessions[sessionId], applyFlagSettings };
         }

@@ -156,6 +156,8 @@ URL as `ANTHROPIC_BEDROCK_BASE_URL`, and sets `CLAUDE_CODE_USE_BEDROCK=1` when
 launching the Claude runtime. Bedrock gateway setup does not use an Anthropic
 auth token.
 
+When NeverWrite configures a Claude gateway through ACP, that route is authoritative over user and project Claude settings for the session. The adapter clears competing Anthropic, Bedrock, Vertex, OAuth, API-key, and `apiKeyHelper` routing while the override is active, while preserving unrelated Claude settings. Disabling the ACP override restores native Claude routing.
+
 ### Removed Gemini ACP Support
 
 NeverWrite no longer registers a `gemini-acp` provider. Google redirected
