@@ -604,6 +604,7 @@ function SliderField({
 
 const THEME_ORDER: ThemeName[] = [
     "default",
+    "automata",
     "ocean",
     "forest",
     "rose",

@@ -33,6 +33,7 @@ const DEFAULT_THEME: ThemePreference = { mode: "system", themeName: "default" };
 
 const VALID_THEME_NAMES = new Set<ThemeName>([
     "default",
+    "automata",
     "ocean",
     "forest",
     "rose",
