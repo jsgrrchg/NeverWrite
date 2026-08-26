@@ -1261,6 +1261,57 @@ impl NativeAi {
         }
     }
 
+    pub(crate) fn shutdown(&self) -> Result<(), String> {
+        let (session_ids, runtime_handles) = {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            let session_ids = state.sessions.keys().cloned().collect::<Vec<_>>();
+            let mut runtime_handles = HashMap::new();
+            for managed in state.sessions.drain().map(|(_, managed)| managed) {
+                if let Some(handle) = managed.runtime_handle {
+                    runtime_handles.entry(handle.process_id).or_insert(handle);
+                }
+            }
+            state.session_order.clear();
+            state.conversation_turn_bindings.clear();
+            (session_ids, runtime_handles)
+        };
+
+        if let Ok(mut waiters) = self.user_input_waiters.lock() {
+            waiters.clear();
+        }
+        if let Ok(mut waiters) = self.url_elicitation_waiters.lock() {
+            waiters.clear();
+        }
+        if let Ok(mut completed) = self.completed_url_elicitations.lock() {
+            completed.clear();
+        }
+        if let Ok(mut terminal_sessions) = self.auth_terminal_sessions.lock() {
+            for (_, handle) in terminal_sessions.drain() {
+                handle.closed.store(true, Ordering::Relaxed);
+                handle.release_runtime_resources(true);
+            }
+        }
+        for session_id in session_ids {
+            self.tool_diffs.clear_session(&session_id);
+        }
+
+        let errors = runtime_handles
+            .into_values()
+            .filter_map(|handle| handle.shutdown().err())
+            .collect::<Vec<_>>();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Failed to stop one or more AI runtime processes: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
     pub(crate) fn list_runtimes(&self) -> Value {
         let custom_runtimes = self.custom_runtimes.list().unwrap_or_else(|error| {
             eprintln!("Failed to load custom ACP runtimes for the runtime catalog: {error}");
@@ -4671,6 +4722,7 @@ async fn run_acp_auth_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
+    command.kill_on_drop(true);
     apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
@@ -4749,6 +4801,7 @@ async fn run_acp12_auth_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
+    command.kill_on_drop(true);
     apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
@@ -4863,6 +4916,19 @@ async fn run_acp12_actor(
 }
 
 async fn shutdown_acp_child(child: &mut tokio::process::Child) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        if let Some(process_id) = child.id() {
+            let result = unsafe { libc::kill(-(process_id as i32), libc::SIGKILL) };
+            if result != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(format!("Failed to stop AI runtime process group: {error}"));
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
     child
         .start_kill()
         .map_err(|error| format!("Failed to stop AI runtime process: {error}"))?;
@@ -4980,6 +5046,7 @@ async fn run_acp12_actor_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    command.kill_on_drop(true);
     apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
@@ -5218,6 +5285,7 @@ async fn run_acp_actor_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    command.kill_on_drop(true);
     apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
