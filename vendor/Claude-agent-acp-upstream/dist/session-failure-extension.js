@@ -6,12 +6,12 @@ const AIR_EXTENSION_VERSION_KEY = "version";
 const AIR_EXTENSION_CAPABILITIES_KEY = "capabilities";
 const AIR_SESSION_FAILURE_KEY = "sessionFailure";
 const AIR_EXTENSION_VERSION = 1;
-export function airSessionFailureCapabilityMeta() {
+export function airSessionFailureCapabilityMeta(...additionalCapabilities) {
     return {
         [JETBRAINS_META_KEY]: {
             [AIR_META_KEY]: {
                 [AIR_EXTENSION_VERSION_KEY]: AIR_EXTENSION_VERSION,
-                [AIR_EXTENSION_CAPABILITIES_KEY]: [AIR_SESSION_FAILURE_KEY],
+                [AIR_EXTENSION_CAPABILITIES_KEY]: [AIR_SESSION_FAILURE_KEY, ...additionalCapabilities],
             },
         },
     };

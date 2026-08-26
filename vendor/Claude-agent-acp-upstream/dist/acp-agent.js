@@ -12,6 +12,7 @@ import packageJson from "../package.json" with { type: "json" };
 import { applyAskElicitationResponse, askUserQuestionsToCreateRequest, createElicitationResponseToElicitResult, extractAskUserQuestions, extractRefusalFallbackPrompt, mcpElicitationToCreateRequest, REFUSAL_FALLBACK_DIALOG_KIND, refusalFallbackResultFromResponse, refusalFallbackToCreateRequest, } from "./elicitation.js";
 import { SettingsManager } from "./settings.js";
 import { activeUsageLimitMessage, airSessionFailureCapabilityMeta, assistantMessageText, createSessionFailureState, isSyntheticUsageLimitMessage, providerFailureCategory, SessionFailureController, sessionFailureMeta, supportsAirSessionFailures, } from "./session-failure-extension.js";
+import { AGENT_FILE_CHANGE_REPORT_CAPABILITY, agentFileChangeReportMeta, agentFileChangeReportRequestId, containsFileChangeAuditMarker, createFileChangeAuditSupport, createFileChangeAuditTurnState, FILE_CHANGE_AUDIT_SERVER_NAME, isFileChangeAuditReportPhase, isFileChangeAuditTool, supportsAgentFileChangeReport, } from "./file-change-audit.js";
 import { applyTaskCreate, applyTaskList, applyTaskUpdate, createPostToolUseHook, createTaskHook, parseTaskCreateOutput, parseTaskListOutput, parseTaskUpdateOutput, planEntries, registerHookCallback, taskStateToPlanEntries, toolInfoFromToolUse, toolUpdateFromDiffToolResponse, toolUpdateFromToolResult, } from "./tools.js";
 import { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
@@ -577,6 +578,8 @@ export class ClaudeAcpAgent {
     gatewayAuthRequest;
     /** Set while ACP overrides the agent's native provider configuration. */
     providerConfig;
+    /** Serializes provider changes while every open query is recreated between turns. */
+    providerUpdate = null;
     /** Grace period before a `session/cancel` forces a wedged prompt loop to
      *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
      *  tests can shrink it. */
@@ -729,7 +732,7 @@ export class ClaudeAcpAgent {
             // steering extension contract: advertises the `_session/steering` request
             // so clients know they may inject a follow-up into a running turn.
             _meta: {
-                ...airSessionFailureCapabilityMeta(),
+                ...airSessionFailureCapabilityMeta(AGENT_FILE_CHANGE_REPORT_CAPABILITY),
                 steering: {
                     supported: true,
                 },
@@ -742,6 +745,8 @@ export class ClaudeAcpAgent {
         };
     }
     async newSession(params) {
+        if (this.providerUpdate)
+            await this.providerUpdate;
         const response = await this.createSession(params, {
             // Revisit these meta values once we support resume
             resume: params._meta?.claudeCode?.options?.resume,
@@ -753,6 +758,8 @@ export class ClaudeAcpAgent {
         return response;
     }
     async unstable_forkSession(params) {
+        if (this.providerUpdate)
+            await this.providerUpdate;
         const response = await this.createSession({
             cwd: params.cwd,
             mcpServers: params.mcpServers ?? [],
@@ -769,6 +776,8 @@ export class ClaudeAcpAgent {
         return response;
     }
     async resumeSession(params) {
+        if (this.providerUpdate)
+            await this.providerUpdate;
         const result = await this.getOrCreateSession(params);
         // Needs to happen after we return the session
         setTimeout(() => {
@@ -777,6 +786,8 @@ export class ClaudeAcpAgent {
         return result;
     }
     async loadSession(params) {
+        if (this.providerUpdate)
+            await this.providerUpdate;
         const result = await this.getOrCreateSession(params);
         await this.replaySessionHistory(params.sessionId);
         // Send available commands after replay so it doesn't interleave with history
@@ -845,6 +856,7 @@ export class ClaudeAcpAgent {
     }
     async unstable_listProviders(_params) {
         const config = this.providerConfig ?? this.defaultProviderConfig();
+        this.logger.log(`[providers/list] apiType=${config.apiType} baseUrl=${config.baseUrl} overridden=${this.providerConfig !== undefined}`);
         const provider = {
             providerId: PROVIDER_ID,
             supported: SUPPORTED_PROTOCOLS,
@@ -887,7 +899,8 @@ export class ClaudeAcpAgent {
             }
             config.vertex = { projectId: vertex.projectId, region: vertex.region };
         }
-        this.providerConfig = config;
+        this.logger.log(`[providers/set] apiType=${config.apiType} baseUrl=${config.baseUrl} sessions=${Object.keys(this.sessions).length}`);
+        await this.enqueueProviderUpdate(config);
         return {};
     }
     /**
@@ -896,7 +909,8 @@ export class ClaudeAcpAgent {
      */
     async unstable_disableProvider(params) {
         if (params.providerId === PROVIDER_ID) {
-            this.providerConfig = undefined;
+            this.logger.log(`[providers/disable] sessions=${Object.keys(this.sessions).length}`);
+            await this.enqueueProviderUpdate(undefined);
         }
         // Unknown provider: idempotent success.
         return {};
@@ -957,6 +971,8 @@ export class ClaudeAcpAgent {
         }
     }
     async prompt(params) {
+        if (this.providerUpdate)
+            await this.providerUpdate;
         const session = this.sessions[params.sessionId];
         if (!session) {
             throw new Error("Session not found");
@@ -977,6 +993,15 @@ export class ClaudeAcpAgent {
         // user message, so the consumer can't promote the turn from the echo.
         const firstText = params.prompt[0]?.type === "text" ? params.prompt[0].text : "";
         const isLocalOnlyCommand = firstText.startsWith("/") && LOCAL_ONLY_COMMANDS.has(firstText.split(" ", 1)[0]);
+        const fileChangeReportRequestId = supportsAgentFileChangeReport(this.clientCapabilities)
+            ? agentFileChangeReportRequestId(params._meta)
+            : undefined;
+        let fileChangeAudit;
+        if (fileChangeReportRequestId &&
+            !session.fileChangeReportRequestIds.has(fileChangeReportRequestId)) {
+            session.fileChangeReportRequestIds.add(fileChangeReportRequestId);
+            fileChangeAudit = createFileChangeAuditTurnState(fileChangeReportRequestId);
+        }
         // Each prompt is a Turn whose deferred the persistent consumer settles once
         // the turn's outcome is known. `prompt()` owns no loop: it enqueues the
         // turn, pushes the user message onto the streaming input, makes sure the
@@ -984,13 +1009,24 @@ export class ClaudeAcpAgent {
         const turn = {
             promptUuid,
             isLocalOnlyCommand,
+            ...(fileChangeAudit ? { fileChangeAudit } : {}),
             settled: false,
             resolve: () => { },
             reject: () => { },
         };
+        let completeTurn;
+        turn.completion = new Promise((resolve) => {
+            completeTurn = resolve;
+        });
         const response = new Promise((resolve, reject) => {
-            turn.resolve = resolve;
-            turn.reject = reject;
+            turn.resolve = (result) => {
+                resolve(result);
+                completeTurn();
+            };
+            turn.reject = (error) => {
+                reject(error);
+                completeTurn();
+            };
         });
         session.turnQueue ??= [];
         session.turnQueue.push(turn);
@@ -1147,6 +1183,15 @@ export class ClaudeAcpAgent {
         await this.publishGoalFromPrompt(sessionId, firstText, steeredUuid);
         return { outcome: "injected" };
     }
+    /** Publish the audit terminal for every turn path that did not reach the
+     *  report tool. The support flips the turn state synchronously before its
+     *  transport await, so callers can stay fail-open and settle the ACP prompt
+     *  immediately without allowing a racing lifecycle path to publish twice. */
+    finishFileChangeAudit(session, turn, reason) {
+        if (!turn.fileChangeAudit || !session.fileChangeAuditSupport)
+            return;
+        void session.fileChangeAuditSupport.finishUnavailable(turn.fileChangeAudit, reason);
+    }
     /** Lazily start the per-session consumer that drains the SDK query stream for
      *  the session's whole life. Idempotent: only the first `prompt()` starts it. */
     ensureConsumer(session, sessionId) {
@@ -1228,6 +1273,14 @@ export class ClaudeAcpAgent {
          *  as the turn's answer. */
         const sendUpdate = async (notification) => {
             const { update } = notification;
+            if (isFileChangeAuditReportPhase(session.activeTurn?.fileChangeAudit) &&
+                (update.sessionUpdate === "agent_message_chunk" ||
+                    update.sessionUpdate === "agent_thought_chunk" ||
+                    update.sessionUpdate === "user_message_chunk" ||
+                    update.sessionUpdate === "tool_call" ||
+                    update.sessionUpdate === "tool_call_update")) {
+                return;
+            }
             if (update.sessionUpdate === "agent_message_chunk") {
                 const claudeMeta = update._meta?.claudeCode;
                 if (!claudeMeta?.parentToolUseId) {
@@ -1523,11 +1576,14 @@ export class ClaudeAcpAgent {
         };
         /** Settle the active turn's deferred exactly once, disarm the force-cancel
          *  backstop (the turn is over), and drop it from the queue. */
-        const settleActive = (result) => {
+        const settleActive = (result, auditReason = result.stopReason === "cancelled"
+            ? "cancelled"
+            : "notReported") => {
             const turn = session.activeTurn;
             if (!turn || turn.settled) {
                 return;
             }
+            this.finishFileChangeAudit(session, turn, auditReason);
             // Captured before the settled flip below (isHeldOpen tests !settled).
             const wasHeld = isHeldOpen(turn);
             turn.settled = true;
@@ -1561,6 +1617,7 @@ export class ClaudeAcpAgent {
                 this.logger.error(`Session ${params.sessionId}: cannot fail active turn because no unsettled active turn exists: ${error}`);
                 return;
             }
+            this.finishFileChangeAudit(session, turn, "providerError");
             turn.settled = true;
             session.turnQueue = (session.turnQueue ?? []).filter((t) => t !== turn);
             session.activeTurn = null;
@@ -1595,7 +1652,7 @@ export class ClaudeAcpAgent {
                 stopReason: "end_turn",
                 usage: sessionUsage(session),
                 _meta: sessionFailureMeta(failure),
-            });
+            }, "providerError");
         };
         /** Reject every in-flight turn — used when the stream dies. */
         const failAllTurns = (error) => {
@@ -1607,6 +1664,7 @@ export class ClaudeAcpAgent {
             session.turnQueue = [];
             for (const turn of turns) {
                 if (!turn.settled) {
+                    this.finishFileChangeAudit(session, turn, "providerError");
                     const wasHeld = isHeldOpen(turn);
                     turn.settled = true;
                     if (wasHeld) {
@@ -1755,6 +1813,7 @@ export class ClaudeAcpAgent {
                     // still here was enqueued afterward and was not part of the cancel.)
                     for (const queued of [...(session.turnQueue ?? [])]) {
                         if (!queued.settled) {
+                            this.finishFileChangeAudit(session, queued, "providerError");
                             queued.settled = true;
                             queued.reject(RequestError.internalError(undefined, SESSION_ENDED_MESSAGE));
                         }
@@ -3417,6 +3476,7 @@ export class ClaudeAcpAgent {
         if (session.turnQueue) {
             for (const turn of session.turnQueue) {
                 if (turn !== session.activeTurn && !turn.settled) {
+                    this.finishFileChangeAudit(session, turn, "cancelled");
                     turn.settled = true;
                     // Deliberately no `usage`: a queued turn never ran, so the session
                     // accumulator (the active turn's tally) is not its spend.
@@ -3478,6 +3538,7 @@ export class ClaudeAcpAgent {
         {
             const active = session.activeTurn;
             if (isHeldOpen(active)) {
+                this.finishFileChangeAudit(session, active, "cancelled");
                 active.settled = true;
                 // Mirror settleActive's invariants (it is consumer-scoped and
                 // unreachable from here): disarm the backstop — none should be
@@ -3815,6 +3876,13 @@ export class ClaudeAcpAgent {
             })
             : undefined;
         let replayTurnId;
+        // Stop-hook additionalContext is persisted as an internal user message.
+        // Once that marker (or the internal tool itself) appears, suppress the
+        // whole audit exchange until its tool result. This also hides a disobedient
+        // model's separate prose message, while an ordinary next user prompt safely
+        // ends an incomplete audit lane.
+        let replayingFileChangeAudit = false;
+        const replayFileChangeAuditToolUseIds = new Set();
         for (const message of messages) {
             if (message.type === "user" &&
                 message.parent_tool_use_id === null &&
@@ -3864,9 +3932,60 @@ export class ClaudeAcpAgent {
                 if (content === null)
                     continue;
             }
+            const auditBlocks = Array.isArray(content)
+                ? content.filter((block) => typeof block === "object" && block !== null)
+                : [];
+            const hasFileChangeAuditMarker = (typeof content === "string" && containsFileChangeAuditMarker(content)) ||
+                auditBlocks.some((block) => typeof block.text === "string" && containsFileChangeAuditMarker(block.text));
+            const fileChangeAuditToolUseIds = auditBlocks.flatMap((block) => (block.type === "tool_use" ||
+                block.type === "server_tool_use" ||
+                block.type === "mcp_tool_use") &&
+                typeof block.name === "string" &&
+                isFileChangeAuditTool(block.name) &&
+                typeof block.id === "string"
+                ? [block.id]
+                : []);
+            const replayMessageRole = message.message
+                ?.role;
+            if (hasFileChangeAuditMarker || fileChangeAuditToolUseIds.length > 0) {
+                replayingFileChangeAudit = true;
+                for (const toolUseId of fileChangeAuditToolUseIds) {
+                    replayFileChangeAuditToolUseIds.add(toolUseId);
+                }
+                continue;
+            }
+            if (replayingFileChangeAudit) {
+                const toolResultIds = auditBlocks.flatMap((block) => (block.type === "tool_result" || block.type === "mcp_tool_result") &&
+                    typeof block.tool_use_id === "string"
+                    ? [block.tool_use_id]
+                    : []);
+                let completedReport = false;
+                for (const toolUseId of toolResultIds) {
+                    if (replayFileChangeAuditToolUseIds.delete(toolUseId))
+                        completedReport = true;
+                }
+                if (completedReport && replayFileChangeAuditToolUseIds.size === 0) {
+                    replayingFileChangeAudit = false;
+                    continue;
+                }
+                // A denied attempt to call another tool is still part of the hidden
+                // lane. Its result must not end replay suppression before the report.
+                if (toolResultIds.length > 0) {
+                    continue;
+                }
+                // The next real user prompt is already represented by the client and
+                // starts a new turn; do not let a missing audit result hide it or the
+                // rest of the replay.
+                if (replayMessageRole === "user") {
+                    replayingFileChangeAudit = false;
+                }
+                else {
+                    continue;
+                }
+            }
             for (const notification of toAcpNotifications(
             // @ts-expect-error - untyped in SDK but we handle all of these
-            content, 
+            content,
             // @ts-expect-error - untyped in SDK but we handle all of these
             message.message.role, sessionId, toolUseCache, this.client, this.logger, {
                 registerHooks: false,
@@ -3955,6 +4074,26 @@ export class ClaudeAcpAgent {
                 return {
                     behavior: "deny",
                     message: "Session not found",
+                };
+            }
+            const fileChangeAudit = session.activeTurn?.fileChangeAudit;
+            if (isFileChangeAuditReportPhase(fileChangeAudit)) {
+                // The hidden continuation is an audit-only lane: it may submit the
+                // wrapper-owned report, but it must not run another command after the
+                // user-visible answer has already completed.
+                if (isFileChangeAuditTool(toolName) && fileChangeAudit?.phase === "collecting") {
+                    return { behavior: "allow", updatedInput: toolInput };
+                }
+                return {
+                    behavior: "deny",
+                    message: "Only the internal file-change report is allowed during the audit.",
+                };
+            }
+            // The tool is intentionally unusable outside a negotiated audit turn.
+            if (isFileChangeAuditTool(toolName)) {
+                return {
+                    behavior: "deny",
+                    message: "No file-change report was requested for this turn.",
                 };
             }
             // When the tool call originates inside a subagent, attribute the eagerly
@@ -4654,6 +4793,30 @@ export class ClaudeAcpAgent {
         // below) so the TaskCreated/TaskCompleted hook callbacks can close over
         // the same Map that the streaming message handler will read from.
         const taskState = new Map();
+        // Resolve every workspace root once. The hidden report tool uses this same
+        // set for lexical path validation, and the SDK receives it below.
+        const acpAdditionalDirectories = params.additionalDirectories ?? sessionMeta?.additionalRoots ?? [];
+        const additionalDirectories = [
+            ...(userProvidedOptions?.additionalDirectories ?? []),
+            ...acpAdditionalDirectories,
+        ];
+        const fileChangeAuditSupport = supportsAgentFileChangeReport(this.clientCapabilities)
+            ? createFileChangeAuditSupport({
+                cwd: params.cwd,
+                additionalDirectories,
+                getActiveState: () => this.sessions[sessionId]?.activeTurn?.fileChangeAudit,
+                publish: async (result) => {
+                    await this.client.sessionUpdate({
+                        sessionId,
+                        update: {
+                            sessionUpdate: "session_info_update",
+                            _meta: agentFileChangeReportMeta(result),
+                        },
+                    });
+                },
+                logError: (message) => this.logger.error(message),
+            })
+            : undefined;
         // The exact env the query will be created with. Built (and the provider
         // cache key derived from it, below) in one place so the key always
         // describes the backend this query actually talks to: `providers/set`,
@@ -4661,13 +4824,36 @@ export class ClaudeAcpAgent {
         // config concurrently, so re-resolving it after any of the awaits between
         // here and the session registration could disagree with the env baked
         // into the query.
+        const resolvedProvider = this.resolveProviderConfig();
+        const providerEnv = createEnvForProvider(resolvedProvider);
+        const configuredSettings = userProvidedOptions?.settings ??
+            (modelConfig
+                ? {
+                    ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),
+                    ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),
+                }
+                : undefined);
+        // Claude Code applies env from settings.json after the subprocess env. Put
+        // an active ACP route in the programmatic settings tier too so user/project
+        // settings cannot silently restore a different ANTHROPIC_BASE_URL.
+        let settings = configuredSettings;
+        if (resolvedProvider) {
+            const baseSettings = typeof configuredSettings === "string"
+                ? JSON.parse(await fs.readFile(path.resolve(params.cwd, configuredSettings), "utf8"))
+                : configuredSettings;
+            settings = {
+                ...baseSettings,
+                apiKeyHelper: "",
+                env: { ...baseSettings?.env, ...providerEnv },
+            };
+        }
         const env = {
             ...process.env,
             ...userProvidedOptions?.env,
             // Client-managed LLM routing: `providers/set` config wins, else the
-            // legacy gateway auth request. Baked into the query at creation, so it
-            // only affects sessions started after the change (matching the RFD).
-            ...createEnvForProvider(this.resolveProviderConfig()),
+            // legacy gateway auth request. Routing is baked into the query at
+            // creation; provider updates recreate loaded queries between turns.
+            ...providerEnv,
             // Opt-in to session state events like when the agent is idle
             CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
         };
@@ -4676,28 +4862,25 @@ export class ClaudeAcpAgent {
         // SDK, so per-session `_meta` env routing and ambient process-env routing
         // are distinguished exactly as the CLI will see them.
         const providerCacheKey = providerCacheKeyFor(env);
+        this.logger.log(`[session/query] sessionId=${sessionId} resume=${creationOpts?.resume ?? "none"} apiType=${resolvedProvider?.apiType ?? "native"} baseUrl=${resolvedProvider?.baseUrl ?? "native"}`);
         const options = {
             systemPrompt,
             settingSources: ["user", "project", "local"],
             ...(thinking !== undefined && { thinking }),
             ...userProvidedOptions,
-            // CLAUDE_MODEL_CONFIG env var is a fallback for model
-            // configuration (e.g. Bedrock model ID overrides). When the caller
-            // provides settings via _meta, we intentionally ignore the env var —
-            // the caller is assumed to have full control over model configuration.
-            ...(!userProvidedOptions?.settings &&
-                modelConfig && {
-                settings: {
-                    ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),
-                    ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),
-                },
-            }),
+            ...(settings && { settings }),
             env,
             // Override certain fields that must be controlled by ACP
             cwd: params.cwd,
             includePartialMessages: true,
             forwardSubagentText,
-            mcpServers: { ...(userProvidedOptions?.mcpServers || {}), ...mcpServers },
+            mcpServers: {
+                ...(userProvidedOptions?.mcpServers || {}),
+                ...mcpServers,
+                ...(fileChangeAuditSupport
+                    ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
+                    : {}),
+            },
             // If we want bypassPermissions to be an option, we have to allow it here.
             // But it doesn't work in root mode, so we only activate it if it will work.
             allowDangerouslySkipPermissions: ALLOW_BYPASS,
@@ -4731,6 +4914,14 @@ export class ClaudeAcpAgent {
             tools,
             hooks: {
                 ...userProvidedOptions?.hooks,
+                ...(fileChangeAuditSupport
+                    ? {
+                        PreToolUse: [
+                            ...(userProvidedOptions?.hooks?.PreToolUse || []),
+                            { hooks: [fileChangeAuditSupport.preToolUseHook] },
+                        ],
+                    }
+                    : {}),
                 PostToolUse: [
                     ...(userProvidedOptions?.hooks?.PostToolUse || []),
                     {
@@ -4750,6 +4941,14 @@ export class ClaudeAcpAgent {
                         ],
                     },
                 ],
+                ...(fileChangeAuditSupport
+                    ? {
+                        Stop: [
+                            ...(userProvidedOptions?.hooks?.Stop || []),
+                            { hooks: [fileChangeAuditSupport.stopHook] },
+                        ],
+                    }
+                    : {}),
                 TaskCreated: [
                     ...(userProvidedOptions?.hooks?.TaskCreated || []),
                     {
@@ -4780,11 +4979,7 @@ export class ClaudeAcpAgent {
         // legacy `_meta.additionalRoots` extension for clients that haven't been
         // updated yet. Either source is merged with directories supplied via
         // `_meta.claudeCode.options.additionalDirectories` (SDK pass-through).
-        const acpAdditionalDirectories = params.additionalDirectories ?? sessionMeta?.additionalRoots ?? [];
-        options.additionalDirectories = [
-            ...(userProvidedOptions?.additionalDirectories ?? []),
-            ...acpAdditionalDirectories,
-        ];
+        options.additionalDirectories = additionalDirectories;
         if (creationOpts?.resume === undefined || creationOpts?.forkSession) {
             // Set our own session id if not resuming an existing session.
             options.sessionId = sessionId;
@@ -4968,6 +5163,7 @@ export class ClaudeAcpAgent {
             cancelled: false,
             cwd: params.cwd,
             sessionFingerprint: computeSessionFingerprint(params),
+            creationParams: params,
             settingsManager,
             accumulatedUsage: {
                 inputTokens: 0,
@@ -4997,12 +5193,49 @@ export class ClaudeAcpAgent {
             owedTrailingIdles: 0,
             messageIdToUuid: new Map(),
             sessionFailureState: createSessionFailureState(),
+            fileChangeReportRequestIds: new Set(),
+            fileChangeAuditSupport,
         };
         return {
             sessionId,
             modes,
             configOptions,
         };
+    }
+    /**
+     * Provider routing is baked into the environment of each SDK Query. Wait for
+     * all submitted turns to settle, close every query, then resume each Claude
+     * session with the same ID so subsequent turns inherit the new environment.
+     */
+    async enqueueProviderUpdate(config) {
+        const previous = this.providerUpdate?.catch(() => undefined) ?? Promise.resolve();
+        const update = previous.then(async () => {
+            const sessions = Object.entries(this.sessions);
+            const activeTurns = sessions.flatMap(([, session]) => (session.turnQueue ?? []).flatMap((turn) => (turn.completion ? [turn.completion] : [])));
+            if (activeTurns.length > 0) {
+                this.logger.log(`Waiting for ${activeTurns.length} active Claude turn(s) before provider update`);
+                await Promise.all(activeTurns);
+            }
+            this.providerConfig = config;
+            for (const [sessionId, session] of sessions) {
+                if (this.sessions[sessionId] !== session || !session.creationParams) {
+                    continue;
+                }
+                this.logger.log(`Recreating Claude session ${sessionId} for provider update`);
+                this.closeQueryStream(session);
+                delete this.sessions[sessionId];
+                await this.createSession(session.creationParams, { resume: sessionId });
+            }
+        });
+        this.providerUpdate = update;
+        try {
+            await update;
+        }
+        finally {
+            if (this.providerUpdate === update) {
+                this.providerUpdate = null;
+            }
+        }
     }
 }
 function shouldEmitRawMessage(config, message) {
@@ -5091,13 +5324,27 @@ function createEnvForProvider(config) {
     if (!config) {
         return {};
     }
+    const resetRouting = {
+        ANTHROPIC_BASE_URL: "",
+        ANTHROPIC_BEDROCK_BASE_URL: "",
+        ANTHROPIC_VERTEX_BASE_URL: "",
+        CLAUDE_CODE_USE_BEDROCK: "0",
+        CLAUDE_CODE_USE_VERTEX: "0",
+        ANTHROPIC_VERTEX_PROJECT_ID: "",
+        CLOUD_ML_REGION: "",
+        AWS_REGION: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+        CLAUDE_CODE_OAUTH_TOKEN: "",
+    };
     const customHeaders = Object.entries(config.headers)
         .map(([key, value]) => `${key}: ${value}`)
         .join("\n");
     if (config.apiType === "bedrock") {
         return {
+            ...resetRouting,
             CLAUDE_CODE_USE_BEDROCK: "1",
-            AWS_BEARER_TOKEN_BEDROCK: " ", // Must be non-empty to bypass pass configuration check
+            AWS_BEARER_TOKEN_BEDROCK: "acp-proxy", // Bypass local AWS credential checks
             ANTHROPIC_BEDROCK_BASE_URL: config.baseUrl,
             ANTHROPIC_CUSTOM_HEADERS: customHeaders,
         };
@@ -5106,6 +5353,7 @@ function createEnvForProvider(config) {
         // `config.vertex` is guaranteed present for vertex by `unstable_setProvider`
         // validation; fall back to empty strings defensively.
         return {
+            ...resetRouting,
             CLAUDE_CODE_USE_VERTEX: "1",
             ANTHROPIC_VERTEX_BASE_URL: config.baseUrl,
             ANTHROPIC_VERTEX_PROJECT_ID: config.vertex?.projectId ?? "",
@@ -5114,9 +5362,10 @@ function createEnvForProvider(config) {
         };
     }
     return {
+        ...resetRouting,
         ANTHROPIC_BASE_URL: config.baseUrl,
         ANTHROPIC_CUSTOM_HEADERS: customHeaders,
-        ANTHROPIC_AUTH_TOKEN: " ", // Must be specified to bypass claude login requirement
+        ANTHROPIC_AUTH_TOKEN: "acp-proxy", // Bypass local Claude login checks
     };
 }
 /**
@@ -5983,7 +6232,7 @@ function isTaskTool(toolName) {
  *  permission-surfaced tool_call for them (see `ensureToolCallEmitted`) must be
  *  resolved explicitly at tool_result time. */
 function shouldEmitToolCall(toolName) {
-    return toolName !== "TodoWrite" && !isTaskTool(toolName);
+    return toolName !== "TodoWrite" && !isTaskTool(toolName) && !isFileChangeAuditTool(toolName);
 }
 /** Build the Claude Code-specific metadata for a tool call. Bash descriptions
  *  are kept out of ACP's standard `title`, which clients may use as the shell
@@ -6136,7 +6385,7 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
     const registerHooks = options?.registerHooks !== false;
     const supportsTerminalOutput = options?.clientCapabilities?._meta?.["terminal_output"] === true;
     if (typeof content === "string") {
-        if (content.length === 0) {
+        if (content.length === 0 || containsFileChangeAuditMarker(content)) {
             return [];
         }
         const update = {
@@ -6170,6 +6419,13 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
     // Unlike `tool_use_result`, entries carry their own tool_use_id, so batched
     // messages need no single-block guard.
     const toolResultMeta = parseToolResultMeta(options?.toolResultMeta);
+    // A report-phase assistant message may contain a short text preface and the
+    // internal tool call in the same content array. Hide the whole message, not
+    // only the tool block, so it stays absent on session replay as well as live.
+    const containsFileChangeAuditToolUse = content.some((chunk) => (chunk.type === "tool_use" ||
+        chunk.type === "server_tool_use" ||
+        chunk.type === "mcp_tool_use") &&
+        isFileChangeAuditTool(chunk.name));
     const output = [];
     // Only handle the first chunk for streaming; extend as needed for batching
     for (const chunk of content) {
@@ -6177,7 +6433,9 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
         switch (chunk.type) {
             case "text":
             case "text_delta": {
-                if (chunk.text) {
+                if (chunk.text &&
+                    !containsFileChangeAuditToolUse &&
+                    !containsFileChangeAuditMarker(chunk.text)) {
                     update = {
                         sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
                         content: {
@@ -6189,21 +6447,22 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                 break;
             }
             case "image":
-                update = {
-                    sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
-                    content: {
-                        type: "image",
-                        data: chunk.source.type === "base64" ? chunk.source.data : "",
-                        mimeType: chunk.source.type === "base64" ? chunk.source.media_type : "",
-                        uri: chunk.source.type === "url" ? chunk.source.url : undefined,
-                    },
-                };
+                if (!containsFileChangeAuditToolUse)
+                    update = {
+                        sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
+                        content: {
+                            type: "image",
+                            data: chunk.source.type === "base64" ? chunk.source.data : "",
+                            mimeType: chunk.source.type === "base64" ? chunk.source.media_type : "",
+                            uri: chunk.source.type === "url" ? chunk.source.url : undefined,
+                        },
+                    };
                 break;
             case "thinking":
             case "thinking_delta": {
                 // Recent models default `thinking.display` to "omitted", which streams
                 // signature-only thinking blocks whose text is empty.
-                if (chunk.thinking) {
+                if (chunk.thinking && !containsFileChangeAuditToolUse) {
                     update = {
                         sessionUpdate: "agent_thought_chunk",
                         content: {
@@ -6219,7 +6478,11 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
             case "mcp_tool_use": {
                 const alreadyCached = chunk.id in toolUseCache;
                 toolUseCache[chunk.id] = chunk;
-                if (chunk.name === "TodoWrite") {
+                if (isFileChangeAuditTool(chunk.name)) {
+                    // Wrapper-owned audit protocol: never surface or register generic
+                    // PostToolUse callbacks for the internal tool.
+                }
+                else if (chunk.name === "TodoWrite") {
                     // @ts-expect-error - sometimes input is empty object or undefined
                     if (Array.isArray(chunk.input?.todos)) {
                         update = {
@@ -6341,6 +6604,10 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                         });
                     }
                     logger.error(`[claude-agent-acp] Got a tool result for tool use that wasn't tracked: ${chunk.tool_use_id}`);
+                    break;
+                }
+                if (isFileChangeAuditTool(toolUse.name)) {
+                    delete toolUseCache[chunk.tool_use_id];
                     break;
                 }
                 // A permission request may have surfaced a plan-rendered (TodoWrite) or
@@ -6624,7 +6891,7 @@ export async function runPromptWithCancellation(agent, params, signal) {
         signal.removeEventListener("abort", onAbort);
     }
 }
-export function runAcp() {
+export function runAcp(logger) {
     const input = nodeToWebWritable(process.stdout);
     const output = nodeToWebReadable(process.stdin);
     const stream = ndJsonStream(input, output);
@@ -6657,7 +6924,7 @@ export function runAcp() {
         .onRequest(STEER_METHOD, { parse: parseSteerRequest }, (ctx) => agent.steer(ctx.params))
         .onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params))
         .connect(stream);
-    agent = new ClaudeAcpAgent(new ClientConnection(connection.client));
+    agent = new ClaudeAcpAgent(new ClientConnection(connection.client), logger);
     return { connection, agent };
 }
 function commonPrefixLength(a, b) {
@@ -6752,6 +7019,7 @@ const PROVIDER_ROUTING_ENV_VARS = [
     "ANTHROPIC_CUSTOM_HEADERS",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
 ];
 /** Stable identifier for the LLM backend a session's query is created against,
  *  used to scope {@link contextWindowCache} per backend. Positional `\0`-join

@@ -624,6 +624,7 @@ describe("createSession options merging", () => {
                 headers: {},
             });
             const plain = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+            const plainProviderCacheKey = sessionFor(plain.sessionId).providerCacheKey;
             await agent.unstable_setProvider({
                 providerId: "main",
                 apiType: "anthropic",
@@ -631,7 +632,7 @@ describe("createSession options merging", () => {
                 headers: { "anthropic-beta": "context-1m-2025-08-07" },
             });
             const beta = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
-            expect(sessionFor(beta.sessionId).providerCacheKey).not.toBe(sessionFor(plain.sessionId).providerCacheKey);
+            expect(sessionFor(beta.sessionId).providerCacheKey).not.toBe(plainProviderCacheKey);
         });
     });
     describe("refusal fallback dialog", () => {

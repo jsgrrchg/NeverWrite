@@ -5,6 +5,7 @@ import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
 import { type SessionFailureState } from "./session-failure-extension.js";
+import { type FileChangeAuditSupport, type FileChangeAuditTurnState } from "./file-change-audit.js";
 import { TaskState } from "./tools.js";
 import { Pushable } from "./utils.js";
 export declare const CLAUDE_CONFIG_DIR: string;
@@ -74,6 +75,10 @@ type Turn = {
      *  so the consumer can't promote them via the replay; it falls back to
      *  promoting the queue head when the result arrives. */
     isLocalOnlyCommand: boolean;
+    /** Optional hidden, model-authored file-change audit requested by the ACP
+     *  client for this turn. The state is turn-owned so a late tool call can
+     *  never be rebound to a newer prompt. */
+    fileChangeAudit?: FileChangeAuditTurnState;
     /** Set once the deferred has been resolved/rejected, so the consumer never
      *  settles a turn twice (idle + handoff + stream-end can all race). */
     settled: boolean;
@@ -170,6 +175,8 @@ type Turn = {
     steeredSettle?: PromptResponse;
     resolve: (response: PromptResponse) => void;
     reject: (error: unknown) => void;
+    /** Settles after the ACP prompt request completes, regardless of outcome. */
+    completion?: Promise<void>;
 };
 type Session = {
     query: Query;
@@ -181,6 +188,14 @@ type Session = {
     /** The turn whose messages the consumer is currently attributing output to
      *  (the head of `turnQueue` once its user message has been echoed). */
     activeTurn?: Turn | null;
+    /** Request ids already accepted for hidden agent file-change reports. Kept
+     *  for the session lifetime so a redelivered prompt cannot publish the same
+     *  audit twice or bind a late report to another turn. */
+    fileChangeReportRequestIds: Set<string>;
+    /** Session-owned publisher for negotiated file-change audits. Turn state
+     *  stays on each Turn; this controller supplies the single idempotent
+     *  unavailable terminal used by every non-report settlement path. */
+    fileChangeAuditSupport?: FileChangeAuditSupport;
     /** Optimistic goal state published for a submitted `/goal` command whose
      *  matching runtime update has not arrived yet. Runtime updates for the old
      *  goal are suppressed until this command is echoed or completes, otherwise
@@ -258,6 +273,8 @@ type Session = {
     /** Serialized snapshot of session-defining params (cwd, mcpServers) used to
      *  detect when loadSession/resumeSession is called with changed values. */
     sessionFingerprint: string;
+    /** Original ACP parameters used to recreate this query with a new provider. */
+    creationParams?: NewSessionRequest;
     settingsManager: SettingsManager;
     accumulatedUsage: AccumulatedUsage;
     modes: SessionModeState;
@@ -664,6 +681,8 @@ export declare class ClaudeAcpAgent {
     gatewayAuthRequest?: GatewayAuthRequest;
     /** Set while ACP overrides the agent's native provider configuration. */
     providerConfig?: ProviderConfig;
+    /** Serializes provider changes while every open query is recreated between turns. */
+    private providerUpdate;
     /** Grace period before a `session/cancel` forces a wedged prompt loop to
      *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
      *  tests can shrink it. */
@@ -730,6 +749,11 @@ export declare class ClaudeAcpAgent {
      *  `session/prompt`. Without the opt-in, the existing detached `prompt()` and
      *  `startedNewTurn` result are preserved for compatibility. */
     steer(params: SteerRequest): Promise<SteerResponse>;
+    /** Publish the audit terminal for every turn path that did not reach the
+     *  report tool. The support flips the turn state synchronously before its
+     *  transport await, so callers can stay fail-open and settle the ACP prompt
+     *  immediately without allowing a racing lifecycle path to publish twice. */
+    private finishFileChangeAudit;
     /** Lazily start the per-session consumer that drains the SDK query stream for
      *  the session's whole life. Idempotent: only the first `prompt()` starts it. */
     private ensureConsumer;
@@ -885,6 +909,12 @@ export declare class ClaudeAcpAgent {
      */
     private validateCwd;
     private createSession;
+    /**
+     * Provider routing is baked into the environment of each SDK Query. Wait for
+     * all submitted turns to settle, close every query, then resume each Claude
+     * session with the same ID so subsequent turns inherit the new environment.
+     */
+    private enqueueProviderUpdate;
 }
 export declare const BUILTIN_AGENT_NAMES: Set<string>;
 export declare const DEFAULT_AGENT_ID = "default";
@@ -1041,7 +1071,7 @@ export declare function streamEventToAcpNotifications(message: SDKPartialAssista
  *  subsequent turn. `signal` also aborts on connection close, in which case
  *  cancelling the in-flight turn is the desired behavior anyway. */
 export declare function runPromptWithCancellation(agent: Pick<ClaudeAcpAgent, "prompt" | "cancel" | "logger">, params: PromptRequest, signal: AbortSignal): Promise<PromptResponse>;
-export declare function runAcp(): {
+export declare function runAcp(logger?: Logger): {
     connection: import("@agentclientprotocol/sdk").AgentConnection;
     agent: ClaudeAcpAgent;
 };

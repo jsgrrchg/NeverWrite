@@ -33,6 +33,8 @@ export declare function makeMockQuery(overrides?: Record<string, unknown>): {
         totalTokens: number;
         rawMaxTokens: number;
     }>;
+    close: () => void;
+    interrupt: () => Promise<undefined>;
     [Symbol.asyncIterator]: () => AsyncGenerator<never, void, unknown>;
 };
 //# sourceMappingURL=helpers.d.ts.map

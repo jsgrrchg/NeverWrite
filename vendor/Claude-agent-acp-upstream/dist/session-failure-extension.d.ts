@@ -1,6 +1,6 @@
 import type { ClientCapabilities, SessionNotification } from "@agentclientprotocol/sdk";
 import { getSessionMessages, type SDKAssistantMessageError } from "@anthropic-ai/claude-agent-sdk";
-export declare function airSessionFailureCapabilityMeta(): {
+export declare function airSessionFailureCapabilityMeta(...additionalCapabilities: string[]): {
     jetbrains: {
         air: {
             version: number;
