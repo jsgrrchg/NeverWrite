@@ -29,7 +29,7 @@ use codex_core::{
     config::{Config, PermissionProfileSnapshot, set_project_trust_level},
     review_prompts::user_facing_hint,
 };
-use codex_extension_items::ExtensionItem;
+use codex_extension_items::{ExtensionItem, image_generation::ImageGenerationFailure};
 use codex_features::Feature;
 use codex_http_client::{HttpClientFactory, OutboundProxyPolicy};
 use codex_login::auth::AuthManager;
@@ -1019,8 +1019,24 @@ fn image_generation_completion_parts(
     revised_prompt: Option<String>,
     result: String,
     saved_path: Option<String>,
+    failure: Option<ImageGenerationFailure>,
 ) -> (String, ToolCallStatus, Option<String>, serde_json::Value) {
-    let tool_status = image_generation_tool_status(&status);
+    let failure_detail = failure.as_ref().map(|failure| match failure {
+        ImageGenerationFailure::UsageLimitExceeded {
+            limit_id,
+            resets_at,
+        } => match resets_at {
+            Some(resets_at) => {
+                format!("Usage limit {limit_id} was exceeded; resets at {resets_at}")
+            }
+            None => format!("Usage limit {limit_id} was exceeded"),
+        },
+    });
+    let tool_status = if failure.is_some() {
+        ToolCallStatus::Failed
+    } else {
+        image_generation_tool_status(&status)
+    };
     let is_failure = tool_status == ToolCallStatus::Failed;
     let title = if is_failure {
         "Image generation failed"
@@ -1028,7 +1044,10 @@ fn image_generation_completion_parts(
         "Generated image"
     }
     .to_string();
-    let detail = saved_path.clone().or_else(|| Some(result.clone()));
+    let detail = failure_detail
+        .clone()
+        .or_else(|| saved_path.clone())
+        .or_else(|| Some(result.clone()));
     let mut raw_input = json!({
         "status": status,
         "result": result.clone(),
@@ -1040,8 +1059,11 @@ fn image_generation_completion_parts(
         if let Some(revised_prompt) = revised_prompt {
             object.insert("revised_prompt".to_string(), json!(revised_prompt));
         }
+        if let Some(failure) = failure {
+            object.insert("failure".to_string(), json!(failure));
+        }
         if is_failure {
-            object.insert("error".to_string(), json!(result));
+            object.insert("error".to_string(), json!(failure_detail.unwrap_or(result)));
         }
     }
 
@@ -1054,9 +1076,10 @@ fn completed_image_generation_tool_call(
     revised_prompt: Option<String>,
     result: String,
     saved_path: Option<String>,
+    failure: Option<ImageGenerationFailure>,
 ) -> ToolCall {
     let (title, tool_status, detail, raw_input) =
-        image_generation_completion_parts(status, revised_prompt, result, saved_path);
+        image_generation_completion_parts(status, revised_prompt, result, saved_path, failure);
     let mut tool_call = ToolCall::new(image_generation_tool_call_id(&call_id), title)
         .kind(ToolKind::Other)
         .status(tool_status)
@@ -1074,9 +1097,10 @@ fn completed_image_generation_tool_update(
     revised_prompt: Option<String>,
     result: String,
     saved_path: Option<String>,
+    failure: Option<ImageGenerationFailure>,
 ) -> ToolCallUpdate {
     let (title, tool_status, detail, raw_input) =
-        image_generation_completion_parts(status, revised_prompt, result, saved_path);
+        image_generation_completion_parts(status, revised_prompt, result, saved_path, failure);
     let mut fields = ToolCallUpdateFields::new()
         .title(title)
         .status(tool_status)
@@ -2432,6 +2456,7 @@ impl PromptState {
             revised_prompt,
             result,
             saved_path,
+            failure,
             ..
         } = event;
         let saved_path = saved_path.map(|path| path.display().to_string());
@@ -2442,6 +2467,7 @@ impl PromptState {
                 revised_prompt,
                 result,
                 saved_path,
+                failure,
             ))
             .await;
     }
@@ -3339,14 +3365,15 @@ impl PromptState {
         let call_id = guardian_assessment_tool_call_id(&event.id);
         let status = guardian_assessment_tool_call_status(&event.status);
         let content = guardian_assessment_content(&event);
-        let raw_event = serde_json::json!(&event);
+        let title = guardian_assessment_title(&event.action);
+        let raw_event = guardian_assessment_raw_event(&event);
 
         match event.status {
             GuardianAssessmentStatus::InProgress => {
                 if self.active_guardian_assessments.insert(event.id.clone()) {
                     client
                         .send_tool_call(
-                            ToolCall::new(call_id, "Guardian Review")
+                            ToolCall::new(call_id, title)
                                 .kind(ToolKind::Think)
                                 .status(status)
                                 .content(content)
@@ -3382,7 +3409,7 @@ impl PromptState {
                 } else {
                     client
                         .send_tool_call(
-                            ToolCall::new(call_id, "Guardian Review")
+                            ToolCall::new(call_id, title)
                                 .kind(ToolKind::Think)
                                 .status(status)
                                 .content(content)
@@ -5647,6 +5674,7 @@ impl<A: Auth> ThreadActor<A> {
                 revised_prompt,
                 result,
                 saved_path,
+                failure,
                 ..
             }) => {
                 self.client
@@ -5656,6 +5684,7 @@ impl<A: Auth> ThreadActor<A> {
                         revised_prompt.clone(),
                         result.clone(),
                         saved_path.as_ref().map(|path| path.display().to_string()),
+                        failure.clone(),
                     ))
                     .await;
             }
@@ -6011,6 +6040,7 @@ impl<A: Auth> ThreadActor<A> {
                         status.clone(),
                         revised_prompt.clone(),
                         result.clone(),
+                        None,
                         None,
                     ))
                     .await;
@@ -6706,6 +6736,32 @@ fn guardian_assessment_content(event: &GuardianAssessmentEvent) -> Vec<ToolCallC
     content
 }
 
+fn guardian_assessment_title(
+    action: &codex_protocol::approvals::GuardianAssessmentAction,
+) -> String {
+    match action {
+        codex_protocol::approvals::GuardianAssessmentAction::WriteStdin { process_id, .. } => {
+            format!("Review input to process {process_id}")
+        }
+        _ => "Guardian Review".to_string(),
+    }
+}
+
+fn guardian_assessment_raw_event(event: &GuardianAssessmentEvent) -> serde_json::Value {
+    let mut value = serde_json::json!(event);
+    if matches!(
+        event.action,
+        codex_protocol::approvals::GuardianAssessmentAction::WriteStdin { .. }
+    ) && let Some(action) = value
+        .as_object_mut()
+        .and_then(|event| event.get_mut("action"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        action.remove("stdin");
+    }
+    value
+}
+
 fn guardian_action_summary(
     action: &codex_protocol::approvals::GuardianAssessmentAction,
 ) -> Option<String> {
@@ -6852,6 +6908,228 @@ mod tests {
             panic!("denied option should preserve the denied decision");
         };
         assert_eq!(rejection, ACP_COMMAND_REJECTION_REASON);
+    }
+
+    #[test]
+    fn mcp_policy_approval_is_only_projected_when_the_runtime_offers_it() {
+        let without_policy = build_exec_permission_options(
+            &[
+                ReviewDecision::Approved,
+                ReviewDecision::Denied {
+                    rejection: "runtime rejection".to_string(),
+                },
+            ],
+            None,
+            None,
+        );
+        assert_eq!(
+            without_policy
+                .iter()
+                .map(|option| option.option_id)
+                .collect::<Vec<_>>(),
+            vec!["approved", "denied"]
+        );
+
+        let with_policy = build_exec_permission_options(
+            &[
+                ReviewDecision::Approved,
+                ReviewDecision::ApprovedMcpPolicyAmendment,
+                ReviewDecision::Denied {
+                    rejection: "runtime rejection".to_string(),
+                },
+            ],
+            None,
+            None,
+        );
+        assert_eq!(
+            with_policy
+                .iter()
+                .map(|option| option.option_id)
+                .collect::<Vec<_>>(),
+            vec!["approved", "approved-mcp-policy-amendment", "denied"]
+        );
+        assert_eq!(
+            with_policy[1].permission_option.kind,
+            PermissionOptionKind::AllowAlways
+        );
+        assert_eq!(
+            with_policy[1].decision,
+            ReviewDecision::ApprovedMcpPolicyAmendment
+        );
+    }
+
+    #[test]
+    fn path_uri_entries_render_posix_windows_and_opaque_paths() -> anyhow::Result<()> {
+        let cases = [
+            ("file:///home/alice/project", "/home/alice/project"),
+            (
+                "file:///C:/Users/Alice/project",
+                "C:\\Users\\Alice\\project",
+            ),
+            ("file:///%00/bad/path/YQ", "file:///%00/bad/path/YQ"),
+        ];
+
+        for (uri, expected) in cases {
+            let entry = FileSystemSandboxEntry {
+                path: FileSystemPath::Path {
+                    path: codex_utils_path_uri::PathUri::parse(uri)?,
+                },
+                access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
+            };
+            assert_eq!(format_file_system_entry(&entry), expected);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn guardian_write_stdin_keeps_identity_and_redacts_input() -> anyhow::Result<()> {
+        let thread_id = ThreadId::new();
+        let (mut state, session_client, client) = prompt_state_for_projection(thread_id);
+        let event = GuardianAssessmentEvent {
+            id: "guardian-stdin-1".to_string(),
+            target_item_id: Some("exec-1".to_string()),
+            plugin_id: None,
+            script_path: None,
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 1,
+            completed_at_ms: None,
+            status: GuardianAssessmentStatus::InProgress,
+            risk_level: None,
+            user_authorization: None,
+            rationale: None,
+            decision_source: None,
+            action: codex_protocol::approvals::GuardianAssessmentAction::WriteStdin {
+                approval_id: "approval-1".to_string(),
+                process_id: "process-42".to_string(),
+                stdin: "super-secret-input".to_string(),
+                cwd: codex_utils_path_uri::PathUri::parse("file:///workspace")?,
+            },
+        };
+
+        state
+            .handle_event(&session_client, EventMsg::GuardianAssessment(event.clone()))
+            .await;
+        let mut completed = event;
+        completed.status = GuardianAssessmentStatus::Approved;
+        completed.completed_at_ms = Some(2);
+        completed.rationale = Some("Input is allowed".to_string());
+        state
+            .handle_event(&session_client, EventMsg::GuardianAssessment(completed))
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let start = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(tool_call) => Some(tool_call),
+                _ => None,
+            })
+            .expect("guardian start should create an activity");
+        let end = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => Some(update),
+                _ => None,
+            })
+            .expect("guardian completion should update the activity");
+        assert_eq!(start.tool_call_id, end.tool_call_id);
+        assert_eq!(start.title, "Review input to process process-42");
+        assert_eq!(end.fields.status, Some(ToolCallStatus::Completed));
+        let projection = serde_json::to_string(&*notifications)?;
+        assert!(projection.contains("process-42"));
+        assert!(projection.contains("/workspace"));
+        assert!(!projection.contains("super-secret-input"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn image_failure_reason_overrides_a_success_like_status() -> anyhow::Result<()> {
+        let thread_id = ThreadId::new();
+        let (state, session_client, client) = prompt_state_for_projection(thread_id);
+
+        state
+            .send_image_generation_completed(
+                &session_client,
+                ImageGenerationEndEvent {
+                    call_id: "img-limited".to_string(),
+                    status: "completed".to_string(),
+                    revised_prompt: None,
+                    result: String::new(),
+                    transparent_background: None,
+                    failure: Some(ImageGenerationFailure::UsageLimitExceeded {
+                        limit_id: "images-per-day".to_string(),
+                        resets_at: Some(1234),
+                    }),
+                    saved_path: None,
+                },
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let update = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => Some(update),
+                _ => None,
+            })
+            .expect("image failure should produce a tool update");
+        assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
+        assert_eq!(
+            update.fields.title.as_deref(),
+            Some("Image generation failed")
+        );
+        assert_eq!(
+            update
+                .fields
+                .raw_input
+                .as_ref()
+                .and_then(|raw| raw.get("error"))
+                .and_then(serde_json::Value::as_str),
+            Some("Usage limit images-per-day was exceeded; resets at 1234")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn standalone_function_output_does_not_create_a_tool_activity() -> anyhow::Result<()> {
+        let (actor, client, _conversation) = setup_actor(|_| {}).await?;
+        actor
+            .replay_response_item(&ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: None,
+                name: Some("external_context".to_string()),
+                namespace: None,
+                output: codex_protocol::models::FunctionCallOutputPayload::from_text(
+                    "context only".to_string(),
+                ),
+                internal_chat_message_metadata_passthrough: None,
+            })
+            .await;
+
+        assert!(client.notifications.lock().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_queue_signal_does_not_project_or_mutate_local_prompt_state() {
+        let thread_id = ThreadId::new();
+        let (mut state, session_client, client) = prompt_state_for_projection(thread_id);
+
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::ThreadQueueChanged(codex_protocol::protocol::ThreadQueueChangedEvent {
+                    thread_id,
+                }),
+            )
+            .await;
+
+        assert_eq!(state.event_count, 1);
+        assert!(client.notifications.lock().unwrap().is_empty());
+        assert!(state.active_commands.is_empty());
+        assert!(state.projected_tool_calls.is_empty());
     }
 
     #[tokio::test]
