@@ -34,6 +34,31 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.7.4] - 2026-08-27
+
+### Added
+
+- Added the Automata theme with dedicated light and dark interface, editor syntax, and terminal palettes.
+- Added a **Copy Path** action to note-tab context menus for copying the note path relative to the current vault.
+- Added hover metadata to assistant messages, matching user messages with a timestamp and one-click copy action while keeping the transcript uncluttered when idle.
+- Added a guarded **Restore access to AI chats** recovery action when cloud sync, a filesystem provider, a restore, or a storage reconnect replaces the vault folder identity without changing the logical vault.
+
+### Changed
+
+- Refreshed the default theme with a neutral monochrome accent, updated editor and Vim cursors to follow the active theme accent, and made chat stop and action controls adapt more reliably to light and dark palettes.
+- Updated the embedded Claude ACP runtime to `0.70.0`, including changed-file auditing for more reliable AI change tracking and improved provider handling for loaded sessions.
+- Updated the embedded Codex runtime to `0.150.0`, with explicit turn acknowledgements, expanded runtime approval and failure reporting, broader collaboration lifecycle support, and model-provided `max` and `ultra` reasoning efforts.
+
+### Fixed
+
+- Fixed AI chat history becoming inaccessible after cloud sync, File Provider rematerialization, restore operations, or storage reconnects replaced the vault root while preserving its path and contents.
+- Fixed unavailable vaults remaining stuck in Recents by allowing their local registration, per-vault settings, snapshots, drafts, and device-local AI history to be removed even when the original folder no longer exists.
+- Fixed restarted Codex conversations appearing to forget earlier messages when an orphaned runtime retained the thread writer lock and native resume fell back to a fresh runtime session.
+- Fixed application shutdown leaving owned ACP runtime processes alive, preventing stale processes from retaining thread locks across restarts.
+- Fixed declined or mistimed runtime submissions steering an active turn or leaving an ACP prompt pending instead of returning a clear failure.
+- Fixed the AI composer drop target losing its visual highlight while files are dragged over it.
+- Fixed low-contrast composer action and stop controls in dark themes.
+
 ## [0.7.3] - 2026-08-16
 
 ### Added
