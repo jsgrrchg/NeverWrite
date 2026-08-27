@@ -253,6 +253,8 @@
     --text-heading-muted: #737373;
     --border: #e5e5e5;
     --accent: #6366f1;
+    --composer-send-background: var(--accent);
+    --composer-send-foreground: #ffffff;
     --shadow-soft: 0 18px 48px rgba(15, 23, 42, 0.08);
     --highlight-bg: color-mix(
         in srgb,
@@ -334,6 +336,8 @@
     --text-heading-muted: #8a8a8a;
     --border: #383838;
     --accent: #818cf8;
+    --composer-send-background: #ffffff;
+    --composer-send-foreground: #000000;
     --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
     --highlight-bg: rgba(202, 162, 0, 0.35);
     --highlight-text: #f5e082;

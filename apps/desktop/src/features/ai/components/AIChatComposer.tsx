@@ -2137,12 +2137,14 @@ export function AIChatComposer({
                             width: 28,
                             height: 28,
                             color: canRunPrimaryAction
-                                ? "#fff"
+                                ? primaryAction === "stop"
+                                    ? "#fff"
+                                    : "var(--composer-send-foreground)"
                                 : "var(--text-secondary)",
                             backgroundColor: canRunPrimaryAction
                                 ? primaryAction === "stop"
                                     ? "var(--diff-remove)"
-                                    : "var(--accent)"
+                                    : "var(--composer-send-background)"
                                 : "transparent",
                             border: "none",
                             opacity: canRunPrimaryAction ? 1 : 0.4,
