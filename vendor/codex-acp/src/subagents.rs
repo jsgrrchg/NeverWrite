@@ -484,6 +484,14 @@ pub(crate) fn projection_for_collab_item(item: &CollabAgentToolCallItem) -> Suba
         (CollabAgentTool::Wait, false) => "waiting_end",
         (CollabAgentTool::CloseAgent, true) => "close_begin",
         (CollabAgentTool::CloseAgent, false) => "close_end",
+        (CollabAgentTool::SendMessage, true) => "message_begin",
+        (CollabAgentTool::SendMessage, false) => "message_end",
+        (CollabAgentTool::FollowupTask, true) => "followup_begin",
+        (CollabAgentTool::FollowupTask, false) => "followup_end",
+        (CollabAgentTool::InterruptAgent, true) => "interrupt_begin",
+        (CollabAgentTool::InterruptAgent, false) => "interrupt_end",
+        (CollabAgentTool::ListAgents, true) => "list_agents_begin",
+        (CollabAgentTool::ListAgents, false) => "list_agents_end",
     };
     let title = collab_item_title(item, &display_name);
     let detail = collab_item_detail(item);
@@ -519,6 +527,10 @@ struct CollabItemReceiver<'a> {
 }
 
 fn collab_item_receiver(item: &CollabAgentToolCallItem) -> Option<CollabItemReceiver<'_>> {
+    if item.tool == CollabAgentTool::ListAgents {
+        return None;
+    }
+
     item.receiver_agents
         .first()
         .map(|agent| CollabItemReceiver {
@@ -573,6 +585,32 @@ fn collab_item_title(item: &CollabAgentToolCallItem, display_name: &str) -> Stri
             format!("Failed to close {display_name}")
         }
         (CollabAgentTool::CloseAgent, _) => format!("Closed {display_name}"),
+        (CollabAgentTool::SendMessage, CollabAgentToolCallStatus::InProgress) => {
+            format!("Messaging {display_name}")
+        }
+        (CollabAgentTool::SendMessage, _) if failed => {
+            format!("Failed to message {display_name}")
+        }
+        (CollabAgentTool::SendMessage, _) => format!("Messaged {display_name}"),
+        (CollabAgentTool::FollowupTask, CollabAgentToolCallStatus::InProgress) => {
+            format!("Following up with {display_name}")
+        }
+        (CollabAgentTool::FollowupTask, _) if failed => {
+            format!("Failed to follow up with {display_name}")
+        }
+        (CollabAgentTool::FollowupTask, _) => format!("Followed up with {display_name}"),
+        (CollabAgentTool::InterruptAgent, CollabAgentToolCallStatus::InProgress) => {
+            format!("Interrupting {display_name}")
+        }
+        (CollabAgentTool::InterruptAgent, _) if failed => {
+            format!("Failed to interrupt {display_name}")
+        }
+        (CollabAgentTool::InterruptAgent, _) => format!("Interrupted {display_name}"),
+        (CollabAgentTool::ListAgents, CollabAgentToolCallStatus::InProgress) => {
+            "Listing agents".to_string()
+        }
+        (CollabAgentTool::ListAgents, _) if failed => "Failed to list agents".to_string(),
+        (CollabAgentTool::ListAgents, _) => "Listed agents".to_string(),
     }
 }
 
@@ -618,7 +656,10 @@ fn collab_item_detail(item: &CollabAgentToolCallItem) -> Option<String> {
 }
 
 fn collab_item_tool_status(item: &CollabAgentToolCallItem) -> ToolCallStatus {
-    if item.status == CollabAgentToolCallStatus::Failed {
+    if matches!(
+        item.status,
+        CollabAgentToolCallStatus::Failed | CollabAgentToolCallStatus::Interrupted
+    ) {
         return ToolCallStatus::Failed;
     }
 
@@ -646,7 +687,11 @@ fn collab_item_breadcrumb_meta(
         receiver.and_then(|receiver| receiver.agent_role),
         status,
     );
-    if item.tool == CollabAgentTool::Wait && !item.agents_states.is_empty() {
+    if matches!(
+        item.tool,
+        CollabAgentTool::Wait | CollabAgentTool::ListAgents
+    ) && !item.agents_states.is_empty()
+    {
         meta.insert(
             CODEX_ACP_AGENT_STATUSES_KEY.to_string(),
             json!(agent_status_values(
@@ -704,21 +749,30 @@ fn project_subagent_activity_fields(
     }
 
     let display_name = agent_path.name();
-    let (event_type, title, status) = match kind {
+    let (event_type, title, status, tool_status) = match kind {
         SubAgentActivityKind::Started => (
             "activity_started",
             format!("Started {display_name}"),
             "running",
+            ToolCallStatus::InProgress,
         ),
         SubAgentActivityKind::Interacted => (
             "activity_interacted",
             format!("Contacted {display_name}"),
             "running",
+            ToolCallStatus::InProgress,
         ),
         SubAgentActivityKind::Interrupted => (
             "activity_interrupted",
             format!("Interrupted {display_name}"),
             "interrupted",
+            ToolCallStatus::Failed,
+        ),
+        SubAgentActivityKind::Completed => (
+            "activity_completed",
+            format!("Completed {display_name}"),
+            "completed",
+            ToolCallStatus::Completed,
         ),
     };
 
@@ -753,7 +807,7 @@ fn project_subagent_activity_fields(
     Some(SubagentProjection::ToolCall(
         ToolCall::new(subagent_activity_tool_call_id(activity_id), title)
             .kind(ToolKind::Other)
-            .status(ToolCallStatus::Completed)
+            .status(tool_status)
             .content(content(Some(format!("Agent: {agent_path}"))))
             .raw_output(raw_event(raw_output))
             .meta(meta),
@@ -1315,24 +1369,27 @@ mod tests {
         let child_thread_id = ThreadId::new();
         let parent_session_id = SessionId::new("parent-runtime-session-id");
 
-        for (kind, event_type, status, title) in [
+        for (kind, event_type, status, title, tool_status) in [
             (
                 SubAgentActivityKind::Started,
                 "activity_started",
                 "running",
                 "Started explorer",
+                ToolCallStatus::InProgress,
             ),
             (
                 SubAgentActivityKind::Interacted,
                 "activity_interacted",
                 "running",
                 "Contacted explorer",
+                ToolCallStatus::InProgress,
             ),
             (
                 SubAgentActivityKind::Interrupted,
                 "activity_interrupted",
                 "interrupted",
                 "Interrupted explorer",
+                ToolCallStatus::Failed,
             ),
         ] {
             let projection = projection_for_event(
@@ -1354,7 +1411,7 @@ mod tests {
             };
 
             assert_eq!(tool_call.title, title);
-            assert_eq!(tool_call.status, ToolCallStatus::Completed);
+            assert_eq!(tool_call.status, tool_status);
             assert_eq!(
                 tool_call.tool_call_id.0.as_ref(),
                 subagent_activity_tool_call_id(&format!("event-{kind:?}"))
@@ -1547,6 +1604,137 @@ mod tests {
         assert_eq!(completed.fields.status, Some(ToolCallStatus::Completed));
         assert_eq!(
             completed
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get(CODEX_ACP_CHILD_THREAD_ID_KEY))
+                .and_then(serde_json::Value::as_str),
+            Some(child_thread_id.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn expanded_collaboration_tools_project_stable_and_distinct_lifecycles() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let item = |id: &str, tool, status| CollabAgentToolCallItem {
+            id: id.to_string(),
+            tool,
+            status,
+            sender_thread_id: parent_thread_id,
+            receiver_thread_ids: vec![child_thread_id],
+            receiver_agents: vec![CollabAgentRef {
+                thread_id: child_thread_id,
+                agent_nickname: Some("Galileo".to_string()),
+                agent_role: Some("explorer".to_string()),
+            }],
+            prompt: Some("private coordination payload".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::from([(child_thread_id, AgentStatus::Running)]),
+        };
+
+        for (tool, expected_begin, expected_end, end_status, expected_event) in [
+            (
+                CollabAgentTool::SendMessage,
+                "Messaging Galileo",
+                "Messaged Galileo",
+                CollabAgentToolCallStatus::Completed,
+                "message_end",
+            ),
+            (
+                CollabAgentTool::FollowupTask,
+                "Following up with Galileo",
+                "Followed up with Galileo",
+                CollabAgentToolCallStatus::Completed,
+                "followup_end",
+            ),
+            (
+                CollabAgentTool::InterruptAgent,
+                "Interrupting Galileo",
+                "Interrupted Galileo",
+                CollabAgentToolCallStatus::Interrupted,
+                "interrupt_end",
+            ),
+            (
+                CollabAgentTool::ListAgents,
+                "Listing agents",
+                "Listed agents",
+                CollabAgentToolCallStatus::Completed,
+                "list_agents_end",
+            ),
+        ] {
+            let id = format!("{tool:?}");
+            let SubagentProjection::ToolCall(begin) =
+                projection_for_collab_item(&item(&id, tool, CollabAgentToolCallStatus::InProgress))
+            else {
+                panic!("{tool:?} begin should create a tool call");
+            };
+            let SubagentProjection::ToolCallUpdate(end) =
+                projection_for_collab_item(&item(&id, tool, end_status))
+            else {
+                panic!("{tool:?} end should update a tool call");
+            };
+
+            assert_eq!(begin.tool_call_id, end.tool_call_id);
+            assert_eq!(begin.title, expected_begin);
+            assert_eq!(end.fields.title.as_deref(), Some(expected_end));
+            assert_eq!(
+                end.fields.status,
+                Some(if tool == CollabAgentTool::InterruptAgent {
+                    ToolCallStatus::Failed
+                } else {
+                    ToolCallStatus::Completed
+                })
+            );
+            assert_eq!(
+                end.meta
+                    .as_ref()
+                    .and_then(|meta| meta.get(CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY))
+                    .and_then(serde_json::Value::as_str),
+                Some(expected_event)
+            );
+            if tool == CollabAgentTool::ListAgents {
+                assert!(
+                    end.meta
+                        .as_ref()
+                        .is_some_and(|meta| !meta.contains_key(CODEX_ACP_CHILD_THREAD_ID_KEY))
+                );
+                assert!(
+                    end.meta
+                        .as_ref()
+                        .is_some_and(|meta| meta.contains_key(CODEX_ACP_AGENT_STATUSES_KEY))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn completed_activity_is_a_terminal_projection_with_runtime_identity() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let parent_session_id = SessionId::new(parent_thread_id.to_string());
+        let item = SubAgentActivityItem {
+            id: "activity-1".to_string(),
+            kind: SubAgentActivityKind::Completed,
+            agent_thread_id: child_thread_id,
+            agent_path: "/root/research/explorer"
+                .try_into()
+                .expect("valid agent path"),
+        };
+
+        let Some(SubagentProjection::ToolCall(projection)) =
+            projection_for_subagent_activity_item(&item, parent_thread_id, &parent_session_id)
+        else {
+            panic!("completed activity should project");
+        };
+        assert_eq!(
+            projection.tool_call_id.0.as_ref(),
+            "codex-acp:subagent:activity-1"
+        );
+        assert_eq!(projection.title, "Completed explorer");
+        assert_eq!(projection.status, ToolCallStatus::Completed);
+        assert_eq!(
+            projection
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.get(CODEX_ACP_CHILD_THREAD_ID_KEY))

@@ -702,6 +702,12 @@ impl NativeBackend {
             event_tx,
         }
     }
+
+    fn shutdown(&self) {
+        if let Err(error) = self.ai.shutdown() {
+            eprintln!("Failed to shut down AI runtimes: {error}");
+        }
+    }
 }
 
 impl NativeBackend {
@@ -3192,6 +3198,10 @@ fn main() {
             break;
         }
     }
+
+    if let Ok(backend) = backend.lock() {
+        backend.shutdown();
+    };
 }
 
 #[cfg(test)]

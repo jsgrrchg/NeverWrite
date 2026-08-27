@@ -345,6 +345,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
     private readonly child: ChildProcessWithoutNullStreams;
     private readonly emitEvent: (eventName: string, payload: unknown) => void;
     private readonly pending = new Map<number, PendingRequest>();
+    private gracefulShutdownTimer: ReturnType<typeof setTimeout> | null = null;
     private forceKillTimer: ReturnType<typeof setTimeout> | null = null;
     private failure: Error | null = null;
     private nextId = 1;
@@ -415,6 +416,10 @@ class NativeBackendSidecar implements NativeBackendBridge {
         this.child.on("exit", (code, signal) => {
             this.closed = true;
             this.exited = true;
+            if (this.gracefulShutdownTimer) {
+                clearTimeout(this.gracefulShutdownTimer);
+                this.gracefulShutdownTimer = null;
+            }
             if (this.forceKillTimer) {
                 clearTimeout(this.forceKillTimer);
                 this.forceKillTimer = null;
@@ -473,16 +478,22 @@ class NativeBackendSidecar implements NativeBackendBridge {
             this.child.stdin.end();
         }
 
-        if (!this.exited) {
-            this.child.kill("SIGTERM");
-            if (!this.forceKillTimer) {
-                this.forceKillTimer = setTimeout(() => {
-                    if (!this.exited) {
-                        this.child.kill("SIGKILL");
-                    }
-                }, 1500);
-                this.forceKillTimer.unref();
-            }
+        if (!this.exited && !this.gracefulShutdownTimer) {
+            this.gracefulShutdownTimer = setTimeout(() => {
+                this.gracefulShutdownTimer = null;
+                if (this.exited) return;
+
+                this.child.kill("SIGTERM");
+                if (!this.forceKillTimer) {
+                    this.forceKillTimer = setTimeout(() => {
+                        if (!this.exited) {
+                            this.child.kill("SIGKILL");
+                        }
+                    }, 1500);
+                    this.forceKillTimer.unref();
+                }
+            }, 1500);
+            this.gracefulShutdownTimer.unref();
         }
     }
 

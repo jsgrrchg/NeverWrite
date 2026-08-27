@@ -1261,6 +1261,57 @@ impl NativeAi {
         }
     }
 
+    pub(crate) fn shutdown(&self) -> Result<(), String> {
+        let (session_ids, runtime_handles) = {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            let session_ids = state.sessions.keys().cloned().collect::<Vec<_>>();
+            let mut runtime_handles = HashMap::new();
+            for managed in state.sessions.drain().map(|(_, managed)| managed) {
+                if let Some(handle) = managed.runtime_handle {
+                    runtime_handles.entry(handle.process_id).or_insert(handle);
+                }
+            }
+            state.session_order.clear();
+            state.conversation_turn_bindings.clear();
+            (session_ids, runtime_handles)
+        };
+
+        if let Ok(mut waiters) = self.user_input_waiters.lock() {
+            waiters.clear();
+        }
+        if let Ok(mut waiters) = self.url_elicitation_waiters.lock() {
+            waiters.clear();
+        }
+        if let Ok(mut completed) = self.completed_url_elicitations.lock() {
+            completed.clear();
+        }
+        if let Ok(mut terminal_sessions) = self.auth_terminal_sessions.lock() {
+            for (_, handle) in terminal_sessions.drain() {
+                handle.closed.store(true, Ordering::Relaxed);
+                handle.release_runtime_resources(true);
+            }
+        }
+        for session_id in session_ids {
+            self.tool_diffs.clear_session(&session_id);
+        }
+
+        let errors = runtime_handles
+            .into_values()
+            .filter_map(|handle| handle.shutdown().err())
+            .collect::<Vec<_>>();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Failed to stop one or more AI runtime processes: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
     pub(crate) fn list_runtimes(&self) -> Value {
         let custom_runtimes = self.custom_runtimes.list().unwrap_or_else(|error| {
             eprintln!("Failed to load custom ACP runtimes for the runtime catalog: {error}");
@@ -4671,6 +4722,7 @@ async fn run_acp_auth_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
+    command.kill_on_drop(true);
     apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
@@ -4749,6 +4801,7 @@ async fn run_acp12_auth_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
+    command.kill_on_drop(true);
     apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
@@ -4863,6 +4916,19 @@ async fn run_acp12_actor(
 }
 
 async fn shutdown_acp_child(child: &mut tokio::process::Child) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        if let Some(process_id) = child.id() {
+            let result = unsafe { libc::kill(-(process_id as i32), libc::SIGKILL) };
+            if result != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(format!("Failed to stop AI runtime process group: {error}"));
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
     child
         .start_kill()
         .map_err(|error| format!("Failed to stop AI runtime process: {error}"))?;
@@ -4980,6 +5046,7 @@ async fn run_acp12_actor_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    command.kill_on_drop(true);
     apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
@@ -5218,6 +5285,7 @@ async fn run_acp_actor_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    command.kill_on_drop(true);
     apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
@@ -7695,7 +7763,7 @@ fn strip_effort_suffix(value: &str) -> &str {
     value
 }
 
-const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 fn extract_effort(value: &str) -> Option<&str> {
     let suffix = value.rsplit('/').next()?;
@@ -7708,6 +7776,8 @@ fn extract_effort(value: &str) -> Option<&str> {
 fn reasoning_effort_label(effort: &str) -> String {
     match effort {
         "xhigh" => "Extra High".to_string(),
+        "max" => "Maximum".to_string(),
+        "ultra" => "Ultra".to_string(),
         _ => {
             let mut chars = effort.chars();
             match chars.next() {
@@ -12188,6 +12258,52 @@ mod tests {
     }
 
     #[test]
+    fn backend_shutdown_stops_each_owned_process_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = AcpSessionHandle {
+            process_id: 91,
+            command_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let mut state = native_ai.inner.lock().unwrap();
+        for session_id in ["parent-session", "child-session"] {
+            state.sessions.insert(
+                session_id.to_string(),
+                ManagedAiSession {
+                    session: new_session_with_id(CODEX_RUNTIME_ID, session_id.to_string()).unwrap(),
+                    vault_root: None,
+                    additional_roots: vec![],
+                    runtime_handle: Some(handle.clone()),
+                    active_turn_id: None,
+                },
+            );
+            state.session_order.push(session_id.to_string());
+        }
+        drop(state);
+
+        let shutdown = thread::spawn(move || match command_rx.blocking_recv() {
+            Some(AcpCommand::Shutdown { response_tx }) => {
+                response_tx.send(Ok(())).unwrap();
+                assert!(command_rx.try_recv().is_err());
+            }
+            _ => panic!("expected one shutdown command for the shared process"),
+        });
+
+        native_ai.shutdown().unwrap();
+        shutdown.join().unwrap();
+
+        let state = native_ai.inner.lock().unwrap();
+        assert!(state.sessions.is_empty());
+        assert!(state.session_order.is_empty());
+        assert!(state.conversation_turn_bindings.is_empty());
+    }
+
+    #[test]
     fn send_transport_disconnect_invalidates_the_affected_session_family() {
         let (event_tx, event_rx) = mpsc::channel();
         let native_ai =
@@ -15439,6 +15555,8 @@ mod tests {
                 SessionConfigSelectOption::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
                 SessionConfigSelectOption::new("gpt-5.5/high", "GPT-5.5 (high)"),
                 SessionConfigSelectOption::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
+                SessionConfigSelectOption::new("gpt-5.5/max", "GPT-5.5 (max)"),
+                SessionConfigSelectOption::new("gpt-5.5/ultra", "GPT-5.5 (ultra)"),
             ],
         )
         .category(SessionConfigOptionCategory::Model)];
@@ -15458,7 +15576,9 @@ mod tests {
                 "low".to_string(),
                 "medium".to_string(),
                 "high".to_string(),
-                "xhigh".to_string()
+                "xhigh".to_string(),
+                "max".to_string(),
+                "ultra".to_string()
             ])
         );
 
@@ -15478,8 +15598,17 @@ mod tests {
                 .iter()
                 .map(|option| option.value.as_str())
                 .collect::<Vec<_>>(),
-            vec!["low", "medium", "high", "xhigh"]
+            vec!["low", "medium", "high", "xhigh", "max", "ultra"]
         );
+    }
+
+    #[test]
+    fn extended_and_custom_reasoning_efforts_have_stable_labels() {
+        assert_eq!(reasoning_effort_label("max"), "Maximum");
+        assert_eq!(reasoning_effort_label("ultra"), "Ultra");
+        assert_eq!(reasoning_effort_label("experimental"), "Experimental");
+        assert_eq!(strip_effort_suffix("gpt-5.6-sol/max"), "gpt-5.6-sol");
+        assert_eq!(strip_effort_suffix("gpt-5.6-sol/ultra"), "gpt-5.6-sol");
     }
 
     #[test]

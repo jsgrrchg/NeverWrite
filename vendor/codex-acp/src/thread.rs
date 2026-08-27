@@ -29,7 +29,7 @@ use codex_core::{
     config::{Config, PermissionProfileSnapshot, set_project_trust_level},
     review_prompts::user_facing_hint,
 };
-use codex_extension_items::ExtensionItem;
+use codex_extension_items::{ExtensionItem, image_generation::ImageGenerationFailure};
 use codex_features::Feature;
 use codex_http_client::{HttpClientFactory, OutboundProxyPolicy};
 use codex_login::auth::AuthManager;
@@ -51,6 +51,8 @@ use codex_protocol::protocol::{
     WebSearchBeginEvent, WebSearchEndEvent,
 };
 use codex_protocol::review_format::format_review_findings_block;
+#[cfg(test)]
+use codex_protocol::turn_input::TurnInput;
 use codex_protocol::{
     ResponseItemId, ThreadId,
     approvals::{ElicitationRequest, ElicitationRequestEvent},
@@ -69,15 +71,15 @@ use codex_protocol::{
         FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry, FileSystemSpecialPath,
     },
     plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs},
-    protocol::{
-        DynamicToolCallResponseEvent, NetworkApprovalContext, NetworkPolicyRuleAction, RolloutItem,
-    },
+    protocol::{DynamicToolCallResponseEvent, NetworkApprovalContext, NetworkPolicyRuleAction},
     request_permissions::{
         PermissionGrantScope, RequestPermissionProfile, RequestPermissionsEvent,
         RequestPermissionsResponse,
     },
+    turn_input::{TurnInputMode, TurnInputRequest, TurnInputSubmission},
     user_input::UserInput,
 };
+use codex_rollout::RolloutItem;
 use codex_shell_command::parse_command::parse_command;
 use codex_utils_approval_presets::{ApprovalPreset, builtin_approval_presets};
 use heck::ToTitleCase;
@@ -252,6 +254,24 @@ struct NeverWriteDiffHunkLine {
 pub trait CodexThreadImpl: Send + Sync {
     fn submit(&self, op: Op)
     -> Pin<Box<dyn Future<Output = Result<String, CodexErr>> + Send + '_>>;
+
+    fn submit_turn_input(
+        &self,
+        request: TurnInputRequest,
+        mode: TurnInputMode,
+    ) -> Pin<Box<dyn Future<Output = Result<TurnInputSubmission, CodexErr>> + Send + '_>> {
+        Box::pin(async move {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.submit(Op::TurnInput {
+                request: Box::new(request),
+                mode,
+                reply: reply_tx,
+            })
+            .await?;
+            reply_rx.await.map_err(|_| CodexErr::InternalAgentDied)?
+        })
+    }
+
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Result<Event, CodexErr>> + Send + '_>>;
 }
 
@@ -999,8 +1019,24 @@ fn image_generation_completion_parts(
     revised_prompt: Option<String>,
     result: String,
     saved_path: Option<String>,
+    failure: Option<ImageGenerationFailure>,
 ) -> (String, ToolCallStatus, Option<String>, serde_json::Value) {
-    let tool_status = image_generation_tool_status(&status);
+    let failure_detail = failure.as_ref().map(|failure| match failure {
+        ImageGenerationFailure::UsageLimitExceeded {
+            limit_id,
+            resets_at,
+        } => match resets_at {
+            Some(resets_at) => {
+                format!("Usage limit {limit_id} was exceeded; resets at {resets_at}")
+            }
+            None => format!("Usage limit {limit_id} was exceeded"),
+        },
+    });
+    let tool_status = if failure.is_some() {
+        ToolCallStatus::Failed
+    } else {
+        image_generation_tool_status(&status)
+    };
     let is_failure = tool_status == ToolCallStatus::Failed;
     let title = if is_failure {
         "Image generation failed"
@@ -1008,7 +1044,10 @@ fn image_generation_completion_parts(
         "Generated image"
     }
     .to_string();
-    let detail = saved_path.clone().or_else(|| Some(result.clone()));
+    let detail = failure_detail
+        .clone()
+        .or_else(|| saved_path.clone())
+        .or_else(|| Some(result.clone()));
     let mut raw_input = json!({
         "status": status,
         "result": result.clone(),
@@ -1020,8 +1059,11 @@ fn image_generation_completion_parts(
         if let Some(revised_prompt) = revised_prompt {
             object.insert("revised_prompt".to_string(), json!(revised_prompt));
         }
+        if let Some(failure) = failure {
+            object.insert("failure".to_string(), json!(failure));
+        }
         if is_failure {
-            object.insert("error".to_string(), json!(result));
+            object.insert("error".to_string(), json!(failure_detail.unwrap_or(result)));
         }
     }
 
@@ -1034,9 +1076,10 @@ fn completed_image_generation_tool_call(
     revised_prompt: Option<String>,
     result: String,
     saved_path: Option<String>,
+    failure: Option<ImageGenerationFailure>,
 ) -> ToolCall {
     let (title, tool_status, detail, raw_input) =
-        image_generation_completion_parts(status, revised_prompt, result, saved_path);
+        image_generation_completion_parts(status, revised_prompt, result, saved_path, failure);
     let mut tool_call = ToolCall::new(image_generation_tool_call_id(&call_id), title)
         .kind(ToolKind::Other)
         .status(tool_status)
@@ -1054,9 +1097,10 @@ fn completed_image_generation_tool_update(
     revised_prompt: Option<String>,
     result: String,
     saved_path: Option<String>,
+    failure: Option<ImageGenerationFailure>,
 ) -> ToolCallUpdate {
     let (title, tool_status, detail, raw_input) =
-        image_generation_completion_parts(status, revised_prompt, result, saved_path);
+        image_generation_completion_parts(status, revised_prompt, result, saved_path, failure);
     let mut fields = ToolCallUpdateFields::new()
         .title(title)
         .status(tool_status)
@@ -1437,7 +1481,7 @@ fn format_file_system_entries<'a>(
 
 fn format_file_system_entry(entry: &FileSystemSandboxEntry) -> String {
     match &entry.path {
-        FileSystemPath::Path { path } => path.display().to_string(),
+        FileSystemPath::Path { path } => path.inferred_native_path_string(),
         FileSystemPath::GlobPattern { pattern } => format!("glob `{pattern}`"),
         FileSystemPath::Special { value } => format_file_system_special(value),
     }
@@ -2412,6 +2456,7 @@ impl PromptState {
             revised_prompt,
             result,
             saved_path,
+            failure,
             ..
         } = event;
         let saved_path = saved_path.map(|path| path.display().to_string());
@@ -2422,6 +2467,7 @@ impl PromptState {
                 revised_prompt,
                 result,
                 saved_path,
+                failure,
             ))
             .await;
     }
@@ -2839,6 +2885,7 @@ impl PromptState {
                                 result: image_item.result,
                                 saved_path: image_item.saved_path,
                                 transparent_background: None,
+                                failure: None,
                             },
                         )
                         .await;
@@ -2853,6 +2900,7 @@ impl PromptState {
                                 result: image_item.result,
                                 saved_path: image_item.saved_path,
                                 transparent_background: None,
+                                failure: None,
                             },
                         )
                         .await;
@@ -3135,6 +3183,14 @@ impl PromptState {
                     event.environment_id
                 );
             }
+            EventMsg::ThreadQueueChanged(event) => {
+                // NeverWrite owns the user-facing prompt queue. Keep this runtime signal
+                // diagnostic-only so it cannot create a second source of queue truth.
+                info!(
+                    "Runtime thread queue changed without ACP projection: thread_id={}",
+                    event.thread_id
+                );
+            }
             EventMsg::RawResponseItem(..) => {
                 // Canonical ItemStarted/ItemCompleted and dedicated tool events own activity
                 // projection. Re-projecting raw provider items would create a second activity for
@@ -3309,14 +3365,15 @@ impl PromptState {
         let call_id = guardian_assessment_tool_call_id(&event.id);
         let status = guardian_assessment_tool_call_status(&event.status);
         let content = guardian_assessment_content(&event);
-        let raw_event = serde_json::json!(&event);
+        let title = guardian_assessment_title(&event.action);
+        let raw_event = guardian_assessment_raw_event(&event);
 
         match event.status {
             GuardianAssessmentStatus::InProgress => {
                 if self.active_guardian_assessments.insert(event.id.clone()) {
                     client
                         .send_tool_call(
-                            ToolCall::new(call_id, "Guardian Review")
+                            ToolCall::new(call_id, title)
                                 .kind(ToolKind::Think)
                                 .status(status)
                                 .content(content)
@@ -3352,7 +3409,7 @@ impl PromptState {
                 } else {
                     client
                         .send_tool_call(
-                            ToolCall::new(call_id, "Guardian Review")
+                            ToolCall::new(call_id, title)
                                 .kind(ToolKind::Think)
                                 .status(status)
                                 .content(content)
@@ -4305,6 +4362,15 @@ fn build_exec_permission_options(
                     PermissionOptionKind::AllowAlways,
                 ),
                 decision: ReviewDecision::ApprovedForSession,
+            },
+            ReviewDecision::ApprovedMcpPolicyAmendment => ExecPermissionOption {
+                option_id: "approved-mcp-policy-amendment",
+                permission_option: PermissionOption::new(
+                    "approved-mcp-policy-amendment",
+                    "Yes, and allow this MCP tool in the future",
+                    PermissionOptionKind::AllowAlways,
+                ),
+                decision: ReviewDecision::ApprovedMcpPolicyAmendment,
             },
             ReviewDecision::NetworkPolicyAmendment {
                 network_policy_amendment,
@@ -5291,22 +5357,23 @@ impl<A: Auth> ThreadActor<A> {
             return Ok(response_rx);
         }
 
+        enum PromptSubmission {
+            Operation(Op),
+            Turn(TurnInputRequest),
+        }
+
         let items = build_prompt_items(request.prompt);
-        let op;
+        let submission;
         if let Some((name, rest)) = extract_slash_command(&items) {
             match name {
-                "compact" => op = Op::Compact,
+                "compact" => submission = PromptSubmission::Operation(Op::Compact),
                 "init" => {
-                    op = Op::UserInput {
-                        items: vec![UserInput::Text {
+                    submission = PromptSubmission::Turn(TurnInputRequest::user_input(vec![
+                        UserInput::Text {
                             text: INIT_COMMAND_PROMPT.into(),
                             text_elements: vec![],
-                        }],
-                        final_output_json_schema: None,
-                        responsesapi_client_metadata: None,
-                        additional_context: Default::default(),
-                        thread_settings: Default::default(),
-                    }
+                        },
+                    ]))
                 }
                 "fast" => {
                     if !self.fast_mode_available() {
@@ -5383,35 +5450,35 @@ impl<A: Auth> ThreadActor<A> {
                         }
                     };
 
-                    op = Op::Review {
+                    submission = PromptSubmission::Operation(Op::Review {
                         review_request: ReviewRequest {
                             user_facing_hint: Some(user_facing_hint(&target)),
                             target,
                         },
-                    }
+                    })
                 }
                 "review-branch" if !rest.is_empty() => {
                     let target = ReviewTarget::BaseBranch {
                         branch: rest.trim().to_owned(),
                     };
-                    op = Op::Review {
+                    submission = PromptSubmission::Operation(Op::Review {
                         review_request: ReviewRequest {
                             user_facing_hint: Some(user_facing_hint(&target)),
                             target,
                         },
-                    }
+                    })
                 }
                 "review-commit" if !rest.is_empty() => {
                     let target = ReviewTarget::Commit {
                         sha: rest.trim().to_owned(),
                         title: None,
                     };
-                    op = Op::Review {
+                    submission = PromptSubmission::Operation(Op::Review {
                         review_request: ReviewRequest {
                             user_facing_hint: Some(user_facing_hint(&target)),
                             target,
                         },
-                    }
+                    })
                 }
                 "logout" => {
                     self.auth.logout().await?;
@@ -5425,42 +5492,45 @@ impl<A: Auth> ThreadActor<A> {
                     )
                     .map_err(|e| Error::invalid_params().data(e.user_message()))?
                     {
-                        op = Op::UserInput {
-                            items: vec![UserInput::Text {
+                        submission = PromptSubmission::Turn(TurnInputRequest::user_input(vec![
+                            UserInput::Text {
                                 text: prompt,
                                 text_elements: vec![],
-                            }],
-                            final_output_json_schema: None,
-                            responsesapi_client_metadata: None,
-                            additional_context: Default::default(),
-                            thread_settings: Default::default(),
-                        }
+                            },
+                        ]))
                     } else {
-                        op = Op::UserInput {
-                            items,
-                            final_output_json_schema: None,
-                            responsesapi_client_metadata: None,
-                            additional_context: Default::default(),
-                            thread_settings: Default::default(),
-                        }
+                        submission = PromptSubmission::Turn(TurnInputRequest::user_input(items))
                     }
                 }
             }
         } else {
-            op = Op::UserInput {
-                items,
-                final_output_json_schema: None,
-                responsesapi_client_metadata: None,
-                additional_context: Default::default(),
-                thread_settings: Default::default(),
-            }
+            submission = PromptSubmission::Turn(TurnInputRequest::user_input(items))
         }
 
-        let submission_id = self
-            .thread
-            .submit(op.clone())
-            .await
-            .map_err(|e| Error::internal_error().data(e.to_string()))?;
+        let submission_id = match submission {
+            PromptSubmission::Operation(op) => self
+                .thread
+                .submit(op)
+                .await
+                .map_err(|e| Error::internal_error().data(e.to_string()))?,
+            PromptSubmission::Turn(request) => match self
+                .thread
+                .submit_turn_input(request, TurnInputMode::StartIfIdle)
+                .await
+                .map_err(|e| Error::internal_error().data(e.to_string()))?
+            {
+                TurnInputSubmission::Started { turn_id } => turn_id,
+                TurnInputSubmission::Steered { turn_id } => {
+                    return Err(Error::internal_error().data(format!(
+                        "runtime unexpectedly steered active turn {turn_id} for a start-if-idle prompt"
+                    )));
+                }
+                TurnInputSubmission::NotSubmitted { reason } => {
+                    return Err(Error::invalid_params()
+                        .data(format!("runtime declined prompt submission: {reason:?}")));
+                }
+            },
+        };
 
         info!("Submitted prompt with submission_id: {submission_id}");
         info!("Starting to wait for conversation events for submission_id: {submission_id}");
@@ -5604,6 +5674,7 @@ impl<A: Auth> ThreadActor<A> {
                 revised_prompt,
                 result,
                 saved_path,
+                failure,
                 ..
             }) => {
                 self.client
@@ -5613,6 +5684,7 @@ impl<A: Auth> ThreadActor<A> {
                         revised_prompt.clone(),
                         result.clone(),
                         saved_path.as_ref().map(|path| path.display().to_string()),
+                        failure.clone(),
                     ))
                     .await;
             }
@@ -5833,9 +5905,14 @@ impl<A: Auth> ThreadActor<A> {
             ResponseItem::FunctionCallOutput {
                 call_id, output, ..
             } => {
-                self.client
-                    .send_tool_call_completed(call_id.clone(), serde_json::to_value(output).ok())
-                    .await;
+                if let Some(call_id) = call_id {
+                    self.client
+                        .send_tool_call_completed(
+                            call_id.clone(),
+                            serde_json::to_value(output).ok(),
+                        )
+                        .await;
+                }
             }
             ResponseItem::LocalShellCall {
                 call_id: Some(call_id),
@@ -5963,6 +6040,7 @@ impl<A: Auth> ThreadActor<A> {
                         status.clone(),
                         revised_prompt.clone(),
                         result.clone(),
+                        None,
                         None,
                     ))
                     .await;
@@ -6658,6 +6736,32 @@ fn guardian_assessment_content(event: &GuardianAssessmentEvent) -> Vec<ToolCallC
     content
 }
 
+fn guardian_assessment_title(
+    action: &codex_protocol::approvals::GuardianAssessmentAction,
+) -> String {
+    match action {
+        codex_protocol::approvals::GuardianAssessmentAction::WriteStdin { process_id, .. } => {
+            format!("Review input to process {process_id}")
+        }
+        _ => "Guardian Review".to_string(),
+    }
+}
+
+fn guardian_assessment_raw_event(event: &GuardianAssessmentEvent) -> serde_json::Value {
+    let mut value = serde_json::json!(event);
+    if matches!(
+        event.action,
+        codex_protocol::approvals::GuardianAssessmentAction::WriteStdin { .. }
+    ) && let Some(action) = value
+        .as_object_mut()
+        .and_then(|event| event.get_mut("action"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        action.remove("stdin");
+    }
+    value
+}
+
 fn guardian_action_summary(
     action: &codex_protocol::approvals::GuardianAssessmentAction,
 ) -> Option<String> {
@@ -6673,6 +6777,12 @@ fn guardian_action_summary(
                 .ok()
                 .or_else(|| Some(parts.join(" ")))
         }
+        codex_protocol::approvals::GuardianAssessmentAction::WriteStdin {
+            process_id, cwd, ..
+        } => Some(format!(
+            "write input to process {process_id} in {}",
+            cwd.inferred_native_path_string()
+        )),
         codex_protocol::approvals::GuardianAssessmentAction::ApplyPatch { files, .. } => {
             Some(if files.len() == 1 {
                 format!("apply_patch touching {}", files[0].display())
@@ -6800,6 +6910,228 @@ mod tests {
         assert_eq!(rejection, ACP_COMMAND_REJECTION_REASON);
     }
 
+    #[test]
+    fn mcp_policy_approval_is_only_projected_when_the_runtime_offers_it() {
+        let without_policy = build_exec_permission_options(
+            &[
+                ReviewDecision::Approved,
+                ReviewDecision::Denied {
+                    rejection: "runtime rejection".to_string(),
+                },
+            ],
+            None,
+            None,
+        );
+        assert_eq!(
+            without_policy
+                .iter()
+                .map(|option| option.option_id)
+                .collect::<Vec<_>>(),
+            vec!["approved", "denied"]
+        );
+
+        let with_policy = build_exec_permission_options(
+            &[
+                ReviewDecision::Approved,
+                ReviewDecision::ApprovedMcpPolicyAmendment,
+                ReviewDecision::Denied {
+                    rejection: "runtime rejection".to_string(),
+                },
+            ],
+            None,
+            None,
+        );
+        assert_eq!(
+            with_policy
+                .iter()
+                .map(|option| option.option_id)
+                .collect::<Vec<_>>(),
+            vec!["approved", "approved-mcp-policy-amendment", "denied"]
+        );
+        assert_eq!(
+            with_policy[1].permission_option.kind,
+            PermissionOptionKind::AllowAlways
+        );
+        assert_eq!(
+            with_policy[1].decision,
+            ReviewDecision::ApprovedMcpPolicyAmendment
+        );
+    }
+
+    #[test]
+    fn path_uri_entries_render_posix_windows_and_opaque_paths() -> anyhow::Result<()> {
+        let cases = [
+            ("file:///home/alice/project", "/home/alice/project"),
+            (
+                "file:///C:/Users/Alice/project",
+                "C:\\Users\\Alice\\project",
+            ),
+            ("file:///%00/bad/path/YQ", "file:///%00/bad/path/YQ"),
+        ];
+
+        for (uri, expected) in cases {
+            let entry = FileSystemSandboxEntry {
+                path: FileSystemPath::Path {
+                    path: codex_utils_path_uri::PathUri::parse(uri)?,
+                },
+                access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
+            };
+            assert_eq!(format_file_system_entry(&entry), expected);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn guardian_write_stdin_keeps_identity_and_redacts_input() -> anyhow::Result<()> {
+        let thread_id = ThreadId::new();
+        let (mut state, session_client, client) = prompt_state_for_projection(thread_id);
+        let event = GuardianAssessmentEvent {
+            id: "guardian-stdin-1".to_string(),
+            target_item_id: Some("exec-1".to_string()),
+            plugin_id: None,
+            script_path: None,
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 1,
+            completed_at_ms: None,
+            status: GuardianAssessmentStatus::InProgress,
+            risk_level: None,
+            user_authorization: None,
+            rationale: None,
+            decision_source: None,
+            action: codex_protocol::approvals::GuardianAssessmentAction::WriteStdin {
+                approval_id: "approval-1".to_string(),
+                process_id: "process-42".to_string(),
+                stdin: "super-secret-input".to_string(),
+                cwd: codex_utils_path_uri::PathUri::parse("file:///workspace")?,
+            },
+        };
+
+        state
+            .handle_event(&session_client, EventMsg::GuardianAssessment(event.clone()))
+            .await;
+        let mut completed = event;
+        completed.status = GuardianAssessmentStatus::Approved;
+        completed.completed_at_ms = Some(2);
+        completed.rationale = Some("Input is allowed".to_string());
+        state
+            .handle_event(&session_client, EventMsg::GuardianAssessment(completed))
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let start = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(tool_call) => Some(tool_call),
+                _ => None,
+            })
+            .expect("guardian start should create an activity");
+        let end = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => Some(update),
+                _ => None,
+            })
+            .expect("guardian completion should update the activity");
+        assert_eq!(start.tool_call_id, end.tool_call_id);
+        assert_eq!(start.title, "Review input to process process-42");
+        assert_eq!(end.fields.status, Some(ToolCallStatus::Completed));
+        let projection = serde_json::to_string(&*notifications)?;
+        assert!(projection.contains("process-42"));
+        assert!(projection.contains("/workspace"));
+        assert!(!projection.contains("super-secret-input"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn image_failure_reason_overrides_a_success_like_status() -> anyhow::Result<()> {
+        let thread_id = ThreadId::new();
+        let (state, session_client, client) = prompt_state_for_projection(thread_id);
+
+        state
+            .send_image_generation_completed(
+                &session_client,
+                ImageGenerationEndEvent {
+                    call_id: "img-limited".to_string(),
+                    status: "completed".to_string(),
+                    revised_prompt: None,
+                    result: String::new(),
+                    transparent_background: None,
+                    failure: Some(ImageGenerationFailure::UsageLimitExceeded {
+                        limit_id: "images-per-day".to_string(),
+                        resets_at: Some(1234),
+                    }),
+                    saved_path: None,
+                },
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let update = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => Some(update),
+                _ => None,
+            })
+            .expect("image failure should produce a tool update");
+        assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
+        assert_eq!(
+            update.fields.title.as_deref(),
+            Some("Image generation failed")
+        );
+        assert_eq!(
+            update
+                .fields
+                .raw_input
+                .as_ref()
+                .and_then(|raw| raw.get("error"))
+                .and_then(serde_json::Value::as_str),
+            Some("Usage limit images-per-day was exceeded; resets at 1234")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn standalone_function_output_does_not_create_a_tool_activity() -> anyhow::Result<()> {
+        let (actor, client, _conversation) = setup_actor(|_| {}).await?;
+        actor
+            .replay_response_item(&ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: None,
+                name: Some("external_context".to_string()),
+                namespace: None,
+                output: codex_protocol::models::FunctionCallOutputPayload::from_text(
+                    "context only".to_string(),
+                ),
+                internal_chat_message_metadata_passthrough: None,
+            })
+            .await;
+
+        assert!(client.notifications.lock().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_queue_signal_does_not_project_or_mutate_local_prompt_state() {
+        let thread_id = ThreadId::new();
+        let (mut state, session_client, client) = prompt_state_for_projection(thread_id);
+
+        state
+            .handle_event(
+                &session_client,
+                EventMsg::ThreadQueueChanged(codex_protocol::protocol::ThreadQueueChangedEvent {
+                    thread_id,
+                }),
+            )
+            .await;
+
+        assert_eq!(state.event_count, 1);
+        assert!(client.notifications.lock().unwrap().is_empty());
+        assert!(state.active_commands.is_empty());
+        assert!(state.projected_tool_calls.is_empty());
+    }
+
     #[tokio::test]
     async fn stale_permission_response_cannot_resolve_a_reused_call_id() -> anyhow::Result<()> {
         let session_id = SessionId::new("test");
@@ -6864,7 +7196,7 @@ mod tests {
             let ops = thread.ops.lock().unwrap();
             assert!(matches!(
                 ops.as_slice(),
-                [Op::ExecApproval {
+                [RecordedOp::ExecApproval {
                     id,
                     turn_id: Some(turn_id),
                     decision: ReviewDecision::Denied { rejection },
@@ -6962,19 +7294,80 @@ mod tests {
         let ops = thread.ops.lock().unwrap();
         assert_eq!(
             ops.as_slice(),
-            &[Op::UserInput {
+            &[RecordedOp::TurnInput {
                 items: vec![UserInput::Text {
                     text: "Hi".to_string(),
                     text_elements: vec![]
                 }],
-                final_output_json_schema: None,
-                responsesapi_client_metadata: None,
-                additional_context: Default::default(),
-                thread_settings: Default::default(),
+                mode: TurnInputMode::StartIfIdle,
             }],
             "ops don't match {ops:?}"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn busy_runtime_declines_prompt_without_leaving_a_pending_response() -> anyhow::Result<()>
+    {
+        let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
+        thread.set_next_turn_submission(TurnInputSubmission::NotSubmitted {
+            reason: codex_protocol::turn_input::NotSubmittedReason::NotIdle,
+        });
+        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Prompt {
+            request: PromptRequest::new(session_id, vec!["queued too early".into()]),
+            response_tx: prompt_response_tx,
+        })?;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx).await??;
+        let error = match result {
+            Ok(_) => anyhow::bail!("busy runtime unexpectedly accepted the prompt"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:?}").contains("NotIdle"),
+            "unexpected submission error: {error:?}"
+        );
+        assert!(matches!(
+            thread.ops.lock().unwrap().as_slice(),
+            [RecordedOp::TurnInput {
+                mode: TurnInputMode::StartIfIdle,
+                ..
+            }]
+        ));
+
+        drop(message_tx);
+        drop(local_set.await);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn start_if_idle_rejects_an_unexpected_steered_acknowledgement() -> anyhow::Result<()> {
+        let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
+        thread.set_next_turn_submission(TurnInputSubmission::Steered {
+            turn_id: "active-turn".to_string(),
+        });
+        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Prompt {
+            request: PromptRequest::new(session_id, vec!["must not steer".into()]),
+            response_tx: prompt_response_tx,
+        })?;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx).await??;
+        let error = match result {
+            Ok(_) => anyhow::bail!("start-if-idle unexpectedly accepted a steered prompt"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:?}").contains("unexpectedly steered active turn active-turn"),
+            "unexpected submission error: {error:?}"
+        );
+
+        drop(message_tx);
+        drop(local_set.await);
         Ok(())
     }
 
@@ -7015,7 +7408,7 @@ mod tests {
             "notifications don't match {notifications:?}"
         );
         let ops = thread.ops.lock().unwrap();
-        assert_eq!(ops.as_slice(), &[Op::Compact]);
+        assert_eq!(ops.as_slice(), &[RecordedOp::Compact]);
 
         Ok(())
     }
@@ -7359,7 +7752,7 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(matches!(
             &ops[0],
-            Op::ThreadSettings {
+            RecordedOp::ThreadSettings {
                 thread_settings: ThreadSettingsOverrides {
                     service_tier: Some(Some(tier)),
                     ..
@@ -7409,7 +7802,7 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(matches!(
             &ops[0],
-            Op::ThreadSettings {
+            RecordedOp::ThreadSettings {
                 thread_settings: ThreadSettingsOverrides {
                     service_tier: Some(Some(tier)),
                     ..
@@ -7487,7 +7880,7 @@ mod tests {
         assert_eq!(ops.len(), 2);
         assert!(matches!(
             &ops[0],
-            Op::ThreadSettings {
+            RecordedOp::ThreadSettings {
                 thread_settings: ThreadSettingsOverrides {
                     service_tier: Some(Some(tier)),
                     ..
@@ -7496,7 +7889,7 @@ mod tests {
         ));
         assert!(matches!(
             &ops[1],
-            Op::ThreadSettings {
+            RecordedOp::ThreadSettings {
                 thread_settings: ThreadSettingsOverrides {
                     service_tier: Some(None),
                     ..
@@ -7545,15 +7938,12 @@ mod tests {
         let ops = thread.ops.lock().unwrap();
         assert_eq!(
             ops.as_slice(),
-            &[Op::UserInput {
+            &[RecordedOp::TurnInput {
                 items: vec![UserInput::Text {
                     text: INIT_COMMAND_PROMPT.to_string(),
                     text_elements: vec![]
                 }],
-                final_output_json_schema: None,
-                responsesapi_client_metadata: None,
-                additional_context: Default::default(),
-                thread_settings: Default::default(),
+                mode: TurnInputMode::StartIfIdle,
             }],
             "ops don't match {ops:?}"
         );
@@ -7601,7 +7991,7 @@ mod tests {
         let ops = thread.ops.lock().unwrap();
         assert_eq!(
             ops.as_slice(),
-            &[Op::Review {
+            &[RecordedOp::Review {
                 review_request: ReviewRequest {
                     user_facing_hint: Some(user_facing_hint(&ReviewTarget::UncommittedChanges)),
                     target: ReviewTarget::UncommittedChanges,
@@ -7657,7 +8047,7 @@ mod tests {
         let ops = thread.ops.lock().unwrap();
         assert_eq!(
             ops.as_slice(),
-            &[Op::Review {
+            &[RecordedOp::Review {
                 review_request: ReviewRequest {
                     user_facing_hint: Some(user_facing_hint(&ReviewTarget::Custom {
                         instructions: instructions.to_owned()
@@ -7713,7 +8103,7 @@ mod tests {
         let ops = thread.ops.lock().unwrap();
         assert_eq!(
             ops.as_slice(),
-            &[Op::Review {
+            &[RecordedOp::Review {
                 review_request: ReviewRequest {
                     user_facing_hint: Some(user_facing_hint(&ReviewTarget::Commit {
                         sha: "123456".to_owned(),
@@ -7771,7 +8161,7 @@ mod tests {
         let ops = thread.ops.lock().unwrap();
         assert_eq!(
             ops.as_slice(),
-            &[Op::Review {
+            &[RecordedOp::Review {
                 review_request: ReviewRequest {
                     user_facing_hint: Some(user_facing_hint(&ReviewTarget::BaseBranch {
                         branch: "feature".to_owned()
@@ -7834,15 +8224,12 @@ mod tests {
         let ops = thread.ops.lock().unwrap();
         assert_eq!(
             ops.as_slice(),
-            &[Op::UserInput {
+            &[RecordedOp::TurnInput {
                 items: vec![UserInput::Text {
                     text: "Custom prompt with foo arg.".into(),
                     text_elements: vec![]
                 }],
-                final_output_json_schema: None,
-                responsesapi_client_metadata: None,
-                additional_context: Default::default(),
-                thread_settings: Default::default(),
+                mode: TurnInputMode::StartIfIdle,
             }],
             "ops don't match {ops:?}"
         );
@@ -8990,6 +9377,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_subagent_activity_updates_the_started_activity_once() -> anyhow::Result<()> {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let (mut prompt_state, session_client, client) =
+            prompt_state_for_projection(parent_thread_id);
+        let agent_path: codex_protocol::AgentPath = "/root/research/explorer"
+            .try_into()
+            .expect("valid agent path");
+        let activity = |kind| {
+            EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                event_id: "stable-activity".to_string(),
+                occurred_at_ms: 1,
+                agent_thread_id: child_thread_id,
+                agent_path: agent_path.clone(),
+                kind,
+            })
+        };
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                activity(codex_protocol::protocol::SubAgentActivityKind::Started),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                activity(codex_protocol::protocol::SubAgentActivityKind::Completed),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                activity(codex_protocol::protocol::SubAgentActivityKind::Completed),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(notification.update, SessionUpdate::ToolCall(_)))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        let updates = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => Some(update),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(updates.len(), 1, "notifications={notifications:?}");
+        assert_eq!(
+            updates[0].tool_call_id.0.as_ref(),
+            "codex-acp:subagent:stable-activity"
+        );
+        assert_eq!(
+            updates[0].fields.title.as_deref(),
+            Some("Completed explorer")
+        );
+        assert_eq!(updates[0].fields.status, Some(ToolCallStatus::Completed));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn specific_subagent_activity_prevents_a_later_turn_item_duplicate() -> anyhow::Result<()>
     {
         let parent_thread_id = ThreadId::new();
@@ -9223,7 +9677,7 @@ mod tests {
             setup(vec![]).await?;
         let (response_tx, response_rx) = oneshot::channel();
         message_tx.send(ThreadMessage::ReplayHistory {
-            history: vec![RolloutItem::ResponseItem(item)],
+            history: vec![RolloutItem::ResponseItem(item.into())],
             response_tx,
         })?;
         response_rx.await??;
@@ -9493,6 +9947,7 @@ mod tests {
                     status: "completed".to_string(),
                     revised_prompt: Some("A clearer prompt".to_string()),
                     result: "base64-image-data".to_string(),
+                    failure: None,
                     saved_path: Some(
                         std::env::current_dir()
                             .expect("current dir should be available")
@@ -9634,6 +10089,7 @@ mod tests {
                 result: "image generation failed".to_string(),
                 saved_path: Some(saved_path),
                 transparent_background: None,
+                failure: None,
             }))
             .await;
 
@@ -9701,6 +10157,64 @@ mod tests {
             )
         }));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn config_options_expose_max_and_ultra_from_the_runtime_catalog() -> anyhow::Result<()> {
+        let preset = all_model_presets()
+            .iter()
+            .find(|preset| {
+                preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .any(|effort| effort.effort == ReasoningEffort::Max)
+                    && preset
+                        .supported_reasoning_efforts
+                        .iter()
+                        .any(|effort| effort.effort == ReasoningEffort::Ultra)
+            })
+            .expect("runtime 0.150 catalog should include max and ultra")
+            .clone();
+        let selected_model = preset.model.clone();
+        let (actor, _client, _conversation) = setup_actor(|config| {
+            config.model = Some(selected_model);
+            config.model_reasoning_effort = Some(ReasoningEffort::Ultra);
+        })
+        .await?;
+
+        let options = actor.config_options().await?;
+        let reasoning = options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "reasoning_effort")
+            .expect("reasoning option should be present");
+        let SessionConfigKind::Select(select) = &reasoning.kind else {
+            panic!("reasoning option should be a select");
+        };
+        let SessionConfigSelectOptions::Ungrouped(efforts) = &select.options else {
+            panic!("reasoning options should be ungrouped");
+        };
+        let values = efforts
+            .iter()
+            .map(|effort| effort.value.to_string())
+            .collect::<Vec<_>>();
+        assert!(values.contains(&"max".to_string()), "efforts={values:?}");
+        assert!(values.contains(&"ultra".to_string()), "efforts={values:?}");
+        assert_eq!(select.current_value.0.as_ref(), "ultra");
+        assert_eq!(
+            efforts
+                .iter()
+                .find(|effort| effort.value.0.as_ref() == "max")
+                .map(|effort| effort.name.as_str()),
+            Some("Max")
+        );
+        assert_eq!(
+            efforts
+                .iter()
+                .find(|effort| effort.value.0.as_ref() == "ultra")
+                .map(|effort| effort.name.as_str()),
+            Some("Ultra")
+        );
         Ok(())
     }
 
@@ -9795,7 +10309,7 @@ mod tests {
         );
         assert!(matches!(
             conversation.ops.lock().unwrap().last(),
-            Some(Op::ThreadSettings {
+            Some(RecordedOp::ThreadSettings {
                 thread_settings: ThreadSettingsOverrides {
                     permission_profile: Some(_),
                     ..
@@ -10565,9 +11079,31 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, PartialEq)]
+    enum RecordedOp {
+        TurnInput {
+            items: Vec<UserInput>,
+            mode: TurnInputMode,
+        },
+        Compact,
+        Review {
+            review_request: ReviewRequest,
+        },
+        ThreadSettings {
+            thread_settings: ThreadSettingsOverrides,
+        },
+        ExecApproval {
+            id: String,
+            turn_id: Option<String>,
+            decision: ReviewDecision,
+        },
+        Other(String),
+    }
+
     struct StubCodexThread {
         current_id: AtomicUsize,
-        ops: std::sync::Mutex<Vec<Op>>,
+        ops: std::sync::Mutex<Vec<RecordedOp>>,
+        next_turn_submission: std::sync::Mutex<Option<TurnInputSubmission>>,
         op_tx: mpsc::UnboundedSender<Event>,
         op_rx: Mutex<mpsc::UnboundedReceiver<Event>>,
     }
@@ -10578,9 +11114,14 @@ mod tests {
             StubCodexThread {
                 current_id: AtomicUsize::new(0),
                 ops: std::sync::Mutex::default(),
+                next_turn_submission: std::sync::Mutex::default(),
                 op_tx,
                 op_rx: Mutex::new(op_rx),
             }
+        }
+
+        fn set_next_turn_submission(&self, submission: TurnInputSubmission) {
+            *self.next_turn_submission.lock().unwrap() = Some(submission);
         }
     }
 
@@ -10594,10 +11135,53 @@ mod tests {
                     .current_id
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-                self.ops.lock().unwrap().push(op.clone());
+                let recorded_op = match &op {
+                    Op::TurnInput { request, mode, .. } => match &request.input {
+                        TurnInput::UserInput { content, .. } => RecordedOp::TurnInput {
+                            items: content.clone(),
+                            mode: mode.clone(),
+                        },
+                        input => RecordedOp::Other(format!("turn input: {input:?}")),
+                    },
+                    Op::Compact => RecordedOp::Compact,
+                    Op::Review { review_request } => RecordedOp::Review {
+                        review_request: review_request.clone(),
+                    },
+                    Op::ThreadSettings { thread_settings } => RecordedOp::ThreadSettings {
+                        thread_settings: thread_settings.clone(),
+                    },
+                    Op::ExecApproval {
+                        id,
+                        turn_id,
+                        decision,
+                    } => RecordedOp::ExecApproval {
+                        id: id.clone(),
+                        turn_id: turn_id.clone(),
+                        decision: decision.clone(),
+                    },
+                    op => RecordedOp::Other(format!("{op:?}")),
+                };
+                self.ops.lock().unwrap().push(recorded_op);
 
                 match op {
-                    Op::UserInput { items, .. } => {
+                    Op::TurnInput { request, reply, .. } => {
+                        let TurnInput::UserInput { content: items, .. } = request.input else {
+                            unimplemented!()
+                        };
+                        let turn_submission = self
+                            .next_turn_submission
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap_or_else(|| TurnInputSubmission::Started {
+                                turn_id: id.to_string(),
+                            });
+                        let turn_started =
+                            matches!(turn_submission, TurnInputSubmission::Started { .. });
+                        drop(reply.send(Ok(turn_submission)));
+                        if !turn_started {
+                            return Ok(id.to_string());
+                        }
                         let prompt = items
                             .into_iter()
                             .map(|i| match i {
@@ -10723,6 +11307,7 @@ mod tests {
                                         message: prompt,
                                         phase: None,
                                         memory_citation: None,
+                                        delivery: None,
                                     }),
                                 })
                                 .unwrap();
@@ -10762,6 +11347,7 @@ mod tests {
                                     message: "Compact task completed".to_string(),
                                     phase: None,
                                     memory_citation: None,
+                                    delivery: None,
                                 }),
                             })
                             .unwrap();

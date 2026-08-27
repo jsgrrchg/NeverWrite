@@ -265,6 +265,9 @@ export function updateConversationBindingsFromLegacySession(
             binding.bindingId === current.activeBindingId &&
             binding.runtimeId === projectedBinding.runtimeId,
     );
+    const runtimeContextChanged =
+        activeBinding != null &&
+        activeBinding.runtimeSessionId !== projectedBinding.runtimeSessionId;
     const nextBinding: AcpConversationBinding = activeBinding
         ? {
               ...activeBinding,
@@ -284,6 +287,12 @@ export function updateConversationBindingsFromLegacySession(
               availableCommands: projectedBinding.availableCommands,
               effortsByModel: projectedBinding.effortsByModel,
               runtimeState: projectedBinding.runtimeState,
+              contextCursor: runtimeContextChanged
+                  ? null
+                  : activeBinding.contextCursor,
+              contextGeneration: runtimeContextChanged
+                  ? activeBinding.contextGeneration + 1
+                  : activeBinding.contextGeneration,
               updatedAt: projectedBinding.updatedAt,
           }
         : projectedBinding;

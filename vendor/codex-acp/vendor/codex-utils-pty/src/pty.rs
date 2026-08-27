@@ -18,6 +18,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
+#[cfg(not(unix))]
 use std::time::Duration;
 
 use anyhow::Result;
@@ -159,6 +160,12 @@ async fn spawn_process_portable(
 ) -> Result<SpawnedProcess> {
     let pty_system = platform_native_pty_system();
     let pair = pty_system.openpty(size.into())?;
+    #[cfg(unix)]
+    let io = crate::unix_io::PtyIo::new(
+        pair.master
+            .as_raw_fd()
+            .ok_or_else(|| anyhow::anyhow!("PTY master has no file descriptor"))?,
+    )?;
 
     let mut command_builder = CommandBuilder::new(arg0.as_ref().unwrap_or(&program.to_string()));
     command_builder.cwd(cwd);
@@ -178,45 +185,56 @@ async fn spawn_process_portable(
     let process_group_id = child.process_id();
     let killer = child.clone_killer();
 
-    let (writer_tx, mut writer_rx) = mpsc::channel::<Vec<u8>>(128);
+    let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(128);
     let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(128);
     let (_stderr_tx, stderr_rx) = mpsc::channel::<Vec<u8>>(1);
-    let mut reader = pair.master.try_clone_reader()?;
-    let reader_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
-        let mut buf = [0u8; 8_192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let _ = stdout_tx.blocking_send(buf[..n].to_vec());
+    #[cfg(unix)]
+    let (reader_handle, writer_handle) = io.spawn(
+        stdout_tx,
+        writer_rx,
+        crate::unix_io::StdinCloseBehavior::SendEof,
+    );
+    #[cfg(not(unix))]
+    let (reader_handle, writer_handle) = {
+        let mut reader = pair.master.try_clone_reader()?;
+        let reader_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
+            let mut buf = [0u8; 8_192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = stdout_tx.blocking_send(buf[..n].to_vec());
+                    }
+                    Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+                    Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(_) => break,
                 }
-                Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5));
-                    continue;
-                }
-                Err(_) => break,
             }
-        }
-    });
+        });
 
-    let writer = pair.master.take_writer()?;
-    let writer = Arc::new(tokio::sync::Mutex::new(writer));
-    let writer_handle: JoinHandle<()> = tokio::spawn({
-        let writer = Arc::clone(&writer);
-        async move {
-            #[cfg(windows)]
-            let mut windows_input = crate::WindowsTtyInputNormalizer::default();
-            while let Some(bytes) = writer_rx.recv().await {
+        let mut writer_rx = writer_rx;
+        let writer = pair.master.take_writer()?;
+        let writer = Arc::new(tokio::sync::Mutex::new(writer));
+        let writer_handle: JoinHandle<()> = tokio::spawn({
+            let writer = Arc::clone(&writer);
+            async move {
                 #[cfg(windows)]
-                let bytes = windows_input.normalize(&bytes);
-                let mut guard = writer.lock().await;
-                use std::io::Write;
-                let _ = guard.write_all(&bytes);
-                let _ = guard.flush();
+                let mut windows_input = crate::WindowsTtyInputNormalizer::default();
+                while let Some(bytes) = writer_rx.recv().await {
+                    #[cfg(windows)]
+                    let bytes = windows_input.normalize(&bytes);
+                    let mut guard = writer.lock().await;
+                    use std::io::Write;
+                    let _ = guard.write_all(&bytes);
+                    let _ = guard.flush();
+                }
             }
-        }
-    });
+        });
+        (reader_handle, writer_handle)
+    };
 
     let (exit_tx, exit_rx) = oneshot::channel::<i32>();
     let exit_status = Arc::new(AtomicBool::new(false));
@@ -280,6 +298,7 @@ async fn spawn_process_preserving_fds(
     inherited_fds: &[RawFd],
 ) -> Result<SpawnedProcess> {
     let (master, slave) = open_unix_pty(size)?;
+    let io = crate::unix_io::PtyIo::new(master.as_raw_fd())?;
     let mut command = StdCommand::new(program);
     if let Some(arg0) = arg0 {
         command.arg0(arg0);
@@ -342,40 +361,14 @@ async fn spawn_process_preserving_fds(
     drop(slave);
     let process_group_id = child.id();
 
-    let (writer_tx, mut writer_rx) = mpsc::channel::<Vec<u8>>(128);
+    let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(128);
     let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(128);
     let (_stderr_tx, stderr_rx) = mpsc::channel::<Vec<u8>>(1);
-    let mut reader = master.try_clone()?;
-    let reader_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
-        let mut buf = [0u8; 8_192];
-        loop {
-            match std::io::Read::read(&mut reader, &mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let _ = stdout_tx.blocking_send(buf[..n].to_vec());
-                }
-                Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5));
-                    continue;
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    let writer = Arc::new(tokio::sync::Mutex::new(master.try_clone()?));
-    let writer_handle: JoinHandle<()> = tokio::spawn({
-        let writer = Arc::clone(&writer);
-        async move {
-            while let Some(bytes) = writer_rx.recv().await {
-                let mut guard = writer.lock().await;
-                use std::io::Write;
-                let _ = guard.write_all(&bytes);
-                let _ = guard.flush();
-            }
-        }
-    });
+    let (reader_handle, writer_handle) = io.spawn(
+        stdout_tx,
+        writer_rx,
+        crate::unix_io::StdinCloseBehavior::NoEof,
+    );
 
     let (exit_tx, exit_rx) = oneshot::channel::<i32>();
     let exit_status = Arc::new(AtomicBool::new(false));
@@ -467,7 +460,78 @@ fn set_cloexec(fd: RawFd) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
+// macOS needs a fork-safe sweep because recvmsg cannot set close-on-exec.
+#[cfg(target_os = "macos")]
+pub fn close_inherited_fds_except(preserved_fds: &[RawFd]) {
+    let mut descriptors = [libc::proc_fdinfo {
+        proc_fd: 0,
+        proc_fdtype: 0,
+    }; 1024];
+    // SAFETY: proc_pidinfo writes descriptor records into the stack buffer.
+    let bytes = unsafe {
+        libc::proc_pidinfo(
+            libc::getpid(),
+            libc::PROC_PIDLISTFDS,
+            /*arg*/ 0,
+            descriptors.as_mut_ptr().cast(),
+            std::mem::size_of_val(&descriptors) as libc::c_int,
+        )
+    };
+    let close_inheritable = |fd| {
+        if fd <= libc::STDERR_FILENO || preserved_fds.contains(&fd) {
+            return;
+        }
+        // std::process keeps a CLOEXEC pipe open until exec to report spawn errors.
+        // SAFETY: fcntl and close only operate on a descriptor owned by this process.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                libc::close(fd);
+            }
+        }
+    };
+    if bytes > 0 && (bytes as usize) < std::mem::size_of_val(&descriptors) {
+        let count = bytes as usize / std::mem::size_of::<libc::proc_fdinfo>();
+        for descriptor in descriptors.iter().take(count) {
+            close_inheritable(descriptor.proc_fd);
+        }
+        return;
+    }
+
+    // SAFETY: proc_pidinfo accepts a null buffer when its size is zero.
+    let descriptor_table_bytes = unsafe {
+        libc::proc_pidinfo(
+            libc::getpid(),
+            libc::PROC_PIDLISTFDS,
+            /*arg*/ 0,
+            std::ptr::null_mut(),
+            /*buffersize*/ 0,
+        )
+    };
+    if descriptor_table_bytes > 0 {
+        let upper_bound =
+            descriptor_table_bytes as usize / std::mem::size_of::<libc::proc_fdinfo>();
+        for fd in libc::STDERR_FILENO + 1..upper_bound as RawFd {
+            close_inheritable(fd);
+        }
+        return;
+    }
+
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit writes into the stack-owned resource-limit structure.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } == 0 {
+        let upper_bound = limit.rlim_cur.min(RawFd::MAX as _) as RawFd;
+        for fd in libc::STDERR_FILENO + 1..upper_bound {
+            close_inheritable(fd);
+        }
+    }
+}
+
+// Other Unix platforms keep their existing fd cleanup.
+#[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) fn close_inherited_fds_except(preserved_fds: &[RawFd]) {
     if let Ok(dir) = std::fs::read_dir("/dev/fd") {
         let mut fds = Vec::new();

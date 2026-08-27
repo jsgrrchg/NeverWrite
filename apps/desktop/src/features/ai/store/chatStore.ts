@@ -2936,6 +2936,11 @@ function createTurnBinding(
 ) {
     const now = Date.now();
     const selection = getConversationSelection(runtimeSession);
+    const runtimeSessionId = getLiveRuntimeSessionId(runtimeSession);
+    const preservesRuntimeContext =
+        existing != null &&
+        existing.runtimeSessionId != null &&
+        existing.runtimeSessionId === runtimeSessionId;
     return {
         bindingId:
             existing?.bindingId ??
@@ -2946,7 +2951,7 @@ function createTurnBinding(
         runtimeRevision: runtimeSession.runtimeRevision ?? null,
         runtimeLaunchFingerprint:
             runtimeSession.runtimeLaunchFingerprint ?? null,
-        runtimeSessionId: getLiveRuntimeSessionId(runtimeSession),
+        runtimeSessionId,
         continuationStrategy: runtimeSession.continuationStrategy ?? null,
         capabilities: [...capabilities],
         modelId: selection.modelId,
@@ -2958,8 +2963,17 @@ function createTurnBinding(
         availableCommands: runtimeSession.availableCommands,
         effortsByModel: runtimeSession.effortsByModel ?? {},
         runtimeState: runtimeSession.runtimeState ?? "live",
-        contextCursor: existing?.contextCursor ?? null,
-        contextGeneration: existing?.contextGeneration ?? 0,
+        // A cursor is meaningful only to the runtime session that accepted the
+        // corresponding handoff. A replacement runtime must receive the full
+        // saved transcript even when it reuses the durable conversation binding.
+        contextCursor: preservesRuntimeContext
+            ? (existing.contextCursor ?? null)
+            : null,
+        contextGeneration: preservesRuntimeContext
+            ? existing.contextGeneration
+            : existing
+              ? existing.contextGeneration + 1
+              : 0,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
     } satisfies AcpConversationBinding;
