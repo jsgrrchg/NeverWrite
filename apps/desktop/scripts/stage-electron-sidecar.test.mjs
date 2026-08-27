@@ -93,6 +93,39 @@ test("keeps runtime, PTY, lock commit, and V8 on one checked-in baseline", async
     );
 });
 
+test("accepts Windows line endings in the runtime lockfile", async () => {
+    const adapterRoot = path.join(
+        checkedInWorkspaceRoot,
+        "vendor",
+        "codex-acp",
+    );
+    const lockfile = await fs.readFile(
+        path.join(adapterRoot, "Cargo.lock"),
+        "utf8",
+    );
+    const adapterManifest = await fs.readFile(
+        path.join(adapterRoot, "Cargo.toml"),
+        "utf8",
+    );
+    const ptyManifest = await fs.readFile(
+        path.join(
+            adapterRoot,
+            "vendor",
+            "codex-utils-pty",
+            "Cargo.toml",
+        ),
+        "utf8",
+    );
+
+    assert.doesNotThrow(() =>
+        validateCodexRuntimeSourceAlignment({
+            adapterManifest,
+            lockfile: lockfile.replace(/\r?\n/g, "\r\n"),
+            ptyManifest,
+        }),
+    );
+});
+
 test("rejects a mixed runtime source baseline before staging", () => {
     assert.throws(
         () =>

@@ -55,6 +55,7 @@ export function validateCodexRuntimeSourceAlignment({
     lockfile,
     ptyManifest,
 }) {
+    const normalizedLockfile = lockfile.replace(/\r\n?/g, "\n");
     const expectedTag = `tag = "${CODEX_RUNTIME_BASELINE.tag}"`;
     const declaredTags = [
         ...adapterManifest.matchAll(/tag\s*=\s*"(rust-v[^"]+)"/g),
@@ -70,7 +71,7 @@ export function validateCodexRuntimeSourceAlignment({
 
     const expectedSource = `git+https://github.com/openai/codex?tag=${CODEX_RUNTIME_BASELINE.tag}#${CODEX_RUNTIME_BASELINE.commit}`;
     const codexSources = [
-        ...lockfile.matchAll(
+        ...normalizedLockfile.matchAll(
             /source = "(git\+https:\/\/github\.com\/openai\/codex\?tag=rust-v[^"]+)"/g,
         ),
     ].map((match) => match[1]);
@@ -92,7 +93,7 @@ export function validateCodexRuntimeSourceAlignment({
         );
     }
 
-    const v8Version = lockfile.match(
+    const v8Version = normalizedLockfile.match(
         /\[\[package\]\]\nname = "v8"\nversion = "([^"]+)"/,
     )?.[1];
     if (v8Version !== CODEX_RUNTIME_BASELINE.v8Version) {
