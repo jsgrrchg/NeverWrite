@@ -8,7 +8,11 @@ import {
     useRef,
     useState,
 } from "react";
-import { AIChatMessageItem, PlanMessage } from "./AIChatMessageItem";
+import {
+    AIChatMessageItem,
+    PlanMessage,
+    type AssistantMessageMetadataMode,
+} from "./AIChatMessageItem";
 import { ToolActivitySegment } from "./ToolActivitySegment";
 import {
     ContextMenu,
@@ -55,6 +59,7 @@ import {
     buildChatPromptRingItems,
     resolveChatPromptRingLayout,
 } from "./ChatPromptRing.logic";
+import { deriveAssistantMessageMetadataModes } from "./assistantMessageMetadata";
 
 interface AIChatMessageListProps {
     sessionId?: string | null;
@@ -307,6 +312,10 @@ function renderTimelineRow(
         forceExpandedMessageId?: string | null;
         forceExpandedForSearch?: boolean;
         activityDisplayMode: ActivityDisplayMode;
+        assistantMetadataModes: ReadonlyMap<
+            string,
+            AssistantMessageMetadataMode
+        >;
     },
 ) {
     if (row.kind === "run-indicator") {
@@ -359,10 +368,17 @@ function renderTimelineMessage(
             action: AIUrlElicitationAction,
         ) => void;
         onDismissMessage?: (messageId: string) => void;
+        assistantMetadataModes: ReadonlyMap<
+            string,
+            AssistantMessageMetadataMode
+        >;
     },
 ) {
     return (
         <AIChatMessageItem
+            assistantMetadataMode={
+                options.assistantMetadataModes.get(message.id) ?? "hidden"
+            }
             sessionId={options.sessionId}
             readOnly={options.readOnly}
             message={message}
@@ -635,6 +651,10 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         timelineActivityDisplayMode,
         visiblePinnedPlanId,
     ]);
+    const assistantMetadataModes = useMemo(
+        () => deriveAssistantMessageMetadataModes(messages, status),
+        [messages, status],
+    );
     const promptRingItems = useMemo(
         () => buildChatPromptRingItems(messages),
         [messages],
@@ -680,9 +700,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             forceExpandedForSearch: findOpen && findQuery.trim().length > 0,
             highlightedMessageId: outlineHighlightedMessageId,
             activityDisplayMode,
+            assistantMetadataModes,
         }),
         [
             activityDisplayMode,
+            assistantMetadataModes,
             chatFontSize,
             findOpen,
             scrollToMessageId,
