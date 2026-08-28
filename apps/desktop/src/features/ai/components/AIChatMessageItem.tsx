@@ -687,10 +687,12 @@ function AssistantTextMessage({
     message,
     pillMetrics,
     chatFontSize,
+    metadataMode,
 }: {
     message: AIChatMessage;
     pillMetrics: ChatPillMetrics;
     chatFontSize: number;
+    metadataMode: AssistantMessageMetadataMode;
 }) {
     return (
         <div
@@ -709,11 +711,13 @@ function AssistantTextMessage({
                 chatFontSize={chatFontSize}
                 fileReferenceAppearance="link"
             />
-            <MessageMetadata
-                available={message.inProgress !== true}
-                message={message}
-                placement="assistant"
-            />
+            {metadataMode !== "hidden" ? (
+                <MessageMetadata
+                    available={metadataMode === "available"}
+                    message={message}
+                    placement="assistant"
+                />
+            ) : null}
         </div>
     );
 }
@@ -759,6 +763,7 @@ interface AIChatMessageItemProps {
     message: AIChatMessage;
     sessionId?: string | null;
     readOnly?: boolean;
+    assistantMetadataMode?: AssistantMessageMetadataMode;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
     visibleWorkCycleId?: string | null;
@@ -775,6 +780,11 @@ interface AIChatMessageItemProps {
     ) => void;
     onDismissMessage?: (messageId: string) => void;
 }
+
+export type AssistantMessageMetadataMode =
+    | "available"
+    | "reserved"
+    | "hidden";
 
 function stripMarkdownBold(text: string) {
     return text.replace(/\*\*(.+?)\*\*/g, "$1");
@@ -3374,6 +3384,8 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     message,
     sessionId,
     readOnly = false,
+    assistantMetadataMode =
+        message.inProgress === true ? "reserved" : "available",
     pillMetrics,
     chatFontSize = 14,
     visibleWorkCycleId = null,
@@ -3487,6 +3499,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
             message={message}
             pillMetrics={pillMetrics}
             chatFontSize={chatFontSize}
+            metadataMode={assistantMetadataMode}
         />
     );
 });
