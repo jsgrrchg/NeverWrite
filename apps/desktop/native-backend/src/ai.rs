@@ -2856,7 +2856,7 @@ impl NativeAi {
         };
 
         eprintln!(
-            "ACP runtime transport disconnected phase=send runtime_id={runtime_id} session_id={session_id} process_id={process_id}"
+            "ACP runtime transport disconnected phase=send runtime_id={runtime_id} process_id={process_id}"
         );
         emit_event(
             &self.event_tx,
