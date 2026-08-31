@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "neverwrite-native-backend"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-legacy",
