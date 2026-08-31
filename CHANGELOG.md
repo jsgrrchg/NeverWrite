@@ -34,6 +34,18 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.7.5] - 2026-08-31
+
+### Fixed
+
+- Fixed assistant message metadata appearing on the wrong message or more than once across tool turns, keeping timestamps and copy actions attached to the final assistant response for each turn.
+
+### Security
+
+- Stopped logging AI session identifiers when an ACP runtime transport disconnects.
+
+---
+
 ## [0.7.4] - 2026-08-27
 
 ### Added
