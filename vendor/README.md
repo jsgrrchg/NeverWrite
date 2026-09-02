@@ -63,10 +63,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty/`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.70.0`
-  - upstream tag: `v0.70.0`
-  - upstream commit: `d0aafb1ca26427285ffaeac8d8a4452fff28e9c3`
-  - dependencies match the upstream `0.70.0` release (`@agentclientprotocol/sdk` `1.3.0`, `@anthropic-ai/claude-agent-sdk` `0.3.232`, `@anthropic-ai/sdk` `0.117.1`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.73.0`
+  - upstream tag: `v0.73.0`
+  - upstream commit: `ea7076c0bc324603e65d8c124b7573f158749969`
+  - dependencies match the upstream `0.73.0` release (`@agentclientprotocol/sdk` `1.4.0`, `@anthropic-ai/claude-agent-sdk` `0.3.257`, `@anthropic-ai/sdk` `0.122.0`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 - `acp12/`
   - local package names: `agent-client-protocol-legacy` and
@@ -187,15 +187,21 @@ The desktop backend supports a mixed ACP world: current ACP integration for Clau
 
 ## Current Claude Delta
 
-The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.70.0` at commit `d0aafb1ca26427285ffaeac8d8a4452fff28e9c3`, with a bounded NeverWrite-specific runtime source delta.
+The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.73.0` at commit `ea7076c0bc324603e65d8c124b7573f158749969`, with a bounded NeverWrite-specific runtime source delta.
 
-The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.70.0` retains that protection, so the old trailer patch does not need to be reapplied.
+The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.73.0` retains that protection, so the old trailer patch does not need to be reapplied.
 
 NeverWrite additionally replaces the ambiguous textual `TaskList` fallback regex with linear string parsing. The local parser preserves task owners and dependency lists, treats malformed suffixes as subject text, and prevents adversarial tool output from causing excessive regex backtracking. The delta is limited to `src/tools.ts`, its regression coverage in `src/tests/tools.test.ts`, and the generated `dist/` output.
 
 This `TaskList` hardening is tracked upstream in [issue #1005](https://github.com/agentclientprotocol/claude-agent-acp/issues/1005) and [pull request #1006](https://github.com/agentclientprotocol/claude-agent-acp/pull/1006). Until an upstream release contains an equivalent fix and regression coverage, vendor refreshes must reapply this delta rather than replacing the source tree verbatim.
 
-The `0.70.0` baseline includes an opt-in `subagent-transcript` client capability. NeverWrite does not advertise that capability, so Claude keeps the legacy behavior that filters nested subagent text and thinking from the top-level feed. Rich nested transcript integration remains intentionally out of scope.
+The `0.73.0` baseline generates and persists session titles after a completed turn, then publishes them through ACP `session_info_update`. NeverWrite consumes those updates as runtime titles, persists them in local chat history, and keeps an explicit manual rename authoritative over later runtime title updates.
+
+The `0.73.0` baseline exposes canonical native subagent sessions and AIR asynchronous tasks in addition to the older opt-in `subagent-transcript` capability. NeverWrite advertises none of `subagents`, `nativeSubagentSessions`, `asyncTasks`, or `subagent-transcript`, so Claude does not emit those native child-session and task lifecycles. Rich Claude subagent integration remains intentionally out of scope.
+
+The Claude agent advertises its steering extension, but NeverWrite does not invoke `_session/steering`; queued messages continue to use NeverWrite's existing turn queue. Steering integration remains intentionally out of scope.
+
+The `0.73.0` baseline also aligns Claude permission modes and clear-context planning, reports per-model effort options, and supports message-specific ACP forks. NeverWrite keeps its existing generic mode and configuration-option mapping, ignores permission-kind and per-model quota metadata, and continues to fork its own persisted history rather than invoking the ACP fork extension.
 
 The `0.70.0` baseline also publishes the provider-neutral `_meta.goal` extension. NeverWrite does not yet consume goal snapshots or expose goal controls; that product integration is tracked separately in issue `#377` and is intentionally out of scope for this vendor update.
 
@@ -228,6 +234,10 @@ Claude runtime compatibility work is:
   NeverWrite's user-input UI
 - `elicitation.url`: advertised; the native backend bridges URL requests into a
   compact timeline confirmation UI
+- `subagents`: not advertised
+- AIR `nativeSubagentSessions`: not advertised
+- AIR `asyncTasks`: not advertised
+- legacy `subagent-transcript`: not advertised
 
 ## Updating Vendored Runtimes
 

@@ -2,6 +2,7 @@ import { createSdkMcpServer, } from "@anthropic-ai/claude-agent-sdk";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
+import { airExtensionMeta, clientSupportsAirCapability, withAirMeta } from "./air-extension.js";
 export const AGENT_FILE_CHANGE_REPORT_CAPABILITY = "agentFileChangeReport";
 export const FILE_CHANGE_AUDIT_SERVER_NAME = "claude_agent_acp";
 export const FILE_CHANGE_AUDIT_TOOL_NAME = "report_changed_files";
@@ -11,11 +12,6 @@ const MAX_REPORTED_PATHS = 1024;
 const MAX_REPORTED_PATH_LENGTH = 4096;
 export const AGENT_FILE_CHANGE_REPORT_MAX_BYTES = 256 * 1024;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
-const JETBRAINS_META_KEY = "jetbrains";
-const AIR_META_KEY = "air";
-const AIR_EXTENSION_VERSION = 1;
-const AIR_EXTENSION_CAPABILITIES_KEY = "capabilities";
-const AIR_AGENT_FILE_CHANGE_REPORT_KEY = "agentFileChangeReport";
 const reportInputSchema = {
     paths: z
         .array(z.string())
@@ -32,7 +28,7 @@ const reportInputSchema = {
         .describe("Why the report may be incomplete or uncertain."),
 };
 export function agentFileChangeReportRequestId(meta) {
-    const air = airExtension(meta);
+    const air = airExtensionMeta(meta);
     const request = air?.agentFileChangeReportRequest;
     if (!request || typeof request !== "object" || Array.isArray(request))
         return undefined;
@@ -49,35 +45,10 @@ export function agentFileChangeReportRequestId(meta) {
         : undefined;
 }
 export function supportsAgentFileChangeReport(capabilities) {
-    if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
-        return false;
-    }
-    const air = airExtension(capabilities._meta);
-    const advertised = air?.[AIR_EXTENSION_CAPABILITIES_KEY];
-    return (air?.version === AIR_EXTENSION_VERSION &&
-        Array.isArray(advertised) &&
-        advertised.includes(AGENT_FILE_CHANGE_REPORT_CAPABILITY));
+    return clientSupportsAirCapability(capabilities, AGENT_FILE_CHANGE_REPORT_CAPABILITY);
 }
 export function agentFileChangeReportMeta(result) {
-    return {
-        [JETBRAINS_META_KEY]: {
-            [AIR_META_KEY]: {
-                version: AIR_EXTENSION_VERSION,
-                [AIR_AGENT_FILE_CHANGE_REPORT_KEY]: result,
-            },
-        },
-    };
-}
-function airExtension(meta) {
-    if (!meta || typeof meta !== "object" || Array.isArray(meta))
-        return undefined;
-    const jetbrains = meta[JETBRAINS_META_KEY];
-    if (!jetbrains || typeof jetbrains !== "object" || Array.isArray(jetbrains))
-        return undefined;
-    const air = jetbrains[AIR_META_KEY];
-    return air && typeof air === "object" && !Array.isArray(air)
-        ? air
-        : undefined;
+    return withAirMeta(undefined, AGENT_FILE_CHANGE_REPORT_CAPABILITY, result);
 }
 export function createFileChangeAuditTurnState(requestId) {
     return {

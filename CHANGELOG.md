@@ -34,6 +34,14 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.73.0`, adding Claude Fable 5.1 compatibility and runtime-generated chat titles while keeping native Claude steering, subagent sessions, and asynchronous task integration disabled in NeverWrite.
+
+---
+
 ## [0.7.5] - 2026-08-31
 
 ### Fixed

@@ -1,20 +1,8 @@
 import { USAGE_LIMIT_ERROR_PREFIXES, } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
-const JETBRAINS_META_KEY = "jetbrains";
-const AIR_META_KEY = "air";
-const AIR_EXTENSION_VERSION_KEY = "version";
-const AIR_EXTENSION_CAPABILITIES_KEY = "capabilities";
-const AIR_SESSION_FAILURE_KEY = "sessionFailure";
-const AIR_EXTENSION_VERSION = 1;
+import { AIR_SESSION_FAILURE_CAPABILITY, airCapabilityMeta, clientSupportsAirCapability, withAirMeta, } from "./air-extension.js";
 export function airSessionFailureCapabilityMeta(...additionalCapabilities) {
-    return {
-        [JETBRAINS_META_KEY]: {
-            [AIR_META_KEY]: {
-                [AIR_EXTENSION_VERSION_KEY]: AIR_EXTENSION_VERSION,
-                [AIR_EXTENSION_CAPABILITIES_KEY]: [AIR_SESSION_FAILURE_KEY, ...additionalCapabilities],
-            },
-        },
-    };
+    return airCapabilityMeta(AIR_SESSION_FAILURE_CAPABILITY, ...additionalCapabilities);
 }
 export function createSessionFailureState() {
     return {
@@ -86,22 +74,15 @@ const AIR_FAILURE_POLICY = {
     },
 };
 export function sessionFailureMeta(failure) {
-    return {
-        [JETBRAINS_META_KEY]: {
-            [AIR_META_KEY]: {
-                [AIR_EXTENSION_VERSION_KEY]: AIR_EXTENSION_VERSION,
-                [AIR_SESSION_FAILURE_KEY]: {
-                    id: failure.id,
-                    revision: failure.revision,
-                    category: failure.category,
-                    severity: failure.severity,
-                    title: failure.title,
-                    ...(failure.details ? { details: failure.details } : {}),
-                    actions: failure.actions,
-                },
-            },
-        },
-    };
+    return withAirMeta(undefined, AIR_SESSION_FAILURE_CAPABILITY, {
+        id: failure.id,
+        revision: failure.revision,
+        category: failure.category,
+        severity: failure.severity,
+        title: failure.title,
+        ...(failure.details ? { details: failure.details } : {}),
+        actions: failure.actions,
+    });
 }
 /** `getSessionMessages` deliberately exposes only the API message and strips
  *  transcript-level `error` / `isApiErrorMessage` fields. The SDK exports the
@@ -161,16 +142,7 @@ export function activeUsageLimitMessage(messages) {
     return active;
 }
 export function supportsAirSessionFailures(capabilities) {
-    const jetbrains = capabilities?._meta?.[JETBRAINS_META_KEY];
-    const air = jetbrains?.[AIR_META_KEY];
-    const version = air?.[AIR_EXTENSION_VERSION_KEY];
-    const advertised = air?.[AIR_EXTENSION_CAPABILITIES_KEY];
-    return (typeof version === "number" &&
-        Number.isFinite(version) &&
-        Number.isInteger(version) &&
-        version >= AIR_EXTENSION_VERSION &&
-        Array.isArray(advertised) &&
-        advertised.some((capability) => capability === AIR_SESSION_FAILURE_KEY));
+    return clientSupportsAirCapability(capabilities, AIR_SESSION_FAILURE_CAPABILITY);
 }
 function sessionFailureRecoveryPolicy(kind, turnId) {
     switch (kind) {
@@ -331,6 +303,7 @@ export function providerFailureCategory(errorKind, isUsageLimit = false) {
         case "oauth_org_not_allowed":
             return "auth_required";
         case "billing_error":
+        case "account_on_hold":
             return "quota_exhausted";
         case "rate_limit":
             return "rate_limited";

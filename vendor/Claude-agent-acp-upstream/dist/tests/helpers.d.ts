@@ -29,6 +29,7 @@ export declare function makeMockQuery(overrides?: Record<string, unknown>): {
     setModel: () => Promise<void>;
     setPermissionMode: () => Promise<void>;
     supportedCommands: () => Promise<never[]>;
+    mcpServerStatus: () => Promise<never[]>;
     getContextUsage: () => Promise<{
         totalTokens: number;
         rawMaxTokens: number;
