@@ -34,7 +34,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [Unreleased]
+## [0.7.6] - 2026-09-02
 
 ### Changed
 
