@@ -25,6 +25,7 @@ export function makeMockQuery(overrides = {}) {
         setModel: async () => { },
         setPermissionMode: async () => { },
         supportedCommands: async () => [],
+        mcpServerStatus: async () => [],
         getContextUsage: async () => DEFAULT_CONTEXT_USAGE,
         close: () => { },
         interrupt: async () => undefined,

@@ -1,6 +1,10 @@
 import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, DisableProviderRequest, DisableProviderResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListProvidersRequest, ListProvidersResponse, LlmProtocol, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, SetProviderRequest, SetProviderResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
-import { AgentInfo, CanUseTool, FastModeDisabledReason, FastModeState, ModelInfo, Options, PermissionMode, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { AgentInfo, CanUseTool, FastModeDisabledReason, FastModeState, ModelInfo, Options, PermissionMode, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage, Settings } from "@anthropic-ai/claude-agent-sdk";
 import { GoalRequest, GoalControlResponse, GoalSnapshot } from "./goal-extension.js";
+import { SessionTitles } from "./session-titles.js";
+import { AcpSessionNotification } from "./acp-subagents.js";
+import { NativeSubagent, NativeSubagentRuntime } from "./native-subagents.js";
+import { AsyncTaskRuntime } from "./async-tasks.js";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
@@ -8,6 +12,8 @@ import { type SessionFailureState } from "./session-failure-extension.js";
 import { type FileChangeAuditSupport, type FileChangeAuditTurnState } from "./file-change-audit.js";
 import { TaskState } from "./tools.js";
 import { Pushable } from "./utils.js";
+export { DEFAULT_AGENT_ID, EFFORT_CONFIG_ID } from "./session-config-ids.js";
+import { MODE_CONFIG_ID } from "./session-mode.js";
 export declare const CLAUDE_CONFIG_DIR: string;
 /**
  * Logger interface for customizing logging output
@@ -21,6 +27,16 @@ type AccumulatedUsage = {
     outputTokens: number;
     cachedReadTokens: number;
     cachedWriteTokens: number;
+};
+/** Per-model token tallies keyed by the model id the SDK reported them under
+ *  (its resolved spelling, e.g. "claude-opus-5[1m]"). */
+type ModelTokenTally = Record<string, AccumulatedUsage>;
+type AsyncTaskStopRequest = {
+    sessionId: string;
+    asyncTaskId: string;
+};
+type AsyncTaskStopResponse = {
+    stopped: boolean;
 };
 /** Request-level steering options. `promptRequired` is opt-in so existing Hosts
  *  keep the established idle fallback behavior. */
@@ -91,11 +107,11 @@ type Turn = {
      *  uuid while the turn is still queued (msg_lifecycle_v1 CLIs). The command
      *  is already finished SDK-side, so a later cancel() must not seed an
      *  orphan entry for it — no terminal frame will ever come to drain it.
-     *  "completed"/"discarded" leave nothing outstanding; "cancelled" after a
-     *  dispatch means the dead turn's result may still arrive (seeded as a
-     *  zombie) unless it already passed (`commandResultSeen`), and without a
-     *  dispatch means dropped (nothing coming). */
-    commandFinished?: "completed" | "discarded" | "cancelled";
+     *  "completed"/"discarded"/"refused" leave nothing outstanding; "cancelled"
+     *  after a dispatch means the dead turn's result may still arrive (seeded
+     *  as a zombie) unless it already passed (`commandResultSeen`), and without
+     *  a dispatch means dropped (nothing coming). */
+    commandFinished?: "completed" | "discarded" | "cancelled" | "refused";
     /** Set when a user-turn result arrives while this command is known
      *  dispatched (`commandStarted`) with no terminal frame yet. Turns run
      *  sequentially and frames arrive in stream order, so the turn this command
@@ -155,7 +171,7 @@ type Turn = {
     deferredSettle?: PromptResponse;
     /** Uuids of `steer()`-injected messages the SDK has not replayed back yet.
      *
-     *  A steer is delivered at {@link STEER_PRIORITY} (`now`), so the CLI ABORTS
+     *  A steer is normally delivered at priority `now`, so the CLI ABORTS
      *  the running cycle: it emits its own human-origin `result` —
      *  indistinguishable from a turn's terminal one — and the steered message runs
      *  as a SECOND cycle. Settling at that result would answer `session/prompt`
@@ -173,12 +189,16 @@ type Turn = {
     /** What a steered turn settles with once its steered work has run: the outcome
      *  of its latest result, so its usage covers every cycle the turn ran. */
     steeredSettle?: PromptResponse;
+    carriedUsage?: AccumulatedUsage;
+    /** `carriedUsage`'s per-model counterpart, so a turn that survives a
+     *  clear-context restart keeps the `_meta.quota` rows it earned pre-restart. */
+    carriedModelUsage?: ModelTokenTally;
     resolve: (response: PromptResponse) => void;
     reject: (error: unknown) => void;
     /** Settles after the ACP prompt request completes, regardless of outcome. */
     completion?: Promise<void>;
 };
-type Session = {
+export type Session = {
     query: Query;
     input: Pushable<SDKUserMessage>;
     cancelled: boolean;
@@ -225,6 +245,11 @@ type Session = {
      *  lane); a count can't express command coalescing — N queued commands can
      *  fold into ONE turn emitting one result, leaving a stale skip of N-1. */
     pendingOrphanResults?: number;
+    /** UUIDs of cancelled-before-echo commands that can still emit Claude's
+     * empty user-interruption diagnostic. Interrupt receipts and command
+     * lifecycle frames remove commands that were dropped before dispatch; the
+     * next ordinary result clears any stale survivors. */
+    pendingEmptyInterruptionDiagnosticCommands?: Set<string>;
     /** msg_lifecycle_v1 lane of the orphan accounting (see
      *  `pendingOrphanResults` for the count lane): the uuids of cancelled queued
      *  turns whose SDK-side command may still produce an unaccounted result,
@@ -276,10 +301,25 @@ type Session = {
     /** Original ACP parameters used to recreate this query with a new provider. */
     creationParams?: NewSessionRequest;
     settingsManager: SettingsManager;
+    /** This session's title state and the turn-end logic that maintains it. */
+    titles: SessionTitles;
     accumulatedUsage: AccumulatedUsage;
+    /** The active turn's spend broken out per model — the breakdown behind
+     *  `accumulatedUsage`, reported as `_meta.quota.model_usage` on the prompt
+     *  response. Accumulated and reset in lockstep with it. */
+    accumulatedModelUsage?: ModelTokenTally;
+    /** The last per-model reading seen on this query, autonomous cycles included.
+     *  `result.modelUsage` is a running total for the whole query() call rather
+     *  than a per-result figure, so consecutive readings are what a result's own
+     *  spend is derived from — this is not itself a turn tally. */
+    lastModelUsageReading?: ModelTokenTally;
     modes: SessionModeState;
     models: SessionModelState;
     modelInfos: ModelInfo[];
+    /** Prevents the model-specific Auto fallback from spamming the transcript. */
+    autoModeFallbackWarningShown?: boolean;
+    /** Initial mode fallback is reported after session/new, on the first prompt. */
+    autoModeFallbackWarningPending?: boolean;
     configOptions: SessionConfigOption[];
     /** Custom main-thread agent personas the user (or a plugin/project) has
      *  configured, discovered via `supportedAgents()` with Claude Code's built-in
@@ -293,6 +333,14 @@ type Session = {
      *  user's intent so it persists across model switches; the Fast mode config
      *  option is only surfaced while the selected model supports it. */
     fastModeEnabled: boolean;
+    /** Whether the user picked a non-default effort through the ACP picker this
+     *  session. A pin lives at the SDK's flag layer, which overrides the CLI's
+     *  persisted effort (including the per-model `modelSettings` entries), so it
+     *  follows the session across model switches; without one, the CLI resolves
+     *  effort itself and the Effort option is display-only. Cleared when the
+     *  user picks "Default" (the flag layer is cleared with it) or when a model
+     *  switch clamps the pin away. */
+    effortPinnedByUser?: boolean;
     /** Why the SDK currently can't serve Fast mode, when the reason is one worth
      *  telling the user about (see {@link FAST_MODE_UNAVAILABLE_EXPLANATIONS} —
      *  routine states like the SDK's own opt-in requirement normalize to
@@ -316,6 +364,11 @@ type Session = {
     /** Whether nested subagent text/thinking is forwarded to the ACP client.
      *  Enabled by either the ACP capability or the pre-existing SDK option. */
     forwardSubagentText: boolean;
+    /** Number of ACP permission/elicitation requests currently awaiting user
+     *  input. This is a counter rather than a boolean because parallel subagents
+     *  can ask concurrently; steering must remain non-interrupting until the last
+     *  request settles. */
+    pendingUserInputCount?: number;
     /** Context window size of the session's current model, carried across
      *  prompts so mid-stream usage_update notifications report a correct `size`
      *  before the turn's first result message arrives. Seeded synchronously at
@@ -327,6 +380,7 @@ type Session = {
      *  fresh session it stalls until the first turn runs (see the seeding call
      *  sites and `contextWindowCache`). */
     contextWindowSize: number;
+    contextUsedTokens?: number;
     /** Whether `contextWindowSize` came from an authoritative source (the
      *  cross-session cache, a resumed session's `getContextUsage` report, or a
      *  `result.modelUsage`) rather than the text heuristic / default. Guards the
@@ -347,12 +401,6 @@ type Session = {
     /** Accumulated task list for the session, keyed by task ID. Task IDs are
      *  per-session, so this state must not be shared across sessions. */
     taskState: TaskState;
-    /** Last session title we pushed to the client via `session_info_update`.
-     *  The SDK auto-generates a title in a background task and persists it to the
-     *  session file; we poll it on each turn-end (`session_state_changed: idle`)
-     *  and only notify the client when it actually changes. Undefined until the
-     *  first title is observed. */
-    lastTitle?: string;
     /** Caches `tool_use` blocks by id so the matching `tool_result` can recover
      *  the tool name/input when mapping it to a `tool_call_update`. Per-session
      *  (tool_use ids are only unique within a session) and pruned at
@@ -367,6 +415,19 @@ type Session = {
      *  tool_use block streams; this set makes the two paths converge regardless of
      *  order. Pruned at `tool_result` time alongside `toolUseCache`. */
     emittedToolCalls: Set<string>;
+    /** ACP session affinity for calls emitted eagerly by permission handling. */
+    eagerToolCallSessions?: Map<string, string>;
+    /** ExitPlanMode denial that intentionally interrupts the current Claude
+     *  cycle. Correlated by tool-use id until the terminal result arrives. */
+    pendingExitPlanModeInterruption?: {
+        toolUseId: string;
+        toolResultSeen: boolean;
+    };
+    pendingExitPlanContextReset?: {
+        toolUseId: string;
+        plan: string;
+        mode: PermissionMode;
+    };
     /** Registry of live background tasks, keyed by task id: populated at
      *  `task_started`, pruned when the task settles (a `task_notification` or
      *  a terminal `task_updated` patch), and reconciled against
@@ -424,6 +485,25 @@ type Session = {
          *  entry on its two-activation clock. */
         endedPerLevel?: "ended" | "sweep-armed";
     }>;
+    /** Native ACP subagent sessions negotiated through PR #1992. Records are
+     *  retained for the parent session lifetime so late child output cannot be
+     *  rebound to another task after the SDK prunes its live-task registry. */
+    nativeSubagentsByTaskId?: Map<string, NativeSubagent>;
+    /** Resolves the spawning Agent/Task tool use carried by child messages to
+     *  the corresponding native ACP child session. */
+    nativeSubagentTaskIdByToolUseId?: Map<string, string>;
+    /** Captures the ACP session in which an Agent/Task tool call was made. This
+     *  supplies the immediate parent for nested `task_started` notifications,
+     *  whose SDK payload has no lineage field of its own. */
+    nativeSubagentParentByToolUseId?: Map<string, string>;
+    /** Session-owned lifecycle controller shared by the consumer, cancel, reset,
+     *  and teardown paths. */
+    nativeSubagentRuntime?: NativeSubagentRuntime;
+    /** Child-aware delivery closure paired with {@link nativeSubagentRuntime}. */
+    nativeSubagentDeliver?: (notification: AcpSessionNotification) => Promise<void>;
+    /** Session-owned async task controller. Prompt cancellation intentionally
+     *  does not finish it because background work may outlive a prompt. */
+    asyncTaskRuntime?: AsyncTaskRuntime;
     /** Whether any top-level assistant text reached the client since the last
      *  stretch boundary. Set as a side effect of sending in the consumer's
      *  `sendUpdate`, never at an emission site; read at the terminal `result`
@@ -568,9 +648,6 @@ type ProviderConfig = {
         region: string;
     };
 };
-/**
- * Extra metadata that the agent provides for each tool_call / tool_update update.
- */
 export type ToolUpdateMeta = {
     claudeCode?: {
         toolName: string;
@@ -649,7 +726,6 @@ export declare function isLocalCommandMetadata(content: unknown): boolean;
  * all both paths have to match on.
  */
 export declare function isSyntheticLoginMessage(apiMessage: unknown): boolean;
-export declare function resolvePermissionMode(defaultMode?: unknown, logger?: Logger): PermissionMode;
 /**
  * Client-facing surface the agent calls back into. This is the subset of ACP
  * client methods the agent actually uses, expressed as a narrow interface so
@@ -657,7 +733,7 @@ export declare function resolvePermissionMode(defaultMode?: unknown, logger?: Lo
  * {@link ClientConnection} over the SDK's typed `AgentContext`.
  */
 export interface AcpClient {
-    sessionUpdate(params: SessionNotification): Promise<void>;
+    sessionUpdate(params: AcpSessionNotification): Promise<void>;
     /** `signal`, when aborted, sends `$/cancel_request` for the in-flight
      *  permission request so the client can dismiss its prompt (and settle our
      *  await) instead of leaving the dialog open after the turn was cancelled. */
@@ -666,8 +742,8 @@ export interface AcpClient {
     writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse>;
     /** `signal`, when aborted, sends `$/cancel_request` for the in-flight
      *  elicitation so the client can dismiss its prompt and settle our await. */
-    unstable_createElicitation(params: CreateElicitationRequest, signal?: AbortSignal): Promise<CreateElicitationResponse>;
-    unstable_completeElicitation(params: CompleteElicitationNotification): Promise<void>;
+    createElicitation(params: CreateElicitationRequest, signal?: AbortSignal): Promise<CreateElicitationResponse>;
+    completeElicitation(params: CompleteElicitationNotification): Promise<void>;
     /** Send a custom (extension) notification, e.g. `_claude/sdkMessage`. */
     extNotification(method: string, params: Record<string, unknown>): Promise<void>;
 }
@@ -678,11 +754,13 @@ export declare class ClaudeAcpAgent {
     client: AcpClient;
     clientCapabilities?: ClientCapabilities;
     logger: Logger;
+    private readonly sessionModes;
     gatewayAuthRequest?: GatewayAuthRequest;
     /** Set while ACP overrides the agent's native provider configuration. */
     providerConfig?: ProviderConfig;
     /** Serializes provider changes while every open query is recreated between turns. */
     private providerUpdate;
+    private readonly exitPlan;
     /** Grace period before a `session/cancel` forces a wedged prompt loop to
      *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
      *  tests can shrink it. */
@@ -694,12 +772,6 @@ export declare class ClaudeAcpAgent {
     resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse>;
     loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse>;
     listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse>;
-    /** Read the SDK-maintained title for a session and, if it changed since the
-     *  last time we looked, notify the client with a `session_info_update`. The
-     *  SDK has no push event for the title it auto-generates in the background, so
-     *  we pull it at turn-end. A missing session file or read error is non-fatal:
-     *  the title is best-effort and another turn will retry. */
-    private maybeUpdateSessionTitle;
     authenticate(_params: AuthenticateRequest): Promise<void>;
     unstable_listProviders(_params: ListProvidersRequest): Promise<ListProvidersResponse>;
     /**
@@ -733,11 +805,13 @@ export declare class ClaudeAcpAgent {
      *  an `SDKUserMessage` onto the same streaming input, which the SDK routes
      *  into the in-flight turn. The injected message's echo carries a uuid that
      *  matches no queued turn, so the consumer drops it as an unrelated replay
-     *  without promoting/settling anything. It is delivered at {@link
-     *  STEER_PRIORITY} (`now`) so it pre-empts the current generation (interrupting
-     *  a single-shot response, or slotting in between a multi-step turn's tool
-     *  calls). The steered message's own output streams via `session/update`, not
-     *  this response.
+     *  without promoting/settling anything. It is normally delivered at priority
+     *  `now` so it pre-empts the current generation (interrupting a single-shot
+     *  response, or slotting in between a multi-step turn's tool calls). While a
+     *  permission or elicitation is awaiting user input it uses `later`, because
+     *  interrupting that SDK callback cancels the ACP request and can strand the
+     *  prompt (IJAI-1191). The steered message's own output streams via
+     *  `session/update`, not this response.
      *
      *  Pre-empting means ABORTING: the interrupted cycle emits a `result` of its
      *  own and the steered message runs as a second one, so the turn is marked
@@ -749,6 +823,7 @@ export declare class ClaudeAcpAgent {
      *  `session/prompt`. Without the opt-in, the existing detached `prompt()` and
      *  `startedNewTurn` result are preserved for compatibility. */
     steer(params: SteerRequest): Promise<SteerResponse>;
+    stopAsyncTask(params: AsyncTaskStopRequest): Promise<AsyncTaskStopResponse>;
     /** Publish the audit terminal for every turn path that did not reach the
      *  report tool. The support flips the turn state synchronously before its
      *  transport await, so callers can stay fail-open and settle the ACP prompt
@@ -809,17 +884,20 @@ export declare class ClaudeAcpAgent {
     deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse>;
     setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse>;
     setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse>;
-    private applySessionMode;
     private replaySessionHistory;
     readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse>;
     writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse>;
+    /** Mark a client request as blocking on user input for exactly the lifetime
+     *  of its promise. Steering consults this session-local count synchronously,
+     *  so a message arriving while any permission/elicitation card is open uses
+     *  non-interrupting SDK delivery. */
+    private withPendingUserInput;
     /** Forward a permission request to the client, wiring the tool call's
      *  `signal` through as a `cancellationSignal`. When the turn is cancelled
      *  while the client's prompt is still open the signal aborts, the SDK sends
-     *  `$/cancel_request`, and the client settles the request (a `cancelled`
-     *  outcome or a `requestCancelled` rejection). Either way we surface the same
-     *  "Tool use aborted" the callers already expect, so a cancelled dialog no
-     *  longer leaves the `await` hanging. */
+     *  `$/cancel_request`, and our local abort race settles even if the client
+     *  ignores it. A `cancelled` outcome, request rejection, and local abort all
+     *  surface the same "Tool use aborted" the callers already expect. */
     private requestPermissionFromClient;
     /** Emit the `tool_call` a permission request references if it hasn't been sent
      *  yet, so the client has the tool call before being asked to approve it. The
@@ -859,13 +937,15 @@ export declare class ClaudeAcpAgent {
     private sendAvailableCommandsUpdate;
     private updateConfigOption;
     private applyConfigOptionValue;
-    /** Reconcile adapter model state after the SDK persistently swapped the
-     *  session's model out from under us (refusal fallback). The SDK already
-     *  made the switch, so this must NOT call `query.setModel` — it only
-     *  updates our bookkeeping (currentModelId, context window, mode clamping,
-     *  effort/Fast-mode options) via the same `applyConfigOptionValue` path a
-     *  user-driven model change takes, then notifies the client. */
-    private syncModelAfterRefusalFallback;
+    /** Reconcile adapter model state after the SDK switched the session's
+     *  model out from under us — a refusal fallback, or any switch reported by
+     *  the PostModelSwitch hook that the adapter didn't drive (e.g. a `/model`
+     *  command typed as a prompt). The SDK already made the switch, so this
+     *  must NOT call `query.setModel` — it only updates our bookkeeping
+     *  (currentModelId, context window, mode clamping, effort/Fast-mode
+     *  options) via the same `applyConfigOptionValue` path a user-driven model
+     *  change takes, then notifies the client. */
+    private syncModelAfterExternalSwitch;
     /** Replace the Fast mode option in `session.configOptions` so it reflects
      *  `enabled` (and the client's current boolean-capability). A no-op when the
      *  option isn't present, so callers must confirm the current model surfaces
@@ -916,8 +996,17 @@ export declare class ClaudeAcpAgent {
      */
     private enqueueProviderUpdate;
 }
+/** The effort level the CLI itself resolves for a model from the persisted
+ *  settings: the per-model entry (`modelSettings`, keyed by canonical model
+ *  name — the CLI persists /effort per model since 2.1.243) wins over the
+ *  legacy top-level `effortLevel`. Alias picker rows are looked up by their
+ *  resolved model id first, then the row value, then the raw config value
+ *  for models not in the picker. Exact keys only — the CLI's canonical-form
+ *  fallback matching isn't replicated, so a miss simply falls back to the
+ *  top-level value (best-effort display; `buildConfigOptions` still
+ *  validates the result against the model's supported levels). */
+export declare function settingsEffortForModel(settings: Settings, modelInfo: ModelInfo | undefined, modelId?: string): string | undefined;
 export declare const BUILTIN_AGENT_NAMES: Set<string>;
-export declare const DEFAULT_AGENT_ID = "default";
 /** Discover user/plugin/project-configured main-thread agents, excluding the
  *  built-in subagents and the reserved "default" sentinel. Returns an empty
  *  list if discovery fails so a flaky control request never blocks session
@@ -927,9 +1016,8 @@ export declare function discoverCustomAgents(q: Query): Promise<AgentInfo[]>;
  *  Centralized so the option declarations in `buildConfigOptions` and the
  *  handlers in `setSessionConfigOption`/`applyConfigOptionValue` reference the
  *  same identifiers and can't drift apart. */
-export declare const MODE_CONFIG_ID = "mode";
+export { MODE_CONFIG_ID };
 export declare const MODEL_CONFIG_ID = "model";
-export declare const EFFORT_CONFIG_ID = "effort";
 export declare const AGENT_CONFIG_ID = "agent";
 export declare const FAST_MODE_CONFIG_ID = "fast";
 /** Select-fallback values used when the client has not opted into boolean
@@ -998,7 +1086,7 @@ export declare function resolveModelPreference(models: ModelInfo[], preference: 
  *  4. `resolveModelPreference` over the picker entries.
  *  5. A model with no picker counterpart (e.g. excluded by an
  *     `availableModels` allowlist) is tracked verbatim, mirroring
- *     `syncModelAfterRefusalFallback`: the picker shows no selection, but the
+ *     `syncModelAfterExternalSwitch`: the picker shows no selection, but the
  *     model-dependent bookkeeping stays truthful to what the SDK is running. */
 export declare function matchResumedModel(models: ModelInfo[], liveModel: string): ModelInfo;
 /**
@@ -1075,5 +1163,4 @@ export declare function runAcp(logger?: Logger): {
     connection: import("@agentclientprotocol/sdk").AgentConnection;
     agent: ClaudeAcpAgent;
 };
-export {};
 //# sourceMappingURL=acp-agent.d.ts.map

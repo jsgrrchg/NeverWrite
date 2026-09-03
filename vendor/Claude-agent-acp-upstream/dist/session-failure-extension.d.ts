@@ -1,13 +1,6 @@
 import type { ClientCapabilities, SessionNotification } from "@agentclientprotocol/sdk";
 import { getSessionMessages, type SDKAssistantMessageError } from "@anthropic-ai/claude-agent-sdk";
-export declare function airSessionFailureCapabilityMeta(...additionalCapabilities: string[]): {
-    jetbrains: {
-        air: {
-            version: number;
-            capabilities: string[];
-        };
-    };
-};
+export declare function airSessionFailureCapabilityMeta(...additionalCapabilities: string[]): Record<string, unknown>;
 export type ClaudeFailureKind = "advisory" | "auth_required" | "bad_request" | "budget_exhausted" | "context_exhausted" | "internal_error" | "overloaded" | "provider_error" | "quota_exhausted" | "rate_limited" | "transport_lost" | "worker_shutdown";
 type AirSessionFailureCategory = "connection" | "access" | "limit" | "request" | "service" | "unknown";
 type AirSessionFailureSeverity = "warning" | "error";
@@ -46,22 +39,7 @@ type Logger = {
     error: (...args: unknown[]) => void;
 };
 export declare function createSessionFailureState(): SessionFailureState;
-export declare function sessionFailureMeta(failure: PublishedSessionFailure): {
-    jetbrains: {
-        air: {
-            version: number;
-            sessionFailure: {
-                actions: AirSessionFailureAction[];
-                details?: string | undefined;
-                id: string;
-                revision: number;
-                category: AirSessionFailureCategory;
-                severity: AirSessionFailureSeverity;
-                title: string;
-            };
-        };
-    };
-};
+export declare function sessionFailureMeta(failure: PublishedSessionFailure): Record<string, unknown>;
 /** `getSessionMessages` deliberately exposes only the API message and strips
  *  transcript-level `error` / `isApiErrorMessage` fields. The SDK exports the
  *  exact stable prefixes used by its synthetic usage-limit errors, so replay

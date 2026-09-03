@@ -78,7 +78,12 @@ export declare function toolUpdateFromDiffToolResponse(toolResponse: unknown): {
 };
 export declare const registerHookCallback: (toolUseID: string, { onPostToolUseHook, }: {
     onPostToolUseHook?: (toolUseID: string, toolInput: unknown, toolResponse: unknown) => Promise<void>;
-}) => void;
+}, ownerId?: string) => void;
+export declare function unregisterHookCallback(toolUseID: string): void;
+/** PostToolUse normally follows tool_result, so keep the callback for a short
+ * grace period while still bounding retention when the hook never arrives. */
+export declare function completeHookCallback(toolUseID: string): void;
+export declare function clearHookCallbacks(ownerId: string): void;
 export declare const createPostToolUseHook: (options?: {
     onEnterPlanMode?: () => Promise<void>;
 }) => HookCallback;

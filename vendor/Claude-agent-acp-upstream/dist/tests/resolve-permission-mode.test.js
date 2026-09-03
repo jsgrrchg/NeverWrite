@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { resolvePermissionMode } from "../acp-agent.js";
+import { resolvePermissionMode } from "../permissions/modes.js";
 function mockLogger() {
     const error = vi.fn();
     const log = vi.fn();

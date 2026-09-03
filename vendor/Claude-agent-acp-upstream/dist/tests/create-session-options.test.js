@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { RequestError } from "@agentclientprotocol/sdk";
+import { RequestError, } from "@agentclientprotocol/sdk";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 let capturedOptions;
 let contextUsageResult;
+let initModels;
+let setModelImpl;
+let mcpServerStatusResult;
+let mcpAuthenticateImpl;
 vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
     const actual = await vi.importActual("@anthropic-ai/claude-agent-sdk");
     const { makeMockQuery, DEFAULT_CONTEXT_USAGE } = await import("./helpers.js");
@@ -14,7 +18,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
             capturedOptions = args.options;
             return makeMockQuery({
                 initializationResult: async () => ({
-                    models: [
+                    models: initModels ?? [
                         {
                             value: "claude-sonnet-4-6",
                             displayName: "Claude Sonnet",
@@ -23,7 +27,10 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
                         },
                     ],
                 }),
+                setModel: (model) => (setModelImpl ? setModelImpl(model) : Promise.resolve()),
                 getContextUsage: () => contextUsageResult ? contextUsageResult() : Promise.resolve(DEFAULT_CONTEXT_USAGE),
+                mcpServerStatus: () => mcpServerStatusResult(),
+                mcpAuthenticate: (serverName) => mcpAuthenticateImpl(serverName),
             });
         },
     };
@@ -49,6 +56,13 @@ describe("createSession options merging", () => {
     beforeEach(async () => {
         capturedOptions = undefined;
         contextUsageResult = undefined;
+        initModels = undefined;
+        setModelImpl = undefined;
+        mcpServerStatusResult = async () => [];
+        mcpAuthenticateImpl = async () => ({
+            requiresUserAction: false,
+            callbackExpected: false,
+        });
         vi.resetModules();
         const acpAgent = await import("../acp-agent.js");
         ClaudeAcpAgent = acpAgent.ClaudeAcpAgent;
@@ -230,7 +244,7 @@ describe("createSession options merging", () => {
             await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
             expect(capturedOptions.forwardSubagentText).toBe(false);
         });
-        it("preserves the pre-existing caller-provided SDK option", async () => {
+        it("preserves caller-provided legacy transcript forwarding", async () => {
             await agent.newSession({
                 cwd: process.cwd(),
                 mcpServers: [],
@@ -238,10 +252,22 @@ describe("createSession options merging", () => {
             });
             expect(capturedOptions.forwardSubagentText).toBe(true);
         });
-        it("enables SDK forwarding when the ACP client advertises support", async () => {
+        it("accepts the legacy transcript extension", async () => {
             await agent.initialize({
                 protocolVersion: 1,
                 clientCapabilities: { _meta: { "subagent-transcript": true } },
+            });
+            await agent.newSession({
+                cwd: process.cwd(),
+                mcpServers: [],
+                _meta: { claudeCode: { options: { forwardSubagentText: false } } },
+            });
+            expect(capturedOptions.forwardSubagentText).toBe(true);
+        });
+        it("enables SDK forwarding after native ACP negotiation", async () => {
+            await agent.initialize({
+                protocolVersion: 1,
+                clientCapabilities: { subagents: {} },
             });
             await agent.newSession({
                 cwd: process.cwd(),
@@ -542,6 +568,53 @@ describe("createSession options merging", () => {
             expect(capturedOptions.disallowedTools).toContain("AskUserQuestion");
             expect(typeof capturedOptions.onElicitation).toBe("function");
         });
+        it("starts MCP OAuth as an ACP URL elicitation and completes it after reconnect", async () => {
+            let statusCall = 0;
+            mcpServerStatusResult = async () => statusCall++ === 0
+                ? [{ name: "linear", status: "needs-auth" }]
+                : [{ name: "linear", status: "connected" }];
+            const authenticate = vi.fn(async () => ({
+                authUrl: "https://example.com/oauth/authorize",
+                requiresUserAction: true,
+                callbackExpected: true,
+            }));
+            mcpAuthenticateImpl = authenticate;
+            const createElicitation = vi.fn(async (_request) => ({
+                action: "accept",
+            }));
+            const completeElicitation = vi.fn(async () => { });
+            Object.assign(agent.client, {
+                createElicitation,
+                completeElicitation,
+            });
+            await agent.initialize({
+                protocolVersion: 1,
+                clientCapabilities: { elicitation: { url: {} } },
+            });
+            const { sessionId } = await agent.newSession({
+                cwd: process.cwd(),
+                mcpServers: [
+                    { name: "linear", type: "http", url: "https://mcp.linear.app/mcp", headers: [] },
+                ],
+            });
+            await vi.waitFor(() => expect(completeElicitation).toHaveBeenCalledOnce());
+            expect(authenticate).toHaveBeenCalledWith("linear");
+            expect(createElicitation).toHaveBeenCalledOnce();
+            const request = createElicitation.mock.calls[0][0];
+            expect(request.mode).toBe("url");
+            if (request.mode !== "url")
+                throw new Error("Expected a URL elicitation");
+            expect(request).toMatchObject({
+                mode: "url",
+                sessionId,
+                message: "Authenticate with MCP server linear",
+                url: "https://example.com/oauth/authorize",
+                elicitationId: expect.stringMatching(/^mcp-oauth-/),
+            });
+            expect(completeElicitation).toHaveBeenCalledWith({
+                elicitationId: request.elicitationId,
+            });
+        });
         it("still merges user-provided disallowedTools when AskUserQuestion is enabled", async () => {
             await agent.initialize({
                 protocolVersion: 1,
@@ -665,7 +738,8 @@ describe("createSession options merging", () => {
             });
             await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
             const createElicitation = vi.fn();
-            agent.client.unstable_createElicitation = createElicitation;
+            agent.client.createElicitation =
+                createElicitation;
             return { onUserDialog: capturedOptions.onUserDialog, createElicitation };
         }
         const signal = () => ({ signal: new AbortController().signal, requestId: "1" });
@@ -728,6 +802,117 @@ describe("createSession options merging", () => {
             }, signal());
             expect(result).toEqual({ behavior: "cancelled" });
             expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("client exploded"));
+        });
+    });
+    describe("model switches and PreModelSwitch hooks", () => {
+        const TWO_MODELS = [
+            {
+                value: "claude-sonnet-4-6",
+                displayName: "Claude Sonnet",
+                description: "Fast",
+                supportsAutoMode: true,
+            },
+            {
+                value: "claude-opus-4-8",
+                displayName: "Claude Opus",
+                description: "Capable",
+                supportsAutoMode: true,
+            },
+        ];
+        let originalAnthropicModel;
+        beforeEach(() => {
+            originalAnthropicModel = process.env.ANTHROPIC_MODEL;
+            delete process.env.ANTHROPIC_MODEL;
+        });
+        afterEach(() => {
+            if (originalAnthropicModel !== undefined) {
+                process.env.ANTHROPIC_MODEL = originalAnthropicModel;
+            }
+            else {
+                delete process.env.ANTHROPIC_MODEL;
+            }
+        });
+        it("tolerates a PreModelSwitch hook vetoing the fresh-session model pin", async () => {
+            // CLI 2.1.251+: a user-configured PreModelSwitch hook can deny (or
+            // 'ask', which headless sessions refuse) the pin's setModel. Terminal
+            // Claude Code never lets a hook veto its startup model, so the same
+            // config must not fail session/new over ACP — the session stays on the
+            // SDK's default, and we report that.
+            initModels = TWO_MODELS;
+            process.env.ANTHROPIC_MODEL = "opus";
+            setModelImpl = () => Promise.reject(new Error("Model switch blocked by a PreModelSwitch hook: pinned by IT"));
+            const errorSpy = vi.fn();
+            agent.logger = { log: () => { }, error: errorSpy };
+            const response = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+            expect(agent.sessions[response.sessionId].models.currentModelId).toBe("claude-sonnet-4-6");
+            expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("vetoed by a PreModelSwitch hook"), expect.anything());
+        });
+        it("still fails session/new loudly on a non-hook setModel failure", async () => {
+            initModels = TWO_MODELS;
+            process.env.ANTHROPIC_MODEL = "opus";
+            setModelImpl = () => Promise.reject(new Error("transport exploded"));
+            await expect(agent.newSession({ cwd: process.cwd(), mcpServers: [] })).rejects.toThrow("transport exploded");
+        });
+        it("syncs adapter model state when a PostModelSwitch hook reports an external switch", async () => {
+            // A `/model <name>` command typed as a prompt switches the session's
+            // model with no refusal-fallback frame; the registered PostModelSwitch
+            // hook is what keeps the ACP picker truthful.
+            initModels = TWO_MODELS;
+            const response = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+            const sessionId = response.sessionId;
+            const matchers = capturedOptions.hooks?.PostModelSwitch;
+            expect(matchers).toBeDefined();
+            const callback = matchers.at(-1).hooks[0];
+            const hookInput = {
+                hook_event_name: "PostModelSwitch",
+                session_id: sessionId,
+                transcript_path: "",
+                cwd: process.cwd(),
+                from_model: "claude-sonnet-4-6",
+                to_model: "claude-opus-4-8",
+                requested_model: "opus",
+                source: "command",
+                context_tokens: 0,
+                prompt_cache_warm: false,
+                cache_ttl: "5m",
+                estimated_cache_write_usd: 0,
+                pricing: "catalog",
+            };
+            const out = await callback(hookInput, undefined, {
+                signal: new AbortController().signal,
+            });
+            expect(out).toEqual({ continue: true });
+            // The sync is detached from the hook response (control requests are
+            // serialized); wait for it to land.
+            await vi.waitFor(() => {
+                expect(agent.sessions[sessionId].models.currentModelId).toBe("claude-opus-4-8");
+            });
+        });
+        it("ignores PostModelSwitch reports for the adapter's own setModel calls", async () => {
+            initModels = TWO_MODELS;
+            const response = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+            const sessionId = response.sessionId;
+            const callback = capturedOptions.hooks.PostModelSwitch.at(-1).hooks[0];
+            await callback({
+                hook_event_name: "PostModelSwitch",
+                session_id: sessionId,
+                transcript_path: "",
+                cwd: process.cwd(),
+                from_model: "claude-sonnet-4-6",
+                to_model: "claude-opus-4-8",
+                requested_model: "opus",
+                source: "sdk",
+                context_tokens: 0,
+                prompt_cache_warm: false,
+                cache_ttl: "5m",
+                estimated_cache_write_usd: 0,
+                pricing: "catalog",
+            }, undefined, { signal: new AbortController().signal });
+            // Detached-sync window: give a stray sync the chance to land, then
+            // assert nothing moved.
+            await new Promise((resolve) => setImmediate(resolve));
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(agent.sessions[sessionId].models.currentModelId).toBe("claude-sonnet-4-6");
         });
     });
 });

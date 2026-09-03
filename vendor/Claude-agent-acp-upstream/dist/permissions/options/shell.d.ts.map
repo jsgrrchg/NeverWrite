@@ -1,0 +1,1 @@
+{"version":3,"file":"shell.d.ts","sourceRoot":"","sources":["../../../src/permissions/options/shell.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,0BAA0B,CAAC;AAGjE,OAAO,EAAe,KAAK,uBAAuB,EAAsB,MAAM,aAAa,CAAC;AA6G5F,wBAAgB,0BAA0B,CAAC,OAAO,EAAE,uBAAuB,GAAG,gBAAgB,EAAE,CAE/F;AAED,wBAAgB,gCAAgC,CAC9C,OAAO,EAAE,uBAAuB,GAC/B,gBAAgB,EAAE,CAEpB"}

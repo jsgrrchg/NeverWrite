@@ -1,0 +1,1 @@
+{"version":3,"file":"tool-result-meta.d.ts","sourceRoot":"","sources":["../src/tool-result-meta.ts"],"names":[],"mappings":"AAAA,MAAM,MAAM,cAAc,GAAG;IAC3B,gBAAgB,EAAE,MAAM,CAAC;IACzB,YAAY,CAAC,EAAE,MAAM,CAAC;CACvB,CAAC;AAEF;gFACgF;AAChF,wBAAgB,mBAAmB,CAAC,GAAG,EAAE,OAAO,GAAG,GAAG,CAAC,MAAM,EAAE,cAAc,CAAC,GAAG,SAAS,CAczF"}

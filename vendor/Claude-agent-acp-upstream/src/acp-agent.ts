@@ -27,7 +27,6 @@ import {
   ndJsonStream,
   NewSessionRequest,
   NewSessionResponse,
-  PermissionOption,
   PromptRequest,
   PromptResponse,
   ProviderInfo,
@@ -62,10 +61,10 @@ import {
   EffortLevel,
   FastModeDisabledReason,
   FastModeState,
-  getSessionInfo,
   getSessionMessages,
   listSessions,
   McpServerConfig,
+  McpServerStatus,
   ModelInfo,
   ModelUsage,
   OnElicitation,
@@ -73,7 +72,6 @@ import {
   Options,
   PermissionMode,
   PermissionResult,
-  PermissionUpdate,
   Query,
   query,
   SDKAssistantMessageError,
@@ -82,6 +80,7 @@ import {
   SDKMessageOrigin,
   SDKPartialAssistantMessage,
   SDKUserMessage,
+  Settings,
   SlashCommand,
   ThinkingConfig,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -97,6 +96,27 @@ import {
   parseGoalRequest,
   toGoalSnapshot,
 } from "./goal-extension.js";
+import { sanitizeTitle, SessionTitles } from "./session-titles.js";
+import {
+  AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY,
+  AcpSessionNotification,
+  asSdkSessionNotification,
+  clientSupportsSubagents,
+  SubagentAwareSessionCapabilities,
+} from "./acp-subagents.js";
+import {
+  isNativeSubagentControlTool,
+  isNativeSubagentControlUpdate,
+  NativeSubagent,
+  NativeSubagentRuntime,
+} from "./native-subagents.js";
+import { AIR_ASYNC_TASKS_CAPABILITY, withAirMeta } from "./air-extension.js";
+import {
+  AsyncTaskRuntime,
+  backgroundBashTaskFromToolResult,
+  clientSupportsAsyncTasks,
+} from "./async-tasks.js";
+import type { AsyncTaskStarted } from "./async-tasks.js";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { execFile } from "node:child_process";
@@ -120,6 +140,12 @@ import {
   refusalFallbackResultFromResponse,
   refusalFallbackToCreateRequest,
 } from "./elicitation.js";
+import { forkSession } from "./fork-session.js";
+import { ALLOW_BYPASS, resolvePermissionMode } from "./permissions/modes.js";
+import { normalizeDurablePermissionChangeSet } from "./permissions/normalization.js";
+import { buildClaudePermissionOptions } from "./permissions/options.js";
+import { buildClaudePermissionPresentation } from "./permissions/presentation.js";
+import { decodeClaudePermissionResponse } from "./permissions/response.js";
 import { SettingsManager } from "./settings.js";
 import {
   activeUsageLimitMessage,
@@ -155,6 +181,8 @@ import {
   applyTaskList,
   applyTaskUpdate,
   ClaudePlanEntry,
+  clearHookCallbacks,
+  completeHookCallback,
   createPostToolUseHook,
   createTaskHook,
   parseTaskCreateOutput,
@@ -167,27 +195,46 @@ import {
   toolInfoFromToolUse,
   toolUpdateFromDiffToolResponse,
   toolUpdateFromToolResult,
+  unregisterHookCallback,
 } from "./tools.js";
 import { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
+import {
+  acceptedPlanToolResult,
+  ExitPlanCoordinator,
+  executionDiagnostic,
+  exitPlanModeRawOutput,
+  observeExitPlanToolResults,
+} from "./exit-plan.js";
+import { DEFAULT_AGENT_ID, EFFORT_CONFIG_ID } from "./session-config-ids.js";
+import { parseToolResultMeta } from "./tool-result-meta.js";
+
+export { DEFAULT_AGENT_ID, EFFORT_CONFIG_ID } from "./session-config-ids.js";
+import { MODE_CONFIG_ID, SessionModeManager } from "./session-mode.js";
 
 export const CLAUDE_CONFIG_DIR =
   process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
 
 const execFileAsync = promisify(execFile);
 
-const MAX_TITLE_LENGTH = 256;
 const MAX_INLINE_FAILURE_TITLE_LENGTH = 256;
 
-function sanitizeTitle(text: string): string {
-  // Replace newlines and collapse whitespace
-  const sanitized = text
-    .replace(/[\r\n]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (sanitized.length <= MAX_TITLE_LENGTH) {
-    return sanitized;
-  }
-  return sanitized.slice(0, MAX_TITLE_LENGTH - 1) + "…";
+/** Claude CLI emits this synthetic result when an interrupted cycle ends on
+ *  queued user input before producing any assistant content. It is a hand-off
+ *  marker, not the outcome of the replacement prompt that may already be
+ *  active by the time the SDK stream delivers it. */
+function isEmptyUserInterruptionDiagnostic(
+  message: Extract<SDKMessage, { type: "result" }>,
+): boolean {
+  const diagnostic =
+    "result" in message
+      ? message.result
+      : message.errors.find((error) => error.startsWith("[ede_diagnostic]"));
+  return (
+    diagnostic?.startsWith("[ede_diagnostic]") === true &&
+    /(?:^|\s)result_type=user(?:\s|$)/.test(diagnostic) &&
+    /(?:^|\s)last_content_type=n\/a(?:\s|$)/.test(diagnostic) &&
+    /(?:^|\s)stop_reason=null(?:\s|$)/.test(diagnostic)
+  );
 }
 
 /**
@@ -204,6 +251,10 @@ type AccumulatedUsage = {
   cachedReadTokens: number;
   cachedWriteTokens: number;
 };
+
+/** Per-model token tallies keyed by the model id the SDK reported them under
+ *  (its resolved spelling, e.g. "claude-opus-5[1m]"). */
+type ModelTokenTally = Record<string, AccumulatedUsage>;
 
 type UsageSnapshot = {
   input_tokens: number;
@@ -232,6 +283,50 @@ const DEFAULT_CONTEXT_WINDOW = 200000;
  *  pre-empt a slow-but-healthy interrupt. */
 const DEFAULT_FORCE_CANCEL_GRACE_MS = 30_000;
 
+/** Claude Code keeps the OAuth callback listener open in the background after
+ *  `mcpAuthenticate` returns the authorization URL. The SDK does not expose
+ *  that listener's completion promise, so watch the server status while the
+ *  ACP client has the URL elicitation open. */
+const MCP_OAUTH_STATUS_POLL_MS = 1_000;
+const MCP_OAUTH_TIMEOUT_MS = 10 * 60_000;
+
+/** Runtime MCP OAuth control exposed by the pinned Agent SDK. It is not yet in
+ *  the public `Query` declaration, even though the method is present on the
+ *  SDK query object and backed by Claude Code's `mcp_authenticate` control. */
+type McpOAuthQuery = Query & {
+  mcpAuthenticate(
+    serverName: string,
+    redirectUri?: string,
+  ): Promise<{
+    authUrl?: string;
+    requiresUserAction: boolean;
+    callbackExpected: boolean;
+    redirectScheme?: "localhost" | "custom";
+    callbackPort?: number;
+    state?: string;
+  }>;
+};
+
+function supportsMcpOAuth(query: Query): query is McpOAuthQuery {
+  return typeof (query as Partial<McpOAuthQuery>).mcpAuthenticate === "function";
+}
+
+/** Wait for a polling interval, resolving false when the session is aborted. */
+function waitUnlessAborted(milliseconds: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, milliseconds);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /** Error surfaced when the SDK declares a turn over (`session_state_changed:
  *  idle`, its authoritative turn-over signal) without ever emitting the turn's
  *  `result` — a model stream that dropped mid-turn, or an async agent that
@@ -247,13 +342,47 @@ const TURN_NO_RESULT_MESSAGE =
  *  `InitializeResponse._meta.steering.supported`. */
 const STEER_METHOD = "_session/steering";
 
+/** Stops one Claude background task without cancelling the parent prompt turn. */
+const ASYNC_TASK_STOP_METHOD = "_session/async_task/stop";
+
+type AsyncTaskStopRequest = {
+  sessionId: string;
+  asyncTaskId: string;
+};
+
+type AsyncTaskStopResponse = {
+  stopped: boolean;
+};
+
+function parseAsyncTaskStopRequest(value: unknown): AsyncTaskStopRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw RequestError.invalidParams(undefined, "async task stop params must be an object");
+  }
+  const params = value as Record<string, unknown>;
+  const sessionId = typeof params.sessionId === "string" ? params.sessionId.trim() : "";
+  const asyncTaskId = typeof params.asyncTaskId === "string" ? params.asyncTaskId.trim() : "";
+  if (!sessionId) {
+    throw RequestError.invalidParams(
+      undefined,
+      "async task stop params require a non-empty sessionId",
+    );
+  }
+  if (!asyncTaskId) {
+    throw RequestError.invalidParams(
+      undefined,
+      "async task stop params require a non-empty asyncTaskId",
+    );
+  }
+  return { sessionId, asyncTaskId };
+}
+
 /** How urgently the SDK delivers a steered message relative to the running
  *  turn — an internal Claude implementation detail, not part of the wire
- *  contract. `now` pre-empts the current generation and handles the message
- *  immediately (interrupting a single-shot response, or slotting in between a
- *  multi-step turn's tool calls). Maps to `SDKUserMessage.priority`; injected
- *  steering always uses `now` so the running turn adapts as soon as possible. */
-const STEER_PRIORITY = "now" as const;
+ *  contract. `now` pre-empts the current generation, while `later` waits for a
+ *  pending permission/elicitation callback to settle instead of cancelling its
+ *  ACP request and hiding the client's user-input card (IJAI-1191). */
+const STEER_PRIORITY_NOW = "now" as const;
+const STEER_PRIORITY_LATER = "later" as const;
 
 /** Request-level steering options. `promptRequired` is opt-in so existing Hosts
  *  keep the established idle fallback behavior. */
@@ -350,11 +479,11 @@ type Turn = {
    *  uuid while the turn is still queued (msg_lifecycle_v1 CLIs). The command
    *  is already finished SDK-side, so a later cancel() must not seed an
    *  orphan entry for it — no terminal frame will ever come to drain it.
-   *  "completed"/"discarded" leave nothing outstanding; "cancelled" after a
-   *  dispatch means the dead turn's result may still arrive (seeded as a
-   *  zombie) unless it already passed (`commandResultSeen`), and without a
-   *  dispatch means dropped (nothing coming). */
-  commandFinished?: "completed" | "discarded" | "cancelled";
+   *  "completed"/"discarded"/"refused" leave nothing outstanding; "cancelled"
+   *  after a dispatch means the dead turn's result may still arrive (seeded
+   *  as a zombie) unless it already passed (`commandResultSeen`), and without
+   *  a dispatch means dropped (nothing coming). */
+  commandFinished?: "completed" | "discarded" | "cancelled" | "refused";
   /** Set when a user-turn result arrives while this command is known
    *  dispatched (`commandStarted`) with no terminal frame yet. Turns run
    *  sequentially and frames arrive in stream order, so the turn this command
@@ -414,7 +543,7 @@ type Turn = {
   deferredSettle?: PromptResponse;
   /** Uuids of `steer()`-injected messages the SDK has not replayed back yet.
    *
-   *  A steer is delivered at {@link STEER_PRIORITY} (`now`), so the CLI ABORTS
+   *  A steer is normally delivered at priority `now`, so the CLI ABORTS
    *  the running cycle: it emits its own human-origin `result` —
    *  indistinguishable from a turn's terminal one — and the steered message runs
    *  as a SECOND cycle. Settling at that result would answer `session/prompt`
@@ -432,13 +561,17 @@ type Turn = {
   /** What a steered turn settles with once its steered work has run: the outcome
    *  of its latest result, so its usage covers every cycle the turn ran. */
   steeredSettle?: PromptResponse;
+  carriedUsage?: AccumulatedUsage;
+  /** `carriedUsage`'s per-model counterpart, so a turn that survives a
+   *  clear-context restart keeps the `_meta.quota` rows it earned pre-restart. */
+  carriedModelUsage?: ModelTokenTally;
   resolve: (response: PromptResponse) => void;
   reject: (error: unknown) => void;
   /** Settles after the ACP prompt request completes, regardless of outcome. */
   completion?: Promise<void>;
 };
 
-type Session = {
+export type Session = {
   query: Query;
   input: Pushable<SDKUserMessage>;
   cancelled: boolean;
@@ -485,6 +618,11 @@ type Session = {
    *  lane); a count can't express command coalescing — N queued commands can
    *  fold into ONE turn emitting one result, leaving a stale skip of N-1. */
   pendingOrphanResults?: number;
+  /** UUIDs of cancelled-before-echo commands that can still emit Claude's
+   * empty user-interruption diagnostic. Interrupt receipts and command
+   * lifecycle frames remove commands that were dropped before dispatch; the
+   * next ordinary result clears any stale survivors. */
+  pendingEmptyInterruptionDiagnosticCommands?: Set<string>;
   /** msg_lifecycle_v1 lane of the orphan accounting (see
    *  `pendingOrphanResults` for the count lane): the uuids of cancelled queued
    *  turns whose SDK-side command may still produce an unaccounted result,
@@ -536,10 +674,25 @@ type Session = {
   /** Original ACP parameters used to recreate this query with a new provider. */
   creationParams?: NewSessionRequest;
   settingsManager: SettingsManager;
+  /** This session's title state and the turn-end logic that maintains it. */
+  titles: SessionTitles;
   accumulatedUsage: AccumulatedUsage;
+  /** The active turn's spend broken out per model — the breakdown behind
+   *  `accumulatedUsage`, reported as `_meta.quota.model_usage` on the prompt
+   *  response. Accumulated and reset in lockstep with it. */
+  accumulatedModelUsage?: ModelTokenTally;
+  /** The last per-model reading seen on this query, autonomous cycles included.
+   *  `result.modelUsage` is a running total for the whole query() call rather
+   *  than a per-result figure, so consecutive readings are what a result's own
+   *  spend is derived from — this is not itself a turn tally. */
+  lastModelUsageReading?: ModelTokenTally;
   modes: SessionModeState;
   models: SessionModelState;
   modelInfos: ModelInfo[];
+  /** Prevents the model-specific Auto fallback from spamming the transcript. */
+  autoModeFallbackWarningShown?: boolean;
+  /** Initial mode fallback is reported after session/new, on the first prompt. */
+  autoModeFallbackWarningPending?: boolean;
   configOptions: SessionConfigOption[];
   /** Custom main-thread agent personas the user (or a plugin/project) has
    *  configured, discovered via `supportedAgents()` with Claude Code's built-in
@@ -553,6 +706,14 @@ type Session = {
    *  user's intent so it persists across model switches; the Fast mode config
    *  option is only surfaced while the selected model supports it. */
   fastModeEnabled: boolean;
+  /** Whether the user picked a non-default effort through the ACP picker this
+   *  session. A pin lives at the SDK's flag layer, which overrides the CLI's
+   *  persisted effort (including the per-model `modelSettings` entries), so it
+   *  follows the session across model switches; without one, the CLI resolves
+   *  effort itself and the Effort option is display-only. Cleared when the
+   *  user picks "Default" (the flag layer is cleared with it) or when a model
+   *  switch clamps the pin away. */
+  effortPinnedByUser?: boolean;
   /** Why the SDK currently can't serve Fast mode, when the reason is one worth
    *  telling the user about (see {@link FAST_MODE_UNAVAILABLE_EXPLANATIONS} —
    *  routine states like the SDK's own opt-in requirement normalize to
@@ -576,6 +737,11 @@ type Session = {
   /** Whether nested subagent text/thinking is forwarded to the ACP client.
    *  Enabled by either the ACP capability or the pre-existing SDK option. */
   forwardSubagentText: boolean;
+  /** Number of ACP permission/elicitation requests currently awaiting user
+   *  input. This is a counter rather than a boolean because parallel subagents
+   *  can ask concurrently; steering must remain non-interrupting until the last
+   *  request settles. */
+  pendingUserInputCount?: number;
   /** Context window size of the session's current model, carried across
    *  prompts so mid-stream usage_update notifications report a correct `size`
    *  before the turn's first result message arrives. Seeded synchronously at
@@ -587,6 +753,7 @@ type Session = {
    *  fresh session it stalls until the first turn runs (see the seeding call
    *  sites and `contextWindowCache`). */
   contextWindowSize: number;
+  contextUsedTokens?: number;
   /** Whether `contextWindowSize` came from an authoritative source (the
    *  cross-session cache, a resumed session's `getContextUsage` report, or a
    *  `result.modelUsage`) rather than the text heuristic / default. Guards the
@@ -607,12 +774,6 @@ type Session = {
   /** Accumulated task list for the session, keyed by task ID. Task IDs are
    *  per-session, so this state must not be shared across sessions. */
   taskState: TaskState;
-  /** Last session title we pushed to the client via `session_info_update`.
-   *  The SDK auto-generates a title in a background task and persists it to the
-   *  session file; we poll it on each turn-end (`session_state_changed: idle`)
-   *  and only notify the client when it actually changes. Undefined until the
-   *  first title is observed. */
-  lastTitle?: string;
   /** Caches `tool_use` blocks by id so the matching `tool_result` can recover
    *  the tool name/input when mapping it to a `tool_call_update`. Per-session
    *  (tool_use ids are only unique within a session) and pruned at
@@ -627,6 +788,19 @@ type Session = {
    *  tool_use block streams; this set makes the two paths converge regardless of
    *  order. Pruned at `tool_result` time alongside `toolUseCache`. */
   emittedToolCalls: Set<string>;
+  /** ACP session affinity for calls emitted eagerly by permission handling. */
+  eagerToolCallSessions?: Map<string, string>;
+  /** ExitPlanMode denial that intentionally interrupts the current Claude
+   *  cycle. Correlated by tool-use id until the terminal result arrives. */
+  pendingExitPlanModeInterruption?: {
+    toolUseId: string;
+    toolResultSeen: boolean;
+  };
+  pendingExitPlanContextReset?: {
+    toolUseId: string;
+    plan: string;
+    mode: PermissionMode;
+  };
   /** Registry of live background tasks, keyed by task id: populated at
    *  `task_started`, pruned when the task settles (a `task_notification` or
    *  a terminal `task_updated` patch), and reconciled against
@@ -687,6 +861,25 @@ type Session = {
       endedPerLevel?: "ended" | "sweep-armed";
     }
   >;
+  /** Native ACP subagent sessions negotiated through PR #1992. Records are
+   *  retained for the parent session lifetime so late child output cannot be
+   *  rebound to another task after the SDK prunes its live-task registry. */
+  nativeSubagentsByTaskId?: Map<string, NativeSubagent>;
+  /** Resolves the spawning Agent/Task tool use carried by child messages to
+   *  the corresponding native ACP child session. */
+  nativeSubagentTaskIdByToolUseId?: Map<string, string>;
+  /** Captures the ACP session in which an Agent/Task tool call was made. This
+   *  supplies the immediate parent for nested `task_started` notifications,
+   *  whose SDK payload has no lineage field of its own. */
+  nativeSubagentParentByToolUseId?: Map<string, string>;
+  /** Session-owned lifecycle controller shared by the consumer, cancel, reset,
+   *  and teardown paths. */
+  nativeSubagentRuntime?: NativeSubagentRuntime;
+  /** Child-aware delivery closure paired with {@link nativeSubagentRuntime}. */
+  nativeSubagentDeliver?: (notification: AcpSessionNotification) => Promise<void>;
+  /** Session-owned async task controller. Prompt cancellation intentionally
+   *  does not finish it because background work may outlive a prompt. */
+  asyncTaskRuntime?: AsyncTaskRuntime;
   /** Whether any top-level assistant text reached the client since the last
    *  stretch boundary. Set as a side effect of sending in the consumer's
    *  `sendUpdate`, never at an emission site; read at the terminal `result`
@@ -919,9 +1112,6 @@ type ProviderConfig = {
   };
 };
 
-/**
- * Extra metadata that the agent provides for each tool_call / tool_update update.
- */
 export type ToolUpdateMeta = {
   claudeCode?: {
     /* The name of the tool that was used in Claude Code. */
@@ -979,6 +1169,28 @@ function supportsSubagentTranscript(capabilities?: ClientCapabilities | null): b
 function parentToolUseIdOf(message: { parent_tool_use_id?: unknown }): string | null {
   if (!("parent_tool_use_id" in message)) return null;
   return typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : null;
+}
+
+function replaySubagentTerminalState(
+  block: Record<string, unknown>,
+): "completed" | "failed" | "cancelled" {
+  if (block.is_error !== true) return "completed";
+  const text = replayContentText(block.content).toLowerCase();
+  return /\b(?:cancelled|canceled|interrupted|stopped|killed)\b/.test(text)
+    ? "cancelled"
+    : "failed";
+}
+
+function replayContentText(value: unknown, seen = new Set<unknown>()): string {
+  if (typeof value === "string") return value;
+  if (typeof value !== "object" || value === null || seen.has(value)) return "";
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => replayContentText(item, seen)).join(" ");
+  const record = value as Record<string, unknown>;
+  return [record.text, record.content, record.message]
+    .map((item) => replayContentText(item, seen))
+    .filter(Boolean)
+    .join(" ");
 }
 
 function stripSubagentTextAndThinking(content: unknown): unknown {
@@ -1135,10 +1347,6 @@ function shouldHideClaudeAuth(): boolean {
  *  revivable, so the only recovery is a fresh session. */
 const SESSION_ENDED_MESSAGE = "The Claude Agent session has ended. Please start a new session.";
 
-// Bypass Permissions doesn't work if we are a root/sudo user
-const IS_ROOT = (process.geteuid?.() ?? process.getuid?.()) === 0;
-const ALLOW_BYPASS = !IS_ROOT || !!process.env.IS_SANDBOX;
-
 // Slash commands that the SDK handles locally without replaying the user
 // message and without invoking the model.
 const LOCAL_ONLY_COMMANDS = new Set(["/context", "/heapdump", "/extra-usage"]);
@@ -1257,172 +1465,6 @@ export function isSyntheticLoginMessage(apiMessage: unknown): boolean {
   );
 }
 
-const PERMISSION_MODE_ALIASES: Record<string, PermissionMode> = {
-  auto: "auto",
-  default: "default",
-  // Claude Code 2.1.200 renamed the "default" mode to "Manual" and accepts
-  // `"defaultMode": "manual"` in settings.json; honor the same alias here.
-  manual: "default",
-  acceptedits: "acceptEdits",
-  dontask: "dontAsk",
-  plan: "plan",
-  bypasspermissions: "bypassPermissions",
-  bypass: "bypassPermissions",
-};
-
-export function resolvePermissionMode(
-  defaultMode?: unknown,
-  logger: Logger = console,
-): PermissionMode {
-  if (defaultMode === undefined) {
-    return "default";
-  }
-
-  if (typeof defaultMode !== "string") {
-    logger.error("Ignoring permissions.defaultMode from settings: expected a string.");
-    return "default";
-  }
-
-  const normalized = defaultMode.trim().toLowerCase();
-  if (normalized === "") {
-    logger.error("Ignoring permissions.defaultMode from settings: expected a non-empty string.");
-    return "default";
-  }
-
-  const mapped = PERMISSION_MODE_ALIASES[normalized];
-  if (!mapped) {
-    logger.error(`Ignoring permissions.defaultMode from settings: unknown value '${defaultMode}'.`);
-    return "default";
-  }
-
-  if (mapped === "bypassPermissions" && !ALLOW_BYPASS) {
-    logger.error(
-      "Ignoring permissions.defaultMode from settings: bypassPermissions is not available when running as root.",
-    );
-    return "default";
-  }
-
-  return mapped;
-}
-
-function permissionLifetime(destination: PermissionUpdate["destination"]): Record<string, string> {
-  switch (destination) {
-    case "session":
-      return { scope: "session" };
-    case "cliArg":
-      return { scope: "process", storage: "cli_argument" };
-    case "userSettings":
-      return { scope: "persistent", storage: "user" };
-    case "projectSettings":
-      return { scope: "persistent", storage: "project" };
-    case "localSettings":
-      return { scope: "persistent", storage: "project_local" };
-    default:
-      return { scope: "unknown" };
-  }
-}
-
-function permissionMetadataForAlwaysAllow(
-  suggestions: PermissionUpdate[] | undefined,
-  toolName: string,
-): Record<string, unknown> {
-  const effectiveSuggestions =
-    suggestions && suggestions.length > 0
-      ? suggestions
-      : [
-          {
-            type: "addRules" as const,
-            rules: [{ toolName }],
-            behavior: "allow" as const,
-            destination: "session" as const,
-          },
-        ];
-  const changes: Array<Record<string, unknown>> = [];
-
-  for (const update of effectiveSuggestions) {
-    switch (update.type) {
-      case "addRules":
-      case "removeRules":
-      case "replaceRules": {
-        const operation =
-          update.type === "addRules" ? "add" : update.type === "removeRules" ? "remove" : "replace";
-        const targets = update.rules.map((rule) => ({
-          type: "tool",
-          toolName: rule.toolName,
-          ...(rule.ruleContent
-            ? {
-                matcher: {
-                  type: "provider_rule",
-                  provider: "claudeCode",
-                  value: rule.ruleContent,
-                },
-              }
-            : {}),
-        }));
-        const renderedRules = update.rules
-          .map((rule) =>
-            rule.ruleContent
-              ? `${rule.toolName} calls matching ${rule.ruleContent}`
-              : `all ${rule.toolName} calls`,
-          )
-          .join(", ");
-        const verb =
-          operation === "add"
-            ? update.behavior === "allow"
-              ? "Allow"
-              : update.behavior === "deny"
-                ? "Deny"
-                : "Ask before"
-            : operation === "remove"
-              ? `Remove ${update.behavior} rules for`
-              : `Replace ${update.behavior} rules with`;
-        changes.push({
-          type: "policy_rule",
-          operation,
-          ruleBehavior: update.behavior,
-          description: `${verb} ${renderedRules}`,
-          lifetime: permissionLifetime(update.destination),
-          targets,
-        });
-        break;
-      }
-      case "addDirectories":
-      case "removeDirectories": {
-        const operation = update.type === "addDirectories" ? "add" : "remove";
-        changes.push({
-          type: "policy_rule",
-          operation,
-          ruleBehavior: "allow",
-          description:
-            operation === "add"
-              ? `Allow filesystem access under ${update.directories.join(", ")}`
-              : `Remove additional filesystem access under ${update.directories.join(", ")}`,
-          lifetime: permissionLifetime(update.destination),
-          targets: update.directories.map((path) => ({
-            type: "filesystem",
-            matcher: { type: "directory", path },
-          })),
-        });
-        break;
-      }
-      case "setMode":
-        changes.push({
-          type: "permission_mode",
-          operation: "set",
-          provider: "claudeCode",
-          mode: update.mode,
-          description: `Set Claude Code permission mode to ${update.mode}`,
-          lifetime: permissionLifetime(update.destination),
-        });
-        break;
-      default:
-        break;
-    }
-  }
-
-  return { version: 1, changes };
-}
-
 /**
  * Client-facing surface the agent calls back into. This is the subset of ACP
  * client methods the agent actually uses, expressed as a narrow interface so
@@ -1430,7 +1472,7 @@ function permissionMetadataForAlwaysAllow(
  * {@link ClientConnection} over the SDK's typed `AgentContext`.
  */
 export interface AcpClient {
-  sessionUpdate(params: SessionNotification): Promise<void>;
+  sessionUpdate(params: AcpSessionNotification): Promise<void>;
   /** `signal`, when aborted, sends `$/cancel_request` for the in-flight
    *  permission request so the client can dismiss its prompt (and settle our
    *  await) instead of leaving the dialog open after the turn was cancelled. */
@@ -1442,11 +1484,11 @@ export interface AcpClient {
   writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse>;
   /** `signal`, when aborted, sends `$/cancel_request` for the in-flight
    *  elicitation so the client can dismiss its prompt and settle our await. */
-  unstable_createElicitation(
+  createElicitation(
     params: CreateElicitationRequest,
     signal?: AbortSignal,
   ): Promise<CreateElicitationResponse>;
-  unstable_completeElicitation(params: CompleteElicitationNotification): Promise<void>;
+  completeElicitation(params: CompleteElicitationNotification): Promise<void>;
   /** Send a custom (extension) notification, e.g. `_claude/sdkMessage`. */
   extNotification(method: string, params: Record<string, unknown>): Promise<void>;
 }
@@ -1460,8 +1502,8 @@ export interface AcpClient {
 class ClientConnection implements AcpClient {
   constructor(private readonly ctx: AgentContext) {}
 
-  sessionUpdate(params: SessionNotification): Promise<void> {
-    return this.ctx.notify(methods.client.session.update, params);
+  sessionUpdate(params: AcpSessionNotification): Promise<void> {
+    return this.ctx.notify(methods.client.session.update, asSdkSessionNotification(params));
   }
 
   requestPermission(
@@ -1481,7 +1523,7 @@ class ClientConnection implements AcpClient {
     return this.ctx.request(methods.client.fs.writeTextFile, params);
   }
 
-  unstable_createElicitation(
+  createElicitation(
     params: CreateElicitationRequest,
     signal?: AbortSignal,
   ): Promise<CreateElicitationResponse> {
@@ -1490,13 +1532,190 @@ class ClientConnection implements AcpClient {
     });
   }
 
-  unstable_completeElicitation(params: CompleteElicitationNotification): Promise<void> {
+  completeElicitation(params: CompleteElicitationNotification): Promise<void> {
     return this.ctx.notify(methods.client.elicitation.complete, params);
   }
 
   extNotification(method: string, params: Record<string, unknown>): Promise<void> {
     return this.ctx.notify(method, params);
   }
+}
+
+function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(new Error("Tool use aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+    }
+    void operation.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+type McpAuthenticationHost = {
+  sessions: Record<string, Session>;
+  client: AcpClient;
+  clientCapabilities?: ClientCapabilities;
+  logger: Logger;
+};
+
+/** Background OAuth work is implementation state, not part of the public
+ *  `Session` shape exposed through `ClaudeAcpAgent.sessions`. */
+const mcpAuthentications = new WeakMap<Session, Promise<void>>();
+
+/** Start OAuth for ACP-provided MCP servers that Claude reported as needing
+ *  authentication. This runs after session creation has returned so an
+ *  interactive browser flow never delays `session/new`. */
+function startMcpAuthentication(
+  host: McpAuthenticationHost,
+  sessionId: string,
+  mcpServers: NewSessionRequest["mcpServers"],
+): void {
+  if (!host.clientCapabilities?.elicitation?.url || mcpServers.length === 0) return;
+
+  const session = host.sessions[sessionId];
+  if (!session || mcpAuthentications.has(session)) return;
+
+  const requestedServers = new Set(mcpServers.map((server) => server.name));
+  const authentication = authenticateMcpServers(host, sessionId, session.query, requestedServers)
+    .catch((error) => {
+      if (!session.abortController.signal.aborted) {
+        host.logger.error(`Failed to inspect MCP servers for OAuth: ${error}`);
+      }
+    })
+    .finally(() => {
+      if (mcpAuthentications.get(session) === authentication) {
+        mcpAuthentications.delete(session);
+      }
+    });
+  mcpAuthentications.set(session, authentication);
+}
+
+async function authenticateMcpServers(
+  host: McpAuthenticationHost,
+  sessionId: string,
+  query: Query,
+  requestedServers: Set<string>,
+): Promise<void> {
+  if (!supportsMcpOAuth(query)) {
+    host.logger.error("The Claude Agent SDK does not expose MCP OAuth authentication.");
+    return;
+  }
+
+  const statuses = await query.mcpServerStatus();
+  for (const status of statuses) {
+    if (status.status !== "needs-auth" || !requestedServers.has(status.name)) continue;
+    try {
+      await authenticateMcpServer(host, sessionId, query, status.name);
+    } catch (error) {
+      const session = host.sessions[sessionId];
+      if (session && !session.abortController.signal.aborted) {
+        host.logger.error(`Failed to authenticate MCP server ${status.name}: ${error}`);
+      }
+    }
+  }
+}
+
+/** Bridge Claude Code's startup MCP OAuth control to ACP URL elicitation.
+ *  Claude opens and owns the localhost callback listener; the ACP client only
+ *  needs to present the returned authorization URL. */
+async function authenticateMcpServer(
+  host: McpAuthenticationHost,
+  sessionId: string,
+  query: McpOAuthQuery,
+  serverName: string,
+): Promise<void> {
+  const session = host.sessions[sessionId];
+  if (!session) return;
+
+  const login = await query.mcpAuthenticate(serverName);
+  if (!login.requiresUserAction) return;
+  if (!login.authUrl) {
+    throw new Error("Claude Code requested user action without returning an authorization URL");
+  }
+
+  const elicitationId = `mcp-oauth-${randomUUID()}`;
+  const flowAbort = new AbortController();
+  const abortFlow = () => flowAbort.abort(session.abortController.signal.reason);
+  session.abortController.signal.addEventListener("abort", abortFlow, { once: true });
+  if (session.abortController.signal.aborted) abortFlow();
+
+  try {
+    const completed = waitForMcpAuthentication(
+      host.sessions,
+      sessionId,
+      query,
+      serverName,
+      flowAbort.signal,
+    );
+    const elicitation = host.client.createElicitation(
+      {
+        mode: "url",
+        sessionId,
+        message: `Authenticate with MCP server ${serverName}`,
+        url: login.authUrl,
+        elicitationId,
+      },
+      flowAbort.signal,
+    );
+    const first = await Promise.race([
+      completed.then((authenticated) => ({ type: "completed" as const, authenticated })),
+      elicitation.then((response) => ({ type: "elicitation" as const, response })),
+    ]);
+
+    if (first.type === "elicitation" && !CreateElicitationResponse.isAccept(first.response)) {
+      return;
+    }
+
+    if (first.type === "elicitation") {
+      await completed;
+    }
+    try {
+      await host.client.completeElicitation({ elicitationId });
+    } catch (error) {
+      if (!flowAbort.signal.aborted) {
+        host.logger.error(`Failed to complete MCP OAuth elicitation: ${error}`);
+      }
+    }
+  } finally {
+    flowAbort.abort();
+    session.abortController.signal.removeEventListener("abort", abortFlow);
+  }
+}
+
+async function waitForMcpAuthentication(
+  sessions: Record<string, Session>,
+  sessionId: string,
+  query: Query,
+  serverName: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const deadline = Date.now() + MCP_OAUTH_TIMEOUT_MS;
+  while (!signal.aborted && Date.now() < deadline) {
+    const session = sessions[sessionId];
+    if (!session || session.query !== query) return false;
+
+    const status: McpServerStatus | undefined = (await query.mcpServerStatus()).find(
+      (server) => server.name === serverName,
+    );
+    if (!status || status.status === "failed" || status.status === "disabled") return false;
+    if (status.status === "connected") return true;
+    if (!(await waitUnlessAborted(MCP_OAUTH_STATUS_POLL_MS, signal))) return false;
+  }
+  return false;
 }
 
 export class ClaudeAcpAgent {
@@ -1506,11 +1725,13 @@ export class ClaudeAcpAgent {
   client: AcpClient;
   clientCapabilities?: ClientCapabilities;
   logger: Logger;
+  private readonly sessionModes: SessionModeManager<Session>;
   gatewayAuthRequest?: GatewayAuthRequest;
   /** Set while ACP overrides the agent's native provider configuration. */
   providerConfig?: ProviderConfig;
   /** Serializes provider changes while every open query is recreated between turns. */
   private providerUpdate: Promise<void> | null = null;
+  private readonly exitPlan: ExitPlanCoordinator<Session, Turn>;
   /** Grace period before a `session/cancel` forces a wedged prompt loop to
    *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
    *  tests can shrink it. */
@@ -1520,6 +1741,51 @@ export class ClaudeAcpAgent {
     this.sessions = {};
     this.client = client;
     this.logger = logger ?? console;
+    this.exitPlan = new ExitPlanCoordinator<Session, Turn>({
+      currentSession: (id) => this.sessions[id],
+      closeQueryStream: (session) => this.closeQueryStream(session),
+      restartSession: async (params, options) => {
+        await this.createSession(params, options);
+        const session = this.sessions[options.publicSessionId];
+        if (!session) throw new Error("Fresh Claude context was not created");
+        return session;
+      },
+      applyFastMode: (session, enabled) => this.applyFastMode(session, enabled),
+      sessionUpdate: (notification) => this.client.sessionUpdate(notification),
+      ensureConsumer: (session, id) => this.ensureConsumer(session, id),
+      logError: (message, error) => this.logger.error(message, error),
+      destroyReplacement: (id, session) => {
+        disarmForceCancel(session);
+        session.cancelController?.abort();
+        this.closeQueryStream(session);
+        session.abortController.abort();
+        session.eagerToolCallSessions?.clear();
+        clearHookCallbacks(id);
+        session.nativeSubagentRuntime?.clear();
+        session.asyncTaskRuntime?.clear();
+        if (this.sessions[id] === session) delete this.sessions[id];
+      },
+      settleCancelledTurn: (original, session, turn) => {
+        disarmForceCancel(session);
+        this.finishFileChangeAudit(session, turn, "cancelled");
+        turn.settled = true;
+        turn.resolve({ stopReason: "cancelled", usage: sessionUsage(original) });
+      },
+      settleFailedTurn: (session, turn, error) => {
+        disarmForceCancel(session);
+        this.finishFileChangeAudit(session, turn, "providerError");
+        turn.settled = true;
+        turn.reject(error);
+      },
+    });
+    this.sessionModes = new SessionModeManager({
+      getSession: (sessionId) => this.sessions[sessionId],
+      sessionEndedMessage: SESSION_ENDED_MESSAGE,
+      updateConfigOption: (sessionId, configId, value) =>
+        this.updateConfigOption(sessionId, configId, value),
+      sessionUpdate: (params: SessionNotification) => this.client.sessionUpdate(params),
+      logError: (...args: unknown[]) => this.logger.error(...args),
+    });
   }
 
   async initialize(request: InitializeRequest): Promise<InitializeResponse> {
@@ -1632,6 +1898,16 @@ export class ClaudeAcpAgent {
       }
     }
 
+    const sessionCapabilities: SubagentAwareSessionCapabilities = {
+      additionalDirectories: {},
+      close: {},
+      delete: {},
+      fork: {},
+      list: {},
+      resume: {},
+      subagents: {},
+    };
+
     return {
       protocolVersion: 1,
       agentCapabilities: {
@@ -1656,14 +1932,7 @@ export class ClaudeAcpAgent {
         // capability prerequisite for the provider methods.
         providers: {},
         loadSession: true,
-        sessionCapabilities: {
-          additionalDirectories: {},
-          close: {},
-          delete: {},
-          fork: {},
-          list: {},
-          resume: {},
-        },
+        sessionCapabilities,
       },
       agentInfo: {
         name: packageJson.name,
@@ -1678,7 +1947,11 @@ export class ClaudeAcpAgent {
       // steering extension contract: advertises the `_session/steering` request
       // so clients know they may inject a follow-up into a running turn.
       _meta: {
-        ...airSessionFailureCapabilityMeta(AGENT_FILE_CHANGE_REPORT_CAPABILITY),
+        ...airSessionFailureCapabilityMeta(
+          AGENT_FILE_CHANGE_REPORT_CAPABILITY,
+          AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY,
+          AIR_ASYNC_TASKS_CAPABILITY,
+        ),
         steering: {
           supported: true,
         },
@@ -1700,29 +1973,17 @@ export class ClaudeAcpAgent {
     // Needs to happen after we return the session
     setTimeout(() => {
       this.sendAvailableCommandsUpdate(response.sessionId);
+      startMcpAuthentication(this, response.sessionId, params.mcpServers);
     }, 0);
     return response;
   }
 
   async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
     if (this.providerUpdate) await this.providerUpdate;
-    const response = await this.createSession(
-      {
-        cwd: params.cwd,
-        mcpServers: params.mcpServers ?? [],
-        additionalDirectories: params.additionalDirectories,
-        _meta: params._meta,
-      },
-      {
-        resume: params.sessionId,
-        forkSession: true,
-      },
-    );
-    // Needs to happen after we return the session
-    setTimeout(() => {
-      this.sendAvailableCommandsUpdate(response.sessionId);
-    }, 0);
-    return response;
+    return forkSession(params, {
+      liveMessageIdToUuid: this.sessions[params.sessionId]?.messageIdToUuid,
+      messageIdForGrouping,
+    });
   }
 
   async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
@@ -1732,6 +1993,7 @@ export class ClaudeAcpAgent {
     // Needs to happen after we return the session
     setTimeout(() => {
       this.sendAvailableCommandsUpdate(params.sessionId);
+      startMcpAuthentication(this, params.sessionId, params.mcpServers ?? []);
     }, 0);
     return result;
   }
@@ -1745,6 +2007,7 @@ export class ClaudeAcpAgent {
     // Send available commands after replay so it doesn't interleave with history
     setTimeout(() => {
       this.sendAvailableCommandsUpdate(params.sessionId);
+      startMcpAuthentication(this, params.sessionId, params.mcpServers ?? []);
     }, 0);
 
     return result;
@@ -1766,40 +2029,6 @@ export class ClaudeAcpAgent {
     return {
       sessions,
     };
-  }
-
-  /** Read the SDK-maintained title for a session and, if it changed since the
-   *  last time we looked, notify the client with a `session_info_update`. The
-   *  SDK has no push event for the title it auto-generates in the background, so
-   *  we pull it at turn-end. A missing session file or read error is non-fatal:
-   *  the title is best-effort and another turn will retry. */
-  private async maybeUpdateSessionTitle(sessionId: string, session: Session): Promise<void> {
-    let info;
-    try {
-      info = await getSessionInfo(sessionId, { dir: session.cwd });
-    } catch (error) {
-      this.logger.error(`Session ${sessionId}: failed to read session info: ${error}`);
-      return;
-    }
-    // `customTitle` is a user-set `/rename`; `summary` is the auto-generated
-    // title (or first prompt). Prefer the explicit title when present.
-    const rawTitle = info?.customTitle ?? info?.summary;
-    if (!rawTitle) {
-      return;
-    }
-    const title = sanitizeTitle(rawTitle);
-    if (title === session.lastTitle) {
-      return;
-    }
-    session.lastTitle = title;
-    await this.client.sessionUpdate({
-      sessionId,
-      update: {
-        sessionUpdate: "session_info_update",
-        title,
-        updatedAt: new Date(info!.lastModified).toISOString(),
-      },
-    });
   }
 
   async authenticate(_params: AuthenticateRequest): Promise<void> {
@@ -1970,6 +2199,10 @@ export class ClaudeAcpAgent {
       throw RequestError.internalError(undefined, SESSION_ENDED_MESSAGE);
     }
 
+    if (session.autoModeFallbackWarningPending) {
+      await this.sessionModes.publishFallbackWarning(params.sessionId, session);
+    }
+
     if (Array.from(session.taskState.values()).some((task) => task.status !== "completed")) {
       await this.publishTaskPlan(params.sessionId, session.taskState);
     }
@@ -1995,6 +2228,8 @@ export class ClaudeAcpAgent {
       session.fileChangeReportRequestIds.add(fileChangeReportRequestId);
       fileChangeAudit = createFileChangeAuditTurnState(fileChangeReportRequestId);
     }
+
+    session.titles.onPrompt(params.prompt);
 
     // Each prompt is a Turn whose deferred the persistent consumer settles once
     // the turn's outcome is known. `prompt()` owns no loop: it enqueues the
@@ -2115,11 +2350,13 @@ export class ClaudeAcpAgent {
    *  an `SDKUserMessage` onto the same streaming input, which the SDK routes
    *  into the in-flight turn. The injected message's echo carries a uuid that
    *  matches no queued turn, so the consumer drops it as an unrelated replay
-   *  without promoting/settling anything. It is delivered at {@link
-   *  STEER_PRIORITY} (`now`) so it pre-empts the current generation (interrupting
-   *  a single-shot response, or slotting in between a multi-step turn's tool
-   *  calls). The steered message's own output streams via `session/update`, not
-   *  this response.
+   *  without promoting/settling anything. It is normally delivered at priority
+   *  `now` so it pre-empts the current generation (interrupting a single-shot
+   *  response, or slotting in between a multi-step turn's tool calls). While a
+   *  permission or elicitation is awaiting user input it uses `later`, because
+   *  interrupting that SDK callback cancels the ACP request and can strand the
+   *  prompt (IJAI-1191). The steered message's own output streams via
+   *  `session/update`, not this response.
    *
    *  Pre-empting means ABORTING: the interrupted cycle emits a `result` of its
    *  own and the steered message runs as a second one, so the turn is marked
@@ -2174,7 +2411,8 @@ export class ClaudeAcpAgent {
     userMessage.uuid = steeredUuid;
     // Deliver into the running turn rather than queuing behind it as a fresh
     // prompt would.
-    userMessage.priority = STEER_PRIORITY;
+    userMessage.priority =
+      (session.pendingUserInputCount ?? 0) > 0 ? STEER_PRIORITY_LATER : STEER_PRIORITY_NOW;
     // Mark before the push and in the same synchronous section as the in-flight
     // check: the interrupt can have the CLI finalizing the aborted cycle by the
     // time the consumer next runs, and an unmarked result would settle the turn
@@ -2191,6 +2429,21 @@ export class ClaudeAcpAgent {
     const firstText = params.prompt[0]?.type === "text" ? params.prompt[0].text : "";
     await this.publishGoalFromPrompt(sessionId, firstText, steeredUuid);
     return { outcome: "injected" };
+  }
+
+  async stopAsyncTask(params: AsyncTaskStopRequest): Promise<AsyncTaskStopResponse> {
+    const session = this.sessions[params.sessionId];
+    const asyncTasks = session?.asyncTaskRuntime;
+    if (!session || !asyncTasks?.claimStop(params.asyncTaskId)) return { stopped: false };
+
+    try {
+      await session.query.stopTask(params.asyncTaskId);
+      await asyncTasks.taskStopped(params.asyncTaskId);
+      return { stopped: true };
+    } catch (error) {
+      asyncTasks.releaseStop(params.asyncTaskId);
+      throw error;
+    }
   }
 
   /** Publish the audit terminal for every turn path that did not reach the
@@ -2286,8 +2539,44 @@ export class ClaudeAcpAgent {
      *  recognizable by the `parentToolUseId` meta that toAcpNotifications
      *  stamps from `parent_tool_use_id`, and never reach the top-level feed
      *  as the turn's answer. */
-    const sendUpdate = async (notification: SessionNotification) => {
+    const subagents = (session.nativeSubagentRuntime ??= new NativeSubagentRuntime(
+      clientSupportsSubagents(this.clientCapabilities),
+      params.sessionId,
+      session,
+      async (notification) => this.client.sessionUpdate(asSdkSessionNotification(notification)),
+      this.logger,
+    ));
+    const asyncTasks = (session.asyncTaskRuntime ??= new AsyncTaskRuntime(
+      clientSupportsAsyncTasks(this.clientCapabilities),
+      params.sessionId,
+      async (notification) => this.client.sessionUpdate(asSdkSessionNotification(notification)),
+    ));
+
+    const sendUpdate = async (notification: AcpSessionNotification) => {
       const { update } = notification;
+      const claudeMeta = update._meta?.claudeCode as
+        { parentToolUseId?: string | null; subagent?: true; toolName?: string } | undefined;
+      const toolCallId =
+        update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update"
+          ? update.toolCallId
+          : undefined;
+      const eagerOwnerSessionId = toolCallId
+        ? session.eagerToolCallSessions?.get(toolCallId)
+        : undefined;
+      const routedNotification = await subagents.route(
+        notification,
+        sendUpdate,
+        eagerOwnerSessionId,
+      );
+      if (!routedNotification) {
+        // Native Agent/Task control calls are intentionally not transcript
+        // tools. Do not let the mapper's pre-send de-duplication mark make a
+        // later permission request believe that a suppressed call exists.
+        if (toolCallId && isNativeSubagentControlUpdate(update)) {
+          session.emittedToolCalls.delete(toolCallId);
+        }
+        return;
+      }
       if (
         isFileChangeAuditReportPhase(session.activeTurn?.fileChangeAudit) &&
         (update.sessionUpdate === "agent_message_chunk" ||
@@ -2299,13 +2588,49 @@ export class ClaudeAcpAgent {
         return;
       }
       if (update.sessionUpdate === "agent_message_chunk") {
-        const claudeMeta = update._meta?.claudeCode as
-          { parentToolUseId?: string | null } | undefined;
         if (!claudeMeta?.parentToolUseId) {
           session.emittedAssistantText = true;
+          session.titles.onAssistantText(update.content);
         }
       }
-      await this.client.sessionUpdate(notification);
+      await this.client.sessionUpdate(routedNotification);
+      if (
+        toolCallId &&
+        update.sessionUpdate === "tool_call_update" &&
+        (update.status === "completed" || update.status === "failed")
+      ) {
+        session.eagerToolCallSessions?.delete(toolCallId);
+      }
+    };
+    // toAcpNotifications registers deferred tool hooks that publish through
+    // the client passed to it. Keep those later updates on the same child-aware
+    // routing path as the immediate notifications.
+    const routedNotificationClient = { sessionUpdate: sendUpdate } as unknown as AcpClient;
+    session.nativeSubagentDeliver = sendUpdate;
+
+    const finishLifecycle = async (
+      nativeState: "completed" | "failed" | "cancelled",
+      asyncState: "failed" | "stopped",
+      context: string,
+    ): Promise<void> => {
+      await Promise.all([
+        subagents
+          .finishAll(nativeState, sendUpdate)
+          .catch((error) =>
+            this.logger.error(
+              `Session ${params.sessionId}: failed to publish terminal subagent state ${context}`,
+              error,
+            ),
+          ),
+        asyncTasks
+          .finishAll(asyncState)
+          .catch((error) =>
+            this.logger.error(
+              `Session ${params.sessionId}: failed to publish terminal async task state ${context}`,
+              error,
+            ),
+          ),
+      ]);
     };
 
     let pendingWorkerShutdown = false;
@@ -2389,12 +2714,17 @@ export class ClaudeAcpAgent {
       // cleared when each consolidated message consumes it. #785 stopped
       // resetting the streamed-content tracking here but left this line.
       stopReason = "end_turn";
-      session.accumulatedUsage = {
+      session.accumulatedUsage = session.activeTurn?.carriedUsage ?? {
         inputTokens: 0,
         outputTokens: 0,
         cachedReadTokens: 0,
         cachedWriteTokens: 0,
       };
+      session.accumulatedModelUsage = session.activeTurn?.carriedModelUsage ?? {};
+      if (session.activeTurn) {
+        session.activeTurn.carriedUsage = undefined;
+        session.activeTurn.carriedModelUsage = undefined;
+      }
     };
 
     /** Promote a queued turn to active: it becomes the one output is attributed
@@ -2446,12 +2776,20 @@ export class ClaudeAcpAgent {
      *
      *  But an echo-less result can also be an ORPHAN: cancel() settles+removes a
      *  queued turn whose user message was already pushed, so the SDK still runs
-     *  it and emits a result with no uuid to match. Promoting the head for an
+     *  it and emits a result with no echo to match. Promoting the head for an
      *  orphan would misattribute its stop reason/usage to an unrelated later
      *  prompt. `session.pendingOrphanResults` counts exactly how many such
      *  orphans are still expected (FIFO, they arrive before any live turn's
-     *  result), so we skip those and only promote once the count is drained. */
-    const ensureActiveTurn = () => {
+     *  result), so we skip those and only promote once the count is drained.
+     *
+     *  `resultUserMessageUuid` is the result's own join key (SDK 0.3.246+
+     *  echoes the triggering send's client uuid on results; absent on older
+     *  CLIs, synthetic/meta turns, and session-scoped failures). When present
+     *  it upgrades the map lane from positional heuristics to an exact match:
+     *  a stamp naming an orphaned command consumes the result outright, and a
+     *  stamp naming anything else positively refutes "this is a dead turn's
+     *  result", so the dup-over-loss one-skip must not eat it. */
+    const ensureActiveTurn = (resultUserMessageUuid?: string) => {
       if (session.activeTurn) {
         if (!isHeldOpen(session.activeTurn)) {
           return;
@@ -2503,8 +2841,13 @@ export class ClaudeAcpAgent {
       // double-consume it. The unexpected-transition logging in the frame
       // handler is the tripwire for that class of drift.
       if (session.orphanCommands?.size) {
+        const stampedOrphan =
+          resultUserMessageUuid !== undefined && session.orphanCommands.has(resultUserMessageUuid);
         let consumedOrphanResult = false;
         let oldestPending: string | undefined;
+        // The started/zombie drain applies regardless of the stamp: commands
+        // folded into the turn that emitted this result share it, and zombies'
+        // late results have already passed (or never existed).
         for (const [uuid, state] of session.orphanCommands) {
           if (state === "started" || state === "zombie") {
             consumedOrphanResult = true;
@@ -2513,17 +2856,32 @@ export class ClaudeAcpAgent {
             oldestPending ??= uuid;
           }
         }
-        if (consumedOrphanResult) {
+        if (stampedOrphan) {
+          // Exact join: the result names an orphaned command. Delete the
+          // matched entry even when it is still "pending" (its dispatch frame
+          // was lost) and consume the result — no promotion.
+          session.orphanCommands.delete(resultUserMessageUuid!);
           return;
         }
-        if (oldestPending !== undefined) {
-          // No dispatch was seen before this result, so it is very likely a
-          // live turn's — but a lost "started" frame would mean it IS the
-          // orphan's (dup-over-loss: prefer one wrong skip over
-          // misattributing a dead turn's outcome to a live prompt). Grant
-          // each pending entry exactly one skip, like the count lane did.
-          session.orphanCommands.delete(oldestPending);
-          return;
+        if (resultUserMessageUuid !== undefined) {
+          // The stamp names a send that is NOT in the orphan map, so this is
+          // a live turn's result: skip both the consumed-return (its folded
+          // orphans were drained above, but the result itself still needs a
+          // turn) and the dup-over-loss one-skip the stamp refutes, and fall
+          // through to promote the head.
+        } else {
+          if (consumedOrphanResult) {
+            return;
+          }
+          if (oldestPending !== undefined) {
+            // No dispatch was seen before this result, so it is very likely a
+            // live turn's — but a lost "started" frame would mean it IS the
+            // orphan's (dup-over-loss: prefer one wrong skip over
+            // misattributing a dead turn's outcome to a live prompt). Grant
+            // each pending entry exactly one skip, like the count lane did.
+            session.orphanCommands.delete(oldestPending);
+            return;
+          }
         }
       }
       const head = firstUnsettledQueuedTurn();
@@ -2715,14 +3073,7 @@ export class ClaudeAcpAgent {
         return;
       }
       sessionFailures.recordActive(failure);
-      settleActive(
-        {
-          stopReason: "end_turn",
-          usage: sessionUsage(session),
-          _meta: sessionFailureMeta(failure),
-        },
-        "providerError",
-      );
+      settleActive(turnOutcome(session, "end_turn", sessionFailureMeta(failure)), "providerError");
     };
 
     /** Reject every in-flight turn — used when the stream dies. */
@@ -2799,7 +3150,11 @@ export class ClaudeAcpAgent {
             // spent would never drain (it would swallow an unrelated later
             // echo-less result instead).
             const active = session.activeTurn;
-            if (active.commandFinished === "completed" || active.commandFinished === "discarded") {
+            if (
+              active.commandFinished === "completed" ||
+              active.commandFinished === "discarded" ||
+              active.commandFinished === "refused"
+            ) {
               // Finished SDK-side; any result already passed. Nothing to
               // track.
             } else if (active.commandFinished === "cancelled") {
@@ -2821,7 +3176,7 @@ export class ClaudeAcpAgent {
               this.trackOrphanCommand(session, active.promptUuid, "started");
             }
           }
-          settleActive({ stopReason: "cancelled", usage: sessionUsage(session) });
+          settleActive(turnOutcome(session, "cancelled"));
           // The cancelled turn's result may never come (that's why the
           // backstop fired) — close its delivery stretch here so partial
           // streamed text can't suppress the next turn's issue-#453 fallback.
@@ -2879,10 +3234,15 @@ export class ClaudeAcpAgent {
           // a deferred turn's stored outcome (followup results never mutate
           // it), but the stored one is the authoritative source.
           const inFlight = session.activeTurn;
+          await finishLifecycle(
+            session.cancelled ? "cancelled" : "failed",
+            session.cancelled ? "stopped" : "failed",
+            "at end of stream",
+          );
           settleActive(
             session.cancelled
-              ? { stopReason: "cancelled", usage: sessionUsage(session) }
-              : (inFlight?.deferredSettle ?? { stopReason, usage: sessionUsage(session) }),
+              ? turnOutcome(session, "cancelled")
+              : (inFlight?.deferredSettle ?? turnOutcome(session, stopReason)),
           );
           // Queued turns the SDK never started never ran, so reject them rather
           // than reporting a success (end_turn) — or a misleading "cancelled" —
@@ -2917,7 +3277,7 @@ export class ClaudeAcpAgent {
 
         // CLIs 2.1.206+ (capability msg_lifecycle_v1) report the fate of every
         // uuid-stamped queued command (queued/started/completed/cancelled/
-        // discarded) as `command_lifecycle` frames — 2-3 per prompt, since
+        // discarded/refused) as `command_lifecycle` frames — 2-3 per prompt, since
         // prompt() stamps a uuid on every message. The frame is @internal and
         // absent from the SDKMessage union, so handle it BEFORE the exhaustive
         // switch: it must not reach `unreachable`'s error log, and a `case`
@@ -2953,6 +3313,7 @@ export class ClaudeAcpAgent {
             }
             case "completed":
             case "discarded":
+            case "refused":
             case "cancelled": {
               // Terminal frames. Latch the fate on a still-queued turn so a
               // later cancel() doesn't seed an orphan entry for a command
@@ -2960,7 +3321,7 @@ export class ClaudeAcpAgent {
               // (nothing would ever drain that entry).
               const queued = findUnsettledTurn(frame.command_uuid);
               if (queued) {
-                queued.commandFinished = frame.state as "completed" | "discarded" | "cancelled";
+                queued.commandFinished = frame.state as NonNullable<Turn["commandFinished"]>;
               }
               if (frame.state === "cancelled") {
                 // Ambiguous by design (dup-over-loss): dropped before
@@ -2975,6 +3336,7 @@ export class ClaudeAcpAgent {
                 const state = session.orphanCommands?.get(frame.command_uuid);
                 if (state === "pending") {
                   session.orphanCommands?.delete(frame.command_uuid);
+                  session.pendingEmptyInterruptionDiagnosticCommands?.delete(frame.command_uuid);
                 } else if (state === "started") {
                   session.orphanCommands?.set(frame.command_uuid, "zombie");
                 }
@@ -2985,7 +3347,11 @@ export class ClaudeAcpAgent {
               // command folded into another turn whose result is attributed
               // elsewhere — either way no echo-less result remains to skip.
               // "discarded" = session ended with it still queued; no result.
+              // "refused" (2.1.238+) = a cross-session peer message declined
+              // by receive-side policy before dispatch; never a prompt-lane
+              // command of ours, and no result will ever come.
               session.orphanCommands?.delete(frame.command_uuid);
+              session.pendingEmptyInterruptionDiagnosticCommands?.delete(frame.command_uuid);
               break;
             }
             default:
@@ -3116,6 +3482,7 @@ export class ClaudeAcpAgent {
                 const usedTokens = await fetchContextUsedTokens(session.query, this.logger);
                 lastAssistantUsage = null;
                 lastAssistantTotalUsage = usedTokens ?? 0;
+                session.contextUsedTokens = usedTokens ?? 0;
                 await sendUpdate({
                   sessionId: message.session_id,
                   update: {
@@ -3169,7 +3536,7 @@ export class ClaudeAcpAgent {
                   // the interrupted turn's tokens entirely (issue #844). Zero
                   // when the cancel pre-empted the result (wedge/force-cancel).
                   if (session.cancelled && session.activeTurn && !session.activeTurn.settled) {
-                    settleActive({ stopReason: "cancelled", usage: sessionUsage(session) });
+                    settleActive(turnOutcome(session, "cancelled"));
                     // An interrupt can pre-empt the turn's result entirely
                     // (nothing ran the result-case `finally`), so close the
                     // delivery stretch here: idle is the SDK's authoritative
@@ -3250,11 +3617,9 @@ export class ClaudeAcpAgent {
                       TURN_NO_RESULT_MESSAGE,
                     );
                   }
-                  // The SDK generates the session title in a background task and
-                  // persists it to the session file; `idle` is the turn-over
-                  // signal, so it's the point at which a new title may have
-                  // landed. Push it to the client if it changed.
-                  await this.maybeUpdateSessionTitle(params.sessionId, session);
+                  // Turn-over is when a title may have landed or become
+                  // generatable; see SessionTitles.onTurnEnd.
+                  await session.titles.onTurnEnd(session);
                 }
                 break;
               }
@@ -3328,6 +3693,7 @@ export class ClaudeAcpAgent {
                 break;
               }
               case "permission_denied": {
+                unregisterHookCallback(message.tool_use_id);
                 // A tool call was auto-denied (by a rule, the classifier,
                 // dontAsk mode, etc.) before running. The tool_use block was
                 // already emitted as a `tool_call`, so mark it failed with the
@@ -3355,6 +3721,18 @@ export class ClaudeAcpAgent {
                 const parentToolUseId = message.agent_id
                   ? session.liveBackgroundTasks.get(message.agent_id)?.parentToolUseId
                   : undefined;
+                const eagerOwnerSessionId = session.eagerToolCallSessions?.get(message.tool_use_id);
+                if (
+                  message.agent_id &&
+                  !parentToolUseId &&
+                  !eagerOwnerSessionId &&
+                  clientSupportsSubagents(this.clientCapabilities)
+                ) {
+                  // An agent-scoped denial with missing lineage cannot safely
+                  // be presented in the root transcript. The matching hidden
+                  // child tool call was not announced there.
+                  break;
+                }
                 const reason = message.decision_reason ?? message.message;
                 await sendUpdate({
                   sessionId: message.session_id,
@@ -3410,7 +3788,15 @@ export class ClaudeAcpAgent {
               case "hook_progress":
               case "hook_response":
               case "files_persisted":
+                break;
               case "task_progress":
+                await asyncTasks.taskProgress({
+                  task_id: message.task_id,
+                  description: message.description,
+                  summary: message.summary,
+                  last_tool_name: message.last_tool_name,
+                  usage: message.usage,
+                });
                 break;
               case "task_started":
                 // For subagent tasks `task_id` is the subagent's agent id (the
@@ -3435,6 +3821,26 @@ export class ClaudeAcpAgent {
                   parentToolUseId: message.tool_use_id,
                   isSubagent: !!message.subagent_type,
                 });
+                await subagents.taskStarted(
+                  {
+                    taskId: message.task_id,
+                    toolUseId: message.tool_use_id,
+                    subagentType: message.subagent_type,
+                    description: message.description,
+                    prompt: message.prompt,
+                  },
+                  sendUpdate,
+                );
+                await asyncTasks.taskStarted({
+                  task_id: message.task_id,
+                  task_type: message.task_type,
+                  description: message.description,
+                  subagent_type: message.subagent_type,
+                  is_backgrounded: message.is_backgrounded,
+                  workflow_name: message.workflow_name,
+                  skip_transcript: message.skip_transcript,
+                  tool_use_id: message.tool_use_id,
+                });
                 if (message.subagent_type && session.activeTurn && !session.activeTurn.settled) {
                   (session.activeTurn.spawnedTaskIds ??= new Set()).add(message.task_id);
                 }
@@ -3442,9 +3848,23 @@ export class ClaudeAcpAgent {
               case "task_notification":
                 // The task settled — no further tool calls can originate
                 // from it, so its registry entry can be dropped.
+                await subagents.finishTask(
+                  message.task_id,
+                  message.status,
+                  sendUpdate,
+                  message.tool_use_id,
+                );
+                await asyncTasks.taskNotification({
+                  task_id: message.task_id,
+                  status: message.status,
+                  summary: message.summary,
+                  output_file: message.output_file,
+                });
+                if (message.tool_use_id) subagents.discardPending(message.tool_use_id);
                 session.liveBackgroundTasks.delete(message.task_id);
                 break;
               case "task_updated":
+                await asyncTasks.taskUpdated(message.task_id, message.patch);
                 // terminal-status task_updated patch and a (deduplicated)
                 // task_notification when a task settles, but only the patch is
                 // guaranteed per transition — prune on it too so the registry
@@ -3455,6 +3875,7 @@ export class ClaudeAcpAgent {
                   message.patch.status === "failed" ||
                   message.patch.status === "killed"
                 ) {
+                  await subagents.finishTask(message.task_id, message.patch.status, sendUpdate);
                   session.liveBackgroundTasks.delete(message.task_id);
                 }
                 break;
@@ -3474,7 +3895,7 @@ export class ClaudeAcpAgent {
                 // client supports url elicitation; ignore failures otherwise.
                 if (this.clientCapabilities?.elicitation?.url) {
                   try {
-                    await this.client.unstable_completeElicitation({
+                    await this.client.completeElicitation({
                       elicitationId: message.elicitation_id,
                     });
                   } catch (error) {
@@ -3566,7 +3987,7 @@ export class ClaudeAcpAgent {
                   });
                 }
                 if (persistent) {
-                  await this.syncModelAfterRefusalFallback(
+                  await this.syncModelAfterExternalSwitch(
                     params.sessionId,
                     session,
                     message.fallback_model,
@@ -3598,6 +4019,7 @@ export class ClaudeAcpAgent {
               case "control_request_progress":
                 break;
               case "background_tasks_changed":
+                await asyncTasks.backgroundTasksChanged(message.tasks);
                 // A level signal: the full live background-task set on every
                 // membership change, with REPLACE semantics. Used only to
                 // reconcile `liveBackgroundTasks` — dropping (or, for
@@ -3653,7 +4075,8 @@ export class ClaudeAcpAgent {
             // slash-command output forwarding), though their cost is real.
             const isAutonomousResult =
               message.origin != null && AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind);
-
+            const pendingExitPlanModeInterruption = session.pendingExitPlanModeInterruption;
+            const pendingExitPlanContextReset = session.pendingExitPlanContextReset;
             try {
               // Reconcile the Fast mode toggle with the SDK's reported state.
               // Gated to user-driven turns like every other side effect below;
@@ -3679,7 +4102,7 @@ export class ClaudeAcpAgent {
               // the map in that case).
               if (!isAutonomousResult) {
                 recordResultForOrphanCommands();
-                ensureActiveTurn();
+                ensureActiveTurn(message.user_message_uuid);
                 // Once the submitted goal command has produced its own result,
                 // no older runtime update can still precede it in the ordered
                 // SDK stream. Stop suppressing updates even when this runtime
@@ -3767,6 +4190,25 @@ export class ClaudeAcpAgent {
                   message.usage.cache_creation_input_tokens;
               }
 
+              // The same tally split by model, for `_meta.quota.model_usage`.
+              // `modelUsage` is a running total for the whole query() call, so
+              // this result's own spend is what it added to the previous
+              // reading. Advance the reading even for an autonomous result — it
+              // is part of the running total the NEXT increment is measured
+              // from — but leave the turn tally alone, exactly as above.
+              const modelUsageReading = normalizeModelUsage(message.modelUsage);
+              const resultModelUsage = modelUsageIncrement(
+                modelUsageReading,
+                session.lastModelUsageReading ?? {},
+              );
+              session.lastModelUsageReading = modelUsageReading;
+              if (!isAutonomousResult) {
+                session.accumulatedModelUsage = addModelUsage(
+                  session.accumulatedModelUsage ?? {},
+                  resultModelUsage,
+                );
+              }
+
               const matchingModelUsage = lastAssistantModel
                 ? getMatchingModelUsage(message.modelUsage, lastAssistantModel)
                 : null;
@@ -3829,6 +4271,8 @@ export class ClaudeAcpAgent {
               }
 
               if (session.cancelled) {
+                session.pendingExitPlanModeInterruption = undefined;
+                session.pendingExitPlanContextReset = undefined;
                 if (!isAutonomousResult) {
                   await clearFailuresFromEarlierTurns();
                   stopReason = "cancelled";
@@ -3868,7 +4312,89 @@ export class ClaudeAcpAgent {
                 break;
               }
 
+              // A cancel can race startup before the original prompt's echo.
+              // The CLI then replays the cancelled prompt, its interruption
+              // marker, and the replacement prompt before yielding this
+              // error-shaped diagnostic for the OLD cycle. The replacement's
+              // echo has already made it active, so treating the diagnostic as
+              // its result rejects a healthy prompt and leaves its real output
+              // arriving after session/prompt completed. Ignore only the
+              // diagnostic's exact empty-user-interruption signature; ordinary
+              // provider errors still follow the failure lanes below.
+              if (
+                message.is_error &&
+                isEmptyUserInterruptionDiagnostic(message) &&
+                (session.pendingEmptyInterruptionDiagnosticCommands?.size ?? 0) > 0
+              ) {
+                const pending = session.pendingEmptyInterruptionDiagnosticCommands!;
+                const stamped = message.user_message_uuid;
+                if (stamped === undefined) {
+                  // Older producer: no join key on the result, so consume an
+                  // arbitrary hand-off token like before.
+                  const commandUuid = pending.values().next().value;
+                  if (commandUuid) {
+                    pending.delete(commandUuid);
+                  }
+                  break;
+                }
+                if (pending.delete(stamped)) {
+                  // Exact join (SDK 0.3.246+ echoes the triggering send's
+                  // uuid on error results): the diagnostic names a cancelled
+                  // command we handed a token for — swallow it.
+                  break;
+                }
+                // Stamped but unmatched: this diagnostic belongs to a send we
+                // did NOT cancel — a live turn's real failure. Don't let a
+                // stale token eat it; fall through to the ordinary failure
+                // lanes (the clear below retires the stale tokens, same as
+                // every other non-diagnostic result path).
+              }
+
+              // Some CLI versions omit the cancelled cycle's diagnostic. Do
+              // not let an unused hand-off token swallow a later turn's real
+              // interruption failure.
+              session.pendingEmptyInterruptionDiagnosticCommands?.clear();
+
               await clearFailuresFromEarlierTurns();
+
+              // `interrupt: true` is required to make "No, keep planning"
+              // terminate the ACP turn. Claude represents that intentional
+              // interrupt as an error-shaped diagnostic, so translate only a
+              // diagnostic causally paired with the recorded ExitPlanMode
+              // permission response.
+              const diagnostic = executionDiagnostic(message);
+              if (
+                pendingExitPlanModeInterruption &&
+                pendingExitPlanModeInterruption.toolResultSeen &&
+                message.is_error &&
+                diagnostic &&
+                /(?:^|\s)result_type=user(?:\s|$)/.test(diagnostic) &&
+                /(?:^|\s)stop_reason=tool_use(?:\s|$)/.test(diagnostic)
+              ) {
+                session.pendingExitPlanModeInterruption = undefined;
+                if (
+                  pendingExitPlanContextReset &&
+                  pendingExitPlanContextReset.toolUseId ===
+                    pendingExitPlanModeInterruption.toolUseId
+                ) {
+                  await this.exitPlan.restart(
+                    params.sessionId,
+                    session,
+                    pendingExitPlanContextReset,
+                  );
+                  return;
+                }
+                stopReason = "cancelled";
+                settleOrDefer(turnOutcome(session, "cancelled"));
+                break;
+              }
+              if (pendingExitPlanModeInterruption) {
+                // This result ended the interrupted cycle without the exact
+                // correlated cancellation shape. Never carry its marker into
+                // a later turn, whether or not the tool result was observed.
+                session.pendingExitPlanModeInterruption = undefined;
+                session.pendingExitPlanContextReset = undefined;
+              }
 
               // A refusal can arrive on any result subtype (and may even set
               // is_error), so handle it before the subtype switch — otherwise the
@@ -3892,7 +4418,7 @@ export class ClaudeAcpAgent {
                 // settling it out from under them would strand their output
                 // and permission requests out-of-turn (issue #866's deadlock,
                 // through the refusal lane).
-                settleOrDefer({ stopReason: "refusal", usage: sessionUsage(session) });
+                settleOrDefer(turnOutcome(session, "refusal"));
                 break;
               }
 
@@ -3906,7 +4432,7 @@ export class ClaudeAcpAgent {
                 isSteering(session.activeTurn) &&
                 session.activeTurn.steeredEchoes.size > 0
               ) {
-                settleOrDefer({ stopReason: "end_turn", usage: sessionUsage(session) });
+                settleOrDefer(turnOutcome(session, "end_turn"));
                 break;
               }
 
@@ -3969,7 +4495,7 @@ export class ClaudeAcpAgent {
                       "assistant",
                       params.sessionId,
                       session.toolUseCache,
-                      this.client,
+                      routedNotificationClient,
                       this.logger,
                     )) {
                       await sendUpdate(notification);
@@ -4068,7 +4594,7 @@ export class ClaudeAcpAgent {
               // idle/abort path. settleActive is idempotent, so a duplicate
               // idle is a no-op.
               if (!session.cancelled) {
-                settleOrDefer({ stopReason, usage: sessionUsage(session) });
+                settleOrDefer(turnOutcome(session, stopReason));
               }
             } finally {
               if (!isAutonomousResult) {
@@ -4178,6 +4704,7 @@ export class ClaudeAcpAgent {
               const nextUsage = totalTokens(lastAssistantUsage);
               if (nextUsage !== lastAssistantTotalUsage) {
                 lastAssistantTotalUsage = nextUsage;
+                session.contextUsedTokens = nextUsage;
                 await sendUpdate({
                   sessionId: params.sessionId,
                   update: {
@@ -4257,7 +4784,7 @@ export class ClaudeAcpAgent {
                       session.owedTrailingIdles++;
                       // Before activateTurn resets the accumulator, so the
                       // usage still belongs to the cancelled turn.
-                      settleActive({ stopReason: "cancelled", usage: sessionUsage(session) });
+                      settleActive(turnOutcome(session, "cancelled"));
                     } else if (isHeldOpen(session.activeTurn)) {
                       // A turn held open for its background subagents (see
                       // Turn.deferredSettle) hands off with the real outcome
@@ -4285,7 +4812,7 @@ export class ClaudeAcpAgent {
                       session.owedTrailingIdles++;
                       settleActive(session.activeTurn.steeredSettle);
                     } else {
-                      settleActive({ stopReason: "end_turn", usage: sessionUsage(session) });
+                      settleActive(turnOutcome(session, "end_turn"));
                     }
                   }
                   // Unlike the no-result teardown lanes, this hand-off must
@@ -4323,6 +4850,7 @@ export class ClaudeAcpAgent {
             if (message.type === "assistant" && message.parent_tool_use_id === null) {
               lastAssistantUsage = snapshotFromUsage(message.message.usage);
               lastAssistantTotalUsage = totalTokens(lastAssistantUsage);
+              session.contextUsedTokens = lastAssistantTotalUsage;
               lastAssistantWasUsageLimit = isSyntheticUsageLimitMessage(message.message);
               if (message.error || lastAssistantWasUsageLimit) {
                 lastAssistantFailureTitle = assistantMessageText(message.message);
@@ -4361,7 +4889,7 @@ export class ClaudeAcpAgent {
                   message.message.role,
                   params.sessionId,
                   session.toolUseCache,
-                  this.client,
+                  routedNotificationClient,
                   this.logger,
                   {
                     clientCapabilities: this.clientCapabilities,
@@ -4489,11 +5017,9 @@ export class ClaudeAcpAgent {
               message.type === "assistant" &&
               !(session.forwardSubagentText || supportsSubagentTranscript(this.clientCapabilities))
             ) {
-              // Legacy clients don't understand nested transcripts. Keep the
-              // historical behavior for them: subagent text/thinking remains
-              // internal to the tool call instead of leaking into the top-level
-              // feed. Capable clients opt into the branch above unchanged, with
-              // `parentToolUseId` stamped by toAcpNotifications.
+              // Legacy clients keep the flattened tool-call representation,
+              // but nested text/thinking stays internal unless explicitly
+              // requested through the historical transcript extension.
               content = message.message.content.filter(
                 (item) => item.type !== "text" && item.type !== "thinking",
               );
@@ -4501,12 +5027,23 @@ export class ClaudeAcpAgent {
               content = message.message.content;
             }
 
+            const acceptedPlanToolUseId = observeExitPlanToolResults(message, content, session);
+            let backgroundBashTask: AsyncTaskStarted | undefined;
+            if (message.type === "user") {
+              backgroundBashTask = backgroundBashTaskFromToolResult(
+                content,
+                message.tool_use_result,
+                session.toolUseCache,
+              );
+              if (backgroundBashTask) await asyncTasks.taskBackgrounded(backgroundBashTask);
+            }
+
             for (const notification of toAcpNotifications(
               content,
               message.message.role,
               params.sessionId,
               session.toolUseCache,
-              this.client,
+              routedNotificationClient,
               this.logger,
               {
                 clientCapabilities: this.clientCapabilities,
@@ -4528,7 +5065,13 @@ export class ClaudeAcpAgent {
               // filtered out of `content` above; blocks that do pass through
               // (e.g. a subagent image) carry the stamped parentToolUseId
               // meta and are excluded there.
-              await sendUpdate(notification);
+              await sendUpdate(
+                backgroundedBashToolCall(
+                  acceptedPlanToolResult(notification, acceptedPlanToolUseId),
+                  backgroundBashTask,
+                  asyncTasks.enabled,
+                ),
+              );
             }
             break;
           }
@@ -4552,6 +5095,13 @@ export class ClaudeAcpAgent {
             if (toolCallId === null || !session.emittedToolCalls.has(toolCallId)) {
               break;
             }
+            const subagentParentToolUseId = message.parent_tool_use_id
+              ? [...session.liveBackgroundTasks.values()].some(
+                  (task) => task.isSubagent && task.parentToolUseId === message.parent_tool_use_id,
+                )
+                ? message.parent_tool_use_id
+                : undefined
+              : undefined;
             await sendUpdate({
               sessionId: message.session_id,
               update: {
@@ -4561,6 +5111,9 @@ export class ClaudeAcpAgent {
                 _meta: {
                   claudeCode: {
                     toolName: message.tool_name,
+                    ...(subagentParentToolUseId
+                      ? { parentToolUseId: subagentParentToolUseId }
+                      : {}),
                     toolResponse: {
                       elapsedTimeSeconds: message.elapsed_time_seconds,
                       // For Agent/Task calls: the subagent's type, and — when
@@ -4600,8 +5153,17 @@ export class ClaudeAcpAgent {
             // and task store are independent of the previous transcript.
             // Clear both the in-memory snapshot and the client's visible plan
             // before any follow-up prompt can republish stale tasks.
+            await finishLifecycle("failed", "failed", "during conversation reset");
+            subagents.clear();
+            asyncTasks.clear();
+            session.eagerToolCallSessions?.clear();
+            clearHookCallbacks(params.sessionId);
             session.taskState.clear();
             await this.publishTaskPlan(params.sessionId, session.taskState);
+            // A reset mounts a fresh transcript (`new_conversation_id`), so our
+            // cached title no longer describes the session: drop it and
+            // re-evaluate at the next turn-end.
+            session.titles.reset();
             break;
           }
           case "tool_use_summary":
@@ -4632,6 +5194,11 @@ export class ClaudeAcpAgent {
           message.includes("process exited with") ||
           message.includes("process terminated by signal") ||
           message.includes("Failed to write to process stdin"));
+      await finishLifecycle(
+        session.cancelled ? "cancelled" : "failed",
+        session.cancelled ? "stopped" : "failed",
+        "after stream error",
+      );
       if (supportsAirSessionFailures(this.clientCapabilities) && session.activeTurn) {
         if (!isHeldOpen(session.activeTurn)) {
           await failActiveWithSessionFailure(
@@ -4660,6 +5227,10 @@ export class ClaudeAcpAgent {
           ),
         );
         this.closeQueryStream(session);
+        session.eagerToolCallSessions?.clear();
+        clearHookCallbacks(params.sessionId);
+        session.nativeSubagentRuntime?.clear();
+        session.asyncTaskRuntime?.clear();
         delete this.sessions[params.sessionId];
       } else {
         this.logger.error(`Session ${params.sessionId}: query stream error: ${message}`);
@@ -4702,18 +5273,39 @@ export class ClaudeAcpAgent {
   }
 
   async cancel(params: CancelNotification): Promise<void> {
+    this.exitPlan.cancel(params.sessionId);
     const session = this.sessions[params.sessionId];
     if (!session) {
       return;
     }
+    session.cancelled = true;
+    session.pendingExitPlanModeInterruption = undefined;
+    session.pendingExitPlanContextReset = undefined;
     // The stream already ended (see closeQueryStream): every in-flight turn was
     // settled when it closed, and there is no live query to interrupt. Calling
     // query.interrupt() on a finished iterator could reject and surface from
     // this fire-and-forget notification, so there is nothing to do here.
     if (session.queryClosed) {
+      session.eagerToolCallSessions?.clear();
+      clearHookCallbacks(params.sessionId);
       return;
     }
-    session.cancelled = true;
+    try {
+      await session.nativeSubagentRuntime?.finishAll(
+        "cancelled",
+        session.nativeSubagentDeliver ??
+          (async (notification) =>
+            this.client.sessionUpdate(asSdkSessionNotification(notification))),
+      );
+    } catch (error) {
+      this.logger.error(
+        `Session ${params.sessionId}: failed to publish cancelled subagent state`,
+        error,
+      );
+    } finally {
+      session.eagerToolCallSessions?.clear();
+      clearHookCallbacks(params.sessionId);
+    }
     // A priority steer may still be queued in the SDK when cancellation
     // settles its owning turn. Its later echo matches no live turn, and its
     // result must be skipped rather than promoted onto the next prompt.
@@ -4747,8 +5339,10 @@ export class ClaudeAcpAgent {
       }
       // Each removed queued turn's user message was already pushed to the SDK,
       // which processes input FIFO and will still emit a result for it with no
-      // uuid to match. Track those so the consumer skips them (see
-      // ensureActiveTurn) rather than misattributing them to the head.
+      // user echo to match (0.3.246+ CLIs do stamp results with the
+      // triggering send's user_message_uuid, which ensureActiveTurn uses as
+      // an exact join when present). Track those so the consumer skips them
+      // (see ensureActiveTurn) rather than misattributing them to the head.
       // msg_lifecycle_v1 CLIs get per-uuid tracking drained by the command's
       // own terminal lifecycle frame — exact under command coalescing, where
       // N queued commands fold into ONE turn emitting one result and a plain
@@ -4757,7 +5351,11 @@ export class ClaudeAcpAgent {
       // never see lifecycle frames, so commandStarted/commandFinished stay
       // unset and every turn takes the plain-seed path below).
       for (const turn of orphanedTurns) {
-        if (turn.commandFinished === "completed" || turn.commandFinished === "discarded") {
+        if (
+          turn.commandFinished === "completed" ||
+          turn.commandFinished === "discarded" ||
+          turn.commandFinished === "refused"
+        ) {
           // The command already finished SDK-side and its terminal frame was
           // consumed while the turn sat queued — nothing is left to skip, and
           // a seeded entry would never drain.
@@ -4791,6 +5389,24 @@ export class ClaudeAcpAgent {
       session.turnQueue = session.turnQueue.filter(
         (turn) => turn === session.activeTurn && !turn.settled,
       );
+    }
+    const diagnosticTurns = orphanedTurns.filter((turn) => {
+      if (
+        turn.commandFinished === "completed" ||
+        turn.commandFinished === "discarded" ||
+        turn.commandFinished === "refused"
+      ) {
+        return false;
+      }
+      if (turn.commandStarted && turn.commandResultSeen) return false;
+      if (turn.commandFinished === "cancelled" && !turn.commandStarted) return false;
+      return true;
+    });
+    if (diagnosticTurns.length > 0) {
+      session.pendingEmptyInterruptionDiagnosticCommands ??= new Set();
+      for (const turn of diagnosticTurns) {
+        session.pendingEmptyInterruptionDiagnosticCommands.add(turn.promptUuid);
+      }
     }
 
     // A deferred active turn (see Turn.deferredSettle) already has its
@@ -4839,7 +5455,14 @@ export class ClaudeAcpAgent {
         if (session.lastSessionState !== "idle") {
           session.owedTrailingIdles++;
         }
-        active.resolve({ stopReason: "cancelled", usage: active.deferredSettle.usage });
+        // Carries the held outcome's `_meta` too: a deferred outcome's only
+        // metadata is its quota breakdown, the counterpart of the usage taken
+        // from it here.
+        active.resolve({
+          stopReason: "cancelled",
+          usage: active.deferredSettle.usage,
+          ...(active.deferredSettle._meta ? { _meta: active.deferredSettle._meta } : {}),
+        });
       }
     }
 
@@ -4897,6 +5520,11 @@ export class ClaudeAcpAgent {
     // activation-time self-heal.
     if (Array.isArray(receipt?.still_queued) && orphanedTurns.length > 0) {
       const stillQueued = new Set(receipt.still_queued);
+      const droppedTurns = orphanedTurns.filter((turn) => !stillQueued.has(turn.promptUuid));
+      const droppedCount = droppedTurns.length;
+      for (const turn of droppedTurns) {
+        session.pendingEmptyInterruptionDiagnosticCommands?.delete(turn.promptUuid);
+      }
       if (lifecycleLane) {
         // Lifecycle lane: forget dropped orphans by uuid. Only entries still
         // "pending" — an orphan absent from `still_queued` because it was
@@ -4916,9 +5544,11 @@ export class ClaudeAcpAgent {
           }
         }
       } else {
-        const dropped = orphanedTurns.filter((turn) => !stillQueued.has(turn.promptUuid)).length;
-        if (dropped > 0) {
-          session.pendingOrphanResults = Math.max(0, (session.pendingOrphanResults ?? 0) - dropped);
+        if (droppedCount > 0) {
+          session.pendingOrphanResults = Math.max(
+            0,
+            (session.pendingOrphanResults ?? 0) - droppedCount,
+          );
         }
       }
     }
@@ -4961,7 +5591,11 @@ export class ClaudeAcpAgent {
     if (!session) {
       return;
     }
-    await this.cancel({ sessionId });
+    try {
+      await this.cancel({ sessionId });
+    } catch (error) {
+      this.logger.error(`Session ${sessionId}: cancellation failed during teardown`, error);
+    }
     // cancel() arms the force-cancel floor and interrupts gracefully, but a
     // wedged consumer only wakes when `cancelController` aborts — closeQueryStream
     // below doesn't touch it. Since we're tearing the session down anyway, wake
@@ -4977,6 +5611,10 @@ export class ClaudeAcpAgent {
     // here the client has asked us to close the session, so signalling abort is
     // appropriate; query.close() above has already torn the subprocess down.
     session.abortController.abort();
+    session.eagerToolCallSessions?.clear();
+    clearHookCallbacks(sessionId);
+    session.nativeSubagentRuntime?.clear();
+    session.asyncTaskRuntime?.clear();
     delete this.sessions[sessionId];
   }
 
@@ -5004,20 +5642,7 @@ export class ClaudeAcpAgent {
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
-    const session = this.sessions[params.sessionId];
-    if (!session) {
-      throw new Error("Session not found");
-    }
-    // The SDK query stream already ended (see closeQueryStream); the session is
-    // a husk and `query.setPermissionMode` below would act on a closed query.
-    // Fail with the same clear message prompt()/cancel() give for a dead stream.
-    if (session.queryClosed) {
-      throw RequestError.internalError(undefined, SESSION_ENDED_MESSAGE);
-    }
-
-    await this.applySessionMode(params.sessionId, params.modeId);
-    await this.updateConfigOption(params.sessionId, MODE_CONFIG_ID, params.modeId);
-    return {};
+    return this.sessionModes.setSessionMode(params);
   }
 
   async setSessionConfigOption(
@@ -5101,15 +5726,10 @@ export class ClaudeAcpAgent {
     // model ID rather than the caller-supplied alias.
     const resolvedValue = validValue.value;
 
+    let effectiveValue = resolvedValue;
     if (params.configId === MODE_CONFIG_ID) {
-      await this.applySessionMode(params.sessionId, resolvedValue);
-      await this.client.sessionUpdate({
-        sessionId: params.sessionId,
-        update: {
-          sessionUpdate: "current_mode_update",
-          currentModeId: resolvedValue,
-        },
-      });
+      effectiveValue = await this.sessionModes.selectMode(params.sessionId, resolvedValue);
+      await this.sessionModes.publishCurrent(params.sessionId, effectiveValue);
     } else if (params.configId === MODEL_CONFIG_ID) {
       await this.sessions[params.sessionId].query.setModel(resolvedValue);
     }
@@ -5117,45 +5737,9 @@ export class ClaudeAcpAgent {
     // effort changes and effort changes induced by a model switch go through
     // the same path.
 
-    await this.applyConfigOptionValue(params.sessionId, session, params.configId, resolvedValue);
+    await this.applyConfigOptionValue(params.sessionId, session, params.configId, effectiveValue);
 
     return { configOptions: session.configOptions };
-  }
-
-  private async applySessionMode(sessionId: string, modeId: string): Promise<void> {
-    switch (modeId) {
-      case "auto":
-      case "default":
-      case "acceptEdits":
-      case "bypassPermissions":
-      case "dontAsk":
-      case "plan":
-        break;
-      default:
-        throw new Error("Invalid Mode");
-    }
-
-    const session = this.sessions[sessionId];
-    if (!session) {
-      throw new Error("Session not found");
-    }
-    if (!session.modes.availableModes.some((mode) => mode.id === modeId)) {
-      throw new Error(`Mode ${modeId} is not available in this session`);
-    }
-
-    try {
-      await session.query.setPermissionMode(modeId);
-    } catch (error) {
-      if (error instanceof Error) {
-        if (!error.message) {
-          error.message = "Invalid Mode";
-        }
-        throw error;
-      } else {
-        // eslint-disable-next-line preserve-caught-error
-        throw new Error("Invalid Mode");
-      }
-    }
   }
 
   private async replaySessionHistory(sessionId: string): Promise<void> {
@@ -5185,6 +5769,128 @@ export class ClaudeAcpAgent {
     // ends an incomplete audit lane.
     let replayingFileChangeAudit = false;
     const replayFileChangeAuditToolUseIds = new Set<string>();
+    const nativeReplayEnabled = clientSupportsSubagents(this.clientCapabilities);
+    const replayTerminalStates = new Map<string, "completed" | "failed" | "cancelled">();
+    const replayChildren = new Map<
+      string,
+      {
+        sessionId: string;
+        parentToolUseId?: string;
+        name: string;
+        task: string;
+        reconstructable: boolean;
+        announced: boolean;
+        terminalState?: "completed" | "failed" | "cancelled";
+      }
+    >();
+
+    if (nativeReplayEnabled) {
+      for (const message of messages) {
+        const content = (message as unknown as { message?: { content?: unknown } }).message
+          ?.content;
+        if (!Array.isArray(content)) continue;
+        const ownerToolUseId = parentToolUseIdOf(message);
+        for (const block of content) {
+          if (
+            typeof block === "object" &&
+            block !== null &&
+            "type" in block &&
+            (block.type === "tool_result" || block.type === "mcp_tool_result") &&
+            "tool_use_id" in block &&
+            typeof block.tool_use_id === "string"
+          ) {
+            replayTerminalStates.set(block.tool_use_id, replaySubagentTerminalState(block));
+          }
+          if (
+            typeof block !== "object" ||
+            block === null ||
+            !("type" in block) ||
+            !["tool_use", "server_tool_use", "mcp_tool_use"].includes(String(block.type)) ||
+            !("id" in block) ||
+            typeof block.id !== "string" ||
+            !("name" in block) ||
+            !isNativeSubagentControlTool(block.name)
+          ) {
+            continue;
+          }
+          const input =
+            "input" in block && typeof block.input === "object" && block.input !== null
+              ? (block.input as Record<string, unknown>)
+              : {};
+          const task =
+            [input.prompt, input.description]
+              .find(
+                (value): value is string => typeof value === "string" && value.trim().length > 0,
+              )
+              ?.trim() ?? "Delegated task restored from session history";
+          const name =
+            [input.name, input.description, input.subagent_type]
+              .find(
+                (value): value is string => typeof value === "string" && value.trim().length > 0,
+              )
+              ?.trim() ?? "Restored agent";
+          replayChildren.set(block.id, {
+            sessionId: `${sessionId}:replay-subagent:${block.id}`,
+            ...(ownerToolUseId ? { parentToolUseId: ownerToolUseId } : {}),
+            name,
+            task,
+            reconstructable: true,
+            announced: false,
+            terminalState: replayTerminalStates.get(block.id),
+          });
+        }
+      }
+      for (const [toolUseId, terminalState] of replayTerminalStates) {
+        const child = replayChildren.get(toolUseId);
+        if (child) child.terminalState = terminalState;
+      }
+    }
+
+    const announceReplayChild = async (
+      parentToolUseId: string,
+      ancestors = new Set<string>(),
+    ): Promise<string> => {
+      let child = replayChildren.get(parentToolUseId);
+      if (!child) {
+        child = {
+          sessionId: `${sessionId}:replay-subagent:${parentToolUseId}`,
+          name: "Disconnected agent",
+          task: "Subagent restored without persisted launch metadata",
+          reconstructable: false,
+          announced: false,
+        };
+        replayChildren.set(parentToolUseId, child);
+      }
+      if (ancestors.has(parentToolUseId)) {
+        child.reconstructable = false;
+        child.terminalState = undefined;
+        child.parentToolUseId = undefined;
+      }
+      if (child.parentToolUseId) {
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(parentToolUseId);
+        await announceReplayChild(child.parentToolUseId, nextAncestors);
+      }
+      if (!child.announced) {
+        const parentSessionId = child.parentToolUseId
+          ? (replayChildren.get(child.parentToolUseId)?.sessionId ?? sessionId)
+          : sessionId;
+        await this.client.sessionUpdate(
+          asSdkSessionNotification({
+            sessionId: parentSessionId,
+            update: {
+              sessionUpdate: "subagent_spawned",
+              subagentSessionId: child.sessionId,
+              name: child.name,
+              task: child.task,
+              capabilities: {},
+            },
+          }),
+        );
+        child.announced = true;
+      }
+      return child.sessionId;
+    };
 
     for (const message of messages) {
       if (
@@ -5238,7 +5944,16 @@ export class ClaudeAcpAgent {
       // @ts-expect-error - untyped in SDK but we handle all of these
       let content: unknown = message.message.content;
       const parentToolUseId = parentToolUseIdOf(message);
-      if (message.type === "assistant" && parentToolUseId && !forwardSubagentText) {
+      const replayTargetSessionId =
+        nativeReplayEnabled && parentToolUseId
+          ? await announceReplayChild(parentToolUseId)
+          : sessionId;
+      if (
+        message.type === "assistant" &&
+        parentToolUseId &&
+        !nativeReplayEnabled &&
+        !forwardSubagentText
+      ) {
         content = stripSubagentTextAndThinking(content);
       }
       // @ts-expect-error - untyped in SDK but we handle all of these
@@ -5325,7 +6040,43 @@ export class ClaudeAcpAgent {
           parentToolUseId,
         },
       )) {
-        await this.client.sessionUpdate(notification);
+        const toolName = (
+          notification.update._meta?.claudeCode as { toolName?: string } | undefined
+        )?.toolName;
+        if (
+          nativeReplayEnabled &&
+          (notification.update.sessionUpdate === "tool_call" ||
+            notification.update.sessionUpdate === "tool_call_update") &&
+          isNativeSubagentControlTool(toolName)
+        ) {
+          continue;
+        }
+        await this.client.sessionUpdate({ ...notification, sessionId: replayTargetSessionId });
+      }
+    }
+
+    if (nativeReplayEnabled) {
+      // Claude history persists sidechain messages and Agent/Task tool uses,
+      // but not task_started/task_updated lifecycle frames. Recover terminal
+      // state from the launch tool_result. Missing results and malformed or
+      // orphan lineage use the draft protocol's deterministic disconnected state.
+      for (const child of [...replayChildren.values()].reverse()) {
+        if (!child.announced) continue;
+        const parentSessionId = child.parentToolUseId
+          ? (replayChildren.get(child.parentToolUseId)?.sessionId ?? sessionId)
+          : sessionId;
+        await this.client.sessionUpdate(
+          asSdkSessionNotification({
+            sessionId: parentSessionId,
+            update: {
+              sessionUpdate: "subagent_state_update",
+              subagentSessionId: child.sessionId,
+              state: child.reconstructable
+                ? (child.terminalState ?? "disconnected")
+                : "disconnected",
+            },
+          }),
+        );
       }
     }
   }
@@ -5340,19 +6091,35 @@ export class ClaudeAcpAgent {
     return response;
   }
 
+  /** Mark a client request as blocking on user input for exactly the lifetime
+   *  of its promise. Steering consults this session-local count synchronously,
+   *  so a message arriving while any permission/elicitation card is open uses
+   *  non-interrupting SDK delivery. */
+  private async withPendingUserInput<T>(sessionId: string, request: () => Promise<T>): Promise<T> {
+    const session = this.sessions[sessionId];
+    if (!session) return request();
+    session.pendingUserInputCount = (session.pendingUserInputCount ?? 0) + 1;
+    try {
+      return await request();
+    } finally {
+      session.pendingUserInputCount = Math.max(0, (session.pendingUserInputCount ?? 1) - 1);
+    }
+  }
+
   /** Forward a permission request to the client, wiring the tool call's
    *  `signal` through as a `cancellationSignal`. When the turn is cancelled
    *  while the client's prompt is still open the signal aborts, the SDK sends
-   *  `$/cancel_request`, and the client settles the request (a `cancelled`
-   *  outcome or a `requestCancelled` rejection). Either way we surface the same
-   *  "Tool use aborted" the callers already expect, so a cancelled dialog no
-   *  longer leaves the `await` hanging. */
+   *  `$/cancel_request`, and our local abort race settles even if the client
+   *  ignores it. A `cancelled` outcome, request rejection, and local abort all
+   *  surface the same "Tool use aborted" the callers already expect. */
   private async requestPermissionFromClient(
     params: RequestPermissionRequest,
     toolName: string,
     signal: AbortSignal,
     parentToolUseId?: string,
+    ownerSessionId: string = params.sessionId,
   ): Promise<RequestPermissionResponse> {
+    if (signal.aborted) throw new Error("Tool use aborted");
     // The SDK may invoke `canUseTool` (and therefore this permission request)
     // before the assistant message's tool_use block streams to us. Some ACP clients
     // expect the `tool_call` a permission request references to already exist,
@@ -5360,14 +6127,23 @@ export class ClaudeAcpAgent {
     // later refines it with a `tool_call_update` rather than emitting a
     // duplicate (see `emittedToolCalls` in `toAcpNotifications`).
     await this.ensureToolCallEmitted(
-      params.sessionId,
+      ownerSessionId,
       toolName,
       params.toolCall.toolCallId,
       params.toolCall.rawInput,
       parentToolUseId,
+      signal,
+      params.sessionId,
     );
+    if (signal.aborted) throw new Error("Tool use aborted");
+
+    // Do not rely on every ACP client settling requestPermission after the
+    // cancellation signal. The local race guarantees that Claude's tool call
+    // is released even when an older or broken client ignores $/cancel_request.
     try {
-      return await this.client.requestPermission(params, signal);
+      return await this.withPendingUserInput(params.sessionId, () =>
+        raceWithAbort(this.client.requestPermission(params, signal), signal),
+      );
     } catch (error) {
       if (signal.aborted) {
         throw new Error("Tool use aborted", { cause: error });
@@ -5394,6 +6170,8 @@ export class ClaudeAcpAgent {
     toolCallId: string,
     toolInput: unknown,
     parentToolUseId?: string,
+    signal?: AbortSignal,
+    notificationSessionId: string = sessionId,
   ): Promise<void> {
     const session = this.sessions[sessionId];
     if (!session) {
@@ -5403,6 +6181,7 @@ export class ClaudeAcpAgent {
       return;
     }
     session.emittedToolCalls.add(toolCallId);
+    (session.eagerToolCallSessions ??= new Map()).set(toolCallId, notificationSessionId);
     const supportsTerminalOutput = this.clientCapabilities?._meta?.["terminal_output"] === true;
     const update = toolCallNotification(
       { id: toolCallId, name: toolName, input: toolInput },
@@ -5419,14 +6198,35 @@ export class ClaudeAcpAgent {
         },
       };
     }
-    await this.client.sessionUpdate({ sessionId, update });
+    try {
+      const emission = this.client.sessionUpdate({ sessionId: notificationSessionId, update });
+      await (signal ? raceWithAbort(emission, signal) : emission);
+    } catch (error) {
+      // The set is also the de-duplication guard for the later streamed
+      // tool_use. Keep it truthful: if emission failed, that path must still
+      // be allowed to publish the tool call instead of refining a phantom one.
+      session.emittedToolCalls.delete(toolCallId);
+      session.eagerToolCallSessions?.delete(toolCallId);
+      throw error;
+    }
   }
 
   canUseTool(sessionId: string): CanUseTool {
     return async (
       toolName,
       toolInput,
-      { signal, suggestions, toolUseID, agentID, matchedAskRule },
+      {
+        signal,
+        suggestions,
+        toolUseID,
+        agentID,
+        matchedAskRule,
+        blockedPath,
+        decisionReason,
+        title,
+        displayName,
+        description,
+      },
     ) => {
       const supportsTerminalOutput = this.clientCapabilities?._meta?.["terminal_output"] === true;
       const session = this.sessions[sessionId];
@@ -5465,6 +6265,18 @@ export class ClaudeAcpAgent {
       const parentToolUseId = agentID
         ? session.liveBackgroundTasks.get(agentID)?.parentToolUseId
         : undefined;
+      const permissionSessionId =
+        clientSupportsSubagents(this.clientCapabilities) && agentID
+          ? (() => {
+              const child = session.nativeSubagentsByTaskId?.get(agentID);
+              // A request must never target a child session before its
+              // subagent_spawned notification. In the rare SDK ordering where
+              // canUseTool beats the spawning Agent/Task frame, keep the
+              // permission on the root session; the later frame will announce
+              // the child with correct nested lineage.
+              return child?.announced ? child.sessionId : sessionId;
+            })()
+          : sessionId;
       if (agentID && !parentToolUseId) {
         // The attribution rests on an undocumented SDK invariant
         // (task_started.task_id === canUseTool's agentID for subagent tasks;
@@ -5491,181 +6303,111 @@ export class ClaudeAcpAgent {
           toolUseID,
           toolInput,
           parentToolUseId,
-        );
-        return this.handleAskUserQuestion(sessionId, toolInput, toolUseID, signal);
-      }
-
-      if (toolName === "ExitPlanMode") {
-        const optionsAll: PermissionOption[] = [
-          { kind: "allow_always", name: 'Yes, and use "auto" mode', optionId: "auto" },
-          {
-            kind: "allow_always",
-            name: "Yes, and auto-accept edits",
-            optionId: "acceptEdits",
-          },
-          { kind: "allow_once", name: "Yes, and manually approve edits", optionId: "default" },
-          { kind: "reject_once", name: "No, keep planning", optionId: "plan" },
-        ];
-        if (ALLOW_BYPASS) {
-          optionsAll.unshift({
-            kind: "allow_always",
-            name: "Yes, and bypass permissions",
-            optionId: "bypassPermissions",
-          });
-        }
-        // Filter against the session's currently-advertised modes so we never
-        // present options the active model can't honor (e.g. `auto` on Haiku).
-        // `bypassPermissions` is already covered by `availableModes` via
-        // `buildAvailableModes`/`ALLOW_BYPASS`. The `plan` option is a
-        // "keep planning" reject path; it's always present in `availableModes`.
-        const options = optionsAll.filter((o) =>
-          session.modes.availableModes.some((m) => m.id === o.optionId),
-        );
-
-        const response = await this.requestPermissionFromClient(
-          {
-            options,
-            sessionId,
-            toolCall: {
-              toolCallId: toolUseID,
-              rawInput: toolInput,
-              ...toolInfoFromToolUse(
-                { name: toolName, input: toolInput, id: toolUseID },
-                supportsTerminalOutput,
-                session?.cwd,
-              ),
-              // `claudeCode` metas always carry `toolName` (see ToolUpdateMeta),
-              // so clients can rely on one shape everywhere.
-              ...(parentToolUseId
-                ? { _meta: { claudeCode: { toolName, parentToolUseId } } satisfies ToolUpdateMeta }
-                : {}),
-            },
-          },
-          toolName,
           signal,
-          parentToolUseId,
+          permissionSessionId,
         );
-
-        if (signal.aborted || response.outcome?.outcome === "cancelled") {
-          throw new Error("Tool use aborted");
-        }
-        const selectedMode =
-          response.outcome?.outcome === "selected" ? response.outcome.optionId : undefined;
-        const selectedModeWasOffered = options.some((option) => option.optionId === selectedMode);
-        if (
-          selectedModeWasOffered &&
-          (selectedMode === "default" ||
-            selectedMode === "acceptEdits" ||
-            selectedMode === "auto" ||
-            selectedMode === "bypassPermissions")
-        ) {
-          await this.client.sessionUpdate({
-            sessionId,
-            update: {
-              sessionUpdate: "current_mode_update",
-              currentModeId: selectedMode,
-            },
-          });
-          await this.updateConfigOption(sessionId, MODE_CONFIG_ID, selectedMode);
-
-          return {
-            behavior: "allow",
-            updatedInput: toolInput,
-            updatedPermissions: suggestions ?? [
-              { type: "setMode", mode: selectedMode, destination: "session" },
-            ],
-          };
-        } else {
-          return {
-            behavior: "deny",
-            message: "User rejected request to exit plan mode.",
-          };
-        }
+        return this.handleAskUserQuestion(permissionSessionId, toolInput, toolUseID, signal);
       }
 
-      // In bypass mode the CLI skips permission checks itself; the asks that
-      // still reach canUseTool are the ones it insists on prompting for even
-      // under --dangerously-skip-permissions. Keep auto-allowing those —
-      // bypass means bypass — EXCEPT rule-forced asks (`matchedAskRule`): the
-      // user explicitly configured a permissions.ask rule for this tool, and
-      // the SDK's guidance is that hosts running auto-approval must treat such
-      // asks as a human prompt. Fall through to the normal request below.
-      if (session.modes.currentModeId === "bypassPermissions" && !matchedAskRule) {
-        return {
-          behavior: "allow",
-          updatedInput: toolInput,
-          updatedPermissions: suggestions ?? [
-            { type: "addRules", rules: [{ toolName }], behavior: "allow", destination: "session" },
-          ],
+      // Do not auto-allow here based on the session's advertised mode. Claude
+      // Code applies bypassPermissions before invoking canUseTool; a request
+      // that still reaches this callback is deliberately bypass-immune (for
+      // example a safety check, a tool requiring user interaction, or an
+      // explicit ask rule). Re-applying bypass in the host would erase that
+      // provider safety decision.
+
+      const durableChangeSet = normalizeDurablePermissionChangeSet(
+        suggestions,
+        matchedAskRule !== undefined,
+      );
+      const presentation = buildClaudePermissionPresentation({
+        toolName,
+        input: toolInput,
+        toolUseID,
+        cwd: session.cwd,
+        supportsTerminalOutput,
+        blockedPath,
+        title,
+        displayName,
+        description,
+        decisionReason,
+      });
+
+      if (parentToolUseId) {
+        presentation.toolCall._meta = {
+          claudeCode: { toolName, parentToolUseId },
         };
       }
 
+      const permissionOptions = buildClaudePermissionOptions({
+        toolName,
+        displayName,
+        input: toolInput,
+        cwd: session.cwd,
+        durableChangeSet,
+        allowPersistentOptions: matchedAskRule === undefined,
+        availableModes: this.sessionModes.availableModeIds(session.modes),
+        contextUsedPercent:
+          session.contextUsedTokens === undefined || session.contextWindowSize <= 0
+            ? undefined
+            : Math.max(
+                0,
+                Math.min(
+                  100,
+                  Math.round((session.contextUsedTokens / session.contextWindowSize) * 100),
+                ),
+              ),
+      });
+
       const response = await this.requestPermissionFromClient(
         {
-          options: [
-            { kind: "reject_once", name: "Deny", optionId: "reject" },
-            { kind: "allow_once", name: "Allow Once", optionId: "allow" },
-            {
-              kind: "allow_always",
-              name: "Always Allow",
-              optionId: "allow_always",
-              _meta: {
-                permission: permissionMetadataForAlwaysAllow(suggestions, toolName),
-              },
-            },
-          ],
-          sessionId,
-          toolCall: {
-            toolCallId: toolUseID,
-            rawInput: toolInput,
-            ...toolInfoFromToolUse(
-              { name: toolName, input: toolInput, id: toolUseID },
-              supportsTerminalOutput,
-              session?.cwd,
-            ),
-            // `claudeCode` metas always carry `toolName` (see ToolUpdateMeta),
-            // so clients can rely on one shape everywhere.
-            ...(parentToolUseId
-              ? { _meta: { claudeCode: { toolName, parentToolUseId } } satisfies ToolUpdateMeta }
-              : {}),
-          },
+          ...presentation,
+          options: permissionOptions,
+          sessionId: permissionSessionId,
         },
         toolName,
         signal,
         parentToolUseId,
+        sessionId,
       );
-      if (signal.aborted || response.outcome?.outcome === "cancelled") {
-        throw new Error("Tool use aborted");
+      if (signal.aborted) throw new Error("Tool use aborted");
+      const decodedPermission = decodeClaudePermissionResponse(
+        response,
+        toolName,
+        toolInput,
+        toolUseID,
+        permissionOptions,
+        durableChangeSet,
+      );
+      let permissionResult = decodedPermission.permissionResult;
+      const autoFallback = this.sessionModes.applyPermissionFallback(session, permissionResult);
+      permissionResult = autoFallback.permissionResult;
+      if (autoFallback.fallbackApplied) {
+        await this.sessionModes.publishFallbackWarning(sessionId, session);
+      }
+      const clearContextMode = decodedPermission.contextResetMode
+        ? this.sessionModes.effectiveMode(session, decodedPermission.contextResetMode)
+        : undefined;
+      if (toolName === "ExitPlanMode" && clearContextMode) {
+        const plan = typeof toolInput.plan === "string" ? toolInput.plan.trim() : "";
+        if (!plan) throw new Error("ExitPlanMode clear-context selection requires a plan");
+        session.pendingExitPlanContextReset = {
+          toolUseId: toolUseID,
+          plan,
+          mode: clearContextMode,
+        };
       }
       if (
-        response.outcome?.outcome === "selected" &&
-        (response.outcome.optionId === "allow" || response.outcome.optionId === "allow_always")
+        toolName === "ExitPlanMode" &&
+        permissionResult.behavior === "deny" &&
+        permissionResult.interrupt === true
       ) {
-        // If Claude Code has suggestions, it will update their settings already
-        if (response.outcome.optionId === "allow_always") {
-          return {
-            behavior: "allow",
-            updatedInput: toolInput,
-            updatedPermissions: suggestions ?? [
-              {
-                type: "addRules",
-                rules: [{ toolName }],
-                behavior: "allow",
-                destination: "session",
-              },
-            ],
-          };
-        }
-        return {
-          behavior: "allow",
-          updatedInput: toolInput,
-        };
-      } else {
-        return {
-          behavior: "deny",
-          message: "User refused permission to run tool",
+        session.pendingExitPlanModeInterruption = {
+          toolUseId: toolUseID,
+          toolResultSeen: false,
         };
       }
+      return permissionResult;
     };
   }
 
@@ -5687,7 +6429,9 @@ export class ClaudeAcpAgent {
       }
 
       try {
-        const response = await this.client.unstable_createElicitation(createRequest, signal);
+        const response = await this.withPendingUserInput(sessionId, () =>
+          this.client.createElicitation(createRequest, signal),
+        );
         if (signal.aborted) {
           return { action: "cancel" };
         }
@@ -5723,7 +6467,9 @@ export class ClaudeAcpAgent {
     const createRequest = askUserQuestionsToCreateRequest(questions, sessionId, toolUseID);
     let response;
     try {
-      response = await this.client.unstable_createElicitation(createRequest, signal);
+      response = await this.withPendingUserInput(sessionId, () =>
+        this.client.createElicitation(createRequest, signal),
+      );
     } catch (error) {
       // A cancellation we requested (signal aborted) settles as an aborted tool
       // use, matching the post-response check below.
@@ -5766,9 +6512,8 @@ export class ClaudeAcpAgent {
       }
       let response: CreateElicitationResponse;
       try {
-        response = await this.client.unstable_createElicitation(
-          refusalFallbackToCreateRequest(prompt, sessionId),
-          signal,
+        response = await this.withPendingUserInput(sessionId, () =>
+          this.client.createElicitation(refusalFallbackToCreateRequest(prompt, sessionId), signal),
         );
       } catch (error) {
         // A cancellation we requested (signal aborted) is expected teardown;
@@ -5826,13 +6571,10 @@ export class ClaudeAcpAgent {
     value: string,
   ): Promise<void> {
     if (configId === MODE_CONFIG_ID) {
-      session.modes = { ...session.modes, currentModeId: value };
-      session.configOptions = session.configOptions.map((o) =>
-        o.id === configId && typeof o.currentValue === "string" ? { ...o, currentValue: value } : o,
-      );
+      this.sessionModes.syncConfig(session, value);
     } else if (configId === MODEL_CONFIG_ID) {
-      // `ModelInfo.supportsAutoMode` is the canonical SDK signal for clamping
-      // modes below; its `displayName`/`description` also let us infer the
+      // `ModelInfo.supportsAutoMode` is the canonical SDK signal for applying
+      // the Auto fallback below; its `displayName`/`description` also let us infer the
       // context window for semantic aliases (e.g. `default`) whose ID alone
       // carries no "1m" token.
       const newModelInfo = session.modelInfos.find((m) => m.value === value);
@@ -5855,42 +6597,7 @@ export class ClaudeAcpAgent {
       }
       session.models = { ...session.models, currentModelId: value };
 
-      // Recompute availableModes for the new model and clamp the current
-      // mode if the SDK no longer offers it (today: "auto" on Haiku). An
-      // unknown model (an SDK-initiated refusal fallback to a model outside
-      // the user's `availableModels` allowlist — user-driven switches are
-      // validated against the options first) tells us nothing about its
-      // capabilities, so keep the current modes rather than spuriously
-      // downgrading (e.g. kicking the user out of "auto" for a model that
-      // does support it).
-      const newAvailableModes = newModelInfo
-        ? buildAvailableModes(newModelInfo)
-        : session.modes.availableModes;
-      // Capture BEFORE mutating session.modes so the log message reflects
-      // the invalidated mode rather than "default".
-      const previousModeId = session.modes.currentModeId;
-      let modeDowngraded = false;
-      if (!newAvailableModes.some((m) => m.id === previousModeId)) {
-        session.modes = {
-          availableModes: newAvailableModes,
-          currentModeId: "default",
-        };
-        try {
-          await session.query.setPermissionMode("default");
-        } catch (err) {
-          // Failing the entire model switch over a bookkeeping sync error is
-          // worse UX than logging and continuing; the user explicitly asked
-          // to change models. The next setPermissionMode from the user will
-          // either succeed or surface a fresh error.
-          this.logger.error(
-            `Failed to sync permissionMode to "default" after model switch invalidated "${previousModeId}":`,
-            err,
-          );
-        }
-        modeDowngraded = true;
-      } else {
-        session.modes = { ...session.modes, availableModes: newAvailableModes };
-      }
+      const modeDowngraded = await this.sessionModes.reconcileForModel(session, newModelInfo);
 
       // `model_not_allowed` described the model we just left, so it must not
       // follow us onto the new one; the remaining reasons are account- or
@@ -5900,15 +6607,26 @@ export class ClaudeAcpAgent {
         session.fastModeDisabledReason = undefined;
       }
 
-      // Rebuild config options since effort levels depend on the selected model
+      // Rebuild config options since effort levels depend on the selected
+      // model. The effort seed depends on who owns the choice: a user pin
+      // made through the ACP picker this session lives at the SDK's flag
+      // layer and follows the session across switches, so carry it forward.
+      // Otherwise the CLI resolves effort itself from the persisted settings
+      // — the NEW model's `modelSettings` entry first (the CLI persists
+      // /effort per model), then the legacy top-level value — so display
+      // what it will actually run instead of dragging the old model's value
+      // along.
       const effortOpt = session.configOptions.find((o) => o.id === EFFORT_CONFIG_ID);
       const currentEffort =
         typeof effortOpt?.currentValue === "string" ? effortOpt.currentValue : undefined;
+      const seedEffort = session.effortPinnedByUser
+        ? currentEffort
+        : settingsEffortForModel(session.settingsManager.getSettings(), newModelInfo, value);
       session.configOptions = buildConfigOptions(
         session.modes,
         session.models,
         session.modelInfos,
-        currentEffort,
+        seedEffort,
         session.agents,
         session.currentAgent,
         {
@@ -5922,14 +6640,25 @@ export class ClaudeAcpAgent {
         },
       );
 
-      // Sync effort with the SDK if it changed after the model switch
-      const newEffortOpt = session.configOptions.find((o) => o.id === EFFORT_CONFIG_ID);
-      const newEffort =
-        typeof newEffortOpt?.currentValue === "string" ? newEffortOpt.currentValue : undefined;
-      if (newEffort !== currentEffort) {
-        await session.query.applyFlagSettings({
-          effortLevel: toSdkEffortLevel(newEffort),
-        });
+      // Sync effort with the SDK only when a user pin changed across the
+      // switch — i.e. the new model clamped it away (buildConfigOptions
+      // validated the seed against the new model's levels), where the flag
+      // must be cleared too or the SDK would keep running the old pin
+      // invisibly. Settings-derived seeds are display-only: the CLI resolves
+      // persisted effort itself, and pinning it at the flag layer would
+      // shadow the per-model values on every later switch.
+      if (session.effortPinnedByUser) {
+        const newEffortOpt = session.configOptions.find((o) => o.id === EFFORT_CONFIG_ID);
+        const newEffort =
+          typeof newEffortOpt?.currentValue === "string" ? newEffortOpt.currentValue : undefined;
+        if (newEffort !== currentEffort) {
+          await session.query.applyFlagSettings({
+            effortLevel: toSdkEffortLevel(newEffort),
+          });
+          if (newEffort === undefined || newEffort === "default") {
+            session.effortPinnedByUser = false;
+          }
+        }
       }
 
       // Emit current_mode_update only after session.modes AND
@@ -5939,13 +6668,7 @@ export class ClaudeAcpAgent {
       // still precedes the caller's config_option_update so order-sensitive
       // clients update currentModeId before re-rendering the option list.
       if (modeDowngraded) {
-        await this.client.sessionUpdate({
-          sessionId,
-          update: {
-            sessionUpdate: "current_mode_update",
-            currentModeId: "default",
-          },
-        });
+        await this.sessionModes.publishFallbackState(sessionId, session);
       }
     } else if (configId === AGENT_CONFIG_ID) {
       // Live agent switch — no subprocess restart needed. Apply the SDK flag
@@ -5968,42 +6691,48 @@ export class ClaudeAcpAgent {
         await session.query.applyFlagSettings({
           effortLevel: toSdkEffortLevel(value),
         });
+        // "Default" clears the flag layer (toSdkEffortLevel → null), handing
+        // effort back to the CLI's persisted per-model resolution — so it
+        // un-pins; any other pick pins effort for the session.
+        session.effortPinnedByUser = value !== "default";
       }
     }
   }
 
-  /** Reconcile adapter model state after the SDK persistently swapped the
-   *  session's model out from under us (refusal fallback). The SDK already
-   *  made the switch, so this must NOT call `query.setModel` — it only
-   *  updates our bookkeeping (currentModelId, context window, mode clamping,
-   *  effort/Fast-mode options) via the same `applyConfigOptionValue` path a
-   *  user-driven model change takes, then notifies the client. */
-  private async syncModelAfterRefusalFallback(
+  /** Reconcile adapter model state after the SDK switched the session's
+   *  model out from under us — a refusal fallback, or any switch reported by
+   *  the PostModelSwitch hook that the adapter didn't drive (e.g. a `/model`
+   *  command typed as a prompt). The SDK already made the switch, so this
+   *  must NOT call `query.setModel` — it only updates our bookkeeping
+   *  (currentModelId, context window, mode clamping, effort/Fast-mode
+   *  options) via the same `applyConfigOptionValue` path a user-driven model
+   *  change takes, then notifies the client. */
+  private async syncModelAfterExternalSwitch(
     sessionId: string,
     session: Session,
-    fallbackModel: string,
+    switchedModel: string,
   ): Promise<void> {
     // Map the SDK-reported model onto one of the session's model options
-    // (handles display names and `resolvedModel` ids). The fallback model may
-    // not be among the options — e.g. excluded by the user's
+    // (handles display names and `resolvedModel` ids). The switched-to model
+    // may not be among the options — e.g. excluded by the user's
     // `availableModels` allowlist — in which case we track the raw id: the
     // picker shows no selection, but the model-dependent bookkeeping and any
     // later `setModel` round-trip stay truthful to what the SDK is running.
-    const resolved = resolveModelPreference(session.modelInfos, fallbackModel);
-    const value = resolved?.value ?? fallbackModel;
+    const resolved = resolveModelPreference(session.modelInfos, switchedModel);
+    const value = resolved?.value ?? switchedModel;
     if (session.models.currentModelId === value) return;
 
     try {
       await this.updateConfigOption(sessionId, MODEL_CONFIG_ID, value);
     } catch (err) {
-      // This runs on the consumer loop: a throw here tears down the query
-      // stream (failAllTurns + closeQueryStream) and bricks the session —
-      // far worse than stale bookkeeping. The user-driven RPC path lets the
-      // same errors propagate to fail just that request; here we log and
-      // move on, matching the setPermissionMode containment inside
-      // applyConfigOptionValue.
+      // This runs on the consumer loop (or detached from a hook callback): a
+      // throw here tears down the query stream (failAllTurns +
+      // closeQueryStream) and bricks the session — far worse than stale
+      // bookkeeping. The user-driven RPC path lets the same errors propagate
+      // to fail just that request; here we log and move on, matching the
+      // setPermissionMode containment inside applyConfigOptionValue.
       this.logger.error(
-        `Failed to reconcile model state after refusal fallback to "${fallbackModel}":`,
+        `Failed to reconcile model state after external switch to "${switchedModel}":`,
         err,
       );
     }
@@ -6183,7 +6912,12 @@ export class ClaudeAcpAgent {
 
   private async createSession(
     params: NewSessionRequest,
-    creationOpts: { resume?: string; forkSession?: boolean } = {},
+    creationOpts: {
+      resume?: string;
+      forkSession?: boolean;
+      publicSessionId?: string;
+      permissionMode?: PermissionMode;
+    } = {},
   ): Promise<NewSessionResponse> {
     // Validate `cwd` up front. The ACP spec requires an absolute path, and the
     // directory must actually exist on the machine running the agent. Without
@@ -6195,7 +6929,9 @@ export class ClaudeAcpAgent {
     // We want to create a new session id unless it is resume,
     // but not resume + forkSession.
     let sessionId;
-    if (creationOpts.forkSession) {
+    if (creationOpts.publicSessionId) {
+      sessionId = creationOpts.publicSessionId;
+    } else if (creationOpts.forkSession) {
       sessionId = randomUUID();
     } else if (creationOpts.resume) {
       sessionId = creationOpts.resume;
@@ -6260,11 +6996,13 @@ export class ClaudeAcpAgent {
       settingsManager.getSettings().permissions?.defaultMode,
       this.logger,
     );
+    const initialPermissionMode = creationOpts.permissionMode ?? permissionMode;
 
     // Extract options from _meta if provided
     const sessionMeta = params._meta as NewSessionMeta | undefined;
     const userProvidedOptions = sessionMeta?.claudeCode?.options;
     const forwardSubagentText =
+      clientSupportsSubagents(this.clientCapabilities) ||
       supportsSubagentTranscript(this.clientCapabilities) ||
       userProvidedOptions?.forwardSubagentText === true;
 
@@ -6403,7 +7141,7 @@ export class ClaudeAcpAgent {
       // If we want bypassPermissions to be an option, we have to allow it here.
       // But it doesn't work in root mode, so we only activate it if it will work.
       allowDangerouslySkipPermissions: ALLOW_BYPASS,
-      permissionMode,
+      permissionMode: initialPermissionMode,
       canUseTool: this.canUseTool(sessionId),
       // Forward MCP elicitation requests onto ACP elicitation. Only attached
       // when the client advertised support, so non-supporting clients keep the
@@ -6447,16 +7185,48 @@ export class ClaudeAcpAgent {
             hooks: [
               createPostToolUseHook({
                 onEnterPlanMode: async () => {
-                  await this.client.sessionUpdate({
-                    sessionId,
-                    update: {
-                      sessionUpdate: "current_mode_update",
-                      currentModeId: "plan",
-                    },
-                  });
+                  await this.sessionModes.publishCurrent(sessionId, "plan");
                   await this.updateConfigOption(sessionId, MODE_CONFIG_ID, "plan");
                 },
               }),
+            ],
+          },
+        ],
+        // Mirror model switches the adapter didn't drive into the ACP picker
+        // and the model-dependent bookkeeping (context window, mode clamping,
+        // effort/Fast-mode options). Without this, a `/model <name>` command
+        // typed as a prompt — which the CLI executes as a local command —
+        // switches the session's model with no refusal-fallback frame, and
+        // the client's picker silently drifts. `source: 'sdk'` is the
+        // adapter's own setModel (applyConfigOptionValue already synced it),
+        // and 'resume' restores are read back via readResumedLiveModel, so
+        // only the remaining sources sync here (CLI 2.1.251+; older CLIs
+        // never fire the hook and keep the pre-hook behavior).
+        PostModelSwitch: [
+          ...(userProvidedOptions?.hooks?.PostModelSwitch || []),
+          {
+            hooks: [
+              async (input) => {
+                if (
+                  input.hook_event_name === "PostModelSwitch" &&
+                  input.source !== "sdk" &&
+                  input.source !== "resume"
+                ) {
+                  // Don't run the sync before answering the hook: the sync
+                  // can issue applyFlagSettings (an outgoing control request)
+                  // while the CLI is awaiting this hook's response, and SDK
+                  // control requests are serialized over one channel.
+                  // syncModelAfterExternalSwitch contains its own errors, so
+                  // the detached call can't surface an unhandled rejection.
+                  const toModel = input.to_model;
+                  setImmediate(() => {
+                    const live = this.sessions[sessionId];
+                    if (!live) return;
+                    void this.syncModelAfterExternalSwitch(sessionId, live, toModel);
+                  });
+                }
+                return { continue: true };
+              },
             ],
           },
         ],
@@ -6491,7 +7261,8 @@ export class ClaudeAcpAgent {
           },
         ],
       },
-      ...creationOpts,
+      ...(creationOpts.resume !== undefined && { resume: creationOpts.resume }),
+      ...(creationOpts.forkSession !== undefined && { forkSession: creationOpts.forkSession }),
       abortController,
     };
 
@@ -6503,7 +7274,7 @@ export class ClaudeAcpAgent {
 
     if (creationOpts?.resume === undefined || creationOpts?.forkSession) {
       // Set our own session id if not resuming an existing session.
-      options.sessionId = sessionId;
+      options.sessionId = creationOpts.publicSessionId ? randomUUID() : sessionId;
     }
 
     // Handle abort controller from meta options
@@ -6566,8 +7337,8 @@ export class ClaudeAcpAgent {
       creationOpts.resume !== undefined,
     );
 
-    // Gate `auto` (and future model-specific modes) on the resolved model's
-    // `ModelInfo`. See `buildAvailableModes` for the canonical SDK signal.
+    // Resolve the current model's capabilities separately from the stable
+    // permission-mode catalog advertised to ACP clients.
     // A resumed session can be running a model outside the `availableModels`
     // allowlist (currentModelId is then the verbatim live id, see
     // `matchResumedModel`); its capabilities are still known to the SDK's
@@ -6587,7 +7358,7 @@ export class ClaudeAcpAgent {
     // (current and future); the identity fields are overridden because the
     // fuzzy-matched sibling's resolvedModel/displayName/description can
     // describe a different context lane and would poison later resolvedModel
-    // matching (syncModelAfterRefusalFallback) and context-window inference
+    // matching (syncModelAfterExternalSwitch) and context-window inference
     // (applyConfigOptionValue) if they traveled under this id.
     const modelInfos = fallbackModelInfo
       ? [
@@ -6601,42 +7372,12 @@ export class ClaudeAcpAgent {
           },
         ]
       : allowedModels;
-    const availableModes = buildAvailableModes(currentModelInfo);
-
-    // Clamp `permissionMode` if the resolved session does not offer it. The
-    // common case is `permissions.defaultMode: "auto"` resolving to a model
-    // that does not support auto mode (e.g. Haiku); without this clamp the
-    // SDK would later throw `"auto mode unavailable for this model"` from
-    // `setPermissionMode`. Keep `permissionMode` as the resolved user intent
-    // (matches what was passed into `options.permissionMode` above) and use
-    // `effectiveMode` for the post-clamp value the session actually runs in.
-    let effectiveMode: PermissionMode = permissionMode;
-    if (!availableModes.some((m) => m.id === effectiveMode)) {
-      if (effectiveMode === "auto") {
-        this.logger.error(
-          `permissions.defaultMode "auto" is not available for model ` +
-            `"${models.currentModelId}"; falling back to "default".`,
-        );
-      } else {
-        this.logger.error(
-          `permissions.defaultMode "${effectiveMode}" is not available in ` +
-            `this session; falling back to "default".`,
-        );
-      }
-      effectiveMode = "default";
-      // Sync the SDK so it doesn't keep "auto" cached internally. Wrapped in
-      // try/catch since failing here would abort session creation entirely.
-      try {
-        await q.setPermissionMode("default");
-      } catch (err) {
-        this.logger.error("Failed to sync clamped permissionMode to SDK:", err);
-      }
-    }
-
-    const modes = {
-      currentModeId: effectiveMode,
-      availableModes,
-    };
+    const { modes, autoModeFallbackWarningPending } = await this.sessionModes.initialize({
+      query: q,
+      requestedMode: initialPermissionMode,
+      currentModelInfo,
+      currentModelId: models.currentModelId,
+    });
 
     const agents = await discoverCustomAgents(q);
     // Only adopt the requested agent as the selected value if it's one we
@@ -6671,27 +7412,23 @@ export class ClaudeAcpAgent {
       disabledReason: fastModeDisabledReason,
     };
 
+    // The Effort picker seed mirrors what the CLI itself resolves from the
+    // persisted settings — the current model's `modelSettings` entry first
+    // (the CLI persists /effort per model), then the legacy top-level value.
+    // Display-only: no applyFlagSettings here. The CLI reads the same
+    // settings, so pinning the seed at the flag layer was always redundant —
+    // and it would override the CLI's own per-model restore on every later
+    // model switch. Only a user's explicit ACP picker choice pins the flag
+    // (see applyConfigOptionValue / Session.effortPinnedByUser).
     const configOptions = buildConfigOptions(
       modes,
       models,
       modelInfos,
-      settingsManager.getSettings().effortLevel,
+      settingsEffortForModel(settingsManager.getSettings(), currentModelInfo),
       agents,
       currentAgent,
       fastMode,
     );
-
-    // Apply the initial effort level to the SDK so it matches the UI default
-    const initialEffort = configOptions.find((o) => o.id === EFFORT_CONFIG_ID);
-    if (
-      initialEffort &&
-      typeof initialEffort.currentValue === "string" &&
-      initialEffort.currentValue !== "default"
-    ) {
-      await q.applyFlagSettings({
-        effortLevel: toSdkEffortLevel(initialEffort.currentValue),
-      });
-    }
     // Seed the context window WITHOUT any extra IPC on the session/new path.
     // On session/load, the resumed session's own `getContextUsage` report — a
     // response `getAvailableModels` already awaited to learn the live model
@@ -6732,15 +7469,20 @@ export class ClaudeAcpAgent {
       sessionFingerprint: computeSessionFingerprint(params),
       creationParams: params,
       settingsManager,
+      titles: new SessionTitles(this, sessionId),
       accumulatedUsage: {
         inputTokens: 0,
         outputTokens: 0,
         cachedReadTokens: 0,
         cachedWriteTokens: 0,
       },
+      accumulatedModelUsage: {},
+      lastModelUsageReading: {},
       modes,
       models,
       modelInfos,
+      autoModeFallbackWarningShown: false,
+      autoModeFallbackWarningPending,
       configOptions,
       agents,
       currentAgent,
@@ -6755,7 +7497,11 @@ export class ClaudeAcpAgent {
       taskState,
       toolUseCache: {},
       emittedToolCalls: new Set(),
+      eagerToolCallSessions: new Map(),
       liveBackgroundTasks: new Map(),
+      nativeSubagentsByTaskId: new Map(),
+      nativeSubagentTaskIdByToolUseId: new Map(),
+      nativeSubagentParentByToolUseId: new Map(),
       emittedAssistantText: false,
       owedTrailingIdles: 0,
       messageIdToUuid: new Map(),
@@ -6832,12 +7578,136 @@ function sessionUsage(session: Session) {
     outputTokens: session.accumulatedUsage.outputTokens,
     cachedReadTokens: session.accumulatedUsage.cachedReadTokens,
     cachedWriteTokens: session.accumulatedUsage.cachedWriteTokens,
-    totalTokens:
-      session.accumulatedUsage.inputTokens +
-      session.accumulatedUsage.outputTokens +
-      session.accumulatedUsage.cachedReadTokens +
-      session.accumulatedUsage.cachedWriteTokens,
+    totalTokens: tallyTotal(session.accumulatedUsage),
   };
+}
+
+/** The prompt response for a turn ending in `stopReason`: its usage and the
+ *  `_meta.quota` breakdown, both read off the session accumulators in the same
+ *  breath so a stored outcome (see Turn.deferredSettle / Turn.steeredSettle)
+ *  can't carry a usage and a quota from different moments. `extraMeta` merges
+ *  in alongside quota — a terminal session failure, today. */
+function turnOutcome(
+  session: Session,
+  stopReason: StopReason,
+  extraMeta?: Record<string, unknown>,
+): PromptResponse {
+  return {
+    stopReason,
+    usage: sessionUsage(session),
+    _meta: { ...turnQuotaMeta(session), ...extraMeta },
+  };
+}
+
+/** `_meta.quota` for a prompt response: what the turn spent, shaped like
+ *  codex-acp's (snake_case container keys, camelCase counters) so a client
+ *  reads one shape from either agent.
+ *
+ *  The two halves have different scopes, and by design don't have to add up.
+ *  `token_count` mirrors the response's own `usage`, which the SDK reports for
+ *  the MAIN AGENT LOOP only. The `model_usage` rows come from
+ *  `result.modelUsage`, which also counts Task subagents, sidechains and
+ *  internal calls such as compaction — the accounting-grade figure per the SDK,
+ *  so the rows can total more than `token_count`. They are the fuller picture,
+ *  not a decomposition of it. */
+function turnQuotaMeta(session: Session) {
+  return {
+    quota: {
+      token_count: quotaTokenCount(session.accumulatedUsage),
+      model_usage: Object.entries(session.accumulatedModelUsage ?? {}).map(([model, usage]) => ({
+        model,
+        token_count: quotaTokenCount(usage),
+      })),
+    },
+  };
+}
+
+/** One `token_count` object. `cachedInputTokens` is cache reads, matching
+ *  codex's field; Claude also reports cache writes, which codex has no slot
+ *  for, so those ride along in an extra sibling (the same name the ACP `usage`
+ *  field already uses) and are counted in `totalTokens`. `reasoningOutputTokens`
+ *  is always 0: Claude bills thinking inside its output tokens and never breaks
+ *  it out — the key is kept so the shape stays uniform across agents. */
+function quotaTokenCount(usage: AccumulatedUsage) {
+  return {
+    totalTokens: tallyTotal(usage),
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cachedReadTokens,
+    cachedWriteTokens: usage.cachedWriteTokens,
+    outputTokens: usage.outputTokens,
+    reasoningOutputTokens: 0,
+  };
+}
+
+/** Sum a tally's four counters. Per the Anthropic API `inputTokens` excludes
+ *  the cache counters, so this is not double-counting (see `totalTokens`). */
+function tallyTotal(usage: AccumulatedUsage): number {
+  return usage.inputTokens + usage.outputTokens + usage.cachedReadTokens + usage.cachedWriteTokens;
+}
+
+/** Project `result.modelUsage` into our tally shape. Counters are coerced the
+ *  way `snapshotFromUsage` coerces the stream's: third-party backends have been
+ *  observed omitting fields, and a missing or NaN counter must not reach the
+ *  wire as NaN (which `JSON.stringify` writes as `null`). */
+function normalizeModelUsage(modelUsage: Record<string, ModelUsage> | undefined): ModelTokenTally {
+  const tally: ModelTokenTally = {};
+  for (const [model, usage] of Object.entries(modelUsage ?? {})) {
+    tally[model] = {
+      inputTokens: finiteCount(usage?.inputTokens),
+      outputTokens: finiteCount(usage?.outputTokens),
+      cachedReadTokens: finiteCount(usage?.cacheReadInputTokens),
+      cachedWriteTokens: finiteCount(usage?.cacheCreationInputTokens),
+    };
+  }
+  return tally;
+}
+
+function finiteCount(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** `current - previous` per model, dropping models with nothing to report so a
+ *  turn only lists the models it actually ran on. A reading that fell BELOW the
+ *  previous one means the running total restarted under us (a mid-session
+ *  /clear, a resumed session starting fresh, a zeroed crash result): there is no
+ *  usable reference left to subtract, so the reading itself is the increment. */
+function modelUsageIncrement(current: ModelTokenTally, previous: ModelTokenTally): ModelTokenTally {
+  const increment: ModelTokenTally = {};
+  for (const [model, usage] of Object.entries(current)) {
+    const base = previous[model];
+    const subtracted: AccumulatedUsage = base
+      ? {
+          inputTokens: usage.inputTokens - base.inputTokens,
+          outputTokens: usage.outputTokens - base.outputTokens,
+          cachedReadTokens: usage.cachedReadTokens - base.cachedReadTokens,
+          cachedWriteTokens: usage.cachedWriteTokens - base.cachedWriteTokens,
+        }
+      : usage;
+    const rewound = Object.values(subtracted).some((count) => count < 0);
+    const resolved = rewound ? usage : subtracted;
+    if (tallyTotal(resolved) > 0) {
+      increment[model] = resolved;
+    }
+  }
+  return increment;
+}
+
+/** Fold `increment` into `base` per model — the per-model counterpart of the
+ *  `+=` the turn's flat accumulator uses. */
+function addModelUsage(base: ModelTokenTally, increment: ModelTokenTally): ModelTokenTally {
+  const merged: ModelTokenTally = { ...base };
+  for (const [model, usage] of Object.entries(increment)) {
+    const existing = merged[model];
+    merged[model] = existing
+      ? {
+          inputTokens: existing.inputTokens + usage.inputTokens,
+          outputTokens: existing.outputTokens + usage.outputTokens,
+          cachedReadTokens: existing.cachedReadTokens + usage.cachedReadTokens,
+          cachedWriteTokens: existing.cachedWriteTokens + usage.cachedWriteTokens,
+        }
+      : usage;
+  }
+  return merged;
 }
 
 /** Sum all four fields as a proxy for post-turn context occupancy: the current
@@ -6987,60 +7857,6 @@ function isValidBaseUrl(baseUrl: string): boolean {
   return parsed.protocol === "http:" || parsed.protocol === "https:";
 }
 
-/**
- * Build the list of permission modes the agent will advertise for the given
- * model. `auto` is gated by `ModelInfo.supportsAutoMode === true`, which is
- * the SDK's model-level availability signal. `undefined`/`false` both exclude
- * `auto`. `bypassPermissions` is still gated by `ALLOW_BYPASS`.
- */
-function buildAvailableModes(modelInfo: ModelInfo | undefined): SessionModeState["availableModes"] {
-  const modes: SessionModeState["availableModes"] = [];
-
-  // Only advertise "auto" when the SDK reports the model supports it.
-  if (modelInfo?.supportsAutoMode === true) {
-    modes.push({
-      id: "auto",
-      name: "Auto",
-      description: "Use a model classifier to approve/deny permission prompts",
-    });
-  }
-
-  modes.push(
-    {
-      // Claude Code 2.1.200 renamed this mode to "Manual" across its surfaces;
-      // the wire id stays "default" ("manual" is only an accepted input alias).
-      id: "default",
-      name: "Manual",
-      description: "Standard behavior, prompts for dangerous operations",
-    },
-    {
-      id: "acceptEdits",
-      name: "Accept Edits",
-      description: "Auto-accept file edit operations",
-    },
-    {
-      id: "plan",
-      name: "Plan Mode",
-      description: "Planning mode, no actual tool execution",
-    },
-    {
-      id: "dontAsk",
-      name: "Don't Ask",
-      description: "Don't prompt for permissions, deny if not pre-approved",
-    },
-  );
-
-  if (ALLOW_BYPASS) {
-    modes.push({
-      id: "bypassPermissions",
-      name: "Bypass Permissions",
-      description: "Bypass all permission checks",
-    });
-  }
-
-  return modes;
-}
-
 // Translate a UI effort value into the flag-layer payload. The SDK
 // shallow-merges `applyFlagSettings`, drops `undefined` during JSON transport,
 // and only clears a key when an explicit `null` is sent — see
@@ -7052,6 +7868,32 @@ function buildAvailableModes(modelInfo: ModelInfo | undefined): SessionModeState
 // that the persisted Settings shape deliberately excludes.
 function toSdkEffortLevel(value: string | undefined): EffortLevel | null {
   return value === undefined || value === "default" ? null : (value as EffortLevel);
+}
+
+/** The effort level the CLI itself resolves for a model from the persisted
+ *  settings: the per-model entry (`modelSettings`, keyed by canonical model
+ *  name — the CLI persists /effort per model since 2.1.243) wins over the
+ *  legacy top-level `effortLevel`. Alias picker rows are looked up by their
+ *  resolved model id first, then the row value, then the raw config value
+ *  for models not in the picker. Exact keys only — the CLI's canonical-form
+ *  fallback matching isn't replicated, so a miss simply falls back to the
+ *  top-level value (best-effort display; `buildConfigOptions` still
+ *  validates the result against the model's supported levels). */
+export function settingsEffortForModel(
+  settings: Settings,
+  modelInfo: ModelInfo | undefined,
+  modelId?: string,
+): string | undefined {
+  const modelSettings = settings.modelSettings;
+  if (modelSettings) {
+    for (const key of [modelInfo?.resolvedModel, modelInfo?.value, modelId]) {
+      const perModel = key !== undefined ? modelSettings[key]?.effortLevel : undefined;
+      if (typeof perModel === "string") {
+        return perModel;
+      }
+    }
+  }
+  return settings.effortLevel;
 }
 
 // `supportedAgents()` always returns Claude Code's built-in subagents — the
@@ -7073,8 +7915,6 @@ export const BUILTIN_AGENT_NAMES = new Set([
 // reserved sentinel: a custom agent named exactly this would collide with it
 // (two options sharing the value, selection silently routing to `null`), so we
 // exclude that name from discovery.
-export const DEFAULT_AGENT_ID = "default";
-
 /** Discover user/plugin/project-configured main-thread agents, excluding the
  *  built-in subagents and the reserved "default" sentinel. Returns an empty
  *  list if discovery fails so a flaky control request never blocks session
@@ -7092,9 +7932,8 @@ export async function discoverCustomAgents(q: Query): Promise<AgentInfo[]> {
  *  Centralized so the option declarations in `buildConfigOptions` and the
  *  handlers in `setSessionConfigOption`/`applyConfigOptionValue` reference the
  *  same identifiers and can't drift apart. */
-export const MODE_CONFIG_ID = "mode";
+export { MODE_CONFIG_ID };
 export const MODEL_CONFIG_ID = "model";
-export const EFFORT_CONFIG_ID = "effort";
 export const AGENT_CONFIG_ID = "agent";
 export const FAST_MODE_CONFIG_ID = "fast";
 
@@ -7231,19 +8070,7 @@ export function buildConfigOptions(
   fastMode?: FastModeOptionState,
 ): SessionConfigOption[] {
   const options: SessionConfigOption[] = [
-    {
-      id: MODE_CONFIG_ID,
-      name: "Mode",
-      description: "Session permission mode",
-      category: "mode",
-      type: "select",
-      currentValue: modes.currentModeId,
-      options: modes.availableModes.map((m) => ({
-        value: m.id,
-        name: m.name,
-        description: m.description,
-      })),
-    },
+    SessionModeManager.configOption(modes),
     {
       id: MODEL_CONFIG_ID,
       name: "Model",
@@ -7507,7 +8334,7 @@ export function resolveModelPreference(models: ModelInfo[], preference: string):
  *  4. `resolveModelPreference` over the picker entries.
  *  5. A model with no picker counterpart (e.g. excluded by an
  *     `availableModels` allowlist) is tracked verbatim, mirroring
- *     `syncModelAfterRefusalFallback`: the picker shows no selection, but the
+ *     `syncModelAfterExternalSwitch`: the picker shows no selection, but the
  *     model-dependent bookkeeping stays truthful to what the SDK is running. */
 export function matchResumedModel(models: ModelInfo[], liveModel: string): ModelInfo {
   const live = canonicalizeModelId(liveModel);
@@ -7647,6 +8474,15 @@ export function applyAvailableModelsAllowlist(
  *  #596). Best-effort: a control-request failure is logged and returns nulls
  *  so callers keep their current choice; failing the whole session/load over
  *  an unreadable report would be worse. */
+/** Whether a rejected `setModel` was vetoed by a user-configured
+ *  PreModelSwitch hook. The CLI's rejection message is the stable,
+ *  distinguishable marker ("Model switch blocked by a PreModelSwitch hook:
+ *  <reason>"); a format change makes this stop matching and the failure
+ *  falls back to the ordinary fail-loud path, no worse than before. */
+function isPreModelSwitchHookBlock(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("blocked by a PreModelSwitch hook");
+}
+
 async function readResumedLiveModel(
   query: Query,
   models: ModelInfo[],
@@ -7742,11 +8578,30 @@ async function getAvailableModels(
       // containment in createSession). The SDK then stayed on the
       // transcript's model, so read that back rather than reporting the
       // pin the session isn't running.
-      if (!isResumedSession) throw error;
-      logger.error(`Failed to re-assert model "${currentModel.value}" on resume:`, error);
-      const live = await readResumedLiveModel(query, models, logger);
-      currentModel = live.model ?? currentModel;
-      resumedContextWindow = live.contextWindow;
+      //
+      // One fresh-session failure is advisory, not defining: a
+      // user-configured PreModelSwitch hook can veto the pin (CLI 2.1.251+;
+      // 'deny', or 'ask' — which headless sessions refuse), and the SDK
+      // rejects setModel with "Model switch blocked by a PreModelSwitch
+      // hook: …". Terminal Claude Code never lets a hook veto its startup
+      // model (the spawn model isn't a switch), so failing session/new here
+      // would make the same hook config fatal only over ACP. The session
+      // stays on the SDK's own default — report that. We can't read the
+      // live model back on this path: getContextUsage isn't serviced on a
+      // fresh session until the first prompt turn (issues #886/#880).
+      if (!isResumedSession) {
+        if (!isPreModelSwitchHookBlock(error)) throw error;
+        logger.error(
+          `Model pin "${currentModel.value}" was vetoed by a PreModelSwitch hook; staying on the default model:`,
+          error,
+        );
+        currentModel = models[0];
+      } else {
+        logger.error(`Failed to re-assert model "${currentModel.value}" on resume:`, error);
+        const live = await readResumedLiveModel(query, models, logger);
+        currentModel = live.model ?? currentModel;
+        resumedContextWindow = live.contextWindow;
+      }
     }
   }
 
@@ -8009,6 +8864,53 @@ function claudeCodeMetaFromToolUse(
   };
 }
 
+/**
+ * Marks the Bash `tool_call_update` whose command detached into the background.
+ *
+ * A backgrounded Bash call returns as soon as the command is handed off, so the
+ * card reaches `completed` while the command itself runs on for minutes. ACP has
+ * no tool-call status for "still running elsewhere", so this marker is what lets
+ * a client render the card as backgrounded work instead of finished work. It
+ * rides the update the tool result already emits, so it costs no extra
+ * notification and cannot arrive out of order.
+ *
+ * The command's own lifecycle -- progress, completion, the stop control -- is
+ * published separately as an async task; this says only that the card has one.
+ * Hence the AIR namespace rather than `claudeCode`: to a client without the
+ * `asyncTasks` capability, which is never sent that lifecycle, the marker would
+ * promise a card state it has no way to ever resolve.
+ */
+function backgroundedBashToolCall(
+  notification: SessionNotification,
+  task: AsyncTaskStarted | undefined,
+  asyncTasksSupported: boolean,
+): SessionNotification {
+  const update = notification.update;
+  const toolCallId = task ? nonBlankTaskField(task.toolCallId ?? task.tool_use_id) : undefined;
+  if (
+    !asyncTasksSupported ||
+    !toolCallId ||
+    update.sessionUpdate !== "tool_call_update" ||
+    update.toolCallId !== toolCallId
+  ) {
+    return notification;
+  }
+  return {
+    ...notification,
+    update: {
+      ...update,
+      _meta: withAirMeta(update._meta, AIR_ASYNC_TASKS_CAPABILITY, { backgrounded: true }),
+    },
+  };
+}
+
+/** The task fields arrive as `unknown` off the wire; only non-blank strings carry a link. */
+function nonBlankTaskField(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 /** Roots a skill's directory may sit under, relative to the directory the scope resolves to. */
 const SKILL_CONTAINER_DIRS = [".claude/skills", ".agents/skills"] as const;
 
@@ -8117,36 +9019,6 @@ function streamedInputRefinement(
     kind,
     ...(locations ? { locations } : {}),
   };
-}
-
-/** Validates the SDK user message's `tool_result_meta` sidecar (emitted on the
- *  wire by CLI ≥ 2.1.216 but absent from sdk.d.ts, hence unknown-typed) into a
- *  by-tool_use_id lookup. Each entry explains why an is_error tool_result
- *  carries harness prose instead of the tool's own output — "user-rejected",
- *  "permission-rule", "interrupted", "cancelled", … (open set: new kinds ship
- *  on the wire ahead of schema updates, so no enum check). Malformed entries
- *  are skipped rather than failing the message. */
-function parseToolResultMeta(
-  raw: unknown,
-): Map<string, { nonExecutionKind: string; userFeedback?: string }> | undefined {
-  if (!Array.isArray(raw)) {
-    return undefined;
-  }
-  let byToolUseId: Map<string, { nonExecutionKind: string; userFeedback?: string }> | undefined;
-  for (const entry of raw) {
-    if (typeof entry !== "object" || entry === null) {
-      continue;
-    }
-    const { id, non_execution_kind, user_feedback } = entry as Record<string, unknown>;
-    if (typeof id !== "string" || typeof non_execution_kind !== "string") {
-      continue;
-    }
-    (byToolUseId ??= new Map()).set(id, {
-      nonExecutionKind: non_execution_kind,
-      ...(typeof user_feedback === "string" ? { userFeedback: user_feedback } : {}),
-    });
-  }
-  return byToolUseId;
 }
 
 /**
@@ -8322,37 +9194,44 @@ export function toAcpNotifications(
             // closing over the name keeps the diff working without depending on
             // (or pinning) the cache entry's lifetime.
             const toolName = chunk.name;
-            registerHookCallback(chunk.id, {
-              onPostToolUseHook: async (toolUseId, toolInput, toolResponse) => {
-                // Both `Edit` and `Write` produce a structuredPatch in their
-                // PostToolUse tool_response. For Edit the diff replaces the
-                // optimistic content built at tool_use time. For Write the
-                // optimistic content (built from `input.content` alone with
-                // `oldText: null`) shows "creation" semantics regardless of
-                // whether the file existed; the structuredPatch from the
-                // hook lets us emit the real diff for `type: "update"`. The
-                // helper returns `{}` if the response shape isn't usable.
-                const editDiff =
-                  toolName === "Edit" || toolName === "Write"
-                    ? toolUpdateFromDiffToolResponse(toolResponse)
-                    : {};
-                const update: SessionNotification["update"] = {
-                  _meta: {
-                    claudeCode: {
-                      toolResponse,
-                      toolName,
-                    },
-                  } satisfies ToolUpdateMeta,
-                  toolCallId: toolUseId,
-                  sessionUpdate: "tool_call_update",
-                  ...editDiff,
-                };
-                await client.sessionUpdate({
-                  sessionId,
-                  update,
-                });
+            registerHookCallback(
+              chunk.id,
+              {
+                onPostToolUseHook: async (toolUseId, toolInput, toolResponse) => {
+                  // Both `Edit` and `Write` produce a structuredPatch in their
+                  // PostToolUse tool_response. For Edit the diff replaces the
+                  // optimistic content built at tool_use time. For Write the
+                  // optimistic content (built from `input.content` alone with
+                  // `oldText: null`) shows "creation" semantics regardless of
+                  // whether the file existed; the structuredPatch from the
+                  // hook lets us emit the real diff for `type: "update"`. The
+                  // helper returns `{}` if the response shape isn't usable.
+                  const editDiff =
+                    toolName === "Edit" || toolName === "Write"
+                      ? toolUpdateFromDiffToolResponse(toolResponse)
+                      : {};
+                  const update: SessionNotification["update"] = {
+                    _meta: {
+                      claudeCode: {
+                        toolResponse,
+                        toolName,
+                        ...(options?.parentToolUseId
+                          ? { parentToolUseId: options.parentToolUseId }
+                          : {}),
+                      },
+                    } satisfies ToolUpdateMeta,
+                    toolCallId: toolUseId,
+                    sessionUpdate: "tool_call_update",
+                    ...editDiff,
+                  };
+                  await client.sessionUpdate({
+                    sessionId,
+                    update,
+                  });
+                },
               },
-            });
+              sessionId,
+            );
           }
 
           let rawInput;
@@ -8402,6 +9281,7 @@ export function toAcpNotifications(
       case "mcp_tool_result": {
         const wasEmitted = options?.emittedToolCalls?.has(chunk.tool_use_id) === true;
         options?.emittedToolCalls?.delete(chunk.tool_use_id);
+        completeHookCallback(chunk.tool_use_id);
         // Why this is_error result carries harness prose instead of tool
         // output (user-rejected / interrupted / …), when the SDK said so.
         // Spread into the claudeCode meta of every update emitted below; the
@@ -8556,7 +9436,12 @@ export function toAcpNotifications(
             toolCallId: chunk.tool_use_id,
             sessionUpdate: "tool_call_update",
             status: "is_error" in chunk && chunk.is_error ? "failed" : "completed",
-            rawOutput: chunk.content,
+            // terminal_output already carried the exact bytes in the preceding
+            // update. Repeating them as rawOutput wastes bandwidth and lets a
+            // client accidentally render the same output twice.
+            ...(toolMeta?.terminal_output
+              ? {}
+              : { rawOutput: exitPlanModeRawOutput(toolUse.name, chunk.content) }),
             ...toolUpdate,
           };
         }
@@ -8578,7 +9463,6 @@ export function toAcpNotifications(
       case "compaction":
       case "compaction_delta":
       case "advisor_tool_result":
-      case "mid_conv_system":
       case "fallback":
         break;
 
@@ -8818,6 +9702,11 @@ export function runAcp(logger?: Logger) {
     .onNotification(methods.agent.session.cancel, (ctx) => agent.cancel(ctx.params))
     .onRequest<SteerRequest, SteerResponse>(STEER_METHOD, { parse: parseSteerRequest }, (ctx) =>
       agent.steer(ctx.params),
+    )
+    .onRequest<AsyncTaskStopRequest, AsyncTaskStopResponse>(
+      ASYNC_TASK_STOP_METHOD,
+      { parse: parseAsyncTaskStopRequest },
+      (ctx) => agent.stopAsyncTask(ctx.params),
     )
     .onRequest<GoalRequest, GoalControlResponse>(
       GOAL_CONTROL_METHOD,

@@ -1,0 +1,1 @@
+{"version":3,"file":"modes.d.ts","sourceRoot":"","sources":["../../src/permissions/modes.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,gCAAgC,CAAC;AAErE,UAAU,oBAAoB;IAC5B,KAAK,EAAE,CAAC,GAAG,IAAI,EAAE,OAAO,EAAE,KAAK,IAAI,CAAC;CACrC;AAID,eAAO,MAAM,YAAY,SAAuC,CAAC;AAiBjE,wBAAgB,qBAAqB,CACnC,WAAW,CAAC,EAAE,OAAO,EACrB,MAAM,GAAE,oBAA8B,GACrC,cAAc,CA8BhB"}

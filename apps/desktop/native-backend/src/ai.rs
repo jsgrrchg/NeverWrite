@@ -11520,6 +11520,23 @@ mod tests {
     }
 
     #[test]
+    fn client_capabilities_do_not_enable_claude_subagent_extensions() {
+        let capabilities =
+            serde_json::to_value(neverwrite_acp_client_capabilities(CLAUDE_RUNTIME_ID)).unwrap();
+        let air_capabilities = capabilities
+            .pointer("/_meta/jetbrains/air/capabilities")
+            .and_then(Value::as_array);
+
+        assert!(capabilities.get("subagents").is_none());
+        assert!(capabilities.pointer("/_meta/subagent-transcript").is_none());
+        assert!(!air_capabilities.is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| matches!(item.as_str(), Some("nativeSubagentSessions" | "asyncTasks")))
+        }));
+    }
+
+    #[test]
     fn new_session_request_serializes_additional_directories() {
         let request = new_session_request(
             CLAUDE_RUNTIME_ID,

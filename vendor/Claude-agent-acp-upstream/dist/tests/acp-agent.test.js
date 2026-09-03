@@ -1,19 +1,23 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import { spawn, spawnSync } from "child_process";
 import { client as acpClient, CreateElicitationRequest, methods, ndJsonStream, } from "@agentclientprotocol/sdk";
+import { NativeSubagentRuntime } from "../native-subagents.js";
 import { nodeToWebWritable, nodeToWebReadable } from "../utils.js";
 import { markdownEscape, toolInfoFromToolUse, toDisplayPath, toolUpdateFromToolResult, toolUpdateFromDiffToolResponse, } from "../tools.js";
 import { toAcpNotifications, promptToClaude, isLocalCommandMetadata, isSyntheticLoginMessage, stripLocalCommandMetadata, ClaudeAcpAgent, claudeCliPath, streamEventToAcpNotifications, messageIdForGrouping, buildConfigOptions, createFastModeConfigOption, discoverCustomAgents, runPromptWithCancellation, } from "../acp-agent.js";
+import { SessionTitles } from "../session-titles.js";
 import { Pushable } from "../utils.js";
-import { deleteSession, getSessionInfo, getSessionMessages, query, } from "@anthropic-ai/claude-agent-sdk";
+import { deleteSession, forkSession, getSessionInfo, getSessionMessages, query, } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "crypto";
 import { readFile } from "node:fs/promises";
+import { mockSessionState, successfulResultMessage, userEcho, wrapQuery, } from "./session-doubles.js";
 import { GOAL_CONTROL_METHOD, goalUpdateFromPrompt, parseGoalRequest, toGoalSnapshot, } from "../goal-extension.js";
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
     const actual = await importOriginal();
     return {
         ...actual,
         deleteSession: vi.fn(),
+        forkSession: vi.fn(),
         getSessionInfo: vi.fn(),
         // Delegates to the real implementation so integration tests that read
         // actual transcripts keep working; unit tests override per-call with
@@ -21,18 +25,6 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
         getSessionMessages: vi.fn(actual.getSessionMessages),
     };
 });
-/** Build the replayed `user` message the SDK echoes back for a pushed prompt,
- *  used by mock generators to promote a turn to active. */
-function userEcho(u) {
-    return {
-        type: "user",
-        message: u.message,
-        parent_tool_use_id: null,
-        uuid: u.uuid,
-        session_id: "test-session",
-        isReplay: true,
-    };
-}
 /** A `system`/init frame advertising the msg_lifecycle_v1 capability, so the
  *  consumer latches `session.msgLifecycleV1` and cancel() routes orphan
  *  accounting through `orphanCommands` (CLIs 2.1.206+). */
@@ -64,55 +56,34 @@ const cancelledTurnUsage = {
     cachedWriteTokens: 0,
     totalTokens: 0,
 };
-/** Wrap a mock async generator with the `Query` methods the agent calls outside
- *  of iteration — `close()` (teardown/closeQueryStream), `interrupt()` (cancel),
- *  and `setModel()` — so a bare generator doesn't trip "x is not a function". */
-function wrapQuery(generator) {
-    return Object.assign(generator, {
-        interrupt: vi.fn(async () => { }),
-        close: vi.fn(),
-        setModel: vi.fn(async () => { }),
-    });
-}
-/** The common `Session` mock fields, with per-test overrides spread on top.
- *  Centralizes the boilerplate (usage accumulator, caches, controllers) so a new
- *  Session field is added in one place rather than every inline literal. */
-function mockSessionState(overrides = {}) {
+/** One `token_count` object as the prompt response's `_meta.quota` spells it —
+ *  codex-acp's shape, where cache reads are `cachedInputTokens` and
+ *  `reasoningOutputTokens` is always 0 for Claude. */
+function expectedTokenCount(usage) {
     return {
-        cancelled: false,
-        cwd: "/test",
-        sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
-        modes: { currentModeId: "default", availableModes: [] },
-        models: { currentModelId: "default", availableModels: [] },
-        modelInfos: [],
-        settingsManager: { dispose: vi.fn() },
-        accumulatedUsage: {
-            inputTokens: 0,
-            outputTokens: 0,
-            cachedReadTokens: 0,
-            cachedWriteTokens: 0,
-        },
-        configOptions: [],
-        agents: [],
-        currentAgent: "default",
-        abortController: new AbortController(),
-        emitRawSDKMessages: false,
-        forwardSubagentText: false,
-        contextWindowSize: 200000,
-        contextWindowAuthoritative: false,
-        providerCacheKey: "default",
-        taskState: new Map(),
-        toolUseCache: {},
-        emittedToolCalls: new Set(),
-        liveBackgroundTasks: new Map(),
-        emittedAssistantText: false,
-        owedTrailingIdles: 0,
-        messageIdToUuid: new Map(),
-        sessionFailureState: { epoch: randomUUID(), revisions: new Map(), active: new Map() },
-        fileChangeReportRequestIds: new Set(),
-        ...overrides,
+        totalTokens: usage.inputTokens + usage.outputTokens + usage.cachedReadTokens + usage.cachedWriteTokens,
+        inputTokens: usage.inputTokens,
+        cachedInputTokens: usage.cachedReadTokens,
+        cachedWriteTokens: usage.cachedWriteTokens,
+        outputTokens: usage.outputTokens,
+        reasoningOutputTokens: 0,
     };
 }
+/** The whole `_meta` a settled turn carries: its totals plus one `model_usage`
+ *  row per model it ran on (none when no result was accounted for it). */
+function expectedQuotaMeta(usage, modelUsage = []) {
+    return {
+        quota: {
+            token_count: expectedTokenCount(usage),
+            model_usage: modelUsage.map(([model, tokens]) => ({
+                model,
+                token_count: expectedTokenCount(tokens),
+            })),
+        },
+    };
+}
+/** The `_meta` companion of {@link cancelledTurnUsage}. */
+const cancelledTurnQuotaMeta = expectedQuotaMeta(cancelledTurnUsage);
 /** Install a mock session whose query is a caller-supplied async generator
  *  driven by the session's streaming input. Returns the input Pushable so the
  *  test can push additional turns. Centralizes the Session literal so tests that
@@ -294,7 +265,7 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
             const optionId = params.options.find((p) => p.kind === "allow_once").optionId;
             return { outcome: { outcome: "selected", optionId } };
         }
-        async unstable_createElicitation(params) {
+        async createElicitation(params) {
             this.elicitations.push(params);
             if (!CreateElicitationRequest.isForm(params)) {
                 return { action: "decline" };
@@ -354,7 +325,7 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
             .onRequest(methods.client.session.requestPermission, (c) => client.requestPermission(c.params))
             .onRequest(methods.client.fs.readTextFile, (c) => client.readTextFile(c.params))
             .onRequest(methods.client.fs.writeTextFile, (c) => client.writeTextFile(c.params))
-            .onRequest(methods.client.elicitation.create, (c) => client.unstable_createElicitation(c.params))
+            .onRequest(methods.client.elicitation.create, (c) => client.createElicitation(c.params))
             .connect(stream);
         await ctx.request(methods.agent.initialize, {
             protocolVersion: 1,
@@ -592,7 +563,12 @@ describe("tool conversions", () => {
             ], "assistant", "test-session", {}, {}, console);
             expect(notifications[0]?.update).toMatchObject({
                 sessionUpdate: "tool_call",
-                _meta: { claudeCode: { toolName: name, subagent: true } },
+                _meta: {
+                    claudeCode: {
+                        toolName: name,
+                        subagent: true,
+                    },
+                },
             });
         }
         const nestedAgent = toAcpNotifications([
@@ -1049,6 +1025,67 @@ describe("tool conversions", () => {
             ],
         });
     });
+    it("renders a compact placeholder for a document block instead of its base64 payload", () => {
+        // SDK 0.3.243 moved a PDF Read's document block inside the tool_result
+        // content; dumping it through the default JSON.stringify branch would
+        // send the entire base64 payload as a text block.
+        const toolUse = {
+            type: "tool_use",
+            id: "toolu_01PDF",
+            name: "Read",
+            input: { file_path: "/Users/test/report.pdf" },
+        };
+        const toolResult = {
+            content: [
+                {
+                    type: "document",
+                    title: "Quarterly report",
+                    source: {
+                        type: "base64",
+                        media_type: "application/pdf",
+                        data: "A".repeat(4096),
+                    },
+                },
+            ],
+            tool_use_id: "toolu_01PDF",
+            is_error: false,
+            type: "tool_result",
+        };
+        const update = toolUpdateFromToolResult(toolResult, toolUse);
+        expect(update).toEqual({
+            content: [
+                {
+                    type: "content",
+                    content: {
+                        type: "text",
+                        text: '[document "Quarterly report": application/pdf, 3.0 KB]',
+                    },
+                },
+            ],
+        });
+    });
+    it("renders a url-sourced document block as its URL", () => {
+        const toolResult = {
+            content: [
+                {
+                    type: "document",
+                    source: { type: "url", url: "https://example.com/spec.pdf" },
+                },
+            ],
+            tool_use_id: "toolu_01PDF",
+            is_error: false,
+            type: "tool_result",
+        };
+        const update = toolUpdateFromToolResult(toolResult, undefined);
+        expect(update).toEqual({
+            content: [
+                {
+                    type: "content",
+                    content: { type: "text", text: "[document: https://example.com/spec.pdf]" },
+                },
+            ],
+        });
+    });
     it("should transform tool_reference content to valid ACP content", () => {
         const toolUse = {
             type: "tool_use",
@@ -1337,6 +1374,67 @@ describe("toolUpdateFromDiffToolResponse", () => {
             structuredPatch: [],
         };
         expect(toolUpdateFromDiffToolResponse(toolResponse)).toEqual({});
+    });
+    it("emits a whole-file diff for a Write update whose structuredPatch is empty", () => {
+        // The empty-patch lanes (nothing changed / diff timed out) would
+        // otherwise leave Write's optimistic oldText:null "creation" content
+        // standing for an overwrite of an existing file.
+        expect(toolUpdateFromDiffToolResponse({
+            filePath: "/Users/test/project/file.ts",
+            structuredPatch: [],
+            type: "update",
+            content: "new content",
+            originalFile: "old content",
+        })).toEqual({
+            content: [
+                {
+                    type: "diff",
+                    path: "/Users/test/project/file.ts",
+                    oldText: "old content",
+                    newText: "new content",
+                },
+            ],
+            locations: [{ path: "/Users/test/project/file.ts" }],
+        });
+    });
+    it("emits a truthful note for a Write update whose previous content was too large to diff", () => {
+        // SDK 0.3.252 documents this lane: type "update" with an empty
+        // structuredPatch AND originalFile null.
+        expect(toolUpdateFromDiffToolResponse({
+            filePath: "/Users/test/project/big.json",
+            structuredPatch: [],
+            type: "update",
+            content: "new content",
+            originalFile: null,
+        })).toEqual({
+            content: [
+                {
+                    type: "content",
+                    content: {
+                        type: "text",
+                        text: "Updated `/Users/test/project/big.json` (previous content too large to diff)",
+                    },
+                },
+            ],
+            locations: [{ path: "/Users/test/project/big.json" }],
+        });
+    });
+    it("keeps the empty return for a Write create and for Edit-shaped responses", () => {
+        // A create's optimistic content already shows creation semantics.
+        expect(toolUpdateFromDiffToolResponse({
+            filePath: "/Users/test/project/new.ts",
+            structuredPatch: [],
+            type: "create",
+            content: "new content",
+            originalFile: null,
+        })).toEqual({});
+        // FileEditOutput carries no `type`; its optimistic old/new diff is
+        // truthful, so an empty patch still means "nothing to correct".
+        expect(toolUpdateFromDiffToolResponse({
+            filePath: "/Users/test/project/file.ts",
+            structuredPatch: [],
+            originalFile: "old content",
+        })).toEqual({});
     });
 });
 describe("stripLocalCommandMetadata", () => {
@@ -1777,39 +1875,177 @@ describe("subagent transcript replay", () => {
             },
         },
     ];
-    async function replay(capable) {
+    const agentResult = (isError, content) => ({
+        type: "user",
+        uuid: `agent-result-${content}`,
+        session_id: "s1",
+        parent_tool_use_id: null,
+        parent_agent_id: null,
+        message: {
+            role: "user",
+            content: [
+                {
+                    type: "tool_result",
+                    tool_use_id: "parent-agent-call",
+                    is_error: isError,
+                    content,
+                },
+            ],
+        },
+    });
+    async function replay(capability, history = replayHistory) {
         const updates = [];
         const client = {
             sessionUpdate: async (update) => updates.push(update),
         };
         const agent = new ClaudeAcpAgent(client, { log: () => { }, error: () => { } });
-        agent.clientCapabilities = capable ? { _meta: { "subagent-transcript": true } } : {};
-        vi.mocked(getSessionMessages).mockResolvedValueOnce(replayHistory);
+        agent.clientCapabilities =
+            capability === "native"
+                ? { subagents: {} }
+                : capability === "legacy"
+                    ? { _meta: { "subagent-transcript": true } }
+                    : {};
+        vi.mocked(getSessionMessages).mockResolvedValueOnce(history);
         await agent.replaySessionHistory("s1");
         return updates;
     }
-    it("preserves nested text and child tool attribution for capable clients", async () => {
-        const updates = await replay(true);
-        expect(updates).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-                update: expect.objectContaining({
-                    sessionUpdate: "agent_message_chunk",
-                    content: { type: "text", text: "nested report" },
-                    _meta: expect.objectContaining({
-                        claudeCode: expect.objectContaining({ parentToolUseId: "parent-agent-call" }),
-                    }),
-                }),
-            }),
-            expect.objectContaining({
-                update: expect.objectContaining({
-                    sessionUpdate: "tool_call",
-                    toolCallId: "child-tool",
-                    _meta: expect.objectContaining({
-                        claudeCode: expect.objectContaining({ parentToolUseId: "parent-agent-call" }),
-                    }),
-                }),
-            }),
-        ]));
+    it("replays an unattributed sidechain as a deterministic disconnected child", async () => {
+        const updates = await replay("native");
+        expect(updates.map(({ sessionId, update }) => [sessionId, update.sessionUpdate])).toEqual([
+            ["s1", "subagent_spawned"],
+            ["s1:replay-subagent:parent-agent-call", "agent_message_chunk"],
+            ["s1:replay-subagent:parent-agent-call", "tool_call"],
+            ["s1", "subagent_state_update"],
+        ]);
+        expect(updates[0]?.update).toMatchObject({
+            subagentSessionId: "s1:replay-subagent:parent-agent-call",
+            name: "Disconnected agent",
+        });
+        expect(updates.at(-1)?.update).toMatchObject({ state: "disconnected" });
+    });
+    it("reconstructs a persisted Agent launch before child updates", async () => {
+        const launch = {
+            type: "assistant",
+            uuid: "launch-message",
+            session_id: "s1",
+            parent_tool_use_id: null,
+            parent_agent_id: null,
+            message: {
+                id: "api-launch-message",
+                model: "claude-sonnet-4-5",
+                role: "assistant",
+                type: "message",
+                stop_reason: "tool_use",
+                content: [
+                    {
+                        type: "tool_use",
+                        id: "parent-agent-call",
+                        name: "Agent",
+                        input: { name: "Reviewer", prompt: "Review the implementation" },
+                    },
+                ],
+            },
+        };
+        const updates = await replay("native", [launch, ...replayHistory, agentResult(false, "done")]);
+        expect(updates[0]?.update).toMatchObject({
+            sessionUpdate: "subagent_spawned",
+            name: "Reviewer",
+            task: "Review the implementation",
+        });
+        expect(updates.at(-1)?.update).toMatchObject({
+            sessionUpdate: "subagent_state_update",
+            state: "completed",
+        });
+        expect(updates.some(({ update }) => (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") &&
+            update.toolCallId === "parent-agent-call")).toBe(false);
+    });
+    it.each([
+        { content: "subagent failed", state: "failed" },
+        { content: "Request interrupted by user", state: "cancelled" },
+    ])("restores a persisted $state Agent result", async ({ content, state }) => {
+        const launch = {
+            type: "assistant",
+            uuid: "launch-message",
+            session_id: "s1",
+            parent_tool_use_id: null,
+            parent_agent_id: null,
+            message: {
+                id: "api-launch-message",
+                model: "claude-sonnet-4-5",
+                role: "assistant",
+                type: "message",
+                stop_reason: "tool_use",
+                content: [
+                    {
+                        type: "tool_use",
+                        id: "parent-agent-call",
+                        name: "Agent",
+                        input: { name: "Reviewer", prompt: "Review" },
+                    },
+                ],
+            },
+        };
+        const updates = await replay("native", [launch, ...replayHistory, agentResult(true, content)]);
+        expect(updates.at(-1)?.update).toMatchObject({
+            sessionUpdate: "subagent_state_update",
+            state,
+        });
+    });
+    it("marks a launched child without a persisted result as disconnected", async () => {
+        const launch = {
+            type: "assistant",
+            uuid: "launch-message",
+            session_id: "s1",
+            parent_tool_use_id: null,
+            parent_agent_id: null,
+            message: {
+                id: "api-launch-message",
+                model: "claude-sonnet-4-5",
+                role: "assistant",
+                type: "message",
+                stop_reason: "tool_use",
+                content: [
+                    {
+                        type: "tool_use",
+                        id: "parent-agent-call",
+                        name: "Agent",
+                        input: { name: "Reviewer", prompt: "Review" },
+                    },
+                ],
+            },
+        };
+        const updates = await replay("native", [launch, ...replayHistory]);
+        expect(updates.at(-1)?.update).toMatchObject({
+            sessionUpdate: "subagent_state_update",
+            state: "disconnected",
+        });
+    });
+    it("breaks malformed replay lineage cycles deterministically", async () => {
+        const cyclicLaunch = (id, parentToolUseId) => ({
+            type: "assistant",
+            uuid: `launch-${id}`,
+            session_id: "s1",
+            parent_tool_use_id: parentToolUseId,
+            parent_agent_id: "malformed",
+            message: {
+                id: `api-launch-${id}`,
+                model: "claude-sonnet-4-5",
+                role: "assistant",
+                type: "message",
+                stop_reason: "tool_use",
+                content: [{ type: "tool_use", id, name: "Agent", input: { prompt: `Run ${id}` } }],
+            },
+        });
+        const updates = await replay("native", [
+            cyclicLaunch("agent-a", "agent-b"),
+            cyclicLaunch("agent-b", "agent-a"),
+            {
+                ...replayHistory[0],
+                parent_tool_use_id: "agent-a",
+            },
+        ]);
+        expect(updates.filter(({ update }) => update.sessionUpdate === "subagent_spawned")).toHaveLength(2);
+        expect(updates.some(({ update }) => update.sessionUpdate === "subagent_state_update" && update.state === "disconnected")).toBe(true);
     });
     it("keeps legacy text filtering without losing child tool attribution", async () => {
         const updates = await replay(false);
@@ -1823,6 +2059,20 @@ describe("subagent transcript replay", () => {
                         claudeCode: expect.objectContaining({ parentToolUseId: "parent-agent-call" }),
                     }),
                 }),
+            }),
+        ]));
+    });
+    it("replays the flattened transcript for the legacy opt-in", async () => {
+        const updates = await replay("legacy");
+        expect(updates).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                update: expect.objectContaining({
+                    sessionUpdate: "agent_message_chunk",
+                    content: { type: "text", text: "nested report" },
+                }),
+            }),
+            expect.objectContaining({
+                update: expect.objectContaining({ sessionUpdate: "tool_call", toolCallId: "child-tool" }),
             }),
         ]));
     });
@@ -2159,6 +2409,119 @@ describe("permission request cancellation", () => {
         controller.abort();
         await expect(pending).rejects.toThrow("Tool use aborted");
     });
+    it("does not wait for a permission client that ignores cancellation", async () => {
+        const mockClient = {
+            sessionUpdate: async () => { },
+            requestPermission: () => new Promise(() => { }),
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const session = injectSession(agent, "session-1");
+        session.emittedToolCalls.add("tool-1");
+        const controller = new AbortController();
+        const pending = agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: controller.signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+        });
+        await Promise.resolve();
+        controller.abort();
+        await expect(pending).rejects.toThrow("Tool use aborted");
+    });
+    it("observes a client rejection when the signal aborts during request creation", async () => {
+        const controller = new AbortController();
+        const clientOperation = Promise.reject(new Error("Request cancelled"));
+        const then = vi.spyOn(clientOperation, "then");
+        const mockClient = {
+            sessionUpdate: async () => { },
+            requestPermission: () => {
+                controller.abort();
+                return clientOperation;
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const session = injectSession(agent, "session-1");
+        session.emittedToolCalls.add("tool-1");
+        await expect(agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: controller.signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+        })).rejects.toThrow("Tool use aborted");
+        expect(then).toHaveBeenCalledOnce();
+    });
+    it("does not wait for an eager tool-call update that ignores cancellation", async () => {
+        const requestPermission = vi.fn();
+        const mockClient = {
+            sessionUpdate: () => new Promise(() => { }),
+            requestPermission,
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const session = injectSession(agent, "session-1");
+        const controller = new AbortController();
+        const pending = agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: controller.signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+        });
+        await Promise.resolve();
+        controller.abort();
+        await expect(pending).rejects.toThrow("Tool use aborted");
+        expect(requestPermission).not.toHaveBeenCalled();
+        expect(session.emittedToolCalls.has("tool-1")).toBe(false);
+    });
+    it("clears pending ExitPlanMode state even after the query has closed", async () => {
+        const mockClient = { sessionUpdate: vi.fn() };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const session = injectSession(agent, "session-1");
+        session.queryClosed = true;
+        session.pendingExitPlanModeInterruption = {
+            toolUseId: "tool-plan",
+            toolResultSeen: false,
+        };
+        session.pendingExitPlanContextReset = {
+            toolUseId: "tool-plan",
+            plan: "Ship it",
+            mode: "auto",
+        };
+        await agent.cancel({ sessionId: "session-1" });
+        expect(session.cancelled).toBe(true);
+        expect(session.pendingExitPlanModeInterruption).toBeUndefined();
+        expect(session.pendingExitPlanContextReset).toBeUndefined();
+    });
+    it("does not emit or request permission for a pre-aborted tool call", async () => {
+        const sessionUpdate = vi.fn();
+        const requestPermission = vi.fn();
+        const mockClient = { sessionUpdate, requestPermission };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const session = injectSession(agent, "session-1");
+        const controller = new AbortController();
+        controller.abort();
+        await expect(agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: controller.signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+        })).rejects.toThrow("Tool use aborted");
+        expect(sessionUpdate).not.toHaveBeenCalled();
+        expect(requestPermission).not.toHaveBeenCalled();
+        expect(session.emittedToolCalls.has("tool-1")).toBe(false);
+    });
+    it("allows a streamed tool call to retry after eager emission fails", async () => {
+        const requestPermission = vi.fn();
+        const mockClient = {
+            sessionUpdate: async () => {
+                throw new Error("transport failed");
+            },
+            requestPermission,
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const session = injectSession(agent, "session-1");
+        await expect(agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+        })).rejects.toThrow("transport failed");
+        expect(requestPermission).not.toHaveBeenCalled();
+        expect(session.emittedToolCalls.has("tool-1")).toBe(false);
+    });
     it("treats a cancelled permission outcome as an aborted tool use", async () => {
         const mockClient = {
             sessionUpdate: async () => { },
@@ -2172,7 +2535,7 @@ describe("permission request cancellation", () => {
             toolUseID: "tool-1",
         })).rejects.toThrow("Tool use aborted");
     });
-    it("offers the approval actions in deny, once, always order with human-readable labels", async () => {
+    it("omits the durable action when Claude supplies no permission update", async () => {
         let request;
         const mockClient = {
             sessionUpdate: async () => { },
@@ -2189,31 +2552,200 @@ describe("permission request cancellation", () => {
             toolUseID: "tool-1",
         });
         expect(request?.options).toEqual([
-            { kind: "reject_once", name: "Deny", optionId: "reject" },
-            { kind: "allow_once", name: "Allow Once", optionId: "allow" },
-            {
-                kind: "allow_always",
-                name: "Always Allow",
-                optionId: "allow_always",
-                _meta: {
-                    permission: {
-                        version: 1,
-                        changes: [
-                            {
-                                type: "policy_rule",
-                                operation: "add",
-                                ruleBehavior: "allow",
-                                description: "Allow all Bash calls",
-                                lifetime: { scope: "session" },
-                                targets: [{ type: "tool", toolName: "Bash" }],
-                            },
-                        ],
-                    },
-                },
+            { kind: "allow_once", name: "Yes", optionId: "allow-once" },
+            { kind: "reject_once", name: "No", optionId: "reject" },
+        ]);
+        expect(request?._meta).toEqual({
+            permission: { version: 1, title: "Bash" },
+        });
+    });
+    it("maps explicit reject to deny while retaining Claude classification", async () => {
+        const mockClient = {
+            sessionUpdate: async () => { },
+            requestPermission: async () => ({ outcome: { outcome: "selected", optionId: "reject" } }),
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        injectSession(agent, "session-1");
+        await expect(agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+        })).resolves.toEqual({
+            behavior: "deny",
+            message: "User refused permission to run tool",
+            toolUseID: "tool-1",
+            decisionClassification: "user_reject",
+        });
+    });
+    it("interrupts the turn after an ExitPlanMode keep-planning rejection", async () => {
+        const mockClient = {
+            sessionUpdate: async () => { },
+            requestPermission: async () => ({ outcome: { outcome: "selected", optionId: "reject" } }),
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const session = injectSession(agent, "session-1");
+        await expect(agent.canUseTool("session-1")("ExitPlanMode", { plan: "Implement it" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "tool-plan",
+        })).resolves.toEqual({
+            behavior: "deny",
+            message: "User chose to keep planning",
+            interrupt: true,
+            toolUseID: "tool-plan",
+            decisionClassification: "user_reject",
+        });
+        expect(session.pendingExitPlanModeInterruption).toEqual({
+            toolUseId: "tool-plan",
+            toolResultSeen: false,
+        });
+    });
+    it("offers ExitPlanMode clear-context with measured usage and records the handoff", async () => {
+        let request;
+        const mockClient = {
+            sessionUpdate: async () => { },
+            requestPermission: async (value) => {
+                request = value;
+                return {
+                    outcome: { outcome: "selected", optionId: "exit-plan-clear-auto" },
+                };
             },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const session = injectSession(agent, "session-1");
+        session.modes.availableModes = [
+            { id: "default", name: "Manual" },
+            { id: "acceptEdits", name: "Accept edits" },
+            { id: "auto", name: "Auto" },
+        ];
+        session.contextUsedTokens = 150_000;
+        session.contextWindowSize = 200_000;
+        await expect(agent.canUseTool("session-1")("ExitPlanMode", { plan: "Implement it" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "tool-plan",
+        })).resolves.toMatchObject({ behavior: "deny", interrupt: true });
+        expect(request?.options).toContainEqual({
+            optionId: "exit-plan-clear-auto",
+            name: "Yes, clear context (75% used) and use auto mode",
+            kind: "allow_always",
+        });
+        expect(session.pendingExitPlanContextReset).toEqual({
+            toolUseId: "tool-plan",
+            plan: "Implement it",
+            mode: "auto",
+        });
+    });
+    it("maps Claude presentation fields without reconstructing provider text or changing input", async () => {
+        let request;
+        const mockClient = {
+            sessionUpdate: async () => { },
+            requestPermission: async (value) => {
+                request = value;
+                return { outcome: { outcome: "selected", optionId: "allow-once" } };
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        injectSession(agent, "session-1");
+        const input = { file_path: "/outside/a.ts" };
+        const result = await agent.canUseTool("session-1")("Read", input, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+            requestId: "claude-request-1",
+            title: "Claude wants to read /outside/a.ts",
+            displayName: "Read file",
+            description: "Read a.ts",
+            decisionReason: "Needed to inspect the dependency.",
+            blockedPath: "/outside/a.ts",
+        });
+        expect(request?._meta).toEqual({
+            permission: {
+                version: 1,
+                title: "Read /outside/a.ts",
+                description: "Reason: Needed to inspect the dependency.",
+            },
+        });
+        expect(request?.toolCall).toMatchObject({
+            kind: "read",
+            rawInput: input,
+            locations: [{ path: "/outside/a.ts", line: 1 }],
+        });
+        expect(request?.toolCall.rawInput).toBe(input);
+        expect(result?.behavior === "allow" && result.updatedInput).toBe(input);
+    });
+    it("keeps concurrent permission requests independent even for the same tool call", async () => {
+        const requests = [];
+        const mockClient = {
+            sessionUpdate: async () => { },
+            requestPermission: async (request) => {
+                requests.push(request);
+                return { outcome: { outcome: "selected", optionId: "allow-once" } };
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const session = injectSession(agent, "session-1");
+        session.emittedToolCalls.add("tool-shared");
+        const canUseTool = agent.canUseTool("session-1");
+        await Promise.all([
+            canUseTool("Bash", { command: "one" }, {
+                signal: new AbortController().signal,
+                suggestions: [],
+                toolUseID: "tool-shared",
+            }),
+            canUseTool("Bash", { command: "two" }, {
+                signal: new AbortController().signal,
+                suggestions: [],
+                toolUseID: "tool-shared",
+            }),
+        ]);
+        expect(requests).toHaveLength(2);
+        expect(requests.map((request) => request.toolCall.rawInput)).toEqual([
+            { command: "one" },
+            { command: "two" },
         ]);
     });
-    it("attaches structured permission changes to the always-allow ACP option", async () => {
+    it("applies the exact representable provider updates described by the selected option", async () => {
+        let request;
+        const updates = [
+            {
+                type: "addRules",
+                rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+                behavior: "allow",
+                destination: "session",
+            },
+            {
+                type: "addDirectories",
+                directories: ["/tmp/work"],
+                destination: "session",
+            },
+        ];
+        const mockClient = {
+            sessionUpdate: async () => { },
+            requestPermission: async (params) => {
+                request = params;
+                return { outcome: { outcome: "selected", optionId: "allow-with-updates" } };
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        injectSession(agent, "session-1");
+        const result = await agent.canUseTool("session-1")("Bash", { command: "npm test" }, {
+            signal: new AbortController().signal,
+            suggestions: updates,
+            toolUseID: "tool-1",
+        });
+        expect(result?.behavior).toBe("allow");
+        if (!result || result.behavior !== "allow")
+            throw new Error("expected allow result");
+        expect(result.updatedPermissions).toEqual(updates);
+        const option = request?.options.find((candidate) => candidate.optionId === "allow-with-updates");
+        expect(option).toEqual({
+            kind: "allow_always",
+            name: "Yes, and allow access to work/ and npm test commands",
+            optionId: "allow-with-updates",
+        });
+    });
+    it("keeps provider permission effects inside the adapter", async () => {
         let request;
         const mockClient = {
             sessionUpdate: async () => { },
@@ -2241,46 +2773,9 @@ describe("permission request cancellation", () => {
             ],
             toolUseID: "tool-1",
         });
-        expect(request?.options.find((option) => option.optionId === "allow_always")?._meta).toEqual({
-            permission: {
-                version: 1,
-                changes: [
-                    {
-                        type: "policy_rule",
-                        operation: "add",
-                        ruleBehavior: "allow",
-                        description: "Allow Bash calls matching npm test:*",
-                        lifetime: { scope: "session" },
-                        targets: [
-                            {
-                                type: "tool",
-                                toolName: "Bash",
-                                matcher: {
-                                    type: "provider_rule",
-                                    provider: "claudeCode",
-                                    value: "npm test:*",
-                                },
-                            },
-                        ],
-                    },
-                    {
-                        type: "policy_rule",
-                        operation: "add",
-                        ruleBehavior: "allow",
-                        description: "Allow filesystem access under /tmp/work",
-                        lifetime: { scope: "session" },
-                        targets: [
-                            {
-                                type: "filesystem",
-                                matcher: { type: "directory", path: "/tmp/work" },
-                            },
-                        ],
-                    },
-                ],
-            },
-        });
+        expect(request?.options.find((option) => option.optionId === "allow-with-updates")?._meta).toBeUndefined();
     });
-    it("preserves replace, remove, deny, destination, and mode suggestion semantics", async () => {
+    it("does not expose an update bundle that Claude's Bash dialog cannot label", async () => {
         let request;
         const mockClient = {
             sessionUpdate: async () => { },
@@ -2313,48 +2808,7 @@ describe("permission request cancellation", () => {
             ],
             toolUseID: "tool-1",
         });
-        expect(request?.options.find((option) => option.optionId === "allow_always")?._meta
-            ?.permission.changes).toEqual([
-            {
-                type: "policy_rule",
-                operation: "replace",
-                ruleBehavior: "deny",
-                description: "Replace deny rules with Bash calls matching rm generated.txt",
-                lifetime: { scope: "persistent", storage: "project" },
-                targets: [
-                    {
-                        type: "tool",
-                        toolName: "Bash",
-                        matcher: {
-                            type: "provider_rule",
-                            provider: "claudeCode",
-                            value: "rm generated.txt",
-                        },
-                    },
-                ],
-            },
-            {
-                type: "policy_rule",
-                operation: "remove",
-                ruleBehavior: "allow",
-                description: "Remove additional filesystem access under /tmp/old",
-                lifetime: { scope: "persistent", storage: "project_local" },
-                targets: [
-                    {
-                        type: "filesystem",
-                        matcher: { type: "directory", path: "/tmp/old" },
-                    },
-                ],
-            },
-            {
-                type: "permission_mode",
-                operation: "set",
-                provider: "claudeCode",
-                mode: "default",
-                description: "Set Claude Code permission mode to default",
-                lifetime: { scope: "session" },
-            },
-        ]);
+        expect(request?.options.map((option) => option.optionId)).toEqual(["allow-once", "reject"]);
     });
 });
 describe("tool_call emitted before permission request", () => {
@@ -2373,7 +2827,7 @@ describe("tool_call emitted before permission request", () => {
             },
             requestPermission: async () => {
                 events.push("permission");
-                return { outcome: { outcome: "selected", optionId: "allow" } };
+                return { outcome: { outcome: "selected", optionId: "allow-once" } };
             },
         };
         const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
@@ -2560,7 +3014,7 @@ describe("canUseTool in bypassPermissions mode", () => {
             sessionUpdate: async () => { },
             requestPermission: async () => {
                 events.push("permission");
-                return { outcome: { outcome: "selected", optionId: "allow" } };
+                return { outcome: { outcome: "selected", optionId: "allow-once" } };
             },
         };
         const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
@@ -2572,15 +3026,16 @@ describe("canUseTool in bypassPermissions mode", () => {
         agent.sessions["session-1"].emittedToolCalls.add("tool-1");
         return { agent, events };
     }
-    it("auto-allows asks that carry no matchedAskRule", async () => {
+    it("prompts for asks that survive Claude Code's bypass evaluation", async () => {
         const { agent, events } = setup();
         const result = await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
             signal: new AbortController().signal,
             suggestions: [],
             toolUseID: "tool-1",
+            decisionReason: "This action requires interactive safety approval.",
         });
-        expect(events).toEqual([]);
-        expect(result).toMatchObject({ behavior: "allow" });
+        expect(events).toEqual(["permission"]);
+        expect(result).toMatchObject({ behavior: "allow", toolUseID: "tool-1" });
     });
     // The asks that still reach canUseTool in bypass mode are the ones the CLI
     // insists on prompting for even under --dangerously-skip-permissions. When
@@ -2602,8 +3057,40 @@ describe("canUseTool in bypassPermissions mode", () => {
         expect(events).toEqual(["permission"]);
         expect(result).toMatchObject({ behavior: "allow" });
     });
+    it("does not promise an ineffective always-allow fallback for a forced ask rule", async () => {
+        let request;
+        const mockClient = {
+            sessionUpdate: async () => { },
+            requestPermission: async (params) => {
+                request = params;
+                return { outcome: { outcome: "selected", optionId: "allow-once" } };
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        agent.sessions["session-1"] = mockSessionState({
+            modes: { currentModeId: "bypassPermissions", availableModes: [] },
+        });
+        agent.sessions["session-1"].emittedToolCalls.add("tool-1");
+        await agent.canUseTool("session-1")("Bash", { command: "terraform destroy" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "tool-1",
+            matchedAskRule: {
+                source: "projectSettings",
+                toolName: "Bash",
+                ruleContent: "Bash(terraform:*)",
+            },
+        });
+        expect(request?.options.map((option) => option.optionId)).toEqual(["allow-once", "reject"]);
+    });
 });
 describe("subagent permission attribution (issue #851)", () => {
+    const SUBAGENT_TEST_USAGE = {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+    };
     // A background subagent's permission requests reach canUseTool with only an
     // `agentID`; the streamed subagent messages carry `parent_tool_use_id`
     // instead. `task_started` bridges the two (for subagent tasks its `task_id`
@@ -2613,6 +3100,7 @@ describe("subagent permission attribution (issue #851)", () => {
     function setup() {
         const updates = [];
         const requests = [];
+        const elicitations = [];
         const log = vi.fn();
         const mockClient = {
             sessionUpdate: async (n) => {
@@ -2620,14 +3108,21 @@ describe("subagent permission attribution (issue #851)", () => {
             },
             requestPermission: async (params) => {
                 requests.push(params);
-                return { outcome: { outcome: "selected", optionId: "allow" } };
+                return { outcome: { outcome: "selected", optionId: "allow-once" } };
+            },
+            createElicitation: async (request) => {
+                elicitations.push(request);
+                return {
+                    action: "accept",
+                    content: { question_0: "Fast", question_0_custom: "" },
+                };
             },
         };
         const agent = new ClaudeAcpAgent(mockClient, { log, error: () => { } });
         agent.sessions["session-1"] = mockSessionState();
-        return { agent, updates, requests, log, session: agent.sessions["session-1"] };
+        return { agent, updates, requests, elicitations, log, session: agent.sessions["session-1"] };
     }
-    it("attributes a subagent tool's eager tool_call and permission request to the spawning tool call", async () => {
+    it("keeps the legacy child tool call before its root permission request", async () => {
         const { agent, updates, requests, session } = setup();
         session.liveBackgroundTasks.set("agent-42", {
             parentToolUseId: "toolu_parent",
@@ -2644,11 +3139,40 @@ describe("subagent permission attribution (issue #851)", () => {
             toolCallId: "toolu_sub",
             _meta: { claudeCode: { parentToolUseId: "toolu_parent" } },
         });
-        // The request's claudeCode meta keeps the shape every other claudeCode
-        // meta has (toolName is required by ToolUpdateMeta).
+        expect(requests[0].sessionId).toBe("session-1");
         expect(requests[0].toolCall._meta).toMatchObject({
             claudeCode: { toolName: "Bash", parentToolUseId: "toolu_parent" },
         });
+    });
+    it("forwards child elicitation to the root when native subagents were not negotiated", async () => {
+        const { agent, updates, requests, session } = setup();
+        agent.clientCapabilities = { elicitation: { form: {} } };
+        session.liveBackgroundTasks.set("agent-42", {
+            parentToolUseId: "toolu_parent",
+            isSubagent: true,
+        });
+        const result = await agent.canUseTool("session-1")("AskUserQuestion", {
+            questions: [
+                {
+                    question: "Which mode?",
+                    header: "Mode",
+                    options: [
+                        { label: "Fast", description: "Fast mode" },
+                        { label: "Safe", description: "Safe mode" },
+                    ],
+                    multiSelect: false,
+                },
+            ],
+        }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "toolu_question",
+            agentID: "agent-42",
+        });
+        expect(result).toMatchObject({ behavior: "allow" });
+        expect(updates).toHaveLength(1);
+        expect(updates[0].sessionId).toBe("session-1");
+        expect(requests).toEqual([]);
     });
     it("omits the attribution (and logs the miss) when the agent id has no recorded parent", async () => {
         const { agent, updates, requests, log } = setup();
@@ -2658,8 +3182,10 @@ describe("subagent permission attribution (issue #851)", () => {
             toolUseID: "toolu_sub",
             agentID: "agent-unknown",
         });
-        const meta = updates[0].update._meta;
-        expect(meta.claudeCode?.parentToolUseId).toBeUndefined();
+        expect(updates[0].update).toMatchObject({
+            sessionUpdate: "tool_call",
+            toolCallId: "toolu_sub",
+        });
         expect(requests[0].toolCall._meta).toBeUndefined();
         // The task_id === agentID invariant is undocumented SDK behavior; a miss
         // must be observable so an SDK bump that breaks it doesn't regress silently.
@@ -2680,6 +3206,113 @@ describe("subagent permission attribution (issue #851)", () => {
             toolCallId: "toolu_sub",
             _meta: { claudeCode: { parentToolUseId: "toolu_parent" } },
         });
+    });
+    it("routes native child tool calls and permission requests to the child session", async () => {
+        const { agent, updates, requests, session } = setup();
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        session.liveBackgroundTasks.set("agent-42", {
+            parentToolUseId: "toolu_parent",
+            isSubagent: true,
+        });
+        session.nativeSubagentsByTaskId = new Map([
+            [
+                "agent-42",
+                {
+                    sessionId: "child-session",
+                    parentSessionId: "session-1",
+                    parentToolUseId: "toolu_parent",
+                    name: "Explore",
+                    task: "Investigate",
+                    announced: true,
+                },
+            ],
+        ]);
+        await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "toolu_sub",
+            agentID: "agent-42",
+        });
+        expect(updates[0].sessionId).toBe("child-session");
+        expect(requests[0].sessionId).toBe("child-session");
+    });
+    it("keeps a raced permission on the root until the child is announced", async () => {
+        const { agent, updates, requests, session } = setup();
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        session.liveBackgroundTasks.set("agent-42", {
+            parentToolUseId: "toolu_parent",
+            isSubagent: true,
+        });
+        session.nativeSubagentsByTaskId = new Map([
+            [
+                "agent-42",
+                {
+                    sessionId: "child-session",
+                    parentSessionId: "session-1",
+                    parentToolUseId: "toolu_parent",
+                    name: "Explore",
+                    task: "Investigate",
+                },
+            ],
+        ]);
+        await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "toolu_sub",
+            agentID: "agent-42",
+        });
+        expect(updates[0].sessionId).toBe("session-1");
+        expect(requests[0].sessionId).toBe("session-1");
+    });
+    it("routes a native child AskUserQuestion and its tool call to the child session", async () => {
+        const { agent, updates, elicitations, session } = setup();
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                subagents: {},
+                elicitation: { form: {} },
+            },
+        });
+        session.liveBackgroundTasks.set("agent-42", {
+            parentToolUseId: "toolu_parent",
+            isSubagent: true,
+        });
+        session.nativeSubagentsByTaskId = new Map([
+            [
+                "agent-42",
+                {
+                    sessionId: "child-session",
+                    parentSessionId: "session-1",
+                    parentToolUseId: "toolu_parent",
+                    name: "Explore",
+                    task: "Investigate",
+                    announced: true,
+                },
+            ],
+        ]);
+        await agent.canUseTool("session-1")("AskUserQuestion", {
+            questions: [
+                {
+                    question: "Which mode?",
+                    header: "Mode",
+                    options: [{ label: "Fast", description: "Fast mode" }],
+                    multiSelect: false,
+                },
+            ],
+        }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "toolu_question",
+            agentID: "agent-42",
+        });
+        expect(updates[0].sessionId).toBe("child-session");
+        expect(elicitations[0].sessionId).toBe("child-session");
     });
     function taskStarted(taskId, toolUseId) {
         return {
@@ -2793,6 +3426,808 @@ describe("subagent permission attribution (issue #851)", () => {
         const map = agent.sessions["test-session"].liveBackgroundTasks;
         expect(map.has("agent-42")).toBe(false);
         expect(map.get("agent-43")?.parentToolUseId).toBe("toolu_parent_2");
+    });
+    it("keeps legacy Agent lifecycle and flattened child output without capability negotiation", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (update) => {
+                updates.push(update);
+            },
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+        injectGeneratorSession(agent, makeGenerator([
+            {
+                type: "assistant",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+                message: {
+                    id: randomUUID(),
+                    role: "assistant",
+                    model: "claude-sonnet-4-20250514",
+                    content: [
+                        {
+                            type: "tool_use",
+                            id: "toolu_parent",
+                            name: "Agent",
+                            input: { description: "Investigate", subagent_type: "Explore" },
+                        },
+                    ],
+                    stop_reason: null,
+                    stop_sequence: null,
+                    usage: SUBAGENT_TEST_USAGE,
+                },
+            },
+            {
+                ...taskStarted("agent-42", "toolu_parent"),
+                subagent_type: "Explore",
+            },
+            {
+                type: "stream_event",
+                parent_tool_use_id: "toolu_parent",
+                uuid: randomUUID(),
+                session_id: "test-session",
+                event: {
+                    type: "content_block_delta",
+                    index: 0,
+                    delta: { type: "text_delta", text: "hidden child output" },
+                },
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        expect(updates.some(({ update }) => update.sessionUpdate === "subagent_spawned" ||
+            update.sessionUpdate === "subagent_state_update")).toBe(false);
+        expect(updates.some(({ update }) => JSON.stringify(update).includes("hidden child output"))).toBe(true);
+        expect(updates.some(({ update }) => (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") &&
+            update.toolCallId === "toolu_parent")).toBe(true);
+    });
+    it("emits native subagent lifecycle when both peers advertise support", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (update) => {
+                updates.push(update);
+            },
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        injectGeneratorSession(agent, makeGenerator([
+            {
+                ...taskStarted("agent-42", "toolu_parent"),
+                subagent_type: "Explore",
+            },
+            {
+                type: "system",
+                subtype: "task_notification",
+                task_id: "agent-42",
+                tool_use_id: "toolu_parent",
+                status: "completed",
+                output_file: "",
+                summary: "done",
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        expect(updates.map((notification) => notification.update)).toEqual(expect.arrayContaining([
+            {
+                sessionUpdate: "subagent_spawned",
+                subagentSessionId: "agent-42",
+                name: "Investigate",
+                task: "Investigate",
+                capabilities: {},
+            },
+            {
+                sessionUpdate: "subagent_state_update",
+                subagentSessionId: "agent-42",
+                state: "completed",
+            },
+        ]));
+    });
+    it("buffers child output until spawn and drops duplicates and late updates", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (update) => {
+                updates.push(update);
+            },
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        const childMessage = (text) => ({
+            type: "stream_event",
+            parent_tool_use_id: "toolu_parent",
+            uuid: randomUUID(),
+            session_id: "test-session",
+            event: {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "text_delta", text },
+            },
+        });
+        const terminal = {
+            type: "system",
+            subtype: "task_notification",
+            task_id: "agent-42",
+            tool_use_id: "toolu_parent",
+            status: "completed",
+            output_file: "",
+            summary: "done",
+            uuid: randomUUID(),
+            session_id: "test-session",
+        };
+        const childTool = {
+            type: "assistant",
+            parent_tool_use_id: "toolu_parent",
+            uuid: randomUUID(),
+            session_id: "test-session",
+            message: {
+                id: randomUUID(),
+                role: "assistant",
+                model: "claude-sonnet-4-20250514",
+                content: [
+                    { type: "tool_use", id: "toolu_child", name: "Bash", input: { command: "pwd" } },
+                ],
+                usage: SUBAGENT_TEST_USAGE,
+            },
+        };
+        injectGeneratorSession(agent, makeGenerator([
+            childMessage("buffered"),
+            { ...taskStarted("agent-42", "toolu_parent"), subagent_type: "Explore" },
+            childTool,
+            childMessage("routed"),
+            terminal,
+            terminal,
+            childMessage("late"),
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        expect(updates.map(({ sessionId, update }) => [sessionId, update.sessionUpdate])).toEqual([
+            ["test-session", "subagent_spawned"],
+            ["agent-42", "agent_message_chunk"],
+            ["agent-42", "tool_call"],
+            ["agent-42", "agent_message_chunk"],
+            ["test-session", "subagent_state_update"],
+        ]);
+        expect(JSON.stringify(updates)).not.toContain("late");
+    });
+    it("uses the immediate child as parent for a nested subagent", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (update) => {
+                updates.push(update);
+            },
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        const agentTool = (id, parent_tool_use_id) => ({
+            type: "assistant",
+            parent_tool_use_id,
+            uuid: randomUUID(),
+            session_id: "test-session",
+            message: {
+                id: randomUUID(),
+                role: "assistant",
+                model: "claude-sonnet-4-20250514",
+                content: [
+                    {
+                        type: "tool_use",
+                        id,
+                        name: "Agent",
+                        input: {
+                            name: `${id}-name`,
+                            description: `${id} description`,
+                            prompt: `${id} full prompt`,
+                        },
+                    },
+                ],
+                usage: SUBAGENT_TEST_USAGE,
+            },
+        });
+        injectGeneratorSession(agent, makeGenerator([
+            agentTool("toolu_outer", null),
+            { ...taskStarted("agent-outer", "toolu_outer"), subagent_type: "Explore" },
+            // The SDK does not guarantee that task_started follows the assistant
+            // frame containing the spawning tool_use. Lineage must still attach
+            // the nested child to agent-outer, not to the root session.
+            { ...taskStarted("agent-inner", "toolu_inner"), subagent_type: "Explore" },
+            agentTool("toolu_inner", "toolu_outer"),
+            {
+                type: "system",
+                subtype: "task_updated",
+                task_id: "agent-inner",
+                patch: { status: "completed" },
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            {
+                type: "system",
+                subtype: "task_updated",
+                task_id: "agent-outer",
+                patch: { status: "completed" },
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        const nestedSpawn = updates.find(({ update }) => update.sessionUpdate === "subagent_spawned" && update.subagentSessionId === "agent-inner");
+        expect(nestedSpawn?.sessionId).toBe("agent-outer");
+        expect(nestedSpawn?.update).toMatchObject({
+            name: "toolu_inner-name",
+            task: "toolu_inner full prompt",
+        });
+        expect(updates.find(({ update }) => update.sessionUpdate === "subagent_spawned" && update.subagentSessionId === "agent-outer")?.update).toMatchObject({
+            name: "toolu_outer-name",
+            task: "toolu_outer full prompt",
+        });
+        expect(updates.filter(({ update }) => (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") &&
+            update._meta?.claudeCode?.toolName === "Agent")).toEqual([]);
+    });
+    it("fails an announced child if the provider stream ends without a terminal event", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (update) => {
+                updates.push(update);
+            },
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        injectGeneratorSession(agent, makeGenerator([
+            { ...taskStarted("agent-42", "toolu_parent"), subagent_type: "Explore" },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        expect(updates.at(-1)).toEqual({
+            sessionId: "test-session",
+            update: {
+                sessionUpdate: "subagent_state_update",
+                subagentSessionId: "agent-42",
+                state: "failed",
+            },
+        });
+    });
+    it("maps the SDK stopped terminal status to ACP cancelled", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (update) => updates.push(update),
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        injectGeneratorSession(agent, makeGenerator([
+            { ...taskStarted("agent-42", "toolu_parent"), subagent_type: "Explore" },
+            {
+                type: "system",
+                subtype: "task_notification",
+                task_id: "agent-42",
+                tool_use_id: "toolu_parent",
+                status: "stopped",
+                output_file: "",
+                summary: "stopped",
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        expect(updates.at(-1)?.update).toEqual({
+            sessionUpdate: "subagent_state_update",
+            subagentSessionId: "agent-42",
+            state: "cancelled",
+        });
+    });
+    it("finishes every announced child as cancelled when the parent is cancelled", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (update) => updates.push(update),
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        let childStarted;
+        const started = new Promise((resolve) => (childStarted = resolve));
+        let releaseStream;
+        const released = new Promise((resolve) => (releaseStream = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messages() {
+                const iter = input[Symbol.asyncIterator]();
+                const user = await iter.next();
+                yield userEcho(user.value);
+                yield { ...taskStarted("agent-42", "toolu_parent"), subagent_type: "Explore" };
+                childStarted();
+                await released;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messages();
+        });
+        const prompt = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "go" }],
+        });
+        await started;
+        await agent.cancel({ sessionId: "test-session" });
+        releaseStream();
+        await prompt;
+        expect(updates.slice(-2).map(({ update }) => update)).toEqual([
+            {
+                sessionUpdate: "subagent_spawned",
+                subagentSessionId: "agent-42",
+                name: "Investigate",
+                task: "Investigate",
+                capabilities: {},
+            },
+            {
+                sessionUpdate: "subagent_state_update",
+                subagentSessionId: "agent-42",
+                state: "cancelled",
+            },
+        ]);
+    });
+    it("bounds unattributed child output while waiting for its spawn", async () => {
+        const updates = [];
+        const logs = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (update) => updates.push(update),
+        }, { log: (message) => logs.push(String(message)), error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        const childMessages = Array.from({ length: 40 }, (_, index) => ({
+            type: "stream_event",
+            parent_tool_use_id: "toolu_parent",
+            uuid: randomUUID(),
+            session_id: "test-session",
+            event: {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "text_delta", text: `chunk-${index}` },
+            },
+        }));
+        injectGeneratorSession(agent, makeGenerator([
+            ...childMessages,
+            { ...taskStarted("agent-42", "toolu_parent"), subagent_type: "Explore" },
+            {
+                type: "system",
+                subtype: "task_notification",
+                task_id: "agent-42",
+                tool_use_id: "toolu_parent",
+                status: "completed",
+                output_file: "",
+                summary: "done",
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        expect(updates.filter(({ update }) => update.sessionUpdate === "agent_message_chunk")).toHaveLength(32);
+        expect(logs).toContainEqual(expect.stringContaining("pending buffer limit reached"));
+    });
+    it("propagates a terminal SDK output_file through the async task lifecycle", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (notification) => updates.push(notification),
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                _meta: { jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } } },
+            },
+        });
+        injectGeneratorSession(agent, makeGenerator([
+            {
+                ...taskStarted("workflow-1", "toolu_workflow"),
+                task_type: "local_workflow",
+                workflow_name: "assets",
+                is_backgrounded: true,
+            },
+            {
+                type: "system",
+                subtype: "task_notification",
+                task_id: "workflow-1",
+                tool_use_id: "toolu_workflow",
+                status: "completed",
+                output_file: "/tmp/tasks/workflow-1.output",
+                summary: "done",
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        expect(updates.map(({ update }) => update)).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                sessionUpdate: "async_task_spawned",
+                asyncTaskId: "workflow-1",
+                name: "assets",
+            }),
+            expect.objectContaining({
+                sessionUpdate: "async_task_state_update",
+                asyncTaskId: "workflow-1",
+                state: "completed",
+                outputFilePath: "/tmp/tasks/workflow-1.output",
+            }),
+        ]));
+    });
+    it("stops one advertised async task through the SDK without cancelling the prompt", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (notification) => updates.push(notification),
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                _meta: { jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } } },
+            },
+        });
+        injectGeneratorSession(agent, makeGenerator([
+            {
+                ...taskStarted("workflow-1", "toolu_workflow"),
+                task_type: "local_workflow",
+                is_backgrounded: true,
+            },
+            successResult(),
+        ]));
+        const query = agent.sessions["test-session"].query;
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        query.stopTask.mockRejectedValueOnce(new Error("SDK stop failed"));
+        await expect(agent.stopAsyncTask({ sessionId: "test-session", asyncTaskId: "workflow-1" })).rejects.toThrow("SDK stop failed");
+        await expect(agent.stopAsyncTask({ sessionId: "test-session", asyncTaskId: "workflow-1" })).resolves.toEqual({ stopped: true });
+        expect(query.stopTask).toHaveBeenCalledTimes(2);
+        expect(query.stopTask).toHaveBeenNthCalledWith(1, "workflow-1");
+        expect(query.stopTask).toHaveBeenNthCalledWith(2, "workflow-1");
+        expect(query.interrupt).not.toHaveBeenCalled();
+        expect(updates.map(({ update }) => update)).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                sessionUpdate: "async_task_spawned",
+                asyncTaskId: "workflow-1",
+                canStop: true,
+            }),
+            expect.objectContaining({
+                sessionUpdate: "async_task_state_update",
+                asyncTaskId: "workflow-1",
+                state: "stopped",
+            }),
+        ]));
+        // One transcript line for the two stop attempts: the failed one never
+        // reached a terminal state, and the retry says it once.
+        expect(updates.filter(({ update }) => update.sessionUpdate === "agent_message_chunk")).toHaveLength(1);
+        expect(updates.at(-1)?.update).toMatchObject({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text" },
+        });
+    });
+    it("attaches a Bash tool id discovered after async_task_spawned", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (notification) => updates.push(notification),
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                _meta: { jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } } },
+            },
+        });
+        injectGeneratorSession(agent, makeGenerator([
+            {
+                type: "assistant",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+                message: {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "tool_use",
+                            id: "bash-tool",
+                            name: "Bash",
+                            input: { command: "npm run build", run_in_background: true },
+                        },
+                    ],
+                    usage: SUBAGENT_TEST_USAGE,
+                },
+            },
+            {
+                type: "system",
+                subtype: "task_started",
+                task_id: "shell-1",
+                task_type: "local_bash",
+                description: "Build",
+                is_backgrounded: true,
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            {
+                type: "user",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+                tool_use_result: { backgroundTaskId: "shell-1" },
+                message: {
+                    role: "user",
+                    content: [
+                        {
+                            type: "tool_result",
+                            tool_use_id: "bash-tool",
+                            content: "Command running in background. Output is being written to: /tmp/tasks/shell-1.output. You will be notified when it completes.",
+                        },
+                    ],
+                },
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        const lifecycle = updates
+            .map(({ update }) => update)
+            .filter((update) => update.sessionUpdate === "async_task_spawned" ||
+            update.sessionUpdate === "async_task_progress");
+        expect(lifecycle[0]).toMatchObject({
+            sessionUpdate: "async_task_spawned",
+            asyncTaskId: "shell-1",
+        });
+        expect(lifecycle[0]).not.toHaveProperty("toolCallId");
+        expect(lifecycle[1]).toMatchObject({
+            sessionUpdate: "async_task_progress",
+            asyncTaskId: "shell-1",
+            toolCallId: "bash-tool",
+            outputFilePath: "/tmp/tasks/shell-1.output",
+        });
+        // The Bash card completes as soon as the command detaches, so this marker is
+        // the only thing telling a client it is backgrounded work, not finished work.
+        const bashUpdate = updates
+            .map(({ update }) => update)
+            .findLast((update) => update.sessionUpdate === "tool_call_update" && update.toolCallId === "bash-tool");
+        expect(bashUpdate).toMatchObject({
+            status: "completed",
+            _meta: {
+                jetbrains: { air: { version: 1, asyncTasks: { backgrounded: true } } },
+            },
+        });
+        // Agent-native tool metadata keeps its own namespace alongside it.
+        expect(bashUpdate?._meta?.claudeCode).toMatchObject({ toolName: "Bash" });
+    });
+    it("omits the background task link for a client without the asyncTasks capability", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (notification) => updates.push(notification),
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+        injectGeneratorSession(agent, makeGenerator([
+            {
+                type: "assistant",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+                message: {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "tool_use",
+                            id: "bash-tool",
+                            name: "Bash",
+                            input: { command: "npm run build", run_in_background: true },
+                        },
+                    ],
+                    usage: SUBAGENT_TEST_USAGE,
+                },
+            },
+            {
+                type: "user",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+                tool_use_result: { backgroundTaskId: "shell-1" },
+                message: {
+                    role: "user",
+                    content: [
+                        {
+                            type: "tool_result",
+                            tool_use_id: "bash-tool",
+                            content: "Command running in background. Output is being written to: /tmp/tasks/shell-1.output. You will be notified when it completes.",
+                        },
+                    ],
+                },
+            },
+            successResult(),
+        ]));
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        // The id would name an `async_task_spawned` this client is never sent.
+        const bashUpdate = updates
+            .map(({ update }) => update)
+            .findLast((update) => update.sessionUpdate === "tool_call_update" && update.toolCallId === "bash-tool");
+        expect(bashUpdate).toMatchObject({ status: "completed" });
+        expect(bashUpdate?._meta).not.toHaveProperty("jetbrains");
+    });
+});
+describe("native subagent eager tool ownership", () => {
+    it("completes an Agent card created by a permission after its control frame was suppressed", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (notification) => updates.push(notification),
+            requestPermission: async () => ({
+                outcome: { outcome: "selected", optionId: "allow-once" },
+            }),
+        }, { log: () => { }, error: () => { } });
+        await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        let controlConsumed;
+        const consumed = new Promise((resolve) => (controlConsumed = resolve));
+        let release;
+        const released = new Promise((resolve) => (release = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messages() {
+                const iter = input[Symbol.asyncIterator]();
+                const user = await iter.next();
+                yield userEcho(user.value);
+                yield {
+                    type: "assistant",
+                    parent_tool_use_id: null,
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                    message: {
+                        role: "assistant",
+                        content: [
+                            {
+                                type: "tool_use",
+                                id: "toolu_agent",
+                                name: "Agent",
+                                input: { description: "Investigate", prompt: "Find the bug" },
+                            },
+                        ],
+                        usage: {},
+                    },
+                };
+                controlConsumed();
+                await released;
+                yield {
+                    type: "system",
+                    subtype: "task_started",
+                    task_id: "agent-1",
+                    tool_use_id: "toolu_agent",
+                    subagent_type: "Explore",
+                    description: "Investigate",
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                };
+                yield {
+                    type: "user",
+                    parent_tool_use_id: null,
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                    message: {
+                        role: "user",
+                        content: [{ type: "tool_result", tool_use_id: "toolu_agent", content: "done" }],
+                    },
+                };
+                yield {
+                    type: "result",
+                    subtype: "success",
+                    stop_reason: "end_turn",
+                    is_error: false,
+                    result: "",
+                    errors: [],
+                    duration_ms: 0,
+                    duration_api_ms: 0,
+                    num_turns: 1,
+                    total_cost_usd: 0,
+                    usage: {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                    modelUsage: {},
+                    permission_denials: [],
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                };
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messages();
+        });
+        const prompt = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "go" }],
+        });
+        await consumed;
+        await agent.canUseTool("test-session")("Agent", { description: "Investigate", prompt: "Find the bug" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "toolu_agent",
+        });
+        release();
+        await prompt;
+        const controlUpdates = updates.filter(({ update }) => (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") &&
+            update.toolCallId === "toolu_agent");
+        expect(controlUpdates.map(({ sessionId }) => sessionId)).toEqual([
+            "test-session",
+            "test-session",
+        ]);
+        expect(controlUpdates.map(({ update }) => ("status" in update ? update.status : undefined))).toEqual(["pending", "completed"]);
+    });
+    it("keeps permission-visible Agent control lifecycle in its original session", async () => {
+        const published = [];
+        const session = {
+            nativeSubagentsByTaskId: new Map(),
+            nativeSubagentTaskIdByToolUseId: new Map(),
+            nativeSubagentParentByToolUseId: new Map(),
+        };
+        const runtime = new NativeSubagentRuntime(true, "root", session, async (notification) => {
+            published.push(notification);
+        }, { log: () => { } });
+        await runtime.taskStarted({
+            taskId: "agent-1",
+            toolUseId: "toolu_agent",
+            subagentType: "Explore",
+            description: "Investigate",
+        }, async (notification) => {
+            published.push(notification);
+        });
+        const control = {
+            sessionId: "root",
+            update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: "toolu_agent",
+                status: "completed",
+                rawInput: { description: "Investigate", prompt: "Find the bug" },
+                _meta: { claudeCode: { toolName: "Agent", subagent: true } },
+            },
+        };
+        const routed = await runtime.route(control, async () => { }, "root");
+        expect(routed).toEqual(control);
+        expect(published[0]).toMatchObject({
+            sessionId: "root",
+            update: { sessionUpdate: "subagent_spawned", subagentSessionId: "agent-1" },
+        });
+    });
+    it("pins a raced child tool lifecycle to the root where permission created it", async () => {
+        const session = {
+            nativeSubagentsByTaskId: new Map([
+                [
+                    "agent-1",
+                    {
+                        sessionId: "agent-1",
+                        parentSessionId: "root",
+                        parentToolUseId: "toolu_agent",
+                        name: "Explore",
+                        task: "Investigate",
+                        announced: true,
+                    },
+                ],
+            ]),
+            nativeSubagentTaskIdByToolUseId: new Map([["toolu_agent", "agent-1"]]),
+            nativeSubagentParentByToolUseId: new Map(),
+        };
+        const runtime = new NativeSubagentRuntime(true, "root", session, async () => { }, {
+            log: () => { },
+        });
+        const terminal = {
+            sessionId: "root",
+            update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: "toolu_child",
+                status: "completed",
+                _meta: { claudeCode: { toolName: "Bash", parentToolUseId: "toolu_agent" } },
+            },
+        };
+        await expect(runtime.route(terminal, async () => { }, "root")).resolves.toEqual(terminal);
+        await expect(runtime.route(terminal, async () => { })).resolves.toMatchObject({
+            sessionId: "agent-1",
+        });
     });
 });
 describe("runPromptWithCancellation", () => {
@@ -3194,6 +4629,39 @@ describe("stop reason propagation", () => {
         expect(response.stopReason).toBe("end_turn");
         expect(errors.filter((e) => e.includes("Unexpected case"))).toEqual([]);
     });
+    it("treats the command_lifecycle 'refused' state (2.1.238+) as terminal, not unknown", async () => {
+        // A cross-session peer message declined by the session's receive-side
+        // policy gets a terminal `refused` frame instead of no frames at all.
+        // Its uuid is never one of our prompt uuids, but the frame still flows
+        // down the same stream — it must drain silently, not log as an unknown
+        // v1 state.
+        const errors = [];
+        const mockClient = { sessionUpdate: async () => { } };
+        const agent = new ClaudeAcpAgent(mockClient, {
+            log: () => { },
+            error: (msg) => errors.push(String(msg)),
+        });
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield lifecycleFrame(randomUUID(), "refused");
+                yield lifecycleFrame(userMessage.uuid, "queued");
+                yield lifecycleFrame(userMessage.uuid, "started");
+                yield userEcho(userMessage);
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield lifecycleFrame(userMessage.uuid, "completed");
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "test" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        expect(errors.filter((e) => e.includes("unknown command_lifecycle state"))).toEqual([]);
+    });
     it("publishes active_goal as provider-neutral session state without changing turn settlement", async () => {
         const updates = [];
         const mockClient = {
@@ -3507,82 +4975,6 @@ describe("stop reason propagation", () => {
             .map((u) => u.update.content?.text);
         expect(chunkTexts).toContain("between-turn background note");
     });
-    it("pushes a session_info_update when the SDK generates a title at turn-end", async () => {
-        const sessionUpdates = [];
-        const mockClient = {
-            sessionUpdate: async (u) => {
-                sessionUpdates.push(u);
-            },
-        };
-        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
-        vi.mocked(getSessionInfo).mockResolvedValue({
-            sessionId: "test-session",
-            summary: "Fix the flaky title test",
-            lastModified: 1_700_000_000_000,
-        });
-        const input = new Pushable();
-        async function* messageGenerator() {
-            const iter = input[Symbol.asyncIterator]();
-            const { value: userMessage } = await iter.next();
-            yield userEcho(userMessage);
-            yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
-            yield { type: "system", subtype: "session_state_changed", state: "idle" };
-        }
-        agent.sessions["test-session"] = mockSessionState({
-            query: wrapQuery(messageGenerator()),
-            input,
-        });
-        await agent.prompt({
-            sessionId: "test-session",
-            prompt: [{ type: "text", text: "test" }],
-        });
-        await agent.sessions["test-session"]?.consumer;
-        const titleUpdate = sessionUpdates.find((u) => u.update?.sessionUpdate === "session_info_update");
-        expect(titleUpdate?.update).toEqual({
-            sessionUpdate: "session_info_update",
-            title: "Fix the flaky title test",
-            updatedAt: new Date(1_700_000_000_000).toISOString(),
-        });
-        expect(getSessionInfo).toHaveBeenCalledWith("test-session", { dir: "/test" });
-    });
-    it("does not re-push session_info_update when the title is unchanged", async () => {
-        const sessionUpdates = [];
-        const mockClient = {
-            sessionUpdate: async (u) => {
-                sessionUpdates.push(u);
-            },
-        };
-        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
-        vi.mocked(getSessionInfo).mockResolvedValue({
-            sessionId: "test-session",
-            summary: "Stable title",
-            lastModified: 1_700_000_000_000,
-        });
-        const input = new Pushable();
-        async function* messageGenerator() {
-            const iter = input[Symbol.asyncIterator]();
-            // Two turns, each ending in idle, but the title never changes.
-            for (let i = 0; i < 2; i++) {
-                const { value: userMessage } = await iter.next();
-                yield userEcho(userMessage);
-                yield createResultMessage({
-                    subtype: "success",
-                    stop_reason: "end_turn",
-                    is_error: false,
-                });
-                yield { type: "system", subtype: "session_state_changed", state: "idle" };
-            }
-        }
-        agent.sessions["test-session"] = mockSessionState({
-            query: wrapQuery(messageGenerator()),
-            input,
-        });
-        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "one" }] });
-        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "two" }] });
-        await agent.sessions["test-session"]?.consumer;
-        const titleUpdates = sessionUpdates.filter((u) => u.update?.sessionUpdate === "session_info_update");
-        expect(titleUpdates).toHaveLength(1);
-    });
     it("should throw internal error for success with is_error true and no max_tokens", async () => {
         const agent = createMockAgent();
         injectSession(agent, [
@@ -3787,6 +5179,7 @@ describe("stop reason propagation", () => {
     it.each([
         ["authentication_failed", "access"],
         ["billing_error", "limit"],
+        ["account_on_hold", "limit"],
         ["rate_limit", "limit"],
         ["overloaded", "service"],
         ["invalid_request", "request"],
@@ -4976,6 +6369,30 @@ describe("logout", () => {
         });
         expect(response.agentCapabilities?.auth?.logout).toEqual({});
     });
+    it("advertises the agent subagent capability independently of client negotiation", async () => {
+        const agent = createMockAgent();
+        const unsupported = await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+        const supported = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: { subagents: {} },
+        });
+        expect((unsupported.agentCapabilities?.sessionCapabilities).subagents).toEqual({});
+        expect((supported.agentCapabilities?.sessionCapabilities).subagents).toEqual({});
+    });
+    it("negotiates subagents through AIR metadata when the SDK strips the draft field", async () => {
+        const agent = createMockAgent();
+        const supported = await agent.initialize({
+            protocolVersion: 1,
+            clientCapabilities: {
+                _meta: {
+                    jetbrains: {
+                        air: { version: 1, capabilities: ["nativeSubagentSessions"] },
+                    },
+                },
+            },
+        });
+        expect((supported.agentCapabilities?.sessionCapabilities).subagents).toEqual({});
+    });
     it("advertises canonical AIR sessionFailure support during initialize", async () => {
         const agent = createMockAgent();
         const response = await agent.initialize({
@@ -4990,7 +6407,12 @@ describe("logout", () => {
         });
         expect(response._meta?.jetbrains?.air).toEqual({
             version: 1,
-            capabilities: ["sessionFailure", "agentFileChangeReport"],
+            capabilities: [
+                "sessionFailure",
+                "agentFileChangeReport",
+                "nativeSubagentSessions",
+                "asyncTasks",
+            ],
         });
     });
     it("advertises AIR sessionFailure support even before client negotiation", async () => {
@@ -5001,7 +6423,58 @@ describe("logout", () => {
         });
         expect(response._meta?.jetbrains?.air).toEqual({
             version: 1,
-            capabilities: ["sessionFailure", "agentFileChangeReport"],
+            capabilities: [
+                "sessionFailure",
+                "agentFileChangeReport",
+                "nativeSubagentSessions",
+                "asyncTasks",
+            ],
+        });
+    });
+});
+describe("session/fork", () => {
+    it("forks the latest turn in the requested workspace", async () => {
+        const client = { sessionUpdate: async () => { } };
+        const agent = new ClaudeAcpAgent(client, { log: () => { }, error: () => { } });
+        vi.mocked(forkSession).mockResolvedValueOnce({ sessionId: "fork-id" });
+        const response = await agent.unstable_forkSession({
+            sessionId: "source-id",
+            cwd: "/workspace",
+            additionalDirectories: ["/workspace/extra"],
+            mcpServers: [],
+        });
+        expect(response.sessionId).toBe("fork-id");
+        expect(forkSession).toHaveBeenCalledWith("source-id", { dir: "/workspace" });
+    });
+    it("forks at an AIR message id through the current SDK", async () => {
+        const client = { sessionUpdate: async () => { } };
+        const agent = new ClaudeAcpAgent(client, { log: () => { }, error: () => { } });
+        vi.mocked(getSessionMessages).mockResolvedValueOnce([
+            {
+                type: "assistant",
+                uuid: "assistant-uuid",
+                session_id: "source-id",
+                message: { id: "msg_123", role: "assistant", content: [] },
+                parent_tool_use_id: null,
+                parent_agent_id: null,
+            },
+        ]);
+        vi.mocked(forkSession).mockResolvedValueOnce({ sessionId: "fork-id" });
+        const meta = {
+            jetbrains: { air: { fork: { version: 1, messageId: "msg_123:segment:0" } } },
+        };
+        const response = await agent.unstable_forkSession({
+            sessionId: "source-id",
+            cwd: "/workspace",
+            additionalDirectories: ["/workspace/extra"],
+            mcpServers: [],
+            _meta: meta,
+        });
+        expect(response.sessionId).toBe("fork-id");
+        expect(getSessionMessages).toHaveBeenCalledWith("source-id", { dir: "/workspace" });
+        expect(forkSession).toHaveBeenCalledWith("source-id", {
+            dir: "/workspace",
+            upToMessageId: "assistant-uuid",
         });
     });
 });
@@ -5019,6 +6492,7 @@ describe("session/close", () => {
             query: gen,
             input: new Pushable(),
             cancelled: false,
+            titles: new SessionTitles(agent, sessionId),
             cwd: "/test",
             sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
             modes: {
@@ -5103,6 +6577,7 @@ describe("session/delete", () => {
             query: gen,
             input: new Pushable(),
             cancelled: false,
+            titles: new SessionTitles(agent, sessionId),
             cwd: "/test",
             sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
             modes: { currentModeId: "default", availableModes: [] },
@@ -5192,6 +6667,7 @@ describe("getOrCreateSession param change detection", () => {
             query: gen,
             input: new Pushable(),
             cancelled: false,
+            titles: new SessionTitles(agent, sessionId),
             cwd,
             sessionFingerprint: JSON.stringify({
                 cwd,
@@ -6892,6 +8368,7 @@ describe("assembled assistant text fallback", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "second" }] });
         // Turn 2's text appears exactly once (the live delta); the consolidated copy
@@ -6914,7 +8391,7 @@ describe("assembled assistant text fallback", () => {
         expect(messageChunkTexts(updates)).toEqual([]);
         expect(thoughtChunkTexts(updates)).toEqual([]);
     });
-    it("forwards subagent text and thinking as nested chunks for capable clients", async () => {
+    it("forwards subagent text and thinking through the legacy transcript extension", async () => {
         const { agent, updates } = createMockAgentWithCapture();
         agent.clientCapabilities = { _meta: { "subagent-transcript": true } };
         injectSession(agent, [
@@ -6930,9 +8407,7 @@ describe("assembled assistant text fallback", () => {
             update.sessionUpdate === "agent_thought_chunk");
         expect(nestedUpdates).toHaveLength(2);
         for (const { update } of nestedUpdates) {
-            expect(update._meta).toMatchObject({
-                claudeCode: { parentToolUseId: "tool_use_1" },
-            });
+            expect(update._meta).toMatchObject({ claudeCode: { parentToolUseId: "tool_use_1" } });
         }
         expect(messageChunkTexts(updates)).toContain("nested report");
         expect(thoughtChunkTexts(updates)).toContain("checking");
@@ -7675,6 +9150,7 @@ describe("post-error recovery", () => {
             query: gen,
             input,
             cancelled: false,
+            titles: new SessionTitles(agent, "test-session"),
             cwd: "/test",
             sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
             modes: { currentModeId: "default", availableModes: [] },
@@ -7894,6 +9370,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
     });
@@ -7934,6 +9411,12 @@ describe("post-error recovery", () => {
                 cachedWriteTokens: 0,
                 totalTokens: 15,
             },
+            _meta: expectedQuotaMeta({
+                inputTokens: 10,
+                outputTokens: 5,
+                cachedReadTokens: 0,
+                cachedWriteTokens: 0,
+            }),
         });
     });
     it("ignores cancel() after the query stream has closed (no interrupt on a dead query)", async () => {
@@ -7962,6 +9445,28 @@ describe("post-error recovery", () => {
         // client-owned) abort controller — only explicit teardown does.
         expect(agent.sessions["test-session"].query.close).toHaveBeenCalled();
         expect(agent.sessions["test-session"].abortController.signal.aborted).toBe(false);
+    });
+    it("still interrupts and cleans up when native subagent cancellation publication fails", async () => {
+        const errors = [];
+        const agent = new ClaudeAcpAgent({}, {
+            log: () => { },
+            error: (...args) => errors.push(args),
+        });
+        async function* emptyQuery() { }
+        const session = mockSessionState({
+            query: wrapQuery(emptyQuery()),
+            nativeSubagentRuntime: {
+                finishAll: vi.fn(async () => {
+                    throw new Error("client disconnected");
+                }),
+            },
+            eagerToolCallSessions: new Map([["tool", "test-session"]]),
+        });
+        agent.sessions["test-session"] = session;
+        await expect(agent.cancel({ sessionId: "test-session" })).resolves.toBeUndefined();
+        expect(session.query.interrupt).toHaveBeenCalledOnce();
+        expect(session.eagerToolCallSessions).toEqual(new Map());
+        expect(errors.flat().join(" ")).toContain("failed to publish cancelled subagent state");
     });
     it("settles a turn that ends via the stream-done path even if releasing resources throws", async () => {
         const agent = createMockAgent();
@@ -8023,6 +9528,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).rejects.toThrow(/start a new session/);
     });
@@ -8064,6 +9570,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         // session.cancelled is still true here (turn 1 settled, nothing re-activated).
         // The /compact result must still settle via head-promotion.
@@ -8125,6 +9632,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const thirdResult = await third;
@@ -8190,6 +9698,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const compactResult = await compact;
@@ -8244,6 +9753,7 @@ describe("post-error recovery", () => {
         await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 2);
         await agent.cancel({ sessionId: "test-session" }); // counts turn 2, then the receipt uncounts it
         expect(agent.sessions["test-session"]?.pendingOrphanResults).toBe(0);
+        expect(agent.sessions["test-session"]?.pendingEmptyInterruptionDiagnosticCommands?.size ?? 0).toBe(0);
         const compact = agent.prompt({
             sessionId: "test-session",
             prompt: [{ type: "text", text: "/compact" }],
@@ -8252,6 +9762,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const compactResult = await compact;
@@ -8310,6 +9821,7 @@ describe("post-error recovery", () => {
         session.query.interrupt = vi.fn(async () => ({ still_queued: [survivingUuid] }));
         await agent.cancel({ sessionId: "test-session" });
         expect(agent.sessions["test-session"]?.pendingOrphanResults).toBe(1);
+        expect(agent.sessions["test-session"]?.pendingEmptyInterruptionDiagnosticCommands).toEqual(new Set([survivingUuid]));
         const compact = agent.prompt({
             sessionId: "test-session",
             prompt: [{ type: "text", text: "/compact" }],
@@ -8318,6 +9830,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const compactResult = await compact;
@@ -8400,6 +9913,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         await expect(third).resolves.toEqual({ stopReason: "cancelled" });
@@ -8458,6 +9972,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const compactResult = await compact;
@@ -8522,6 +10037,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const compactResult = await compact;
@@ -8584,11 +10100,96 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const compactResult = await compact;
         expect(compactResult.stopReason).toBe("end_turn");
         expect(compactResult.usage?.inputTokens).toBe(10);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("uses a result's user_message_uuid to consume exactly the orphan it names", async () => {
+        // SDK 0.3.246+ stamps results with the triggering send's client uuid.
+        // With TWO cancelled commands pending (their dispatch frames lost), a
+        // stamped orphan result must consume the entry it NAMES — not the oldest
+        // — and the later /compact result, stamped with its own send, must not
+        // be eaten by the dup-over-loss one-skip that the leftover pending entry
+        // would otherwise trigger (which would hang the /compact prompt).
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield lifecycleInit;
+                yield userEcho(u1.value); // turn 1 active
+                await iter.next(); // turn 2 queued (cancelled below; every frame lost)
+                const u3 = await iter.next(); // turn 3 queued (cancelled below)
+                await gate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                // Both dispatch frames are LOST; only turn 3's dead turn flushes a
+                // result, stamped with the send it answers.
+                yield {
+                    ...createResultMessage({
+                        subtype: "error_during_execution",
+                        stop_reason: null,
+                        is_error: true,
+                    }),
+                    user_message_uuid: u3.value.uuid,
+                };
+                const u4 = await iter.next(); // /compact's pushed message
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield {
+                    ...createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false }),
+                    user_message_uuid: u4.value.uuid, // a live result names its own send
+                };
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        await waitFor(() => !!agent.sessions["test-session"]?.msgLifecycleV1);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        const third = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "third" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 3);
+        await agent.cancel({ sessionId: "test-session" });
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(2);
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({
+            stopReason: "cancelled",
+            usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
+        });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        await expect(third).resolves.toEqual({ stopReason: "cancelled" });
+        // Settles on its OWN stamped result — under positional attribution the
+        // one-skip would have consumed it for turn 2 and hung this prompt.
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        // Turn 3's entry was consumed by name; turn 2's leftover pending entry
+        // is swept by /compact's activation.
+        expect(agent.sessions["test-session"]?.orphanCommands?.size).toBe(0);
         await agent.sessions["test-session"]?.consumer;
     });
     it("deletes (not zombifies) an orphan whose `cancelled` frame arrives AFTER its error result", async () => {
@@ -8649,6 +10250,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const compactResult = await compact;
@@ -8723,6 +10325,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         await expect(third).resolves.toEqual({ stopReason: "cancelled" });
@@ -8787,6 +10390,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const compactResult = await compact;
@@ -8853,6 +10457,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const compactResult = await compact;
@@ -8918,6 +10523,7 @@ describe("post-error recovery", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         // The orphan's headless result must have drained its own entry — this
@@ -9443,6 +11049,11 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: expect.objectContaining({ totalTokens: 15 }),
+            _meta: expect.objectContaining({
+                quota: expect.objectContaining({
+                    token_count: expect.objectContaining({ totalTokens: 15 }),
+                }),
+            }),
         });
         releaseAfterCancel();
         await agent.sessions["test-session"]?.consumer;
@@ -10190,6 +11801,17 @@ describe("turn steering (_session/steering)", () => {
             session_id: "test-session",
         };
     }
+    function createExecutionErrorResult(errors) {
+        const base = { ...createResultMessage() };
+        delete base.result;
+        return {
+            ...base,
+            subtype: "error_during_execution",
+            stop_reason: null,
+            is_error: true,
+            errors,
+        };
+    }
     // A minimal SDK assistant message carrying a single text block. Used by the
     // promptRequired retry test to model the continuation turn's streamed reply.
     function createAssistantText(text) {
@@ -10649,6 +12271,89 @@ describe("turn steering (_session/steering)", () => {
         expect(typeof injected.uuid).toBe("string");
         expect(JSON.stringify(injected.message.content)).toContain("also handle X");
     });
+    it.each([
+        {
+            name: "a permission request",
+            start: (agent, signal) => agent.canUseTool("test-session")("Bash", { command: "npm test" }, {
+                signal,
+                suggestions: [],
+                toolUseID: "tool-permission",
+            }),
+            response: { outcome: { outcome: "selected", optionId: "allow-once" } },
+        },
+        {
+            name: "an AskUserQuestion elicitation",
+            start: (agent, signal) => {
+                agent.clientCapabilities = { elicitation: { form: true, url: true } };
+                return agent.canUseTool("test-session")("AskUserQuestion", {
+                    questions: [
+                        {
+                            question: "Pick a color",
+                            header: "Color",
+                            options: [{ label: "Blue", description: "Use blue" }],
+                            multiSelect: false,
+                        },
+                    ],
+                }, { signal, suggestions: [], toolUseID: "tool-question" });
+            },
+            response: { action: "accept", content: { question_0: "Blue" } },
+        },
+        {
+            name: "an MCP elicitation",
+            start: (agent, signal) => agent.handleMcpElicitation("test-session", { form: true, url: true })({
+                mode: "form",
+                message: "Choose",
+                requestedSchema: { type: "object", properties: {} },
+            }, { signal }),
+            response: { action: "accept", content: {} },
+        },
+        {
+            name: "a refusal-fallback user dialog",
+            start: (agent, signal) => agent.handleUserDialog("test-session")({
+                dialogKind: "refusal_fallback_prompt",
+                payload: {
+                    originalModel: "claude-fable-5",
+                    fallbackModel: "claude-opus-4-8",
+                    apiRefusalCategory: "cyber",
+                },
+            }, { signal }),
+            response: { action: "accept", content: { choice: "retry_fallback" } },
+        },
+    ])("uses priority:'later' while $name is pending", async ({ start, response }) => {
+        let resolveUserInput;
+        const userInputResponse = new Promise((resolve) => (resolveUserInput = resolve));
+        const userInputRequest = vi.fn(() => userInputResponse);
+        const input = new Pushable();
+        const inputPush = vi.spyOn(input, "push");
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async () => { },
+            requestPermission: userInputRequest,
+            createElicitation: userInputRequest,
+        }, { log: () => { }, error: () => { } });
+        agent.sessions["test-session"] = mockSessionState({
+            input,
+            turnQueue: [
+                {
+                    promptUuid: "running",
+                    isLocalOnlyCommand: false,
+                    settled: false,
+                    resolve: () => { },
+                    reject: () => { },
+                },
+            ],
+        });
+        const pending = start(agent, new AbortController().signal);
+        await waitFor(() => userInputRequest.mock.calls.length === 1);
+        await expect(agent.steer({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "also handle this" }],
+        })).resolves.toEqual({ outcome: "injected" });
+        expect(inputPush).toHaveBeenCalledTimes(1);
+        expect(inputPush.mock.calls[0][0].priority).toBe("later");
+        resolveUserInput(response);
+        await pending;
+        expect(agent.sessions["test-session"].pendingUserInputCount).toBe(0);
+    });
     it("publishes an optimistic goal update for a steered goal replacement", async () => {
         const updates = [];
         const agent = new ClaudeAcpAgent({
@@ -10814,6 +12519,447 @@ describe("turn steering (_session/steering)", () => {
             prompt: [{ type: "text", text: "/goal clear" }],
         });
         await expect(turn).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+    });
+    it("maps the correlated ExitPlanMode interrupt diagnostic to cancellation", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (notification) => updates.push(notification),
+        }, { log: () => { }, error: () => { } });
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const original = await iter.next();
+                yield userEcho(original.value);
+                yield {
+                    type: "assistant",
+                    message: {
+                        role: "assistant",
+                        content: [
+                            {
+                                type: "tool_use",
+                                id: "tool-plan",
+                                name: "ExitPlanMode",
+                                input: { plan: "Implement it" },
+                            },
+                        ],
+                        usage: {},
+                    },
+                    parent_tool_use_id: null,
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                };
+                yield {
+                    type: "user",
+                    message: {
+                        role: "user",
+                        content: [
+                            {
+                                type: "tool_result",
+                                tool_use_id: "tool-plan",
+                                content: "User chose to keep planning",
+                                is_error: true,
+                            },
+                        ],
+                    },
+                    parent_tool_use_id: null,
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                    tool_result_meta: [{ id: "tool-plan", non_execution_kind: "user-rejected" }],
+                };
+                // An interrupted Claude cycle is error-shaped. The causal stop reason
+                // is present only in errors; SDKResultError has no result property.
+                yield createExecutionErrorResult([
+                    "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use",
+                ]);
+                yield idleMessage();
+            }
+            return messageGenerator();
+        });
+        await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "plan" }] })).resolves.toEqual(expect.objectContaining({ stopReason: "cancelled" }));
+        expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+        expect(agent.sessions["test-session"].pendingExitPlanModeInterruption).toBeUndefined();
+    });
+    it("continues an accepted plan in a fresh private query without exposing the internal reject", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (notification) => updates.push(notification),
+        }, { log: () => { }, error: () => { } });
+        let continuation;
+        const createSession = vi
+            .spyOn(agent, "createSession")
+            .mockImplementation(async (_params, options) => {
+            const input = new Pushable();
+            async function* freshGenerator() {
+                const next = await input[Symbol.asyncIterator]().next();
+                continuation = next.value;
+                yield userEcho(next.value);
+                yield createAssistantText("Implemented");
+                yield createResultMessage();
+                yield idleMessage();
+            }
+            agent.sessions["test-session"] = mockSessionState({
+                query: wrapQuery(freshGenerator()),
+                input,
+                modes: { currentModeId: options.permissionMode, availableModes: [] },
+                fastModeEnabled: false,
+            });
+            return { sessionId: "test-session" };
+        });
+        injectGeneratorSession(agent, (input) => {
+            async function* oldGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const original = await iter.next();
+                yield userEcho(original.value);
+                yield {
+                    type: "assistant",
+                    message: {
+                        role: "assistant",
+                        content: [
+                            {
+                                type: "tool_use",
+                                id: "tool-plan",
+                                name: "ExitPlanMode",
+                                input: { plan: "Implement it" },
+                            },
+                        ],
+                        usage: {},
+                    },
+                    parent_tool_use_id: null,
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                };
+                yield {
+                    type: "user",
+                    message: {
+                        role: "user",
+                        content: [
+                            {
+                                type: "tool_result",
+                                tool_use_id: "tool-plan",
+                                content: "User accepted the plan and requested a fresh context",
+                                is_error: true,
+                            },
+                        ],
+                    },
+                    parent_tool_use_id: null,
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                    tool_result_meta: [{ id: "tool-plan", non_execution_kind: "user-rejected" }],
+                };
+                yield createExecutionErrorResult([
+                    "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use",
+                ]);
+            }
+            return oldGenerator();
+        }, {
+            creationParams: { cwd: "/test", mcpServers: [] },
+            pendingExitPlanModeInterruption: {
+                toolUseId: "tool-plan",
+                toolResultSeen: false,
+            },
+            pendingExitPlanContextReset: {
+                toolUseId: "tool-plan",
+                plan: "Implement it",
+                mode: "auto",
+            },
+        });
+        await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "plan" }] })).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/test" }), expect.objectContaining({ publicSessionId: "test-session", permissionMode: "auto" }));
+        expect(JSON.stringify(continuation)).toContain("Implement the following plan:\\n\\nImplement it");
+        expect(updates).toContainEqual(expect.objectContaining({
+            update: expect.objectContaining({
+                sessionUpdate: "tool_call_update",
+                toolCallId: "tool-plan",
+                status: "completed",
+            }),
+        }));
+        expect(JSON.stringify(updates)).not.toContain('"status":"failed"');
+        expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+    });
+    it("rejects the pending turn if a fresh clear-context query cannot be created", async () => {
+        const agent = createMockAgent();
+        vi.spyOn(agent, "createSession").mockRejectedValue(new Error("restart failed"));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const original = await iter.next();
+                yield userEcho(original.value);
+                yield {
+                    type: "user",
+                    message: {
+                        role: "user",
+                        content: [
+                            {
+                                type: "tool_result",
+                                tool_use_id: "tool-plan",
+                                content: "User accepted the plan and requested a fresh context",
+                                is_error: true,
+                            },
+                        ],
+                    },
+                    parent_tool_use_id: null,
+                    uuid: randomUUID(),
+                    session_id: "test-session",
+                };
+                yield createExecutionErrorResult([
+                    "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use",
+                ]);
+            }
+            return messageGenerator();
+        }, {
+            creationParams: { cwd: "/test", mcpServers: [] },
+            pendingExitPlanModeInterruption: {
+                toolUseId: "tool-plan",
+                toolResultSeen: true,
+            },
+            pendingExitPlanContextReset: {
+                toolUseId: "tool-plan",
+                plan: "Implement it",
+                mode: "auto",
+            },
+        });
+        await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "plan" }] })).rejects.toThrow("restart failed");
+    });
+    it("does not resurrect a clear-context session closed while its replacement is created", async () => {
+        const agent = createMockAgent();
+        const resolveTurn = vi.fn();
+        const rejectTurn = vi.fn();
+        const turn = {
+            promptUuid: randomUUID(),
+            isLocalOnlyCommand: false,
+            settled: false,
+            resolve: resolveTurn,
+            reject: rejectTurn,
+        };
+        const oldSession = mockSessionState({
+            query: wrapQuery((async function* () {
+                yield await new Promise(() => { });
+            })()),
+            input: new Pushable(),
+            activeTurn: turn,
+            turnQueue: [turn],
+            creationParams: { cwd: "/test", mcpServers: [] },
+        });
+        agent.sessions["test-session"] = oldSession;
+        let finishCreation;
+        let freshSession;
+        let freshInputPush;
+        vi.spyOn(agent, "createSession").mockImplementation(() => new Promise((resolve) => {
+            finishCreation = () => {
+                const freshInput = new Pushable();
+                freshInputPush = vi.spyOn(freshInput, "push");
+                freshSession = mockSessionState({
+                    query: wrapQuery((async function* () {
+                        yield await new Promise(() => { });
+                    })()),
+                    input: freshInput,
+                    modes: { currentModeId: "auto", availableModes: [] },
+                });
+                agent.sessions["test-session"] = freshSession;
+                resolve();
+            };
+        }));
+        const restart = agent.exitPlan.restart("test-session", oldSession, {
+            toolUseId: "tool-plan",
+            plan: "Ship it",
+            mode: "auto",
+        });
+        await vi.waitFor(() => expect(oldSession.query.close).toHaveBeenCalled());
+        await agent.closeSession({ sessionId: "test-session" });
+        finishCreation();
+        await expect(restart).resolves.toBeUndefined();
+        expect(agent.sessions["test-session"]).toBeUndefined();
+        expect(freshSession?.query.close).toHaveBeenCalled();
+        expect(freshInputPush).not.toHaveBeenCalled();
+        expect(resolveTurn).toHaveBeenCalledWith(expect.objectContaining({ stopReason: "cancelled" }));
+        expect(rejectTurn).not.toHaveBeenCalled();
+    });
+    it("does not hide a diagnostic before the rejected ExitPlanMode tool result", async () => {
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const original = await iter.next();
+                yield userEcho(original.value);
+                yield createExecutionErrorResult([
+                    "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use",
+                ]);
+                yield idleMessage();
+            }
+            return messageGenerator();
+        }, {
+            pendingExitPlanModeInterruption: {
+                toolUseId: "tool-plan",
+                toolResultSeen: false,
+            },
+        });
+        await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "plan" }] })).rejects.toThrow("[ede_diagnostic]");
+        expect(agent.sessions["test-session"].pendingExitPlanModeInterruption).toBeUndefined();
+    });
+    it("does not fail a replacement prompt on the cancelled prompt's late SDK diagnostic", async () => {
+        const updates = [];
+        const agent = new ClaudeAcpAgent({
+            sessionUpdate: async (notification) => updates.push(notification),
+        }, { log: () => { }, error: () => { } });
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const original = await iter.next();
+                // The first prompt is cancelled before the SDK echoes it. Once startup
+                // unblocks, the CLI still replays that prompt, its interruption marker,
+                // and the replacement prompt before emitting the cancelled cycle's
+                // diagnostic result — the ordering observed in the raw Claude session.
+                await gate;
+                const replacement = await iter.next();
+                yield userEcho(original.value);
+                yield userEcho({
+                    uuid: randomUUID(),
+                    message: { role: "user", content: "[Request interrupted by user]" },
+                });
+                yield userEcho(replacement.value);
+                yield {
+                    ...createResultMessage(),
+                    subtype: "success",
+                    is_error: true,
+                    result: "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+                };
+                yield createAssistantText("replacement answer");
+                yield createResultMessage();
+                yield idleMessage();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => agent.sessions["test-session"]?.turnQueue?.length === 1 &&
+            agent.sessions["test-session"]?.activeTurn == null);
+        await agent.cancel({ sessionId: "test-session" });
+        await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        release();
+        await expect(second).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        expect(JSON.stringify(updates)).not.toContain("[Request interrupted by user]");
+    });
+    it("swallows a stamped interruption diagnostic that names the cancelled command", async () => {
+        // Same replay ordering as above, but the diagnostic carries the SDK
+        // 0.3.246+ user_message_uuid stamp naming the cancelled first prompt —
+        // the exact-join path must consume precisely that hand-off token.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const original = await iter.next();
+                await gate;
+                const replacement = await iter.next();
+                yield userEcho(original.value);
+                yield userEcho({
+                    uuid: randomUUID(),
+                    message: { role: "user", content: "[Request interrupted by user]" },
+                });
+                yield userEcho(replacement.value);
+                yield {
+                    ...createResultMessage(),
+                    subtype: "success",
+                    is_error: true,
+                    result: "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+                    user_message_uuid: original.value.uuid,
+                };
+                yield createAssistantText("replacement answer");
+                yield createResultMessage();
+                yield idleMessage();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => agent.sessions["test-session"]?.turnQueue?.length === 1 &&
+            agent.sessions["test-session"]?.activeTurn == null);
+        await agent.cancel({ sessionId: "test-session" });
+        await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        release();
+        await expect(second).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        expect(agent.sessions["test-session"]?.pendingEmptyInterruptionDiagnosticCommands?.size ?? 0).toBe(0);
+    });
+    it("does not let a stale hand-off token swallow a live turn's stamped interruption diagnostic", async () => {
+        // The diagnostic-shaped error is stamped with the LIVE replacement
+        // prompt's uuid — not the cancelled command the token was handed out for.
+        // The stamp positively refutes "this is the cancelled cycle's
+        // diagnostic", so it must reach the ordinary failure lanes and fail the
+        // replacement prompt instead of being silently eaten.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const original = await iter.next();
+                await gate;
+                const replacement = await iter.next();
+                yield userEcho(original.value);
+                yield userEcho({
+                    uuid: randomUUID(),
+                    message: { role: "user", content: "[Request interrupted by user]" },
+                });
+                yield userEcho(replacement.value);
+                yield {
+                    ...createResultMessage(),
+                    subtype: "success",
+                    is_error: true,
+                    result: "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+                    user_message_uuid: replacement.value.uuid,
+                };
+                yield idleMessage();
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => agent.sessions["test-session"]?.turnQueue?.length === 1 &&
+            agent.sessions["test-session"]?.activeTurn == null);
+        await agent.cancel({ sessionId: "test-session" });
+        await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        release();
+        await expect(second).rejects.toThrow("[ede_diagnostic]");
+    });
+    it("does not hide an empty user-interruption diagnostic without a cancelled predecessor", async () => {
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const original = await iter.next();
+                yield userEcho(original.value);
+                yield {
+                    ...createResultMessage(),
+                    subtype: "success",
+                    is_error: true,
+                    result: "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+                };
+                yield idleMessage();
+            }
+            return messageGenerator();
+        });
+        await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "first" }] })).rejects.toThrow("[ede_diagnostic]");
     });
     // The other steer ordering: the cycle had already finished when the steer
     // landed, so nothing was aborted and its result is a natural one — followed by
@@ -11050,6 +13196,7 @@ describe("session/cancel wedge recovery (issue #680)", () => {
             query: gen,
             input,
             cancelled: false,
+            titles: new SessionTitles(agent, "test-session"),
             cwd: "/test",
             sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
             modes: { currentModeId: "default", availableModes: [] },
@@ -11148,6 +13295,7 @@ describe("session/cancel wedge recovery (issue #680)", () => {
         await expect(promptPromise).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
     });
     it("resolves an in-flight wedged prompt immediately when the session is closed", async () => {
@@ -11166,8 +13314,225 @@ describe("session/cancel wedge recovery (issue #680)", () => {
         await expect(promptPromise).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         expect(agent.sessions["test-session"]).toBeUndefined();
+    });
+});
+describe("prompt response quota metadata (_meta.quota)", () => {
+    function createAgent() {
+        return new ClaudeAcpAgent({ sessionUpdate: async () => { } }, {
+            log: () => { },
+            error: () => { },
+        });
+    }
+    const idle = () => ({
+        type: "system",
+        subtype: "session_state_changed",
+        state: "idle",
+        uuid: randomUUID(),
+        session_id: "test-session",
+    });
+    /** One `result.modelUsage` row; the counters a test doesn't care about stay 0. */
+    const modelRow = (overrides = {}) => ({
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        webSearchRequests: 0,
+        costUSD: 0,
+        contextWindow: 200000,
+        maxOutputTokens: 8192,
+        ...overrides,
+    });
+    const promptOnce = (agent, text) => agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text }] });
+    it("breaks a turn's spend down per model", async () => {
+        const agent = createAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                yield userEcho(userMessage);
+                yield successfulResultMessage({
+                    usage: {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                        cache_read_input_tokens: 3,
+                        cache_creation_input_tokens: 2,
+                    },
+                    // The main loop ran on Opus; a Task subagent ran on Haiku. Both are
+                    // in modelUsage, only the main loop is in `usage`.
+                    modelUsage: {
+                        "claude-opus-5[1m]": modelRow({
+                            inputTokens: 10,
+                            outputTokens: 5,
+                            cacheReadInputTokens: 3,
+                            cacheCreationInputTokens: 2,
+                        }),
+                        "claude-haiku-4-5": modelRow({ inputTokens: 4, outputTokens: 1 }),
+                    },
+                });
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        const response = await promptOnce(agent, "explore");
+        expect(response._meta).toEqual(expectedQuotaMeta({ inputTokens: 10, outputTokens: 5, cachedReadTokens: 3, cachedWriteTokens: 2 }, [
+            [
+                "claude-opus-5[1m]",
+                { inputTokens: 10, outputTokens: 5, cachedReadTokens: 3, cachedWriteTokens: 2 },
+            ],
+            [
+                "claude-haiku-4-5",
+                { inputTokens: 4, outputTokens: 1, cachedReadTokens: 0, cachedWriteTokens: 0 },
+            ],
+        ]));
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("reports each turn's own share of the running per-model total", async () => {
+        // `result.modelUsage` is cumulative for the whole query, so a second turn
+        // must report the increment — not the running total it reads.
+        const agent = createAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const first = await iter.next();
+                yield userEcho(first.value);
+                yield successfulResultMessage({
+                    usage: {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                    modelUsage: { "claude-opus-5": modelRow({ inputTokens: 10, outputTokens: 5 }) },
+                });
+                yield idle();
+                const second = await iter.next();
+                yield userEcho(second.value);
+                yield successfulResultMessage({
+                    usage: {
+                        input_tokens: 15,
+                        output_tokens: 7,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                    modelUsage: { "claude-opus-5": modelRow({ inputTokens: 25, outputTokens: 12 }) },
+                });
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        await promptOnce(agent, "first");
+        const second = await promptOnce(agent, "second");
+        expect(second._meta).toEqual(expectedQuotaMeta({ inputTokens: 15, outputTokens: 7, cachedReadTokens: 0, cachedWriteTokens: 0 }, [
+            [
+                "claude-opus-5",
+                { inputTokens: 15, outputTokens: 7, cachedReadTokens: 0, cachedWriteTokens: 0 },
+            ],
+        ]));
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("keeps an autonomous cycle's spend out of the next turn", async () => {
+        // A task-notification followup's cost is real but is not any user turn's —
+        // its increment must not resurface on the turn that follows it.
+        const agent = createAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const first = await iter.next();
+                yield userEcho(first.value);
+                yield successfulResultMessage({
+                    usage: {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                    modelUsage: { "claude-opus-5": modelRow({ inputTokens: 10, outputTokens: 5 }) },
+                });
+                yield idle();
+                // The followup: +4/+1 on the running total, its own trailing idle.
+                yield successfulResultMessage({
+                    origin: { kind: "task-notification" },
+                    usage: {
+                        input_tokens: 4,
+                        output_tokens: 1,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                    modelUsage: { "claude-opus-5": modelRow({ inputTokens: 14, outputTokens: 6 }) },
+                });
+                yield idle();
+                const second = await iter.next();
+                yield userEcho(second.value);
+                yield successfulResultMessage({
+                    usage: {
+                        input_tokens: 6,
+                        output_tokens: 3,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                    modelUsage: { "claude-opus-5": modelRow({ inputTokens: 20, outputTokens: 9 }) },
+                });
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        await promptOnce(agent, "first");
+        const second = await promptOnce(agent, "second");
+        expect(second._meta).toEqual(expectedQuotaMeta({ inputTokens: 6, outputTokens: 3, cachedReadTokens: 0, cachedWriteTokens: 0 }, [
+            [
+                "claude-opus-5",
+                { inputTokens: 6, outputTokens: 3, cachedReadTokens: 0, cachedWriteTokens: 0 },
+            ],
+        ]));
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("treats a rewound running total as the turn's own spend", async () => {
+        // A mid-session /clear (or a resume) restarts modelUsage from zero. With no
+        // older reference left to subtract, the reading itself is the increment —
+        // never a negative row.
+        const agent = createAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const first = await iter.next();
+                yield userEcho(first.value);
+                yield successfulResultMessage({
+                    usage: {
+                        input_tokens: 30,
+                        output_tokens: 9,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                    modelUsage: { "claude-opus-5": modelRow({ inputTokens: 30, outputTokens: 9 }) },
+                });
+                yield idle();
+                const second = await iter.next();
+                yield userEcho(second.value);
+                yield successfulResultMessage({
+                    usage: {
+                        input_tokens: 8,
+                        output_tokens: 2,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                    modelUsage: { "claude-opus-5": modelRow({ inputTokens: 8, outputTokens: 2 }) },
+                });
+                yield idle();
+            }
+            return messageGenerator();
+        });
+        await promptOnce(agent, "first");
+        const second = await promptOnce(agent, "second");
+        expect(second._meta).toEqual(expectedQuotaMeta({ inputTokens: 8, outputTokens: 2, cachedReadTokens: 0, cachedWriteTokens: 0 }, [
+            [
+                "claude-opus-5",
+                { inputTokens: 8, outputTokens: 2, cachedReadTokens: 0, cachedWriteTokens: 0 },
+            ],
+        ]));
+        await agent.sessions["test-session"]?.consumer;
     });
 });
 describe("turn abandoned by the SDK (issue #825)", () => {
@@ -11277,6 +13642,7 @@ describe("turn abandoned by the SDK (issue #825)", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         const secondResult = await second;
         expect(secondResult.stopReason).toBe("end_turn");
@@ -11323,6 +13689,7 @@ describe("turn abandoned by the SDK (issue #825)", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         await expect(second).resolves.toEqual({ stopReason: "cancelled" });
         const third = await agent.prompt({
@@ -11369,6 +13736,7 @@ describe("turn abandoned by the SDK (issue #825)", () => {
         await expect(first).resolves.toEqual({
             stopReason: "cancelled",
             usage: cancelledTurnUsage,
+            _meta: cancelledTurnQuotaMeta,
         });
         // Queue turn 2 BEFORE the SDK recovers, so the stale result races it.
         const second = agent.prompt({
@@ -11677,7 +14045,7 @@ describe("streamEventToAcpNotifications", () => {
                 name: "WebSearch",
                 type: "server_tool_use",
                 partialJson: '{"query":"ACP tools","allowed_domains":["agentclientprotocol.com","github.com"],"blocked_domains":',
-                title: '"ACP tools" (allowed: agentclientprotocol.com, github.com)',
+                title: 'Search "ACP tools"',
                 rawInput: {
                     query: "ACP tools",
                     allowed_domains: ["agentclientprotocol.com", "github.com"],
@@ -12182,6 +14550,7 @@ describe("agent selection config option", () => {
                 query: gen,
                 input: new Pushable(),
                 cancelled: false,
+                titles: new SessionTitles(agent, sessionId),
                 cwd: "/test",
                 sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
                 modes: { currentModeId: "default", availableModes: [] },
@@ -12350,7 +14719,7 @@ describe("tool_progress heartbeats", () => {
     // report under `agent_<assistant_message_id>`, with the retrying Agent call's
     // real id in `parent_tool_use_id`. Resolving via the suffix alone dropped
     // them, leaving a stalled spawn with no explanation.
-    it("reports a subagent retry beat against the Agent call that is retrying", async () => {
+    it("reports a subagent retry beat against the Agent call without native negotiation", async () => {
         const sent = await run([
             {
                 type: "tool_progress",
@@ -12387,10 +14756,25 @@ describe("tool_progress heartbeats", () => {
         const sent = await run([beat("toolu_inner", "toolu_task", { heartbeat: undefined })], ["toolu_task", "toolu_inner"]);
         expect(sent.map((u) => u.toolCallId)).toEqual(["toolu_inner"]);
     });
+    it("keeps a child tool beat in the legacy flattened transcript", async () => {
+        const sent = await run([
+            {
+                type: "system",
+                subtype: "task_started",
+                task_id: "agent-1",
+                tool_use_id: "toolu_task",
+                subagent_type: "general-purpose",
+                uuid: randomUUID(),
+                session_id: "test-session",
+            },
+            beat("toolu_inner", "toolu_task", { heartbeat: undefined }),
+        ], ["toolu_task", "toolu_inner"]);
+        expect(sent.map((update) => update.toolCallId)).toEqual(["toolu_inner"]);
+    });
 });
 describe("permission_denied", () => {
     /** Run a turn carrying `messages` and return the updates it produced. */
-    async function run(messages, overrides = {}) {
+    async function run(messages, overrides = {}, clientCapabilities) {
         const updates = [];
         const mockClient = {
             sessionUpdate: async (n) => {
@@ -12398,6 +14782,7 @@ describe("permission_denied", () => {
             },
         };
         const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        agent.clientCapabilities = clientCapabilities;
         const input = new Pushable();
         async function* messageGenerator() {
             const { value, done } = await input[Symbol.asyncIterator]().next();
@@ -12561,7 +14946,7 @@ describe("permission_denied", () => {
     // call that spawned it, so without the `liveBackgroundTasks` lookup the update
     // lands at the top level while the tool_call it resolves sits in the
     // subagent's transcript.
-    it("attributes a subagent denial to the Agent call that spawned it", async () => {
+    it("attributes a legacy subagent denial to the Agent call that spawned it", async () => {
         const updates = await run([
             {
                 type: "system",
@@ -12580,10 +14965,7 @@ describe("permission_denied", () => {
             parentToolUseId: "toolu_agent",
         });
     });
-    // The attribution rests on `task_started` having been seen for the agent id.
-    // If it wasn't, the denial still resolves the call — unattributed beats
-    // dropped.
-    it("still resolves a subagent denial when the parent is unknown", async () => {
+    it("still resolves a legacy subagent denial when the parent is unknown", async () => {
         const updates = await run([
             toolUse("toolu_inner", "toolu_agent"),
             denial("toolu_inner", { agent_id: "agent-unknown" }),
@@ -12591,5 +14973,12 @@ describe("permission_denied", () => {
         const sent = denials(updates);
         expect(sent).toHaveLength(1);
         expect(sent[0]._meta.claudeCode).not.toHaveProperty("parentToolUseId");
+    });
+    it("uses eager child ownership when native lineage has not arrived yet", async () => {
+        const updates = await run([denial("toolu_inner", { agent_id: "agent-racing" })], {
+            emittedToolCalls: new Set(["toolu_inner"]),
+            eagerToolCallSessions: new Map([["toolu_inner", "child-session"]]),
+        }, { subagents: {} });
+        expect(denials(updates)).toHaveLength(1);
     });
 });
