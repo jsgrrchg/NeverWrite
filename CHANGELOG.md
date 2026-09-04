@@ -34,6 +34,16 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Added an advanced Codex model-ID selector for explicitly choosing account-gated or upstream-hidden models without forcing them into the normal model catalog.
+
+### Changed
+
+- Updated the embedded Codex runtime to `0.153.2`, adding compatibility with the latest account-aware model catalog and GPT-6 Astra while preserving upstream model visibility rules.
+
 ## [0.7.6] - 2026-09-02
 
 ### Changed

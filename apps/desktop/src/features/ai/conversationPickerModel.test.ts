@@ -106,6 +106,51 @@ describe("conversation provider picker model", () => {
       "provider-a",
       "provider-b",
     ]);
+    expect(options.every((option) => !option.allowsExplicitModelId)).toBe(true);
+  });
+
+  it("enables explicit model IDs only for the Codex provider", () => {
+    const current = session();
+    current.runtimeId = "codex-acp";
+    const bindings = createConversationBindingsFromLegacySession(current);
+    const conversation = {
+      ...current,
+      conversationId: bindings.conversationId,
+      parentConversationId: null,
+      vaultPath: null,
+      closedAt: null,
+      activeWorkCycleId: null,
+      visibleWorkCycleId: null,
+      preferredSelection: bindings.preferredSelection,
+      activeBindingId: bindings.activeBindingId,
+      persistedCreatedAt: null,
+      persistedUpdatedAt: null,
+      persistedTitle: null,
+      customTitle: null,
+      persistedPreview: null,
+      isPersistedSession: false,
+      isPendingSessionCreation: false,
+      isResumingSession: false,
+    };
+
+    const options = buildConversationProviderOptions({
+      runtimes: [runtime("codex-acp"), runtime("provider-b")],
+      setupStatusByRuntimeId: {
+        "codex-acp": ready("codex-acp"),
+        "provider-b": ready("provider-b"),
+      },
+      conversation,
+      bindings: bindings.providerBindings,
+      activeRuntimeId: "codex-acp",
+      hasQueuedMessages: false,
+    });
+
+    expect(
+      options.find((option) => option.runtimeId === "codex-acp"),
+    ).toMatchObject({ allowsExplicitModelId: true });
+    expect(
+      options.find((option) => option.runtimeId === "provider-b"),
+    ).toMatchObject({ allowsExplicitModelId: false });
   });
 
   it("blocks another provider during a running turn", () => {

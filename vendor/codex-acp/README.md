@@ -27,7 +27,7 @@ Learn more about the [Agent Client Protocol](https://agentclientprotocol.com/).
 
 ## NeverWrite compatibility boundary
 
-NeverWrite's vendored build keeps the ACP Rust SDK at `0.14.0` and the wire protocol at ACP v1 while running the OpenAI Codex `rust-v0.147.0` crates.
+NeverWrite's vendored build keeps the ACP Rust SDK at `0.14.0` and the wire protocol at ACP v1 while running the OpenAI Codex `rust-v0.153.2` crates.
 
 MCP protocol `2026-07-28` remains disabled for this adapter because ACP `0.14.0` does not provide the trusted client-extension boundary required to adopt it; client-provided stdio environment variables, HTTP headers, working directories, and existing server authentication or approval configuration remain supported through the legacy MCP path.
 

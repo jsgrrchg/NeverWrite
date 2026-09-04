@@ -1226,6 +1226,7 @@ mod tests {
             approval_policy: AskForApproval::OnRequest,
             approvals_reviewer: ApprovalsReviewer::default(),
             permission_profile: PermissionProfile::default(),
+            full_access: false,
             active_permission_profile: None,
             environments: TurnEnvironmentSelections::new(cwd, Vec::new()),
             workspace_roots: Vec::new(),

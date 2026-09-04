@@ -263,11 +263,30 @@ export function AIProviderModelPicker({
         () => visibleRows.filter((row) => !row.disabledReason),
         [visibleRows],
     );
-    const selectedRow =
-        rows.find(
-            (row) => row.runtimeId === runtimeId && row.modelId === modelId,
-        ) ?? rows.find((row) => row.runtimeId === runtimeId);
-    const triggerLabel = selectedRow?.modelLabel ?? (modelId || "Model");
+    const selectedRow = rows.find(
+        (row) => row.runtimeId === runtimeId && row.modelId === modelId,
+    );
+    const triggerLabel =
+        selectedRow?.modelLabel ??
+        (modelId ||
+            rows.find((row) => row.runtimeId === runtimeId)?.modelLabel ||
+            "Model");
+    const explicitModelId = query.trim();
+    const explicitModelProvider = providers.find(
+        (provider) =>
+            provider.runtimeId === selectedProviderId &&
+            provider.allowsExplicitModelId === true &&
+            provider.disabledReason == null,
+    );
+    const canUseExplicitModelId = Boolean(
+        explicitModelProvider &&
+        explicitModelId &&
+        !rows.some(
+            (row) =>
+                row.runtimeId === explicitModelProvider.runtimeId &&
+                row.modelId === explicitModelId,
+        ),
+    );
     const blockedProvider = providers.find(
         (provider) =>
             provider.runtimeId === blockedProviderId &&
@@ -357,6 +376,12 @@ export function AIProviderModelPicker({
         }
         if (row.disabledReason) return;
         onChange(row.runtimeId, row.modelId);
+        closePicker(true);
+    };
+
+    const selectExplicitModelId = () => {
+        if (!explicitModelProvider || !canUseExplicitModelId) return;
+        onChange(explicitModelProvider.runtimeId, explicitModelId);
         closePicker(true);
     };
 
@@ -580,7 +605,7 @@ export function AIProviderModelPicker({
                         <div className="min-h-0 flex-1 overflow-y-auto p-2">
                             {visibleRows.length === 0 ? (
                                 <div
-                                    className="px-2 py-8 text-center text-xs"
+                                    className="px-2 py-6 text-center text-xs"
                                     style={{ color: "var(--text-secondary)" }}
                                 >
                                     {selectedProviderId === FAVORITES_PROVIDER_ID &&
@@ -692,6 +717,30 @@ export function AIProviderModelPicker({
                                     })}
                                 </div>
                             )}
+                            {canUseExplicitModelId && explicitModelProvider ? (
+                                <button
+                                    aria-label={`Use exact model ID ${explicitModelId}`}
+                                    className="mt-2 w-full rounded-lg px-3 py-2 text-left"
+                                    onClick={selectExplicitModelId}
+                                    style={{
+                                        backgroundColor: "var(--bg-tertiary)",
+                                        border: "1px solid var(--border)",
+                                        color: "var(--text-primary)",
+                                    }}
+                                    title={`Use ${explicitModelId} even though it is not listed in the ${explicitModelProvider.label} catalog`}
+                                    type="button"
+                                >
+                                    <span className="block truncate text-xs font-medium">
+                                        Use exact model ID “{explicitModelId}”
+                                    </span>
+                                    <span
+                                        className="mt-1 block text-[11px] leading-snug"
+                                        style={{ color: "var(--text-secondary)" }}
+                                    >
+                                        Not listed for this account. {explicitModelProvider.label} will verify access when used.
+                                    </span>
+                                </button>
+                            ) : null}
                         </div>
                     </div>
 

@@ -17,6 +17,7 @@ export interface ConversationProviderPickerOption {
   label: string;
   description: string;
   disabledReason: string | null;
+  allowsExplicitModelId?: boolean;
   defaultModelId: string;
   models: ConversationProviderModelOption[];
 }
@@ -193,6 +194,7 @@ export function buildConversationProviderOptions(input: {
         label: runtime.runtime.name.replace(/ ACP$/, ""),
         description: runtime.runtime.description,
         disabledReason,
+        allowsExplicitModelId: runtimeId === "codex-acp",
         ...modelOptions,
       };
     });
