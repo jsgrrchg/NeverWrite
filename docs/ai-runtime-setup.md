@@ -342,7 +342,7 @@ Current packaging expectations:
 - Kilo is integrated but not bundled by default.
 - OpenCode is integrated but not bundled by default.
 
-The packaged sidecar smoke sends ACP `initialize`, `session/new`, and `session/prompt` requests to `codex-acp` using an isolated temporary `CODEX_HOME` and deterministic local Responses mock. It keeps the packaged host beside the ACP executable as required by the 0.147 install context, verifies the code-mode tool output and final assistant response, and inspects the ACP process tree to prove the standalone `codex-code-mode-host` process was launched.
+The packaged sidecar smoke sends ACP `initialize`, `session/new`, and `session/prompt` requests to `codex-acp` using an isolated temporary `CODEX_HOME` and deterministic local Responses mock. It keeps the packaged host beside the ACP executable as required by the current install context, verifies the code-mode tool output and final assistant response, and inspects the ACP process tree to prove the standalone `codex-code-mode-host` process was launched.
 
 The smoke also runs a fail-closed case from an isolated ACP directory without a sibling host and requires an actionable missing-host diagnostic before checking that the native backend responds to ping. This catches missing, non-executable, wrong-architecture, or silently bypassed companion binaries before release assets are staged.
 

@@ -103,6 +103,98 @@ describe("AIChatAgentControls", () => {
     expect(onProviderChange).toHaveBeenCalledWith("codex-acp", "gpt-5");
   });
 
+  it("allows an explicit Codex model ID without adding it to the catalog", async () => {
+    const user = userEvent.setup();
+    const onProviderChange = vi.fn();
+    renderComponent(
+      <AIChatAgentControls
+        runtimeId="codex-acp"
+        modelId="gpt-5"
+        modeId="default"
+        models={[]}
+        modes={[]}
+        configOptions={[]}
+        providers={[
+          {
+            runtimeId: "codex-acp",
+            label: "Codex",
+            description: "Codex provider",
+            disabledReason: null,
+            allowsExplicitModelId: true,
+            defaultModelId: "gpt-5",
+            models: [
+              {
+                modelId: "gpt-5",
+                label: "GPT-5",
+                disabledReason: null,
+              },
+            ],
+          },
+        ]}
+        onProviderModelChange={onProviderChange}
+        onModelChange={() => {}}
+        onModeChange={() => {}}
+        onConfigOptionChange={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByTitle("Provider and model"));
+    await user.type(
+      screen.getByLabelText("Provider and model search"),
+      "gpt-6-astra",
+    );
+
+    expect(screen.queryByText("GPT-6 Astra")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Not listed for this account\./),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Use exact model ID gpt-6-astra",
+      }),
+    );
+
+    expect(onProviderChange).toHaveBeenCalledWith("codex-acp", "gpt-6-astra");
+  });
+
+  it("shows an explicitly selected model ID that is absent from the catalog", () => {
+    renderComponent(
+      <AIChatAgentControls
+        runtimeId="codex-acp"
+        modelId="gpt-6-astra"
+        modeId="default"
+        models={[]}
+        modes={[]}
+        configOptions={[]}
+        providers={[
+          {
+            runtimeId: "codex-acp",
+            label: "Codex",
+            description: "Codex provider",
+            disabledReason: null,
+            allowsExplicitModelId: true,
+            defaultModelId: "gpt-5",
+            models: [
+              {
+                modelId: "gpt-5",
+                label: "GPT-5",
+                disabledReason: null,
+              },
+            ],
+          },
+        ]}
+        onProviderModelChange={() => {}}
+        onModelChange={() => {}}
+        onModeChange={() => {}}
+        onConfigOptionChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByTitle("Provider and model")).toHaveTextContent(
+      "gpt-6-astra",
+    );
+  });
+
   it("leaves Escape available to the global agent shortcut", async () => {
     const user = userEvent.setup();
     renderComponent(

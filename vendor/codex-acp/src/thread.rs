@@ -699,6 +699,7 @@ fn elicitation_request_message(request: &ElicitationRequest) -> &str {
     match request {
         ElicitationRequest::Form { message, .. }
         | ElicitationRequest::OpenAiForm { message, .. }
+        | ElicitationRequest::OpenAiElicitationForm { message, .. }
         | ElicitationRequest::Url { message, .. } => message,
     }
 }
@@ -1154,6 +1155,7 @@ fn format_thread_goal_update(event: &ThreadGoalUpdatedEvent) -> String {
 fn turn_item_id(item: &TurnItem) -> &str {
     match item {
         TurnItem::UserMessage(item) => &item.id,
+        TurnItem::FunctionCallOutput(item) => &item.id,
         TurnItem::HookPrompt(item) => &item.id,
         TurnItem::AgentMessage(item) => &item.id,
         TurnItem::Plan(item) => &item.id,
@@ -1195,9 +1197,10 @@ struct StatusToolCall {
 
 fn turn_item_projection(item: &TurnItem) -> TurnItemProjection {
     match item {
-        TurnItem::UserMessage(..) | TurnItem::AgentMessage(..) | TurnItem::Reasoning(..) => {
-            TurnItemProjection::Hidden
-        }
+        TurnItem::UserMessage(..)
+        | TurnItem::FunctionCallOutput(..)
+        | TurnItem::AgentMessage(..)
+        | TurnItem::Reasoning(..) => TurnItemProjection::Hidden,
         TurnItem::Plan(..)
         | TurnItem::ImageGeneration(..)
         | TurnItem::Extension(ExtensionItem::ImageGeneration(..))
@@ -1234,6 +1237,7 @@ fn turn_item_tool_kind(item: &TurnItem) -> ToolKind {
         | TurnItem::HookPrompt(..)
         | TurnItem::ContextCompaction(..)
         | TurnItem::UserMessage(..)
+        | TurnItem::FunctionCallOutput(..)
         | TurnItem::AgentMessage(..)
         | TurnItem::Plan(..)
         | TurnItem::Reasoning(..)
@@ -1368,6 +1372,7 @@ fn canonical_update_can_materialize(update: &ToolCallUpdate) -> bool {
 fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
     match item {
         TurnItem::UserMessage(..) => ("Preparing input", None),
+        TurnItem::FunctionCallOutput(..) => ("Processing tool output", None),
         TurnItem::HookPrompt(..) => ("Awaiting hook guidance", None),
         TurnItem::AgentMessage(..) => ("Drafting response", None),
         TurnItem::Plan(item) => ("Updating plan", Some(item.text.clone())),
@@ -2569,6 +2574,36 @@ impl PromptState {
                 })
                 .await;
             }
+            EventMsg::AuthRecoveryStarted(event) => {
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!(
+                        "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}auth_recovery:{}",
+                        event.provider
+                    )
+                    .into(),
+                    kind: "auth_recovery",
+                    title: format!("Reconnecting {}", event.provider),
+                    detail: Some(event.message),
+                    emphasis: "neutral",
+                    status: ToolCallStatus::InProgress,
+                })
+                .await;
+            }
+            EventMsg::AuthRecoveryCompleted(event) => {
+                self.send_status_tool_call(client, StatusToolCall {
+                    call_id: format!(
+                        "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}auth_recovery:{}",
+                        event.provider
+                    )
+                    .into(),
+                    kind: "auth_recovery",
+                    title: format!("Reconnected {}", event.provider),
+                    detail: Some(event.message),
+                    emphasis: "success",
+                    status: ToolCallStatus::Completed,
+                })
+                .await;
+            }
             EventMsg::TokenCount(TokenCountEvent { info, .. }) => {
                 if let Some(info) = info
                     && let Some(size) = info.model_context_window {
@@ -2991,13 +3026,20 @@ impl PromptState {
             EventMsg::Error(ErrorEvent {
                 message,
                 codex_error_info,
+                misalignment,
             }) => {
-                error!("Unhandled error during turn: {message} {codex_error_info:?}");
+                error!(
+                    "Unhandled error during turn: {message} {codex_error_info:?} {misalignment:?}"
+                );
                 self.detach_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx
                         .send(Err(Error::internal_error().data(
-                            json!({ "message": message, "codex_error_info": codex_error_info }),
+                            json!({
+                                "message": message,
+                                "codex_error_info": codex_error_info,
+                                "misalignment": misalignment,
+                            }),
                         )))
                         .ok();
                 }
@@ -3274,6 +3316,7 @@ impl PromptState {
             ElicitationRequest::Form { .. } => "form",
             ElicitationRequest::Url { .. } => "url",
             ElicitationRequest::OpenAiForm { .. } => "openai_form",
+            ElicitationRequest::OpenAiElicitationForm { .. } => "openai_elicitation_form",
         };
 
         info!(
@@ -3777,7 +3820,17 @@ impl PromptState {
             file_extension,
             locations,
             kind,
-        } = parse_command_tool_call(parsed_cmd, &cwd.to_path_buf());
+        } = parse_command_tool_call(
+            parsed_cmd,
+            cwd.to_inferred_abs_path()
+                .ok_or_else(|| {
+                    Error::invalid_params().data(json!({
+                        "message": "command approval cwd is not an absolute host-native path",
+                        "cwd": cwd.as_str(),
+                    }))
+                })?
+                .as_path(),
+        );
         self.active_commands.insert(
             call_id.clone(),
             ActiveCommand {
@@ -8827,6 +8880,7 @@ mod tests {
                     error: Some(ErrorEvent {
                         message: "The upstream response was rejected".to_string(),
                         codex_error_info: None,
+                        misalignment: None,
                     }),
                     started_at: Some(10),
                     completed_at: Some(11),
@@ -8995,6 +9049,7 @@ mod tests {
             EventMsg::RawResponseCompleted(codex_protocol::protocol::RawResponseCompletedEvent {
                 response_id: "response-1".to_string(),
                 token_usage: Some(TokenUsage::default()),
+                usage_metadata: None,
             }),
             EventMsg::EnvironmentConnected(codex_protocol::protocol::EnvironmentConnectionEvent {
                 environment_id: "environment-1".to_string(),
@@ -10174,7 +10229,7 @@ mod tests {
                         .iter()
                         .any(|effort| effort.effort == ReasoningEffort::Ultra)
             })
-            .expect("runtime 0.150 catalog should include max and ultra")
+            .expect("runtime 0.153.2 catalog should include max and ultra")
             .clone();
         let selected_model = preset.model.clone();
         let (actor, _client, _conversation) = setup_actor(|config| {
@@ -10214,6 +10269,81 @@ mod tests {
                 .find(|effort| effort.value.0.as_ref() == "ultra")
                 .map(|effort| effort.name.as_str()),
             Some("Ultra")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn config_options_respect_hidden_catalog_models() -> anyhow::Result<()> {
+        let presets = all_model_presets();
+        let astra = presets
+            .iter()
+            .find(|preset| preset.model == "gpt-6-astra")
+            .expect("runtime 0.153.2 catalog should include GPT-6 Astra");
+        assert!(!astra.show_in_picker, "Astra should remain hidden upstream");
+        let visible_model = presets
+            .iter()
+            .find(|preset| preset.show_in_picker && preset.model != astra.model)
+            .expect("catalog should include a visible model")
+            .model
+            .clone();
+        let (actor, _client, _conversation) = setup_actor(|config| {
+            config.model = Some(visible_model);
+        })
+        .await?;
+
+        let options = actor.config_options().await?;
+        let model = options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "model")
+            .expect("model option should be present");
+        let SessionConfigKind::Select(select) = &model.kind else {
+            panic!("model option should be a select");
+        };
+        let SessionConfigSelectOptions::Ungrouped(models) = &select.options else {
+            panic!("model options should be ungrouped");
+        };
+
+        assert!(
+            models
+                .iter()
+                .all(|model| model.value.0.as_ref() != astra.id.as_str()),
+            "hidden Astra must not appear without an account-visible catalog entry"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn config_options_preserve_an_explicit_hidden_model() -> anyhow::Result<()> {
+        let astra = all_model_presets()
+            .iter()
+            .find(|preset| preset.model == "gpt-6-astra")
+            .expect("runtime 0.153.2 catalog should include GPT-6 Astra")
+            .clone();
+        let selected_model = astra.model.clone();
+        let (actor, _client, _conversation) = setup_actor(|config| {
+            config.model = Some(selected_model);
+        })
+        .await?;
+
+        let options = actor.config_options().await?;
+        let model = options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "model")
+            .expect("model option should be present");
+        let SessionConfigKind::Select(select) = &model.kind else {
+            panic!("model option should be a select");
+        };
+        let SessionConfigSelectOptions::Ungrouped(models) = &select.options else {
+            panic!("model options should be ungrouped");
+        };
+
+        assert_eq!(select.current_value.0.as_ref(), astra.model.as_str());
+        assert!(
+            models
+                .iter()
+                .any(|model| model.value.0.as_ref() == astra.id.as_str()),
+            "an explicitly selected hidden model must remain selectable"
         );
         Ok(())
     }
@@ -10902,6 +11032,7 @@ mod tests {
             .clone()
             .expect("test configuration must select a model");
         EventMsg::ThreadSettingsApplied(ThreadSettingsAppliedEvent {
+            thread_id: None,
             thread_settings: ThreadSettingsSnapshot {
                 model: model.clone(),
                 model_provider_id: config.model_provider_id.clone(),
@@ -11308,6 +11439,7 @@ mod tests {
                                         phase: None,
                                         memory_citation: None,
                                         delivery: None,
+                                        questions: None,
                                     }),
                                 })
                                 .unwrap();
@@ -11348,6 +11480,7 @@ mod tests {
                                     phase: None,
                                     memory_citation: None,
                                     delivery: None,
+                                    questions: None,
                                 }),
                             })
                             .unwrap();

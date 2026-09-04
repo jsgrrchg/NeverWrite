@@ -46,10 +46,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
 - `codex-acp/`
   - upstream baseline: `zed-industries/codex-acp` `0.16.0`
   - synced against upstream adapter commit `bb590500e8646f6daf879b8b3c6a659fbd29017d`
-  - OpenAI Codex Rust crates: `rust-v0.150.0` (`3b3b4f8fb3f6403e72c2d0533ed0d2f309c59717`)
+  - OpenAI Codex Rust crates: `rust-v0.153.2` (`657a993cbee87acf52d14b758ce49dbd46d1b8eb`)
   - vendor ACP SDK: `agent-client-protocol` `0.14.0`
   - ACP wire protocol: v1; ACP v2 is not enabled by this runtime promotion
-  - local `vendor/codex-utils-pty/` snapshot: `0.150.0`, with the matching `[patch."https://github.com/openai/codex"]` entry and a standalone local manifest
+  - local `vendor/codex-utils-pty/` snapshot: `0.153.2`, with the matching `[patch."https://github.com/openai/codex"]` entry and a standalone local manifest
   - resolved V8 crate: `150.4.0`, built with OpenAI's verified `ptrcomp_sandbox_release` archive and source binding for the target
   - Rust toolchain: NeverWrite `1.96.0`; upstream Codex `1.95.0`
   - local NeverWrite delta remains intentionally bounded and currently lives in:
@@ -77,7 +77,7 @@ That means the directory is intentionally reproducible, but not yet minimal.
 
 ## Current Codex Delta
 
-The Codex vendor is no longer a raw upstream checkout. Its runtime compatibility baseline is OpenAI Codex `rust-v0.150.0`, resolved to `3b3b4f8fb3f6403e72c2d0533ed0d2f309c59717` in `Cargo.lock`.
+The Codex vendor is no longer a raw upstream checkout. Its runtime compatibility baseline is OpenAI Codex `rust-v0.153.2`, resolved to `657a993cbee87acf52d14b758ce49dbd46d1b8eb` in `Cargo.lock`.
 
 The remaining NeverWrite-specific delta exists to preserve desktop product behavior:
 
@@ -86,7 +86,7 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 - review-mode and review-finding adaptation while preserving inline review and accept/reject flows
 - permission, mode, and approval-preset stability when Codex expands writable roots under `workspace-write`
 - custom slash-prompt discovery and expansion without moving NeverWrite's prompt queue
-- model discovery through the route-aware HTTP client, Fast service-tier controls, and refreshed `ConfigOptionUpdate` values after successful model selection
+- account-aware model discovery through the route-aware HTTP client, upstream visibility filtering, explicit raw model selection, Fast service-tier controls, and refreshed `ConfigOptionUpdate` values after successful model selection
 - session-config synchronization from Codex `SessionConfiguredEvent` and thread snapshots, preserving model, provider, reasoning effort, service tier, and reviewer
 - authentication/keyring selection, async login, reload, logout, and API-key flows without changing NeverWrite's credential policy
 - MCP transport compatibility through `ClientMcpExtensions`, while retaining client-provided environment, cwd, auth, and approval settings
@@ -97,11 +97,11 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 - a private `codexAcp*` subagent contract for session creation, navigable activity breadcrumbs, child lifecycle, and receiver-owned inter-agent transcripts
 - per-turn coalescing of equivalent subagent waits; only fully terminal status sets complete the ACP activity
 - localized `StartThreadOptions`, shared models-manager, external code-mode provider, config, auth, MCP, permission, and thread-store adapters at the ACP boundary
-- a local `codex-utils-pty` `0.150.0` snapshot with its standalone manifest, upstream Unix process-group fallback, Windows Job Object and ConPTY path handling, and the upstream platform tests
+- a local `codex-utils-pty` `0.153.2` snapshot with its standalone manifest, native executable-path encoding, upstream Unix process-group fallback, Windows Job Object and ConPTY path handling, and the upstream platform tests
 
-The 0.150 turn-input boundary uses `TurnInputRequest` with `StartIfIdle` and consumes the runtime acknowledgement before registering the ACP prompt. `NotSubmitted` and an impossible `Steered` acknowledgement resolve as ACP errors instead of leaving a response pending.
+The 0.153.2 turn-input boundary uses `TurnInputRequest` with `StartIfIdle` and consumes the runtime acknowledgement before registering the ACP prompt. `NotSubmitted` and an impossible `Steered` acknowledgement resolve as ACP errors instead of leaving a response pending.
 
-The 0.150 event delta is handled as localized projections. MCP policy amendments are exposed only when offered, Guardian stdin reviews redact the input payload, image failures retain their reason, standalone function outputs do not invent a call identity, and `ThreadQueueChanged` stays diagnostic because NeverWrite owns the user-facing queue.
+The 0.153.2 event delta is handled as localized projections. Authentication recovery is visible as status activity, misalignment details survive the ACP error boundary, unsupported OpenAI elicitation forms fail closed, MCP policy amendments are exposed only when offered, Guardian stdin reviews redact the input payload, image failures retain their reason, standalone function outputs do not invent a call identity, and `ThreadQueueChanged` stays diagnostic because NeverWrite owns the user-facing queue.
 
 `SubAgentActivity` is projected through the same canonical activity identity as its `TurnItem` fallback: matching protocol IDs update one ACP tool call, while distinct IDs remain separate rather than being correlated by descriptive metadata. `SendMessage`, `FollowupTask`, `InterruptAgent`, `ListAgents`, and `Completed` preserve their runtime IDs and terminal semantics. Child `ThreadId` values remain authoritative; paths, nicknames, and roles are display metadata only.
 
@@ -109,7 +109,7 @@ Reasoning options come from each runtime model preset. `max`, `ultra`, and futur
 
 The desktop release pipeline packages `codex-acp` and `codex-code-mode-host` as one runtime unit for macOS universal, Windows x64/ARM64, and Linux x64/ARM64. Each release build is lockfile-pinned, target-architecture checked, and signed together. Its packaged smoke drives an ACP `initialize`, `session/new`, and `session/prompt` exchange through the standalone host with a deterministic local Responses mock, verifies both the tool completion and assistant response, and proves a missing sibling host fails closed.
 
-When updating Codex again, treat upstream adapter commit `bb590500e8646f6daf879b8b3c6a659fbd29017d`, OpenAI Codex tag `rust-v0.150.0` at `3b3b4f8fb3f6403e72c2d0533ed0d2f309c59717`, the local PTY `0.150.0` snapshot, V8 `150.4.0`, and the committed lockfile as one comparison base. Review the bounded delta file by file instead of replacing the vendor tree.
+When updating Codex again, treat upstream adapter commit `bb590500e8646f6daf879b8b3c6a659fbd29017d`, OpenAI Codex tag `rust-v0.153.2` at `657a993cbee87acf52d14b758ce49dbd46d1b8eb`, the local PTY `0.153.2` snapshot, V8 `150.4.0`, and the committed lockfile as one comparison base. Review the bounded delta file by file instead of replacing the vendor tree.
 
 Canonical compatibility checks:
 
@@ -120,9 +120,9 @@ node scripts/run-with-codex-v8.mjs --target "$HOST_TARGET" -- cargo check --lock
 node scripts/run-with-codex-v8.mjs --target "$HOST_TARGET" -- cargo test --locked --manifest-path ../../vendor/codex-acp/Cargo.toml
 ```
 
-## Codex 0.150.0 Compatibility Baseline
+## Codex 0.153.2 Compatibility Baseline
 
-The embedded runtime is pinned to OpenAI Codex `rust-v0.150.0`. Every Codex git dependency in `codex-acp/Cargo.toml` uses that tag, and `Cargo.lock` resolves it to `3b3b4f8fb3f6403e72c2d0533ed0d2f309c59717`. The local `codex-utils-pty` snapshot is also `0.150.0`; it is part of the same runtime baseline, not an independently updatable crate.
+The embedded runtime is pinned to OpenAI Codex `rust-v0.153.2`. Every Codex git dependency in `codex-acp/Cargo.toml` uses that tag, and `Cargo.lock` resolves it to `657a993cbee87acf52d14b758ce49dbd46d1b8eb`. The local `codex-utils-pty` snapshot is also `0.153.2`; it is part of the same runtime baseline, not an independently updatable crate.
 
 The vendor toolchain inherits Rust `1.96.0` from the repository-root `rust-toolchain.toml`, which is compatible with the upstream Codex `1.95.0` toolchain. This promotion deliberately does not change these protocol boundaries:
 
@@ -133,7 +133,7 @@ The vendor toolchain inherits Rust `1.96.0` from the repository-root `rust-toolc
 
 ### Lockfile and V8 provisioning
 
-The committed `Cargo.lock` is part of the runtime pin. In particular, `rama-core`, `rama-error`, `rama-macros`, and `rama-utils` must remain coordinated at `0.3.0-alpha.4`, matching the upstream 0.150 lock. A broad lockfile regeneration can select stable Rama packages next to prerelease peers and produce an incompatible graph, so future promotions must compare this family with the candidate tag and update it as a coordinated set.
+The committed `Cargo.lock` is part of the runtime pin. In particular, `rama-core`, `rama-error`, `rama-macros`, and `rama-utils` must remain coordinated at `0.3.0-alpha.4`, matching the upstream 0.153.2 dependency graph. A broad lockfile regeneration can select stable Rama packages next to prerelease peers and produce an incompatible graph, so future promotions must compare this family with the candidate tag and update it as a coordinated set.
 
 The lockfile resolves `v8 150.4.0`. `apps/desktop/scripts/codex-v8-artifacts.mjs` obtains the target-specific `ptrcomp_sandbox_release` archive, source binding, and SHA-256 manifest from the official `openai/codex` release `rusty-v8-v150.4.0`. It authenticates the downloaded or cached manifest against the target-specific digest pinned in `apps/desktop/scripts/codex-v8-manifest-pins.mjs` before downloading archives or bindings, requires the manifest to cover exactly both artifacts, verifies their checksums before use, and caches the verified set under `apps/desktop/.cache/codex-v8/<version>/<profile>/<target>/`.
 
@@ -145,6 +145,7 @@ Local builds may provide `RUSTY_V8_ARCHIVE` and `RUSTY_V8_SRC_BINDING_PATH` only
 - MCP persistent approval, Guardian `WriteStdin`, image-generation failures, optional function-call IDs, `PathUri`, and runtime queue notifications have explicit safe projections.
 - Collaboration tools `SendMessage`, `FollowupTask`, `InterruptAgent`, and `ListAgents` preserve runtime activity identity. `SubAgentActivityKind::Completed` terminalizes that identity once, while internal agent messages remain outside the parent transcript.
 - Reasoning efforts are catalog-driven, including `max`, `ultra`, and future custom values. Load, resume, fork, and model changes retain an effort only when the selected model supports it.
+- The normal model picker follows the authenticated remote catalog and its visibility flags. GPT-6 Astra remains hidden unless the account catalog exposes it or the user enters its exact model ID through the Codex-only advanced selection path.
 - `TurnItem::Extension(ExtensionItem::Sleep(...))` is projected as the canonical `Waiting` activity and keeps stable item identity across live events and replay.
 - `ItemCompleted.started_at_ms` is propagated into activity metadata when positive so restored activities keep their upstream start time. Turn-level `started_at` fields are accepted but do not invent a second timeline contract.
 - `TurnComplete.error` emits a visible failed `turn_error` status and fails the pending ACP prompt instead of reporting `EndTurn`; aborts remain cancelled and keep their lifecycle event.
@@ -173,7 +174,7 @@ Portable plugins, thread sections/pinning, side conversations, audio/realtime, e
 | Linux x64 | Yes | — |
 | Linux ARM64 | No, because it is cross-compiled | Packaging, sidecar staging, and architecture checks run without executing the foreign binary |
 
-The smoke uses a temporary `CODEX_HOME`, a local deterministic Responses mock, and the 0.150 install-context layout where the packaged host is a sibling of `codex-acp`. It asserts a real ACP turn reaches both a code-mode tool completion and a final assistant response, and it inspects the ACP process tree to prove the packaged standalone host was launched rather than an in-process fallback.
+The smoke uses a temporary `CODEX_HOME`, a local deterministic Responses mock, and the 0.153.2 install-context layout where the packaged host is a sibling of `codex-acp`. It asserts a real ACP turn reaches both a code-mode tool completion and a final assistant response, and it inspects the ACP process tree to prove the packaged standalone host was launched rather than an in-process fallback.
 
 The same smoke starts an isolated copy of `codex-acp` without its sibling host and requires the code-mode tool to fail closed with the missing host path in its diagnostic. It does not require credentials or a network service.
 
@@ -181,7 +182,7 @@ The same smoke starts an isolated copy of `codex-acp` without its sibling host a
 
 #### Rollback baseline
 
-The rollback baseline is OpenAI Codex `rust-v0.147.0` at `be6e8eac029b183056b7e4402879f15d2c85f61b`, local PTY `0.147.0`, V8 `150.4.0`, and the lockfile recorded before this promotion. A rollback must restore `vendor/codex-acp/Cargo.toml`, `vendor/codex-acp/Cargo.lock`, `vendor/codex-acp/vendor/codex-utils-pty/`, and the adapter changes that depend exclusively on 0.150 types as one reviewed unit. V8 remains `150.4.0` on both sides of the rollback; never roll back a single Codex crate, PTY snapshot, or lockfile independently.
+The rollback baseline is OpenAI Codex `rust-v0.150.0` at `3b3b4f8fb3f6403e72c2d0533ed0d2f309c59717`, local PTY `0.150.0`, V8 `150.4.0`, and the lockfile recorded before this promotion. A rollback must restore `vendor/codex-acp/Cargo.toml`, `vendor/codex-acp/Cargo.lock`, `vendor/codex-acp/vendor/codex-utils-pty/`, and the adapter changes that depend exclusively on 0.153.2 types as one reviewed unit. V8 remains `150.4.0` on both sides of the rollback; never roll back a single Codex crate, PTY snapshot, or lockfile independently.
 
 The desktop backend supports a mixed ACP world: current ACP integration for Claude, Codex, Kilo, and OpenCode, plus the vendored `agent-client-protocol-legacy` crates for Grok. The native backend tests cover the reconstructed diff, permission, status metadata, and legacy runtime compatibility paths that NeverWrite depends on.
 
