@@ -2,5 +2,6 @@ export { ClaudeAcpAgent, isLocalCommandMetadata, stripLocalCommandMetadata, runA
 export { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
 export { toolInfoFromToolUse, toDisplayPath, planEntries, toolUpdateFromToolResult, } from "./tools.js";
 export { SettingsManager, type SettingsManagerOptions } from "./settings.js";
+export { AUTH_STATUS_UPDATE_METHOD, type AuthStatus, type AuthStatusAccount, type AuthStatusKind, type AuthStatusUpdateNotification, } from "./auth-status.js";
 export type { ClaudePlanEntry } from "./tools.js";
 //# sourceMappingURL=lib.d.ts.map

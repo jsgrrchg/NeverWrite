@@ -15,6 +15,10 @@ export type PublishedSessionFailure = {
     severity: AirSessionFailureSeverity;
     title: string;
     details?: string;
+    /** A machine-readable refinement of `kind`, e.g. the `--hide-claude-auth`
+     *  subscription guard's reason on an `auth_required` failure. Absent for a
+     *  plain sign-out. */
+    reason?: string;
     actions: AirSessionFailureAction[];
     recoveryPolicy: SessionFailureRecoveryPolicy;
 };
@@ -24,6 +28,7 @@ type SessionFailureOptions = {
     title?: string;
     details?: string;
     severity?: AirSessionFailureSeverity;
+    reason?: string;
 };
 export type SessionFailureState = {
     epoch: string;
@@ -71,6 +76,16 @@ export declare class SessionFailureController {
     });
     private isSupported;
     private emit;
+    /** Whether a session-scoped error of `kind` is active. A turn-scoped
+     *  warning of the same kind (an `api_retry` notice) does not count: it
+     *  reports a retry in progress, not the state the error would publish.
+     *
+     *  `reason` refines `kind`, so the active record must carry the same one,
+     *  and an omitted `reason` matches only a record with no reason. A plain
+     *  sign-out and the `--hide-claude-auth` subscription refusal are both
+     *  `auth_required`, but they tell the user different things. Neither may
+     *  suppress the other. */
+    hasActiveSessionError(kind: ClaudeFailureKind, reason?: string): boolean;
     recordActive(failure: PublishedSessionFailure): void;
     clear(shouldClear?: (failure: PublishedSessionFailure) => boolean): Promise<boolean>;
     prepare(kind: ClaudeFailureKind, failureOptions?: SessionFailureOptions): Promise<PublishedSessionFailure | undefined>;

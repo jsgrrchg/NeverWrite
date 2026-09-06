@@ -1,6 +1,9 @@
 import { ForkSessionRequest, ForkSessionResponse } from "@agentclientprotocol/sdk";
 type ForkSessionDependencies = {
     liveMessageIdToUuid?: ReadonlyMap<string, string>;
+    logger?: {
+        log: (...args: unknown[]) => void;
+    };
     messageIdForGrouping: (message: {
         type?: string;
         uuid?: string | null;

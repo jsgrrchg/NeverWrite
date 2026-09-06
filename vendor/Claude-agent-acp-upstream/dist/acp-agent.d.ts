@@ -5,10 +5,13 @@ import { SessionTitles } from "./session-titles.js";
 import { AcpSessionNotification } from "./acp-subagents.js";
 import { NativeSubagent, NativeSubagentRuntime } from "./native-subagents.js";
 import { AsyncTaskRuntime } from "./async-tasks.js";
+import { type AuthStatus, type AuthStatusKind } from "./auth-status.js";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
+import { ContextCompactionMetadata } from "./context-compaction-meta.js";
 import { type SessionFailureState } from "./session-failure-extension.js";
+import { type ClaudeSubscriptionGuardState } from "./hide-claude-auth.js";
 import { type FileChangeAuditSupport, type FileChangeAuditTurnState } from "./file-change-audit.js";
 import { TaskState } from "./tools.js";
 import { Pushable } from "./utils.js";
@@ -21,6 +24,8 @@ export declare const CLAUDE_CONFIG_DIR: string;
 export interface Logger {
     log: (...args: any[]) => void;
     error: (...args: any[]) => void;
+    /** Optional: a caller that supplies no `warn` gets its warnings on `error`. */
+    warn?: (...args: any[]) => void;
 }
 type AccumulatedUsage = {
     inputTokens: number;
@@ -91,6 +96,17 @@ type Turn = {
      *  so the consumer can't promote them via the replay; it falls back to
      *  promoting the queue head when the result arrives. */
     isLocalOnlyCommand: boolean;
+    /** Structured presentation for an exact /usage command. The command still
+     * runs through the normal SDK turn so ordering, cancellation, persistence,
+     * and replay remain unchanged. Null means the experimental API failed and
+     * every output path must preserve Claude Code's original text. */
+    isUsageCommand?: boolean;
+    usageMarkdown?: Promise<string | null>;
+    usageMarkdownAbort?: AbortController;
+    /** The SDK can expose a local command through more than one message shape;
+     * publish the structured replacement at most once. */
+    usageMarkdownDelivered?: boolean;
+    usageOriginalOutput?: string;
     /** Optional hidden, model-authored file-change audit requested by the ACP
      *  client for this turn. The state is turn-owned so a late tool call can
      *  never be rebound to a newer prompt. */
@@ -373,17 +389,16 @@ export type Session = {
      *  prompts so mid-stream usage_update notifications report a correct `size`
      *  before the turn's first result message arrives. Seeded synchronously at
      *  session creation and on model switches from the per-model cache or the
-     *  text heuristic (DEFAULT_CONTEXT_WINDOW when both miss; on session/load the
-     *  resumed session's own `getContextUsage` report wins, see
-     *  `readResumedLiveModel`), then confirmed — and the cache populated — by each
-     *  result's modelUsage. No extra `getContextUsage` IPC is on these paths: on a
-     *  fresh session it stalls until the first turn runs (see the seeding call
+     *  text heuristic (DEFAULT_CONTEXT_WINDOW when both miss), then confirmed —
+     *  and the cache populated — by each result's modelUsage. No extra
+     *  `getContextUsage` IPC is on these paths: before the first turn it can add
+     *  tens of seconds to both fresh and resumed sessions (see the seeding call
      *  sites and `contextWindowCache`). */
     contextWindowSize: number;
     contextUsedTokens?: number;
     /** Whether `contextWindowSize` came from an authoritative source (the
-     *  cross-session cache, a resumed session's `getContextUsage` report, or a
-     *  `result.modelUsage`) rather than the text heuristic / default. Guards the
+     *  cross-session cache or a `result.modelUsage`) rather than the text
+     *  heuristic / default. Guards the
      *  mid-stream `message_start` heuristic upgrade: an authoritative window that
      *  happens to equal DEFAULT_CONTEXT_WINDOW must not be mistaken for "unseeded"
      *  and clobbered by a "1m" text match. */
@@ -576,6 +591,21 @@ export type Session = {
      *  Keeping it on the Session lets replay seed a failure that the persistent
      *  consumer can later clear with the same id and a higher revision. */
     sessionFailureState: SessionFailureState;
+    /** State of the `--hide-claude-auth` subscription guard for this session.
+     *  Built on the first guarded turn; most sessions never need it. */
+    claudeSubscriptionGuard?: ClaudeSubscriptionGuardState;
+    /** Identity kind of the account this session was created on. The CLI probe
+     *  compares its own read against it to notice that the credential behind the
+     *  cached account was swapped. Undefined when the account carried no
+     *  identity signal, which is "nothing to compare", not a match. */
+    accountKind?: AuthStatusKind;
+    /** Set under `--hide-claude-auth` when the CLI reported a sign-out during
+     *  this session. The query is closed and the account it cached at
+     *  `initialize` now describes a credential that no longer works, so the next
+     *  turn recreates the query before it runs. */
+    needsSignOutRespawn?: boolean;
+    /** The in-flight recreation, so turns that arrive together share one. */
+    signOutRespawn?: Promise<void>;
 };
 export type SDKMessageFilter = {
     type: string;
@@ -623,10 +653,14 @@ type GatewayAuthMeta = {
      * - Redirect API calls via baseUrl
      * - Inject custom headers
      * - Bypass the default Claude login requirement
+     *
+     * Both members are optional in the type because the payload arrives
+     * unvalidated from the client. `authenticate` rejects a request that lacks a
+     * usable `baseUrl`.
      */
-    gateway: {
-        baseUrl: string;
-        headers: Record<string, string>;
+    gateway?: {
+        baseUrl?: string;
+        headers?: Record<string, string>;
     };
 };
 type GatewayAuthRequest = AuthenticateRequest & {
@@ -649,6 +683,7 @@ type ProviderConfig = {
     };
 };
 export type ToolUpdateMeta = {
+    contextCompaction?: ContextCompactionMetadata;
     claudeCode?: {
         toolName: string;
         title?: string;
@@ -761,6 +796,25 @@ export declare class ClaudeAcpAgent {
     /** Serializes provider changes while every open query is recreated between turns. */
     private providerUpdate;
     private readonly exitPlan;
+    /** Last auth identity reported to the client, connection-scoped like
+     *  `authenticate`/`logout`. Undefined means "not determined yet". */
+    currentAuthStatus?: AuthStatus;
+    /** In-flight `claude auth status --json` probe, shared by every caller so
+     *  a concurrent `initialize` and start-of-prompt read never spawn two CLI
+     *  processes. */
+    private cliAuthProbe;
+    /** Counts auth-affecting events (`authenticate`, `logout`) on this
+     *  connection. A probe records it at start and publishes only if it has not
+     *  moved, so a slow read can never overwrite a newer login or logout. */
+    private authEpoch;
+    /** Keeps the "session account told us nothing" note to one line per process
+     *  instead of one per session. */
+    private loggedUninformativeAccount;
+    /** Same, for the "client provider override active" note. */
+    private loggedOverriddenAccount;
+    /** Same, for the "the CLI probe timed out" warning: a wedged CLI stays wedged
+     *  and would otherwise warn once per probe, i.e. once per user prompt. */
+    private loggedProbeTimeout;
     /** Grace period before a `session/cancel` forces a wedged prompt loop to
      *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
      *  tests can shrink it. */
@@ -772,7 +826,85 @@ export declare class ClaudeAcpAgent {
     resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse>;
     loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse>;
     listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse>;
+    /**
+     * `authenticate` — the legacy gateway methods store a provider override that
+     * every later session reads. Validate the payload here, with the same base
+     * URL rule as `providers/set`. An unchecked payload either throws a
+     * `TypeError` deep in session creation, or installs an empty base URL that
+     * silently turns the `--hide-claude-auth` subscription guard off.
+     *
+     * A call that carries no gateway payload at all keeps its historical
+     * meaning: it installs no override and succeeds. That has always been a
+     * no-op here, and a client that probes the method this way must keep
+     * working. Only a payload that IS present has to be usable.
+     */
     authenticate(_params: AuthenticateRequest): Promise<void>;
+    /**
+     * Stores `next` and pushes it to the client.
+     *
+     * A push goes out only when the payload changed. The identity is read on many
+     * occasions — each session create, each guarded turn, the start of each user
+     * prompt — and almost all of them see the same login. Clients replace their
+     * whole state on each update and tolerate duplicates, so a repeat is
+     * harmless, but it is also pure noise; {@link sameAuthStatus} drops it.
+     *
+     * What the agent owes is truth — a stale or uninformative source must not
+     * reach here at all (see the epoch check in the probe and the guards at
+     * session create).
+     */
+    setAuthStatus(next: AuthStatus | undefined): void;
+    /**
+     * Report the identity behind a session's `AccountInfo`.
+     *
+     * `AccountInfo` is richer than the CLI probe (it is what the live query
+     * actually authenticates with). Called before the `--hide-claude-auth` guard
+     * may refuse the session or the turn: that flag blocks the *use* of a
+     * subscription, it does not make the state secret, and a refusal is when the
+     * client most needs to know the account it was refused for.
+     *
+     * Two cases skip it:
+     *
+     * - ACP gateway *authentication* (`gatewayAuthRequest`): the gateway, not
+     *   this account, is the agent-owned identity — already reported as
+     *   `kind: "gateway"` by `authenticate`.
+     * - A client-driven provider override (`providers/set`): the session then
+     *   routes through the client's endpoint and `AccountInfo` describes that
+     *   route (e.g. `apiProvider: "gateway"`), which is NOT agent-owned state.
+     *   `authStatus` reports the agent's own login only, so the CLI probe —
+     *   which reads the credential store the override never touches — stays
+     *   authoritative.
+     *
+     * An account with no identity signal (e.g. `{apiProvider: "firstParty"}`
+     * under an apiKeyHelper) means "nothing to add", not "logged out" — keep
+     * what the CLI probe already established instead of overwriting it.
+     */
+    private publishSessionAccountIdentity;
+    /** Shares one in-flight `claude auth status --json` run between callers. The
+     *  promise is released once settled so a later call re-probes instead of
+     *  replaying a stale verdict. `fresh` forces a new run even when one is in
+     *  flight — `logout` needs a read that started after the credentials were
+     *  cleared. */
+    private probeCliAuthStatus;
+    /** Never rejects: an unavailable CLI means "not reported", not an error. */
+    private runCliAuthProbe;
+    /**
+     * Feed the completed probe to the `--hide-claude-auth` guard.
+     *
+     * The account cached at `initialize` is the guard's fact, and the CLI can
+     * swap the credential behind it between two turns (a Console key removed and
+     * a claude.ai login put in its place) without any turn failing. A read that
+     * reports a different kind of identity than the session was created on
+     * proves that fact stale.
+     *
+     * The probe decides nothing, and it interrupts nothing. Since the read is
+     * fired at the start of every user prompt, it usually lands in the middle of
+     * the turn it belongs to; all it may do there is set a flag. The turn runs to
+     * its end on the query it started on, the NEXT prompt consumes the flag and
+     * recreates the query, the new `initialize` reports the real account, and the
+     * creation guard judges it. So a probe can never refuse or abort a turn, and
+     * a wrong read costs one query recreation, not a false refusal.
+     */
+    private markSessionsWhoseAccountKindChanged;
     unstable_listProviders(_params: ListProvidersRequest): Promise<ListProvidersResponse>;
     /**
      * `providers/set` — replace the full configuration for the `main` provider.
@@ -790,6 +922,71 @@ export declare class ClaudeAcpAgent {
     private defaultProviderConfig;
     logout(_params: LogoutRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
+    /** `--hide-claude-auth` applies only to the CLI's own login. A provider
+     *  override (`providers/set` or gateway `authenticate`) routes traffic away
+     *  from it, so the subscription guard is off while one is active. */
+    private claudeSubscriptionGuardActive;
+    /** Record that the account cached at `initialize` is wrong, and — unless the
+     *  caller defers it — end the query.
+     *
+     *  Only under `--hide-claude-auth`. That cached account is this
+     *  integration's source of truth, and two things prove it wrong: a sign-out
+     *  during the session, and a CLI probe that finds a different identity. In
+     *  both cases the credential behind the cached account is gone, and whatever
+     *  replaces it is invisible until a new `initialize` runs. The flag makes
+     *  the next prompt recreate the query, so the creation guard decides on the
+     *  real account.
+     *
+     *  `endQuery` says whether the query dies now. A sign-out has already killed
+     *  the turn, so its stream is closed at once. A probe has killed nothing: it
+     *  runs beside a turn that is still producing output, and closing there would
+     *  abort a turn the user is watching. It therefore leaves the stream alone
+     *  and lets the recreation at the next prompt close it (`recreateSignedOutQuery`
+     *  closes it too, and both are idempotent).
+     *
+     *  Idempotent: one sign-out reaches this twice (the synthetic login message
+     *  and the turn's error-shaped result), and the second call must not close
+     *  a stream the first one already closed. Closing settles the queued turns
+     *  through the consumer's end-of-stream path, which rejects each one. */
+    private markSessionForSignOutRespawn;
+    /** Recreate the query of a signed-out session, keeping the ACP session id and
+     *  resuming the Claude session so the history survives. Returns the session
+     *  the caller must go on with: the new one, or the argument when no
+     *  recreation is due.
+     *
+     *  When the CLI never persisted that conversation — the first turn was the
+     *  one that signed out — the resume cannot succeed, so a fresh query starts
+     *  under the same id. The session then keeps working, with an empty history.
+     *
+     *  The recreation runs the full creation guard, so a subscription account is
+     *  refused with the subscription reason, a still-signed-out account with the
+     *  plain sign-out error, and an accepted credential proceeds. A refusal keeps
+     *  the old husk in the session map, so the client can sign in and retry on
+     *  the same session instead of meeting "Session not found".
+     *
+     *  Returns `undefined`, not a resolved promise, when no recreation is due:
+     *  the callers enqueue their turn in one synchronous section, and an extra
+     *  microtask there would let the caller observe a half-built turn.
+     *
+     *  A live turn also postpones it. A probe marks the session without ending
+     *  the query, so a turn can still be running when the mark is read — by a
+     *  `steer` injecting into it, say. Recreating there would close the stream
+     *  under the turn and kill output the user is watching, so the flag waits for
+     *  the next turn boundary. A sign-out is not affected: it closed the stream
+     *  when it marked the session, and a closed stream recreates immediately. */
+    private respawnSignedOutSession;
+    private awaitSignOutRespawn;
+    private recreateSignedOutQuery;
+    /** Run the `--hide-claude-auth` guard before a turn starts. The returned
+     *  promise rejects with the `authRequired` error when a claude.ai
+     *  subscription would pay, or when the account holds no credential this
+     *  integration accepts. Every entry point that starts a turn must await it,
+     *  so the refusal reaches the client instead of a detached promise.
+     *
+     *  Returns `undefined`, not a resolved promise, while the guard is off: the
+     *  callers run in the same synchronous section as the turn they enqueue, and
+     *  an extra microtask there would let the caller observe a half-built turn. */
+    private runClaudeSubscriptionGuard;
     goal(params: GoalRequest): Promise<GoalControlResponse>;
     private publishGoal;
     private publishTaskPlan;
@@ -855,6 +1052,8 @@ export declare class ClaudeAcpAgent {
      *  exposes capabilities before the stream starts. */
     private trackOrphanCommand;
     cancel(params: CancelNotification): Promise<void>;
+    /** Release a query that was spawned but never registered as a session. */
+    private discardUnregisteredQuery;
     /** Mark a session's SDK query stream as permanently ended and release the
      *  resources tied to it: drop the consumer handle, dispose the settings
      *  watchers, end the input stream, and close the query (which terminates the
@@ -995,6 +1194,10 @@ export declare class ClaudeAcpAgent {
      * session with the same ID so subsequent turns inherit the new environment.
      */
     private enqueueProviderUpdate;
+    /** Tell a capable client that a session died during a provider switch. The
+     *  session is already removed, so the failure is published on the state it
+     *  left behind, with the refusal reason when the error carries one. */
+    private reportSessionLostOnProviderUpdate;
 }
 /** The effort level the CLI itself resolves for a model from the persisted
  *  settings: the per-model entry (`modelSettings`, keyed by canonical model

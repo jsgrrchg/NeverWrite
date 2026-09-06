@@ -43,6 +43,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 ### Changed
 
 - Updated the embedded Codex runtime to `0.153.2`, adding compatibility with the latest account-aware model catalog and GPT-6 Astra while preserving upstream model visibility rules.
+- Updated the embedded Claude ACP runtime to `0.75.1`, surfacing context compaction as tool activity and rendering Claude `/usage` results as structured Markdown.
 
 ## [0.7.6] - 2026-09-02
 

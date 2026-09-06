@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.75.1](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.75.0...v0.75.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* restore session forks and speed up loading ([#1089](https://github.com/agentclientprotocol/claude-agent-acp/issues/1089)) ([f5e79f5](https://github.com/agentclientprotocol/claude-agent-acp/commit/f5e79f55f8ba8d1cd0a72cbc78bfea726bea2f00))
+
+## [0.75.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.74.0...v0.75.0) (2026-09-05)
+
+
+### Features
+
+* **auth:** report the agent's auth identity over ACP (authStatus extension) ([#1080](https://github.com/agentclientprotocol/claude-agent-acp/issues/1080)) ([eb5ca9f](https://github.com/agentclientprotocol/claude-agent-acp/commit/eb5ca9fd17b6af4a4566be4ad75b64588ce60b52))
+* render usage statistics as Markdown ([#1085](https://github.com/agentclientprotocol/claude-agent-acp/issues/1085)) ([2081767](https://github.com/agentclientprotocol/claude-agent-acp/commit/20817678f68083a2997d1bc45ef20241a9097220))
+* surface context compaction as an ACP tool lifecycle ([#991](https://github.com/agentclientprotocol/claude-agent-acp/issues/991)) ([f74a517](https://github.com/agentclientprotocol/claude-agent-acp/commit/f74a51758dc42896addbcdaf7611a29ec1d1db17))
+
+## [0.74.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.73.0...v0.74.0) (2026-09-04)
+
+
+### Features
+
+* **auth:** refuse claude.ai subscriptions under `--hide-claude-auth` ([#1079](https://github.com/agentclientprotocol/claude-agent-acp/issues/1079)) ([da9f7e5](https://github.com/agentclientprotocol/claude-agent-acp/commit/da9f7e56956c770bd1339151d6166a011fe39174))
+
 ## [0.73.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.72.0...v0.73.0) (2026-09-01)
 
 

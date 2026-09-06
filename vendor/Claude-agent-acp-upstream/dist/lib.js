@@ -3,3 +3,6 @@ export { ClaudeAcpAgent, isLocalCommandMetadata, stripLocalCommandMetadata, runA
 export { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
 export { toolInfoFromToolUse, toDisplayPath, planEntries, toolUpdateFromToolResult, } from "./tools.js";
 export { SettingsManager } from "./settings.js";
+// The `authStatus` extension's wire surface: the notification's method name and
+// the payload types needed to read the traffic. The mappers stay internal.
+export { AUTH_STATUS_UPDATE_METHOD, } from "./auth-status.js";

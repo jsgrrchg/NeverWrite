@@ -81,6 +81,7 @@ export function sessionFailureMeta(failure) {
         severity: failure.severity,
         title: failure.title,
         ...(failure.details ? { details: failure.details } : {}),
+        ...(failure.reason ? { reason: failure.reason } : {}),
         actions: failure.actions,
     });
 }
@@ -200,6 +201,26 @@ export class SessionFailureController {
             return false;
         }
     }
+    /** Whether a session-scoped error of `kind` is active. A turn-scoped
+     *  warning of the same kind (an `api_retry` notice) does not count: it
+     *  reports a retry in progress, not the state the error would publish.
+     *
+     *  `reason` refines `kind`, so the active record must carry the same one,
+     *  and an omitted `reason` matches only a record with no reason. A plain
+     *  sign-out and the `--hide-claude-auth` subscription refusal are both
+     *  `auth_required`, but they tell the user different things. Neither may
+     *  suppress the other. */
+    hasActiveSessionError(kind, reason) {
+        for (const failure of this.state.active.values()) {
+            if (failure.kind === kind &&
+                failure.severity === "error" &&
+                failure.turnId === undefined &&
+                failure.reason === reason) {
+                return true;
+            }
+        }
+        return false;
+    }
     recordActive(failure) {
         this.state.revisions.set(failure.id, failure.revision);
         this.state.active.set(failure.id, failure);
@@ -255,6 +276,7 @@ export class SessionFailureController {
             severity: failureOptions.severity ?? "error",
             title,
             ...(failureOptions.details ? { details: failureOptions.details } : {}),
+            ...(failureOptions.reason ? { reason: failureOptions.reason } : {}),
             actions: failureOptions.severity === "warning" ? [] : policy.actions,
             recoveryPolicy: sessionFailureRecoveryPolicy(kind, failureOptions.turnId && !failureOptions.sessionScoped ? failureOptions.turnId : undefined),
             ...(failureOptions.turnId && !failureOptions.sessionScoped
