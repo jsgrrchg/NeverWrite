@@ -9835,7 +9835,7 @@ mod tests {
         let session_client =
             SessionClient::with_client(session_id.clone(), client.clone(), Arc::default());
         let conversation = Arc::new(StubCodexThread::new());
-        let models_manager = Arc::new(StubModelsManager);
+        let models_manager = Arc::new(StubModelsManager::default());
         let config = Config::load_with_cli_overrides_and_harness_overrides(
             vec![],
             ConfigOverrides::default(),
@@ -9934,7 +9934,7 @@ mod tests {
         let client = Arc::new(StubClient::new());
         let session_client = SessionClient::with_client(session_id, client, Arc::default());
         let conversation = Arc::new(StubCodexThread::new());
-        let models_manager = Arc::new(StubModelsManager);
+        let models_manager = Arc::new(StubModelsManager::default());
         let config = Config::load_with_cli_overrides_and_harness_overrides(
             vec![],
             ConfigOverrides::default(),
@@ -10229,7 +10229,7 @@ mod tests {
                         .iter()
                         .any(|effort| effort.effort == ReasoningEffort::Ultra)
             })
-            .expect("runtime 0.153.2 catalog should include max and ultra")
+            .expect("runtime catalog should include max and ultra")
             .clone();
         let selected_model = preset.model.clone();
         let (actor, _client, _conversation) = setup_actor(|config| {
@@ -10274,21 +10274,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_options_respect_hidden_catalog_models() -> anyhow::Result<()> {
-        let presets = all_model_presets();
-        let astra = presets
+    async fn config_options_include_astra_from_bundled_catalog() -> anyhow::Result<()> {
+        let astra = all_model_presets()
             .iter()
             .find(|preset| preset.model == "gpt-6-astra")
-            .expect("runtime 0.153.2 catalog should include GPT-6 Astra");
-        assert!(!astra.show_in_picker, "Astra should remain hidden upstream");
-        let visible_model = presets
-            .iter()
-            .find(|preset| preset.show_in_picker && preset.model != astra.model)
-            .expect("catalog should include a visible model")
-            .model
+            .expect("runtime catalog should include GPT-6 Astra")
             .clone();
+        assert!(astra.show_in_picker, "bundled Astra should be visible");
+        assert_eq!(
+            codex_models_manager::test_support::get_model_offline_for_tests(None),
+            astra.model,
+            "Astra should be the bundled default without an explicit model"
+        );
+        assert_eq!(
+            codex_models_manager::test_support::get_model_offline_for_tests(Some("gpt-5.6-sol")),
+            "gpt-5.6-sol",
+            "the new default must not replace an explicit model"
+        );
         let (actor, _client, _conversation) = setup_actor(|config| {
-            config.model = Some(visible_model);
+            config.model = Some("gpt-5.6-sol".to_string());
         })
         .await?;
 
@@ -10296,55 +10300,67 @@ mod tests {
         let model = options
             .iter()
             .find(|option| option.id.0.as_ref() == "model")
-            .expect("model option should be present");
+            .unwrap();
         let SessionConfigKind::Select(select) = &model.kind else {
             panic!("model option should be a select");
         };
         let SessionConfigSelectOptions::Ungrouped(models) = &select.options else {
             panic!("model options should be ungrouped");
         };
-
+        assert_eq!(select.current_value.0.as_ref(), "gpt-5.6-sol");
         assert!(
             models
                 .iter()
-                .all(|model| model.value.0.as_ref() != astra.id.as_str()),
-            "hidden Astra must not appear without an account-visible catalog entry"
+                .any(|model| model.value.0.as_ref() == astra.id.as_str())
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn config_options_preserve_an_explicit_hidden_model() -> anyhow::Result<()> {
-        let astra = all_model_presets()
-            .iter()
-            .find(|preset| preset.model == "gpt-6-astra")
-            .expect("runtime 0.153.2 catalog should include GPT-6 Astra")
-            .clone();
-        let selected_model = astra.model.clone();
-        let (actor, _client, _conversation) = setup_actor(|config| {
-            config.model = Some(selected_model);
-        })
-        .await?;
+    async fn config_options_respect_hidden_catalog_models() -> anyhow::Result<()> {
+        // Use a controlled catalog so upstream model launches cannot weaken this contract.
+        let mut hidden = all_model_presets()[0].clone();
+        hidden.id = "test-hidden-model".to_string();
+        hidden.model = hidden.id.clone();
+        hidden.show_in_picker = false;
+        let mut visible = hidden.clone();
+        visible.id = "test-visible-model".to_string();
+        visible.model = visible.id.clone();
+        visible.show_in_picker = true;
 
-        let options = actor.config_options().await?;
-        let model = options
-            .iter()
-            .find(|option| option.id.0.as_ref() == "model")
-            .expect("model option should be present");
-        let SessionConfigKind::Select(select) = &model.kind else {
-            panic!("model option should be a select");
-        };
-        let SessionConfigSelectOptions::Ungrouped(models) = &select.options else {
-            panic!("model options should be ungrouped");
-        };
-
-        assert_eq!(select.current_value.0.as_ref(), astra.model.as_str());
-        assert!(
-            models
+        for selected in [&visible.model, &hidden.model] {
+            let (mut actor, _client, _conversation) = setup_actor(|config| {
+                config.model = Some(selected.clone());
+            })
+            .await?;
+            actor.models_manager = Arc::new(StubModelsManager {
+                presets: vec![hidden.clone(), visible.clone()],
+            });
+            let options = actor.config_options().await?;
+            let model = options
                 .iter()
-                .any(|model| model.value.0.as_ref() == astra.id.as_str()),
-            "an explicitly selected hidden model must remain selectable"
-        );
+                .find(|option| option.id.0.as_ref() == "model")
+                .unwrap();
+            let SessionConfigKind::Select(select) = &model.kind else {
+                panic!("model option should be a select");
+            };
+            let SessionConfigSelectOptions::Ungrouped(models) = &select.options else {
+                panic!("model options should be ungrouped");
+            };
+            assert_eq!(select.current_value.0.as_ref(), selected.as_str());
+            assert!(
+                models
+                    .iter()
+                    .any(|model| model.value.0.as_ref() == visible.id.as_str())
+            );
+            assert_eq!(
+                models
+                    .iter()
+                    .any(|model| model.value.0.as_ref() == hidden.id.as_str()),
+                selected == &hidden.model,
+                "a hidden model is listed only when explicitly selected"
+            );
+        }
         Ok(())
     }
 
@@ -10963,7 +10979,7 @@ mod tests {
         let session_client =
             SessionClient::with_client(session_id.clone(), client.clone(), Arc::default());
         let conversation = Arc::new(StubCodexThread::new());
-        let models_manager = Arc::new(StubModelsManager);
+        let models_manager = Arc::new(StubModelsManager::default());
         let config = Config::load_with_cli_overrides_and_harness_overrides(
             vec![],
             ConfigOverrides::default(),
@@ -10998,7 +11014,7 @@ mod tests {
         let session_client =
             SessionClient::with_client(session_id.clone(), client.clone(), Arc::default());
         let conversation = Arc::new(StubCodexThread::new());
-        let models_manager = Arc::new(StubModelsManager);
+        let models_manager = Arc::new(StubModelsManager::default());
         let config = Config::load_with_cli_overrides_and_harness_overrides(
             vec![],
             ConfigOverrides::default(),
@@ -11190,7 +11206,17 @@ mod tests {
         }
     }
 
-    struct StubModelsManager;
+    struct StubModelsManager {
+        presets: Vec<ModelPreset>,
+    }
+
+    impl Default for StubModelsManager {
+        fn default() -> Self {
+            Self {
+                presets: all_model_presets().to_owned(),
+            }
+        }
+    }
 
     impl ModelsManagerImpl for StubModelsManager {
         fn get_model(
@@ -11200,13 +11226,21 @@ mod tests {
             let model_id = model_id.clone();
             // Mirror the runtime contract: an explicit configured model takes precedence over
             // the catalog default. Tests for model changes rely on this distinction being real.
-            Box::pin(
-                async move { model_id.unwrap_or_else(|| all_model_presets()[0].to_owned().id) },
-            )
+            Box::pin(async move {
+                model_id.unwrap_or_else(|| {
+                    self.presets
+                        .iter()
+                        .find(|preset| preset.show_in_picker)
+                        .or_else(|| self.presets.first())
+                        .unwrap()
+                        .model
+                        .clone()
+                })
+            })
         }
 
         fn list_models(&self) -> Pin<Box<dyn Future<Output = Vec<ModelPreset>> + Send + '_>> {
-            Box::pin(async { all_model_presets().to_owned() })
+            Box::pin(async { self.presets.clone() })
         }
     }
 

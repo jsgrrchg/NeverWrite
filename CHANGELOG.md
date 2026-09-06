@@ -42,7 +42,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ### Changed
 
-- Updated the embedded Codex runtime to `0.153.2`, adding compatibility with the latest account-aware model catalog and GPT-6 Astra while preserving upstream model visibility rules.
+- Updated the embedded Codex runtime to `0.153.4`, making GPT-6 Astra visible and the default in the bundled fallback catalog while preserving account-provided catalogs and explicit model selections.
 
 ## [0.7.6] - 2026-09-02
 

@@ -553,6 +553,18 @@ async function runCodeModeTurn({
             );
         }
 
+        const modelOption = session.configOptions?.find(
+            (option) => option.id === "model",
+        );
+        if (
+            modelOption?.currentValue !== "test-gpt-5.1-codex" ||
+            !modelOption.options?.some((option) => option.value === "gpt-6-astra")
+        ) {
+            throw new Error(
+                "Packaged ACP must list bundled Astra and preserve the explicitly configured smoke model",
+            );
+        }
+
         const prompt = await client.request("session/prompt", {
             sessionId,
             prompt: [
