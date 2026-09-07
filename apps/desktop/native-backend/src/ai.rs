@@ -17748,6 +17748,33 @@ mod tests {
     }
 
     #[test]
+    fn context_compaction_tool_activity_stays_out_of_review_flow() {
+        let tool_call = ToolCall::new(
+            ToolCallId::from("compact-session-1"),
+            "Compact conversation",
+        )
+        .kind(ToolKind::Think)
+        .status(ToolCallStatus::Completed)
+        .meta(Meta::from_iter([(
+            "contextCompaction".to_string(),
+            json!({
+                "version": 1,
+                "trigger": "automatic",
+                "preTokens": 190_000,
+                "postTokens": 42_000,
+            }),
+        )]));
+
+        let payload = map_tool_call("session-1", &tool_call, None, None, vec![]);
+
+        assert_eq!(payload.title, "Compact conversation");
+        assert_eq!(payload.kind, "think");
+        assert_eq!(payload.status, "completed");
+        assert!(payload.diffs.is_none());
+        assert!(payload.action.is_none());
+    }
+
+    #[test]
     fn activity_payloads_preserve_restored_runtime_start_times() {
         let tool_call = ToolCall::new(ToolCallId::from("tool-restored"), "Read README.md")
             .kind(ToolKind::Read)

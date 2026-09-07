@@ -137,7 +137,7 @@ dictionary licenses.
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.73.0  | Apache-2.0                      |
+| @agentclientprotocol/claude-agent-acp   | 0.75.1  | Apache-2.0                      |
 | @agentclientprotocol/sdk                | 1.4.0   | Apache-2.0                      |
 | @anthropic-ai/claude-agent-sdk          | 0.3.257 | Anthropic SDK terms in LICENSE.md |
 | @anthropic-ai/claude-agent-sdk-*        | 0.3.257 | Anthropic SDK terms in LICENSE.md |
@@ -311,7 +311,7 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.73.0` (`ea7076c0bc324603e65d8c124b7573f158749969`) with the bounded NeverWrite modifications listed below |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.75.1` (`3e23c5b960b66a6d2c892e7524c952e731c076a7`) with the bounded NeverWrite modifications listed below |
 | `src/tools.ts`        | Replaced the ambiguous textual `TaskList` fallback regex with linear string parsing to prevent excessive backtracking while preserving owners, dependencies, and malformed suffixes as subject text |
 | `src/tests/tools.test.ts` | Added regression coverage for owner/dependency parsing and adversarial malformed `TaskList` output |
 | `dist/`               | Generated from the locally modified vendored source and force-added because upstream ignores build output |
@@ -337,4 +337,4 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 
 ---
 
-*This file is maintained from project dependency metadata. Last updated: 2026-08-09.*
+*This file is maintained from project dependency metadata. Last updated: 2026-09-06.*
