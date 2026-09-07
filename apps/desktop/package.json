@@ -10,6 +10,7 @@
     },
     "scripts": {
         "preinstall": "node scripts/require-npm.mjs",
+        "postinstall": "patch-package",
         "dev": "node scripts/run-electron-dev.mjs",
         "renderer:dev": "vite",
         "build": "tsc -b && vite build",
@@ -100,6 +101,7 @@
         "eslint-plugin-react-refresh": "^0.4.24",
         "globals": "^16.5.0",
         "jsdom": "^26.1.0",
+        "patch-package": "8.0.1",
         "rcedit": "^5.0.2",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.59.0",
