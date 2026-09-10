@@ -37,15 +37,17 @@ describe("clipper preferences helpers", () => {
 
     it("records folder and tag usage back into settings", () => {
         const settings = createDefaultClipperSettings();
+        const vault = settings.vaults[0]!;
         const nextSettings = recordClipperUsage(settings, {
-            vaultId: settings.vaults[0].id,
+            vaultId: vault.id,
             folder: "/Clips/Web/",
             tags: ["research", "web"],
         });
+        const nextVault = nextSettings.vaults[0]!;
 
-        expect(nextSettings.vaults[0].defaultFolder).toBe("Clips/Web");
-        expect(nextSettings.vaults[0].folderHints).toContain("Clips/Web");
-        expect(nextSettings.recentFoldersByVault[settings.vaults[0].id]).toEqual([
+        expect(nextVault.defaultFolder).toBe("Clips/Web");
+        expect(nextVault.folderHints).toContain("Clips/Web");
+        expect(nextSettings.recentFoldersByVault[vault.id]).toEqual([
             "Clips/Web",
         ]);
         expect(nextSettings.recentTags).toEqual(["research", "web"]);
