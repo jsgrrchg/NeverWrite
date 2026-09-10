@@ -56,7 +56,7 @@ export function TagEditor({ tags, suggestions, onChange }: TagEditorProps) {
                         !draft &&
                         tags.length > 0
                     ) {
-                        removeTag(tags[tags.length - 1]);
+                        removeTag(tags[tags.length - 1]!);
                     }
                 }}
                 list="tag-suggestions"

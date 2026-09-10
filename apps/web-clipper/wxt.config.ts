@@ -15,6 +15,9 @@ export default defineConfig({
     manifestVersion: 3,
     targetBrowsers: ["chrome", "firefox"],
     modules: ["@wxt-dev/module-react"],
+    webExt: {
+        disabled: true,
+    },
     vite: () => ({
         plugins: [tailwindcss()],
     }),
