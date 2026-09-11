@@ -79,6 +79,8 @@ export function AIChatPane() {
             className="flex h-full min-h-0 flex-col"
             style={{
                 background: "var(--bg-secondary)",
+                borderTop: "1px solid color-mix(in srgb, var(--border) 76%, transparent)",
+                boxSizing: "border-box",
                 color: "var(--text-primary)",
             }}
             onFocusCapture={() => nav.setFocusedSurface("chat")}
@@ -86,8 +88,8 @@ export function AIChatPane() {
         >
             {showStandaloneHeader && (
                 <header
-                    className="flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs"
-                    style={{ borderColor: "var(--border)" }}
+                    className="flex shrink-0 items-center gap-2 border-b px-3 py-1 text-xs"
+                    style={{ height: 33, minHeight: 33, boxSizing: "border-box", borderColor: "var(--border)" }}
                 >
                     {view.mode === "history" && (
                         <button

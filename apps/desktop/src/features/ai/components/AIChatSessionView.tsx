@@ -991,7 +991,8 @@ export function AIChatSessionView({
                 data-testid="chat-session-header"
                 className="flex items-center gap-2 px-3 py-1 text-xs shrink-0"
                 style={{
-                    height: 31,
+                    height: 33,
+                    minHeight: 33,
                     boxSizing: "border-box",
                     borderBottom: "1px solid var(--border)",
                     color: "var(--text-secondary)",
