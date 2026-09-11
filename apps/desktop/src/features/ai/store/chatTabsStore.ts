@@ -37,6 +37,8 @@ interface ChatTabsStore {
     view: ChatPaneView;
     historyFilter: ChatHistoryFilter;
     focusedSurface: "chat" | "editor";
+    chatExpanded: boolean;
+    setChatExpanded: (expanded: boolean) => void;
     navigationRevision: number;
     showConversation: (sessionId: string) => void;
     showHistory: () => void;
@@ -413,6 +415,7 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
     view: { mode: "empty" },
     historyFilter: "all",
     focusedSurface: "editor",
+    chatExpanded: false,
     navigationRevision: 0,
     showConversation: (sessionId) => {
         if (!sessionId) return;
@@ -432,7 +435,8 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         else get().showEmpty();
     },
     showEmpty: () => set(state => ({ view: { mode: "empty" }, navigationRevision: state.navigationRevision + 1 })),
-    setFocusedSurface: (focusedSurface) => set({ focusedSurface }),
+    setChatExpanded: (chatExpanded) => set({ chatExpanded }),
+    setFocusedSurface: (focusedSurface) => set(state => ({ focusedSurface, chatExpanded: focusedSurface === "editor" ? false : state.chatExpanded })),
     setHistoryFilter: (historyFilter) => set({ historyFilter }),
     isReady: false,
     tabs: [],
@@ -635,6 +639,7 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
     hydrateForVault: (payload) => {
         const workspace = normalizeWorkspace(payload);
         set({
+            chatExpanded: false,
             tabs: workspace?.tabs ?? [],
             view: workspace?.view ?? { mode: "empty" },
             historyFilter: workspace?.historyFilter ?? "all",
@@ -806,6 +811,7 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         set({
             view: { mode: "empty" },
             focusedSurface: "editor",
+            chatExpanded: false,
             tabs: [],
             activeTabId: null,
         });
@@ -862,6 +868,7 @@ export function resetChatTabsStore() {
         historyFilter: "all",
         view: { mode: "empty" },
         focusedSurface: "editor",
+        chatExpanded: false,
         isReady: false,
         tabs: [],
         activeTabId: null,

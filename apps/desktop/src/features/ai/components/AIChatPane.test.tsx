@@ -1,4 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { useEditorStore } from "../../../app/store/editorStore";
+import { useLayoutStore } from "../../../app/store/layoutStore";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useArchivedChatsStore } from "../store/archivedChatsStore";
@@ -48,6 +50,8 @@ function createSession(): AIChatSession {
 describe("AIChatPane", () => {
     beforeEach(() => {
         resetChatStore();
+        useEditorStore.getState().hydrateTabs([], null);
+        useLayoutStore.setState({ chatPaneVisible: true });
         useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
         useChatTabsStore.getState().reset();
         useChatStore.setState({
@@ -68,6 +72,18 @@ describe("AIChatPane", () => {
         expect(
             screen.queryByRole("button", { name: "History" }),
         ).toBeNull();
+    });
+    it("toggles expansion and restores editors when the chat is hidden", () => {
+        useEditorStore.getState().openNote("a", "A", "a");
+        render(<AIChatPane />);
+        fireEvent.click(screen.getByRole("button", { name: "Expand chat" }));
+        expect(useChatTabsStore.getState().chatExpanded).toBe(true);
+        fireEvent.click(screen.getByRole("button", { name: "Restore panes" }));
+        expect(useChatTabsStore.getState().chatExpanded).toBe(false);
+        fireEvent.click(screen.getByRole("button", { name: "Expand chat" }));
+        fireEvent.click(screen.getByRole("button", { name: "Hide chat pane" }));
+        expect(useChatTabsStore.getState().chatExpanded).toBe(false);
+        expect(useLayoutStore.getState().chatPaneVisible).toBe(false);
     });
     it("opens archived conversations in the same editable session view", () => {
         useArchivedChatsStore.getState().archive("session-a");

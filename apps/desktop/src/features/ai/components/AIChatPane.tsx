@@ -1,3 +1,4 @@
+import { useEditorStore } from "../../../app/store/editorStore";
 import { useChatPaneShortcuts } from "../useChatPaneShortcuts";
 import { useState } from "react";
 import { useLayoutStore } from "../../../app/store/layoutStore";
@@ -14,6 +15,8 @@ import { getSessionTitle } from "../sessionPresentation";
 
 export function AIChatPane() {
     useChatPaneShortcuts();
+    const expanded = useChatTabsStore(state => state.chatExpanded);
+    const hasEditorTabs = useEditorStore(state => state.panes.some(pane => pane.tabs.length > 0));
     const view = useChatTabsStore((state) => state.view);
     const sessions = useChatStore((state) => state.sessionsById);
     const focused = useChatTabsStore(
@@ -47,6 +50,24 @@ export function AIChatPane() {
             >
                 ⋯
             </button>
+            {hasEditorTabs && (
+                <button
+                    type="button"
+                    aria-label={expanded ? "Restore panes" : "Expand chat"}
+                    title={expanded ? "Restore panes" : "Expand chat"}
+                    aria-pressed={expanded}
+                    className="inline-flex shrink-0 items-center justify-center rounded-md opacity-70 hover:bg-gray-500/30 hover:opacity-100"
+                    style={{ width: 20, height: 20, color: "var(--text-secondary)" }}
+                    onClick={() => {
+                        nav.setFocusedSurface("chat");
+                        nav.setChatExpanded(!expanded);
+                    }}
+                >
+                    <svg width={10} height={10} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d={expanded ? "M1 6h5V1M15 10h-5v5M6 6 1 1m9 9 5 5" : "M6 1H1v5m9 9h5v-5M1 1l5 5m9 9-5-5"} />
+                    </svg>
+                </button>
+            )}
             <button
                 type="button"
                 className="inline-flex shrink-0 items-center justify-center rounded-md opacity-70 transition-[background-color,opacity,transform] duration-150 ease-out hover:bg-gray-500/30 hover:opacity-100 active:bg-gray-500/55 active:scale-90"

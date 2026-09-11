@@ -13,6 +13,7 @@ import { useElementWidth } from "./useElementWidth";
 export function ChatEditorWorkspace({ children }: { children: ReactNode }) {
     const { ref, width } = useElementWidth<HTMLDivElement>();
     const visible = useLayoutStore((state) => state.chatPaneVisible);
+    const expanded = useChatTabsStore(state => state.chatExpanded) && visible;
     const preferred = useLayoutStore((state) => state.chatPaneWidth);
     const side = useLayoutStore(selectChatPaneSide);
     const hasEditorTabs = useEditorStore((state) =>
@@ -24,7 +25,7 @@ export function ChatEditorWorkspace({ children }: { children: ReactNode }) {
     const showChat =
         !hasEditorTabs || visible;
     const showEditor =
-        hasEditorTabs;
+        hasEditorTabs && !expanded;
     return (
         <div ref={ref} className="flex h-full min-h-0 min-w-0 flex-col">
             <div className="flex min-h-0 min-w-0 flex-1">
@@ -33,7 +34,7 @@ export function ChatEditorWorkspace({ children }: { children: ReactNode }) {
                     className="min-h-0 min-w-0 shrink-0"
                     style={{
                         display: showChat ? undefined : "none",
-                        width: !hasEditorTabs ? "100%" : chatWidth,
+                        width: !hasEditorTabs || expanded ? "100%" : chatWidth,
                         order: side === "left" ? 0 : 2,
                     }}
                 >
@@ -42,7 +43,7 @@ export function ChatEditorWorkspace({ children }: { children: ReactNode }) {
                 <div
                     className="relative shrink-0"
                     style={{
-                        display: hasEditorTabs && visible ? undefined : "none",
+                        display: hasEditorTabs && visible && !expanded ? undefined : "none",
                         width: 1,
                         order: 1,
                         zIndex: 10,
