@@ -1,3 +1,4 @@
+import { cycleFocusedWorkspaceTabs } from "./features/ai/cycleSidebarChats";
 import { handleChatPaneShortcut } from "./features/ai/useChatPaneShortcuts";
 import { migrateLegacyChatTabs, preserveLegacyChatTabsForVault } from "./features/ai/chatWorkspaceRestoration";
 import { openChatSessionInWorkspace, openChatHistoryInWorkspace } from "./features/ai/chatPaneMovement";
@@ -146,16 +147,6 @@ const DEEP_LINK_OPEN_FILE_EVENT = "neverwrite:deep-link/open-file";
 const MENU_ACTION_EVENT = "menu-action";
 const DOCK_OPEN_VAULT_EVENT = "dock-open-vault";
 const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
-
-function cycleEditorTabs(backward: boolean) {
-    const state = useEditorStore.getState();
-    const pane = selectPaneState(state);
-    const idx = pane.tabs.findIndex((tab) => tab.id === pane.activeTabId);
-    if (idx === -1 || pane.tabs.length <= 1) return;
-
-    const offset = backward ? pane.tabs.length - 1 : 1;
-    state.switchTab(pane.tabs[(idx + offset) % pane.tabs.length].id);
-}
 
 function openEmptyTab() {
     // Cmd+T opens the unified quick switcher palette instead of a blank draft tab.
@@ -433,8 +424,8 @@ function useRegisterCommands(
             label: nextTabShortcut.label,
             shortcut: formatShortcutAction(nextTabShortcut.id, platform),
             category: nextTabShortcut.category,
-            when: hasActiveTab,
-            execute: () => cycleEditorTabs(false),
+            when: () => useChatTabsStore.getState().focusedSurface === "chat" || hasActiveTab(),
+            execute: () => cycleFocusedWorkspaceTabs(false),
         });
 
         register({
@@ -442,8 +433,8 @@ function useRegisterCommands(
             label: previousTabShortcut.label,
             shortcut: formatShortcutAction(previousTabShortcut.id, platform),
             category: previousTabShortcut.category,
-            when: hasActiveTab,
-            execute: () => cycleEditorTabs(true),
+            when: () => useChatTabsStore.getState().focusedSurface === "chat" || hasActiveTab(),
+            execute: () => cycleFocusedWorkspaceTabs(true),
         });
 
         register({
@@ -905,13 +896,13 @@ function useGlobalShortcuts(
 
             if (matchesShortcutAction(e, "next_tab", platform)) {
                 e.preventDefault();
-                cycleEditorTabs(false);
+                cycleFocusedWorkspaceTabs(false);
                 return;
             }
 
             if (matchesShortcutAction(e, "previous_tab", platform)) {
                 e.preventDefault();
-                cycleEditorTabs(true);
+                cycleFocusedWorkspaceTabs(true);
                 return;
             }
 
