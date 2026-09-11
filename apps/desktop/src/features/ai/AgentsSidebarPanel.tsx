@@ -101,14 +101,15 @@ function deriveActivityIndicator(
     }
 }
 
-function formatAgentTimestamp(timestamp: number): string {
+function formatAgentTimestamp(timestamp: number, compact = false): string {
     if (!timestamp) return "";
     const now = Date.now();
     const diffMs = now - timestamp;
     const diffMinutes = Math.floor(diffMs / 60000);
 
-    if (diffMinutes < 1) return "Just now";
+    if (diffMinutes < 1) return compact ? "Now" : "Just now";
     if (diffMinutes < 60) {
+        if (compact) return `${diffMinutes}m`;
         return diffMinutes === 1
             ? "1 minute ago"
             : `${diffMinutes} minutes ago`;
@@ -116,11 +117,13 @@ function formatAgentTimestamp(timestamp: number): string {
 
     const diffHours = Math.floor(diffMinutes / 60);
     if (diffHours < 24) {
+        if (compact) return `${diffHours}h`;
         return diffHours === 1 ? "1 hour ago" : `${diffHours} hours ago`;
     }
 
     const diffDays = Math.floor(diffHours / 24);
     if (diffDays < 7) {
+        if (compact) return `${diffDays}d`;
         return diffDays === 1 ? "Yesterday" : `${diffDays} days ago`;
     }
 
@@ -600,7 +603,7 @@ export function AgentsSidebarPanel() {
         const isPinned = Boolean(pinnedEntries[session.sessionId]);
         const indicator = deriveActivityIndicator(session);
         const updatedAt = getSessionUpdatedAt(session);
-        const timestampLabel = formatAgentTimestamp(updatedAt);
+        const timestampLabel = formatAgentTimestamp(updatedAt, isSessionArchived(session, sessionsById, archivedEntries));
         const dragTitle = getSessionTitleText(session);
         const updateDragPreview = (clientX: number, clientY: number) => {
             setDragPreview({
@@ -857,8 +860,20 @@ export function AgentsSidebarPanel() {
                             {otherGroups.map(renderGroup)}
                         </AgentsSidebarSection>
                         {archivedGroups.length > 0 && <section className="mt-3" aria-label="Archived chats">
-                            <button type="button" className="w-full px-2 py-2 text-left text-xs" aria-expanded={hasFilter || archivedExpanded} onClick={() => setArchivedExpanded(value => !value)}>Archived ({archivedGroups.length})</button>
-                            {(hasFilter || archivedExpanded) && <div className="flex flex-col gap-1.5">{archivedGroups.map(renderGroup)}</div>}
+                            <button
+                                type="button"
+                                className="flex w-full items-center gap-2 px-2 py-2 text-left text-xs"
+                                style={{ color: "var(--text-secondary)" }}
+                                aria-expanded={hasFilter || archivedExpanded}
+                                onClick={() => setArchivedExpanded(value => !value)}
+                            >
+                                <span>Archived ({archivedGroups.length})</span>
+                                <span className="h-px min-w-0 flex-1" style={{ background: "var(--border)" }} aria-hidden="true" />
+                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true" style={{ transform: hasFilter || archivedExpanded ? undefined : "rotate(-90deg)" }}>
+                                    <path d="m4 6 4 4 4-4" />
+                                </svg>
+                            </button>
+                            {(hasFilter || archivedExpanded) && <div className="flex flex-col gap-0.5">{archivedGroups.map(renderGroup)}</div>}
                         </section>}
                     </>
                 )}

@@ -276,12 +276,15 @@ export function AgentsSidebarItem({
             data-testid="agent-sidebar-item"
             title={title}
             aria-label={title}
-            className="group flex w-full cursor-pointer flex-wrap items-center rounded-lg focus-visible:outline-2 focus-visible:outline-(--accent)"
+            className={`group flex w-full cursor-pointer items-center focus-visible:outline-2 focus-visible:outline-(--accent) ${
+                isArchived ? "flex-nowrap rounded-md" : "flex-wrap rounded-lg"
+            }`}
             style={{
                 columnGap: metrics.inlineGap,
-                rowGap: 4,
-                border: "1px solid var(--border)",
-                padding: `${metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
+                rowGap: isArchived ? 0 : 4,
+                minHeight: isArchived ? metrics.titleFontSize * 3 : undefined,
+                border: isArchived ? "1px solid transparent" : "1px solid var(--border)",
+                padding: `${isArchived ? 4 : metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
                 paddingLeft: metrics.rowPaddingLeft + depth * 14,
                 backgroundColor: isActive
                     ? "color-mix(in srgb, var(--accent) 14%, transparent)"
@@ -357,6 +360,14 @@ export function AgentsSidebarItem({
                 event.currentTarget.style.backgroundColor = "transparent";
             }}
         >
+            {isArchived && (
+                <span
+                    className={`shrink-0 transition-opacity ${isActive ? "opacity-100" : "opacity-40 group-hover:opacity-100 group-focus-within:opacity-100"}`}
+                    title={getRuntimeDisplayName(session.runtimeId)}
+                >
+                    <AIProviderIcon runtimeId={session.runtimeId} size={metrics.providerIconSize} />
+                </span>
+            )}
             {isRenaming ? (
                     <input
                         ref={renameInputRef}
@@ -385,7 +396,7 @@ export function AgentsSidebarItem({
                     />
                 ) : (
                     <span
-                        className="min-w-0 flex-1 truncate text-[11.5px] font-medium"
+                        className={`min-w-0 flex-1 truncate text-[11.5px] font-medium ${isArchived && !isActive ? "opacity-60 group-hover:opacity-100 group-focus-within:opacity-100" : ""}`}
                         style={{
                             color: "var(--text-primary)",
                             fontSize: metrics.titleFontSize,
@@ -447,7 +458,7 @@ export function AgentsSidebarItem({
                 />
             ) : null}
 
-            {onToggleArchive && <button type="button" aria-label={isArchived ? "Unarchive chat" : "Archive chat"} title={isArchived ? "Unarchive chat" : "Archive chat"} className="shrink-0 rounded opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={event => { event.stopPropagation(); onToggleArchive(); }}>
+            {onToggleArchive && !isArchived && <button type="button" aria-label={isArchived ? "Unarchive chat" : "Archive chat"} title={isArchived ? "Unarchive chat" : "Archive chat"} className="shrink-0 rounded opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={event => { event.stopPropagation(); onToggleArchive(); }}>
                 <svg width={metrics.pinIconSize} height={metrics.pinIconSize} viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M2 3h12v3H2zM3 6v7h10V6M6 9h4" /></svg>
             </button>}
             {canPin ? (
@@ -492,10 +503,37 @@ export function AgentsSidebarItem({
                     </button>
                 ) : null}
 
+            {isArchived ? (
+                <span className="grid shrink-0 items-center" style={{ fontSize: metrics.timestampFontSize }}>
+                    <span
+                        className={`col-start-1 row-start-1 text-right ${onToggleArchive ? "group-hover:opacity-0 group-focus-within:opacity-0" : ""}`}
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        {timestampLabel}
+                    </span>
+                    {onToggleArchive && (
+                        <button
+                            type="button"
+                            aria-label="Unarchive chat"
+                            title="Unarchive chat"
+                            className="pointer-events-none col-start-1 row-start-1 flex items-center gap-1 rounded px-1 py-0.5 opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                            style={{ background: "var(--bg-tertiary)", color: "var(--text-secondary)" }}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                onToggleArchive();
+                            }}
+                        >
+                            <svg width={metrics.pinIconSize} height={metrics.pinIconSize} viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
+                                <path d="M2 3h12v3H2zM3 6v7h10V6M8 11V7m-2 2 2-2 2 2" />
+                            </svg>
+                            Unarchive
+                        </button>
+                    )}
+                </span>
+            ) : (
             <div className="flex w-full min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)", fontSize: metrics.timestampFontSize }}>
                 <AIProviderIcon runtimeId={session.runtimeId} size={metrics.providerIconSize} />
                 <span className="min-w-0 flex-1 truncate">{getRuntimeDisplayName(session.runtimeId)}</span>
-                {isArchived && <span>Archived</span>}
             <span
                 className="shrink-0 text-[10px]"
                 title={indicator?.title}
@@ -517,6 +555,7 @@ export function AgentsSidebarItem({
                       : timestampLabel}
             </span>
             </div>
+            )}
         </div>
     );
 }
