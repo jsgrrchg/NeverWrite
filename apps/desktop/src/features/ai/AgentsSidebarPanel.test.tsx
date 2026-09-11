@@ -1,5 +1,6 @@
+import { selectChatForTest } from "../../test/test-utils";
 import { useArchivedChatsStore } from "./store/archivedChatsStore";
-import { useArchiveNoticeStore } from "./chatArchiving";
+import { archiveChat, useArchiveNoticeStore } from "./chatArchiving";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { confirm } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -166,6 +167,19 @@ describe("AgentsSidebarPanel", () => {
         act(() => useArchiveNoticeStore.getState().notice?.undo());
         expect(useArchivedChatsStore.getState().entries).toEqual({});
         expect(screen.getAllByText("Root task").length).toBeGreaterThan(0);
+    });
+
+    it("undoes archiving after a pending conversation receives its durable identity", () => {
+        const pending = createSession("pending:chat", "Draft", "streaming");
+        useChatStore.setState({ sessionsById: { [pending.sessionId]: pending }, sessionOrder: [pending.sessionId] });
+        selectChatForTest(pending.sessionId);
+        archiveChat(pending.sessionId);
+        const rebound = { ...pending, sessionId: "runtime:chat", historySessionId: "saved-chat" };
+        useChatStore.setState({ sessionsById: { [rebound.sessionId]: rebound }, sessionOrder: [rebound.sessionId] });
+        useArchivedChatsStore.getState().replaceSessionId(pending.sessionId, rebound.historySessionId);
+        useArchiveNoticeStore.getState().notice?.undo();
+        expect(useArchivedChatsStore.getState().entries).toEqual({});
+        expect(chatPaneMovementMock.openChatSessionInWorkspace).toHaveBeenCalledWith(rebound.sessionId);
     });
 
     it("does not prune persisted folder assignments while cold-start inventory is loading", () => {
@@ -431,11 +445,11 @@ describe("AgentsSidebarPanel", () => {
             },
             sessionOrder: [beta.sessionId, alpha.sessionId],
         }));
-        useEditorStore.getState().openChat(alpha.sessionId, {
+        selectChatForTest(alpha.sessionId, {
             title: "Alpha task",
             paneId: "primary",
         });
-        useEditorStore.getState().openChat(beta.sessionId, {
+        selectChatForTest(beta.sessionId, {
             background: true,
             title: "Beta task",
             paneId: "primary",

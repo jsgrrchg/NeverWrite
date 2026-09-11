@@ -1,3 +1,5 @@
+import { useArchivedChatsStore } from "../store/archivedChatsStore";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import { useChatTabsStore, resetChatTabsStore } from "../store/chatTabsStore";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,6 +57,8 @@ describe("AIChatHistoryWorkspaceView", () => {
     beforeEach(() => {
         resetChatStore();
         resetChatTabsStore();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
         useChatTabsStore.getState().showHistory();
         vi.clearAllMocks();
         useEditorStore.getState().hydrateWorkspace(
@@ -67,6 +71,25 @@ describe("AIChatHistoryWorkspaceView", () => {
             ],
             "primary",
         );
+    });
+
+    it("reads archived history and requires explicit unarchive to continue", async () => {
+        const session = createSession("archived-session", "Archived research");
+        const loadSession = vi.fn();
+        const ensureSessionTranscriptLoaded = vi.fn().mockResolvedValue(true);
+        useChatStore.setState({ sessionsById: { [session.sessionId]: session }, sessionOrder: [session.sessionId], loadSession, ensureSessionTranscriptLoaded });
+        useArchivedChatsStore.getState().archive(session.historySessionId);
+        renderComponent(<AIChatHistoryWorkspaceView />);
+        await screen.findByRole("button", { name: "Unarchive and continue" });
+        expect(loadSession).not.toHaveBeenCalled();
+        fireEvent.change(screen.getByRole("combobox", { name: "Chat history filter" }), { target: { value: "active" } });
+        expect(screen.queryByText("Archived research")).toBeNull();
+        fireEvent.change(screen.getByRole("combobox", { name: "Chat history filter" }), { target: { value: "archived" } });
+        fireEvent.click(await screen.findByRole("button", { name: "Unarchive and continue" }));
+        expect(useArchivedChatsStore.getState().entries).toEqual({});
+        expect(loadSession).toHaveBeenCalledWith(session.sessionId);
+        expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: session.sessionId });
+        expect(useEditorStore.getState().tabs).toEqual([]);
     });
 
     it("restores a history session into the workspace without closing history state", async () => {
@@ -97,10 +120,10 @@ describe("AIChatHistoryWorkspaceView", () => {
 
         renderComponent(<AIChatHistoryWorkspaceView />);
 
-        await screen.findByRole("button", { name: "Restore" });
+        await screen.findByRole("button", { name: "Continue chat" });
         expect(screen.queryByTitle("Back to chat")).toBeNull();
 
-        fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+        fireEvent.click(screen.getByRole("button", { name: "Continue chat" }));
 
         await waitFor(() => {
             expect(loadSession).toHaveBeenCalledWith("session-a");
@@ -142,7 +165,7 @@ describe("AIChatHistoryWorkspaceView", () => {
         }));
 
         renderComponent(<AIChatHistoryWorkspaceView />);
-        await screen.findByRole("button", { name: "Restore" });
+        await screen.findByRole("button", { name: "Continue chat" });
 
         const cardTitle = screen.getAllByText("Saved conversation")[0];
 
@@ -226,7 +249,7 @@ describe("AIChatHistoryWorkspaceView", () => {
         ).toBeTruthy();
 
         fireEvent.click(childRowTitle);
-        fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+        fireEvent.click(screen.getByRole("button", { name: "Continue chat" }));
 
         await waitFor(() => {
             expect(loadSession).toHaveBeenCalledWith("child-session");

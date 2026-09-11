@@ -18,7 +18,6 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import {
-    isChatTab,
     isTerminalTab,
     selectEditorWorkspaceTabs,
     selectFocusedEditorTab,
@@ -40,7 +39,6 @@ import {
 } from "./newAgentCreation";
 import { emitAgentSidebarDrag } from "./agentSidebarDragEvents";
 import {
-    getSessionTitle,
     getSessionTitleText,
     getSessionUpdatedAt,
 } from "./sessionPresentation";
@@ -348,16 +346,12 @@ export function AgentsSidebarPanel() {
     );
     const reconcileFolders = useChatFoldersStore((state) => state.reconcile);
 
-    // Sessions currently open as editor tabs across any pane. Drives the
-    // "Open" section — mirrors Comando's behaviour of bubbling live tabs to
-    // the top of the list.
+    // Terminal agents retain editor tabs; conversations use dedicated metadata.
     const openTerminalSessionIds = useEditorStore(
         useShallow((state) => {
             const ids = new Set<string>();
             for (const tab of selectEditorWorkspaceTabs(state)) {
-                if (isChatTab(tab)) {
-                    ids.add(tab.sessionId);
-                } else if (isTerminalTab(tab)) {
+                if (isTerminalTab(tab)) {
                     // A Claude Code terminal tab being open means its agent
                     // entry belongs in the "Open" section.
                     ids.add(claudeTerminalAgentSessionId(tab.terminalId));
@@ -931,7 +925,7 @@ export function AgentsSidebarPanel() {
             <AgentsSidebarItem
                 key={session.sessionId}
                 session={session}
-                title={getSessionTitle(session)}
+                title={getSessionTitleText(session)}
                 timestampLabel={timestampLabel}
                 isActive={activeSidebarId === session.sessionId}
                 isPinned={canPin && isPinned}

@@ -177,24 +177,12 @@ export interface EditorWorkspaceActions {
     ) => void;
     openMap: (relativePath: string, title: string) => void;
     openGraph: () => void;
-    openChatHistory: () => void;
     openReview: (
         sessionId: string,
         options?: { background?: boolean; title?: string },
     ) => void;
     closeReview: (sessionId: string) => void;
     closeAllReviewTabs: () => void;
-    openChat: (
-        sessionId: string,
-        options?: {
-            background?: boolean;
-            title?: string;
-            paneId?: string;
-            insertIndex?: number;
-            historySessionId?: string | null;
-            forceNewTab?: boolean;
-        },
-    ) => void;
     closeChat: (sessionId: string) => void;
     openTerminal: (options?: {
         cwd?: string | null;
@@ -1163,12 +1151,6 @@ function normalizeHydratedTab(tab: TabInput): Tab | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
-    if (isChatTab(tab)) {
-        return ensureChatTabHistory(tab);
-    }
-    if (isChatHistoryTab(tab)) {
-        return tab;
-    }
     if (isGraphTab(tab)) {
         return tab;
     }
@@ -1194,11 +1176,9 @@ function normalizeExternalTab(tab: TabInput): Tab | null {
     }
     if (
         isReviewTab(tab) ||
-        isChatTab(tab) ||
-        isChatHistoryTab(tab) ||
         isGraphTab(tab)
     ) {
-        return isChatTab(tab) ? ensureChatTabHistory(tab) : tab;
+        return tab;
     }
     if (isTerminalTab(tab)) {
         return ensureTerminalTabDefaults(tab);
@@ -2279,6 +2259,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         fileExternalConflicts: new Set<string>(),
 
         openNote: (noteId, title, content) => {
+            useChatTabsStore.getState().setFocusedSurface("editor");
             set(
                 (state) =>
                     mutateFocusedPaneWorkspace(state, (pane) =>
@@ -2293,6 +2274,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         openPdf: (entryId, title, path) => {
+            useChatTabsStore.getState().setFocusedSurface("editor");
             set(
                 (state) =>
                     mutateFocusedPaneWorkspace(state, (pane) =>
@@ -2307,6 +2289,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         openMap: (relativePath, title) => {
+            useChatTabsStore.getState().setFocusedSurface("editor");
             set((state) => {
                 const existing = selectEditorWorkspaceTabs(state).find(
                     (tab) => isMapTab(tab) && tab.relativePath === relativePath,
@@ -2368,11 +2351,6 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             });
         },
 
-        openChatHistory: () => {
-            useChatTabsStore.getState().showHistory();
-            useLayoutStore.getState().setChatPaneVisible(true);
-        },
-
         openFile: (
             relativePath,
             title,
@@ -2382,6 +2360,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             viewer,
             options,
         ) => {
+            useChatTabsStore.getState().setFocusedSurface("editor");
             set(
                 (state) =>
                     mutateFocusedPaneWorkspace(state, (pane) =>
@@ -2405,6 +2384,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             if (!isAiReviewEnabledForCurrentVault()) {
                 return;
             }
+            if (!options?.background) useChatTabsStore.getState().setFocusedSurface("editor");
 
             set((state) => {
                 const workspace = getEffectivePaneWorkspace(state);
@@ -2571,14 +2551,6 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             });
         },
 
-        openChat: (sessionId, options) => {
-            useChatTabsStore.getState().ensureSessionTab(sessionId, options?.historySessionId);
-            if (!options?.background) {
-                useChatTabsStore.getState().showConversation(sessionId);
-                useLayoutStore.getState().setChatPaneVisible(true);
-            }
-        },
-
         closeChat: (sessionId) => {
             set((state) => {
                 const workspace = getEffectivePaneWorkspace(state);
@@ -2604,6 +2576,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         openTerminal: (options) => {
+            useChatTabsStore.getState().setFocusedSurface("editor");
             const workspace = getEffectivePaneWorkspace(get());
             const requestedPane = options?.paneId
                 ? (workspace.panes.find((pane) => pane.id === options.paneId) ??
@@ -2933,6 +2906,11 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                       );
                 const closed =
                     recentlyClosedTabs[recentlyClosedTabs.length - 1];
+                if (closed && (isChatTab(closed.tab) || isChatHistoryTab(closed.tab))) {
+                    migrateLegacyChatTabs([closed.tab], closed.tab.id);
+                    useLayoutStore.getState().setChatPaneVisible(true);
+                    return { recentlyClosedTabs: recentlyClosedTabs.slice(0, -1) };
+                }
                 if (!closed) {
                     return recentlyClosedTabs === state.recentlyClosedTabs
                         ? state
@@ -4133,6 +4111,12 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 ];
             });
 
+            if (layoutTree) {
+                const kept = new Set(hydratedPanes.map(pane => pane.id));
+                for (const pane of panes) {
+                    if (pane.id && !kept.has(pane.id)) layoutTree = closePaneAndCollapse(layoutTree, pane.id);
+                }
+            }
             set({
                 ...buildWorkspaceSnapshot({
                     panes:

@@ -34,7 +34,6 @@ export type ChatPaneView =
 export type ChatHistoryFilter = "all" | "active" | "archived";
 
 interface ChatTabsStore {
-    dedicatedPaneEnabled: boolean;
     view: ChatPaneView;
     historyFilter: ChatHistoryFilter;
     focusedSurface: "chat" | "editor";
@@ -201,7 +200,7 @@ function buildPersistedWorkspace(
     };
 }
 
-function normalizeParsedWorkspace(raw: unknown): PersistedChatWorkspace | null {
+function normalizeParsedWorkspace(raw: unknown, vaultPath: string): PersistedChatWorkspace | null {
     if (!raw || typeof raw !== "object") return null;
 
     const candidate = raw as {
@@ -276,7 +275,7 @@ function normalizeParsedWorkspace(raw: unknown): PersistedChatWorkspace | null {
             ? candidate.activeTabId
             : null,
         candidate.version === 1 ? (() => {
-            const archived = readArchivedChats(useVaultStore.getState().vaultPath);
+            const archived = readArchivedChats(vaultPath);
             const active = tabs.find(tab => tab.id === candidate.activeTabId);
             const recovered = [active, ...tabs].find(tab => tab && !archived[resolveTabConversationId(tab)]);
             return recovered ? { mode: "conversation", sessionId: recovered.sessionId } : { mode: "empty" };
@@ -384,7 +383,7 @@ export function readPersistedChatWorkspace(
     try {
         const raw = safeStorageGetItem(getChatTabsStorageKey(vaultPath));
         if (!raw) return null;
-        return normalizeParsedWorkspace(JSON.parse(raw));
+        return normalizeParsedWorkspace(JSON.parse(raw), vaultPath);
     } catch {
         return null;
     }
@@ -411,7 +410,6 @@ export function markChatTabsReady() {
 }
 
 export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
-    dedicatedPaneEnabled: true,
     view: { mode: "empty" },
     historyFilter: "all",
     focusedSurface: "editor",
@@ -861,6 +859,7 @@ export function resetChatTabsStore() {
     lastPersistedJsonByVaultPath.clear();
 
     useChatTabsStore.setState({
+        historyFilter: "all",
         view: { mode: "empty" },
         focusedSurface: "editor",
         isReady: false,

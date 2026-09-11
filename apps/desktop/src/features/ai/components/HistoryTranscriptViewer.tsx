@@ -1,3 +1,4 @@
+import { isSessionArchived, useArchivedChatsStore } from "../store/archivedChatsStore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import { useChatStore } from "../store/chatStore";
@@ -35,6 +36,9 @@ function TranscriptHeader({
     const runtimes = useChatStore((s) => s.runtimes);
     const forkSession = useChatStore((s) => s.forkSession);
     const sessionsById = useChatStore((s) => s.sessionsById);
+    const archiveEntries = useArchivedChatsStore(state => state.entries);
+    const openLabel = isSessionArchived(session, sessionsById, archiveEntries)
+        ? "Open archived chat" : "Continue chat";
     const runtimeOptions = useMemo(
         () => runtimes.map((d) => d.runtime),
         [runtimes],
@@ -94,7 +98,7 @@ function TranscriptHeader({
                         border: "1px solid var(--accent)",
                         color: "var(--text-primary)",
                     }}
-                    title="Restore this chat"
+                    title={openLabel}
                 >
                     <svg
                         width="12"
@@ -109,7 +113,7 @@ function TranscriptHeader({
                         <path d="M2.5 6h7" />
                         <path d="M6 2.5 9.5 6 6 9.5" />
                     </svg>
-                    Restore
+                    {openLabel}
                 </button>
             )}
             {onExport && (

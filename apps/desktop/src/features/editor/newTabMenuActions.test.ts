@@ -82,7 +82,7 @@ describe("newTabMenuActions", () => {
         await waitFor(() => {
             expect(
                 chatPaneMovementMock.createNewChatInWorkspace,
-            ).toHaveBeenCalledWith(undefined, { paneId: "secondary" });
+            ).toHaveBeenCalledWith();
         });
         expect(getEntry("Codex")).toBeUndefined();
     });

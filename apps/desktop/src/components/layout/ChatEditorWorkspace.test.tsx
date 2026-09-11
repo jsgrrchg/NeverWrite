@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createDefaultLayoutState, readHydratedLayoutSnapshot, selectChatPaneSide, useLayoutStore } from "../../app/store/layoutStore";
-import { ChatEditorWorkspace, getChatEditorWidths } from "./ChatEditorWorkspace";
+import { getChatEditorWidths, createDefaultLayoutState, readHydratedLayoutSnapshot, selectChatPaneSide, useLayoutStore } from "../../app/store/layoutStore";
+import { ChatEditorWorkspace } from "./ChatEditorWorkspace";
 import { safeStorageClear } from "../../app/utils/safeStorage";
 
 vi.mock("../../features/ai/components/AIChatPane", () => ({ AIChatPane: () => <input aria-label="Draft" defaultValue="Keep me" /> }));

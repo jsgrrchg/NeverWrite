@@ -1,3 +1,4 @@
+import { handleChatPaneShortcut } from "./features/ai/useChatPaneShortcuts";
 import { migrateLegacyChatTabs, preserveLegacyChatTabsForVault } from "./features/ai/chatWorkspaceRestoration";
 import { openChatSessionInWorkspace, openChatHistoryInWorkspace } from "./features/ai/chatPaneMovement";
 import { ChatEditorWorkspace } from "./components/layout/ChatEditorWorkspace";
@@ -527,8 +528,14 @@ function useRegisterCommands(
             label: closeTabShortcut.label,
             shortcut: formatShortcutAction(closeTabShortcut.id, platform),
             category: closeTabShortcut.category,
-            when: hasActiveTab,
+            when: () => hasActiveTab() || (useChatTabsStore.getState().focusedSurface === "chat" && useLayoutStore.getState().chatPaneVisible),
             execute: () => {
+                const nav = useChatTabsStore.getState();
+                if (nav.focusedSurface === "chat" && useLayoutStore.getState().chatPaneVisible) {
+                    useLayoutStore.getState().setChatPaneVisible(false);
+                    nav.setFocusedSurface("editor");
+                    return;
+                }
                 const state = useEditorStore.getState();
                 const activeTab = selectFocusedEditorTab(state);
                 if (!activeTab) return;
@@ -884,6 +891,8 @@ function useGlobalShortcuts(
             }
 
             if (matchesShortcutAction(e, "close_tab", platform)) {
+                handleChatPaneShortcut(e);
+                if (e.defaultPrevented) return;
                 e.preventDefault();
                 useCommandStore.getState().execute("editor:close-tab");
                 return;
@@ -1173,6 +1182,7 @@ export default function App() {
     const focusedWorkspaceTabId = useEditorStore(
         (state) => selectFocusedEditorTab(state)?.id ?? null,
     );
+    const chatPaneVisible = useLayoutStore(state => state.chatPaneVisible);
     const chatTabsReady = useChatTabsStore((s) => s.isReady);
     const hydrateChatWorkspace = useChatTabsStore((s) => s.hydrateForVault);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
@@ -2048,10 +2058,7 @@ export default function App() {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
-            <AIChatWorkspaceHost
-                startupReady={chatTabsReady}
-                listenWithoutChatTabs
-            />
+            <AIChatWorkspaceHost startupReady={chatTabsReady} />
             <ChatArchiveNotice />
             <WorkspaceTerminalHost />
 
@@ -2062,6 +2069,7 @@ export default function App() {
                 window. */}
             <div className="relative flex-1 flex overflow-hidden">
                 <AppLayout
+                    preferredCenterMinimumWidth={chatPaneVisible ? 646 : 36}
                     left={<SidebarShell onOpenSettings={openSettings} />}
                     center={
                         <div className="flex h-full min-h-0 flex-col overflow-hidden">

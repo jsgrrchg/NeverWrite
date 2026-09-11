@@ -160,7 +160,18 @@ export function HistorySessionCard({
     return (
         <>
             <div
-                className="rounded-md px-3 py-2"
+                role="button"
+                tabIndex={0}
+                aria-label={fullTitle}
+                aria-pressed={isActive}
+                onKeyDown={event => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        event.currentTarget.click();
+                    }
+                }}
+                className="rounded-md px-3 py-2 focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
                 style={{
                     paddingLeft: 12 + depth * 16,
                     backgroundColor: isActive

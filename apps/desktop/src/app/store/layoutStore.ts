@@ -481,3 +481,8 @@ export function hydrateLayoutStore() {
         });
     }
 }
+
+export function getChatEditorWidths(available: number, preferred: number) {
+    const narrow = available < MIN_CHAT_PANE_WIDTH + MIN_CHAT_EDITOR_WIDTH + 6;
+    return { narrow, chatWidth: narrow ? available : Math.min(preferred, available - MIN_CHAT_EDITOR_WIDTH - 6) };
+}

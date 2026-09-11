@@ -49,7 +49,6 @@ import {
 } from "../api";
 import {
     isFileTab,
-    isChatTab,
     isNoteTab,
     selectEditorWorkspaceTabs,
     useEditorStore,
@@ -794,11 +793,9 @@ function isSavedChatReconnectFailureMessage(message: string) {
 }
 
 function getWorkspaceHistorySessionIdForSession(sessionId: string) {
-    const tab = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
-        (candidate) =>
-            isChatTab(candidate) && candidate.sessionId === sessionId,
-    );
-    return tab && isChatTab(tab) ? (tab.historySessionId ?? null) : null;
+    return useChatTabsStore.getState().tabs.find(
+        candidate => candidate.sessionId === sessionId,
+    )?.historySessionId ?? null;
 }
 
 function summarizePersistedHistory(
@@ -15890,9 +15887,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         deleteSession: async (sessionId) => {
             const vaultPath = useVaultStore.getState().vaultPath;
             const targetSession = get().sessionsById[sessionId];
-            const shouldCreateReplacementSession =
-                !targetSession ||
-                !isClaudeTerminalRuntimeId(targetSession.runtimeId);
             const historySessionId =
                 targetSession?.historySessionId ?? sessionId;
             clearStaleStreamingCheck(sessionId);
@@ -15912,11 +15906,13 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             if (vaultPath) {
                 await aiDeleteSessionHistory(vaultPath, historySessionId);
             }
+            deletePersistedHistoryCacheEntry(vaultPath, historySessionId);
+            // A completed source-vault deletion must never clear the new vault.
+            if (useVaultStore.getState().vaultPath !== vaultPath) return;
             useArchivedChatsStore.getState().unarchive(historySessionId);
             useArchivedChatsStore.getState().unarchive(sessionId);
             usePinnedChatsStore.getState().unpin(sessionId);
             useChatFoldersStore.getState().moveSession(sessionId, null);
-            deletePersistedHistoryCacheEntry(vaultPath, historySessionId);
             useEditorStore.getState().closeReview(sessionId);
             useEditorStore.getState().closeChat(sessionId);
             useChatTabsStore.getState().removeTabsForSession(sessionId);
@@ -16000,13 +15996,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     nextInterruptedTurnStateBySessionId,
             });
             releaseDraftAttachmentsOwnedBy(releasedDraftOwners);
-            if (shouldCreateReplacementSession) {
-                if (nextActiveId && !nextSessionsById[nextActiveId]) {
-                    await get().newSession();
-                } else if (Object.keys(nextSessionsById).length === 0) {
-                    await get().newSession();
-                }
-            }
+
         },
 
         deleteAllSessions: async () => {
@@ -16028,9 +16018,13 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             );
             await aiDeleteRuntimeSessionsForVault(vaultPath).catch(() => {});
             if (vaultPath) {
-                await aiDeleteAllSessionHistories(vaultPath).catch(() => {});
+                await aiDeleteAllSessionHistories(vaultPath);
             }
             clearPersistedHistoryCache(vaultPath);
+            if (useVaultStore.getState().vaultPath !== vaultPath) return;
+            useArchivedChatsStore.getState().reconcile([], true);
+            usePinnedChatsStore.getState().reconcile([]);
+            useChatFoldersStore.getState().reconcile([]);
             // Close all review and chat tabs before clearing sessions
             const editor = useEditorStore.getState();
             for (const sessionId of Object.keys(get().sessionsById)) {

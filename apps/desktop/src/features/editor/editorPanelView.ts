@@ -1,6 +1,4 @@
 import {
-    isChatTab,
-    isChatHistoryTab,
     isFileTab,
     isGraphTab,
     isMapTab,
@@ -17,8 +15,6 @@ export type EditorPanelView =
     | "file"
     | "search"
     | "ai-review"
-    | "ai-chat"
-    | "ai-chat-history"
     | "editor"
     | "terminal"
     | "map"
@@ -34,8 +30,6 @@ export function resolveEditorPanelView(tab: Tab | null): EditorPanelView {
     if (isPdfTab(tab)) return "pdf";
     if (isFileTab(tab)) return "file";
     if (isReviewTab(tab)) return "ai-review";
-    if (isChatTab(tab)) return "ai-chat";
-    if (isChatHistoryTab(tab)) return "ai-chat-history";
     if (isMapTab(tab)) return "map";
     if (isGraphTab(tab)) return "graph";
     if (isTerminalTab(tab)) return "terminal";

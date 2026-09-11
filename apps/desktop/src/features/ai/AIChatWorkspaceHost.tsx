@@ -3,12 +3,7 @@ import { useChatTabsStore } from "./store/chatTabsStore";
 import { getSelectedChatSessionId } from "./chatWorkspaceSelectors";
 import { useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
-import {
-    isChatTab,
-    selectFocusedEditorTab,
-    selectEditorWorkspaceTabs,
-    useEditorStore,
-} from "../../app/store/editorStore";
+
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
@@ -30,12 +25,6 @@ function hasVisibleAiComposerDropZone(targetSessionId?: string) {
         ? `[data-ai-composer-drop-zone="true"][data-ai-composer-session-id="${CSS.escape(targetSessionId)}"]`
         : '[data-ai-composer-drop-zone="true"]';
     return document.querySelector(selector) !== null;
-}
-
-function getActiveEditorChatSessionId() {
-    if (useChatTabsStore.getState().dedicatedPaneEnabled) return getSelectedChatSessionId();
-    const activeTab = selectFocusedEditorTab(useEditorStore.getState());
-    return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
 }
 
 function needsLiveSessionResumeContextHydration(session: AIChatSession) {
@@ -72,7 +61,7 @@ function replayAttachAfterComposerMount(
     targetSessionId: string,
 ) {
     const replayKey = getAttachReplayKey(detail);
-    // Let the newly opened chat tab mount its composer before we replay the
+    // Let the newly selected conversation mount its composer before we replay the
     // attach event into the real in-workspace target.
     window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
@@ -106,33 +95,17 @@ function focusComposerAtEnd(sessionId: string) {
 
 interface AIChatWorkspaceHostProps {
     startupReady?: boolean;
-    listenWithoutChatTabs?: boolean;
-    initializeWithoutChatTabs?: boolean;
+    initializeWithoutSelection?: boolean;
 }
 
 export function AIChatWorkspaceHost({
     startupReady = true,
-    listenWithoutChatTabs = false,
-    initializeWithoutChatTabs = false,
+    initializeWithoutSelection = false,
 }: AIChatWorkspaceHostProps) {
     const vaultPath = useVaultStore((state) => state.vaultPath);
-    const navigation = useChatTabsStore(useShallow(state => ({ enabled: state.dedicatedPaneEnabled, view: state.view, focused: state.focusedSurface })));
-    const legacyPresence = useEditorStore(
-        useShallow((state) => {
-            const tabs = selectEditorWorkspaceTabs(state);
-            const activeTab = selectFocusedEditorTab(state);
-            return {
-                hasChatTabs: tabs.some((tab) => isChatTab(tab)),
-                activeChatSessionId:
-                    activeTab && isChatTab(activeTab)
-                        ? activeTab.sessionId
-                        : null,
-            };
-        }),
-    );
-    const { hasChatTabs, activeChatSessionId } = navigation.enabled
-        ? { hasChatTabs: navigation.view.mode === "conversation", activeChatSessionId: navigation.view.mode === "conversation" ? navigation.view.sessionId : null }
-        : legacyPresence;
+    const navigation = useChatTabsStore(useShallow(state => ({ view: state.view, focused: state.focusedSurface })));
+    const hasSelection = navigation.view.mode === "conversation";
+    const activeChatSessionId = navigation.view.mode === "conversation" ? navigation.view.sessionId : null;
     const activeChatSession = useChatStore((state) =>
         activeChatSessionId
             ? (state.sessionsById[activeChatSessionId] ?? null)
@@ -145,16 +118,14 @@ export function AIChatWorkspaceHost({
     const attachReplayCountsRef = useRef(new Map<string, number>());
 
     useAiChatEventBridge(
-        Boolean(vaultPath) &&
-            startupReady &&
-            (hasChatTabs || listenWithoutChatTabs),
+        Boolean(vaultPath) && startupReady,
     );
 
     useEffect(() => {
         if (
             !startupReady ||
             !vaultPath ||
-            (!hasChatTabs && !initializeWithoutChatTabs)
+            (!hasSelection && !initializeWithoutSelection)
         ) {
             return;
         }
@@ -170,19 +141,19 @@ export function AIChatWorkspaceHost({
         });
     }, [
         chatActions,
-        hasChatTabs,
-        initializeWithoutChatTabs,
+        hasSelection,
+        initializeWithoutSelection,
         startupReady,
         vaultPath,
     ]);
 
     useEffect(() => {
-        if (!activeChatSessionId || (navigation.enabled && navigation.focused !== "chat")) {
+        if (!activeChatSessionId || navigation.focused !== "chat") {
             return;
         }
 
         chatActions.markSessionFocused(activeChatSessionId);
-    }, [activeChatSessionId, chatActions, navigation.enabled, navigation.focused]);
+    }, [activeChatSessionId, chatActions, navigation.focused]);
 
     useEffect(() => {
         if (
@@ -196,7 +167,7 @@ export function AIChatWorkspaceHost({
     useEffect(() => {
         if (
             !vaultPath ||
-            !hasChatTabs ||
+            !hasSelection ||
             !startupReady ||
             !activeChatSessionId ||
             isInitializing
@@ -227,7 +198,7 @@ export function AIChatWorkspaceHost({
             await initializationPromiseRef.current?.catch(() => {});
             if (
                 recoveringSessionIdRef.current !== activeChatSessionId ||
-                getActiveEditorChatSessionId() !== activeChatSessionId
+                getSelectedChatSessionId() !== activeChatSessionId
             ) {
                 return;
             }
@@ -277,7 +248,7 @@ export function AIChatWorkspaceHost({
         activeChatSession?.runtimeState,
         activeChatSessionId,
         chatActions,
-        hasChatTabs,
+        hasSelection,
         isInitializing,
         startupReady,
         vaultPath,

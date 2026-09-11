@@ -107,9 +107,10 @@ interface AppLayoutProps {
     left: React.ReactNode;
     center: React.ReactNode;
     right?: React.ReactNode;
+    preferredCenterMinimumWidth?: number;
 }
 
-export function AppLayout({ left, center, right }: AppLayoutProps) {
+export function AppLayout({ left, center, right, preferredCenterMinimumWidth = MIN_CENTER_PEEK_WIDTH }: AppLayoutProps) {
     const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
     const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
     const showSidebarAtWidth = useLayoutStore((s) => s.showSidebarAtWidth);
@@ -569,7 +570,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
               `transform ${SIDEBAR_DOCK_TRANSITION_MS}ms ${SIDEBAR_DOCK_TRANSITION_EASING}`,
           ].join(", ");
     const sidebarPeekEnabled = sidebarCollapsed && !dockedSidebarShouldRender;
-    const effectiveLeft = dockedSidebarShouldRender ? dockedSidebarWidth : 0;
+    const centerReserve = layoutWidth > 0 ? Math.min(preferredCenterMinimumWidth, Math.max(MIN_CENTER_PEEK_WIDTH, layoutWidth - (dockedSidebarShouldRender ? MIN_SIDEBAR_WIDTH : 0) - (rightPanelCollapsed ? 0 : rightMinimumWidth))) : MIN_CENTER_PEEK_WIDTH;
+    const effectiveLeft = dockedSidebarShouldRender ? Math.min(dockedSidebarWidth, layoutWidth > 0 ? Math.max(MIN_SIDEBAR_WIDTH, layoutWidth - (rightPanelCollapsed ? 0 : rightMinimumWidth) - centerReserve) : dockedSidebarWidth) : 0;
 
     // macOS only: hide the native traffic-light buttons whenever the sidebar
     // is fully collapsed. They would otherwise float over the empty editor
@@ -609,11 +611,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const effectiveRightForLeftCalc = rightPanelCollapsed ? 0 : rightPanelWidth;
     const maxLeftWidthForLayout = Math.max(
         MIN_SIDEBAR_WIDTH,
-        layoutWidth - effectiveRightForLeftCalc - MIN_CENTER_PEEK_WIDTH,
+        layoutWidth - effectiveRightForLeftCalc - centerReserve,
     );
     const maxRightWidthForLayout = Math.max(
         rightMinimumWidth,
-        layoutWidth - effectiveLeft - MIN_CENTER_PEEK_WIDTH,
+        layoutWidth - effectiveLeft - centerReserve,
     );
     const effectiveRight = rightPanelCollapsed
         ? 0
@@ -937,7 +939,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     aria-hidden={!dockedSidebarInteractive || undefined}
                     inert={!dockedSidebarInteractive || undefined}
                     style={{
-                        width: dockedSidebarWidth,
+                        width: effectiveLeft,
                         flexShrink: 0,
                         overflow: "hidden",
                         pointerEvents: dockedSidebarInteractive
@@ -960,9 +962,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         data-sidebar-dock-inner
                         onTransitionEnd={handleDockTransitionEnd}
                         style={{
-                            width: isResizingLeft
-                                ? dockedSidebarWidth
-                                : sidebarWidth,
+                            width: isResizingLeft ? dockedSidebarWidth : effectiveLeft,
                             height: "100%",
                             opacity: sidebarDockHidden ? 0 : 1,
                             // Keep the wrapper in a compositor layer ONLY while

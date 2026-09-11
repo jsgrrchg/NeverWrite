@@ -258,13 +258,14 @@ describe("StackedPaneContent", () => {
         ).not.toBeInTheDocument();
     });
 
-    it("closes a streaming agent tab from its stacked spine without stopping the session", () => {
+    it("closes a document from its stacked spine", () => {
         setEditorTabs(
             [
                 {
                     id: "chat-busy",
-                    kind: "ai-chat",
-                    sessionId: "session-busy",
+                    kind: "note",
+                    noteId: "notes/other",
+                    content: "Other body",
                     title: "Busy agent",
                 },
                 {

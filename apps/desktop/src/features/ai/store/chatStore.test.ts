@@ -1,3 +1,5 @@
+import { useArchivedChatsStore } from "./archivedChatsStore";
+import { selectChatForTest } from "../../../test/test-utils";
 import { confirm, invoke, listen, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -2520,6 +2522,31 @@ describe("chatStore", () => {
         await vi.waitFor(() => expect(lifecycle).toEqual(["promote", "delete"]));
     });
 
+    it("preserves organization after failed history deletion and clears it only on success", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        const session = createSessionWithTrackedFiles("delete-organized", []);
+        useChatStore.setState({ sessionsById: { [session.sessionId]: session }, sessionOrder: [session.sessionId] });
+        useArchivedChatsStore.getState().archive(session.historySessionId!);
+        usePinnedChatsStore.getState().pin(session.sessionId);
+        const folder = useChatFoldersStore.getState().createFolder("Research")!;
+        useChatFoldersStore.getState().moveSession(session.sessionId, folder);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_delete_session_history") throw new Error("disk unavailable");
+            return defaultInvokeImplementation(command, args);
+        });
+        await expect(useChatStore.getState().deleteSession(session.sessionId)).rejects.toThrow("disk unavailable");
+        expect(useArchivedChatsStore.getState().isArchived(session.historySessionId!)).toBe(true);
+        expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeDefined();
+        expect(useChatFoldersStore.getState().sessionFolderIds[session.sessionId]).toBe(folder);
+        expect(useChatStore.getState().sessionsById[session.sessionId]).toBeDefined();
+        invokeMock.mockImplementation(defaultInvokeImplementation);
+        await useChatStore.getState().deleteSession(session.sessionId);
+        expect(useArchivedChatsStore.getState().isArchived(session.historySessionId!)).toBe(false);
+        expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeUndefined();
+        expect(useChatFoldersStore.getState().sessionFolderIds[session.sessionId]).toBeUndefined();
+        expect(useChatStore.getState().sessionsById[session.sessionId]).toBeUndefined();
+    });
+
     it("releases session-owned drafts when deleting one or all sessions", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
@@ -2540,6 +2567,8 @@ describe("chatStore", () => {
             expect.objectContaining({ draftAttachmentId: firstDraftId }),
         );
 
+        expect(useChatStore.getState().activeSessionId).toBeNull();
+        await useChatStore.getState().newSession();
         const replacementSessionId = getActiveSessionId();
         const secondDraftId =
             "da_55555555555555555555555555555555" as DraftAttachmentId;
@@ -7166,7 +7195,7 @@ describe("chatStore", () => {
             ],
             activeTabId: "tab-detached",
         });
-        useEditorStore.getState().openChat(detachedSessionId, {
+        selectChatForTest(detachedSessionId, {
             title: "Detached chat",
         });
         useChatStore.setState((state) => ({
@@ -22317,12 +22346,12 @@ describe("chatStore", () => {
             ],
             "primary",
         );
-        useEditorStore.getState().openChat("session-fallback", {
+        selectChatForTest("session-fallback", {
             title: "Fallback",
             paneId: "secondary",
             background: true,
         });
-        useEditorStore.getState().openChat("session-last-focused", {
+        selectChatForTest("session-last-focused", {
             title: "Last focused",
             paneId: "tertiary",
             background: true,

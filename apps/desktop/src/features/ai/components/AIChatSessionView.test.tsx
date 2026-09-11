@@ -1,3 +1,4 @@
+import { selectChatForTest } from "../../../test/test-utils";
 import { useChatTabsStore } from "../store/chatTabsStore";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@neverwrite/runtime";
@@ -162,7 +163,7 @@ function setupWorkspaceSession(sessionId = "session-a") {
         },
         activeSessionId: sessionId,
     }));
-    useEditorStore.getState().openChat(sessionId, {
+    selectChatForTest(sessionId, {
         title: "Workspace chat",
         paneId: "primary",
     });
@@ -343,7 +344,7 @@ describe("AIChatSessionView", () => {
                 },
             },
         }));
-        useEditorStore.getState().openChat(sessionId, {
+        selectChatForTest(sessionId, {
             title: "Workspace chat",
             paneId: "primary",
         });
@@ -394,7 +395,7 @@ describe("AIChatSessionView", () => {
             },
             activeSessionId: sessionId,
         }));
-        useEditorStore.getState().openChat(sessionId, {
+        selectChatForTest(sessionId, {
             title: "Gemini history",
             paneId: "primary",
         });
@@ -691,7 +692,7 @@ describe("AIChatSessionView", () => {
         measuredHeight = 48;
 
         act(() => {
-            useEditorStore.getState().openChat("session-b", {
+            selectChatForTest("session-b", {
                 title: "Second chat",
                 paneId: "primary",
             });

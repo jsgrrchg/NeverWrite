@@ -1,12 +1,12 @@
 import { archiveChat, unarchiveChat } from "../chatArchiving";
 import { isSessionArchived, useArchivedChatsStore } from "../store/archivedChatsStore";
 /**
- * AIChatSessionView — renders a single chat session inside an editor workspace pane.
+ * AIChatSessionView renders the explicitly selected conversation.
  *
  * Unlike the window-level chat host, this component:
  * - Does NOT bind desktop runtime event listeners itself.
- * - Does NOT manage tabs or history — the workspace pane handles that.
- * - Derives its sessionId from the active ChatTab in the pane via editorStore.
+ * - Navigation and history belong to the dedicated chat pane.
+ * - Its session identity and focus are supplied by the chat pane.
  *
  * All session data is read reactively from chatStore, which is the single
  * source of truth regardless of where the UI renders.
@@ -22,14 +22,6 @@ import {
 } from "react";
 import { open as runtimeOpen } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
-import {
-    isChatTab,
-    selectEditorPaneActiveTab,
-    selectEditorWorkspaceTabs,
-    selectFocusedPaneId,
-    selectPaneTab,
-    useEditorStore,
-} from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
@@ -208,13 +200,11 @@ function ChatContentColumn({
 }
 
 interface AIChatSessionViewProps {
-    sessionId?: string;
+    sessionId: string;
     focused?: boolean;
-    paneId?: string;
-    tabId?: string;
 }
 
-export function AIChatSessionView({ paneId, tabId, sessionId: explicitSessionId, focused = true }: AIChatSessionViewProps) {
+export function AIChatSessionView({ sessionId, focused = true }: AIChatSessionViewProps) {
     const archivedEntries = useArchivedChatsStore(state => state.entries);
     const allSessions = useChatStore(state => state.sessionsById);
     const [composerExpanded, setComposerExpanded] = useState(false);
@@ -229,15 +219,6 @@ export function AIChatSessionView({ paneId, tabId, sessionId: explicitSessionId,
     const [findOpen, setFindOpen] = useState(false);
     const rootRef = useRef<HTMLDivElement>(null);
 
-    // Resolve sessionId from this column's ChatTab (stacked) or the pane's
-    // active ChatTab (normal mode, when no explicit tabId is bound).
-    const sessionId = useEditorStore((state) => {
-        if (explicitSessionId !== undefined) return explicitSessionId;
-        const tab = tabId
-            ? selectPaneTab(state, paneId, tabId)
-            : selectEditorPaneActiveTab(state, paneId);
-        return tab && isChatTab(tab) ? tab.sessionId : null;
-    });
     const bottomDockHeight =
         bottomDockMeasurement.sessionId === sessionId
             ? bottomDockMeasurement.height
@@ -902,22 +883,6 @@ export function AIChatSessionView({ paneId, tabId, sessionId: explicitSessionId,
         sessionId,
     ]);
 
-    // Title sync: keep the editor tab title in sync with session title
-    useEffect(() => {
-        if (!session || !sessionId) return;
-        const title = getSessionTitle(session);
-        const editorState = useEditorStore.getState();
-        const allTabs = selectEditorWorkspaceTabs(editorState);
-        const chatTabs = allTabs.filter(
-            (t) => isChatTab(t) && t.sessionId === sessionId,
-        );
-        for (const chatTab of chatTabs) {
-            if (chatTab.title !== title) {
-                editorState.updateTabTitle(chatTab.id, title);
-            }
-        }
-    }, [session, sessionId]);
-
     const sessionTitle = session ? getSessionTitleText(session) : "Chat";
     // Close the finder when switching to another session.
     useEffect(() => {
@@ -952,8 +917,6 @@ export function AIChatSessionView({ paneId, tabId, sessionId: explicitSessionId,
             ) {
                 return;
             }
-            const focusedPaneId = selectFocusedPaneId(useEditorStore.getState());
-            if (paneId && focusedPaneId !== paneId) return;
 
             event.preventDefault();
             event.stopPropagation();
@@ -963,7 +926,7 @@ export function AIChatSessionView({ paneId, tabId, sessionId: explicitSessionId,
 
         window.addEventListener("keydown", handleEscape, true);
         return () => window.removeEventListener("keydown", handleEscape, true);
-    }, [findOpen, paneId, focused]);
+    }, [findOpen, focused]);
 
     useLayoutEffect(() => {
         if (composerExpanded) {

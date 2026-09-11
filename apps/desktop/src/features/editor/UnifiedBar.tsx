@@ -18,7 +18,6 @@ import {
 } from "../../app/detachedWindows";
 import {
     useEditorStore,
-    isChatTab,
     isChatHistoryTab,
     isNoteTab,
     isReviewTab,
@@ -173,9 +172,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         const pane = selectEditorPaneState(s);
         if (tabOpenBehavior === "history") {
             const tab = pane.tabs.find((t) => t.id === pane.activeTabId);
-            if (tab && isChatTab(tab)) {
-                return (tab.historyIndex ?? 0) > 0;
-            }
             return tab &&
                 (isNoteTab(tab) ||
                     isFileTab(tab) ||
@@ -192,12 +188,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         const pane = selectEditorPaneState(s);
         if (tabOpenBehavior === "history") {
             const tab = pane.tabs.find((t) => t.id === pane.activeTabId);
-            if (tab && isChatTab(tab)) {
-                return (
-                    Boolean(tab.history) &&
-                    (tab.historyIndex ?? 0) < (tab.history?.length ?? 0) - 1
-                );
-            }
             return tab &&
                 (isNoteTab(tab) ||
                     isFileTab(tab) ||
@@ -1814,21 +1804,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                   },
                               ]
                             : [];
-
-                        if (isChatTab(tab)) {
-                            return [
-                                {
-                                    label: "Close",
-                                    action: () => void handleCloseTab(tab.id),
-                                },
-                                {
-                                    label: "Close Others",
-                                    action: () => closeOtherTabs(tab.id),
-                                    disabled: tabs.length <= 1,
-                                },
-                                ...splitEntries,
-                            ];
-                        }
 
                         if (
                             isReview ||

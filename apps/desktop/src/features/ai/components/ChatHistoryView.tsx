@@ -179,8 +179,6 @@ export function ChatHistoryView({
     }, [
         deleteConfirmIds,
         deleteSession,
-        selectedSession,
-        onSelectHistorySessionId,
     ]);
 
     const cancelDelete = useCallback(() => {

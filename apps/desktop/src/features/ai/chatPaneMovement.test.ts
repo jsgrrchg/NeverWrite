@@ -1,3 +1,4 @@
+import { selectChatForTest } from "../../test/test-utils";
 import { invoke } from "@neverwrite/runtime";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -372,7 +373,7 @@ describe("createNewChatInWorkspace", () => {
             "claude-acp",
         );
         seedChatSessions(claudeSession);
-        useEditorStore.getState().openChat(claudeSession.sessionId, {
+        selectChatForTest(claudeSession.sessionId, {
             title: "Claude chat",
             paneId: "primary",
         });
@@ -464,7 +465,7 @@ describe("createNewChatInWorkspace", () => {
             "claude-acp",
         );
         seedChatSessions(claudeSession);
-        useEditorStore.getState().openChat(claudeSession.sessionId, {
+        selectChatForTest(claudeSession.sessionId, {
             title: "Claude chat",
             paneId: "primary",
         });

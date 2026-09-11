@@ -7,8 +7,7 @@ import {
 import { logWarn } from "../../../app/utils/runtimeLog";
 
 // Client-side persisted set of chat session IDs the user has pinned to the
-// top of the sidebar. Kept out of the Rust backend for now; if we ever want
-// pins to be per-vault or shared across devices the data can migrate.
+// top of the sidebar, isolated per vault. Legacy global pins are claimed once.
 
 const PINNED_CHATS_KEY = "neverwrite.chats.pinnedIds";
 const getStorageKey = () => `${PINNED_CHATS_KEY}:${useVaultStore.getState().vaultPath ?? ""}`;

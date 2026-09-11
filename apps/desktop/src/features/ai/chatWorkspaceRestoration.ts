@@ -67,7 +67,7 @@ export function migrateLegacyChatTabs(tabs: readonly TabInput[], focusedTabId: s
     if (!persistChatNavigationNow()) throw new Error("Could not preserve legacy chat references; editor restoration postponed");
 }
 
-import { safeStorageSetItem } from "../../app/store/../utils/safeStorage";
+import { safeStorageSetItem } from "../../app/utils/safeStorage";
 import { getChatTabsStorageKey, type ChatWorkspaceTab } from "./store/chatTabsStore";
 
 /** Transfers preserve references in their source vault without importing runtime into another vault. */
