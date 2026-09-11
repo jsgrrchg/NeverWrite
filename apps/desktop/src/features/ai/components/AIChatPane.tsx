@@ -35,13 +35,6 @@ export function AIChatPane() {
             <button
                 type="button"
                 className="shrink-0 whitespace-nowrap"
-                onClick={() => void createNewChatInWorkspace()}
-            >
-                New chat
-            </button>
-            <button
-                type="button"
-                className="shrink-0 whitespace-nowrap"
                 aria-label="Chat pane position"
                 onClick={(event) => {
                     const rect = event.currentTarget.getBoundingClientRect();

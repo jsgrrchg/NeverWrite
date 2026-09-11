@@ -62,8 +62,9 @@ describe("AIChatPane", () => {
 
         expect(container.querySelector("header")).toBeNull();
         expect(screen.getByTestId("session-view")).toContainElement(
-            screen.getByRole("button", { name: "New chat" }),
+            screen.getByRole("button", { name: "Chat pane position" }),
         );
+        expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
         expect(
             screen.queryByRole("button", { name: "History" }),
         ).toBeNull();

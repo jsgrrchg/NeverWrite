@@ -1,5 +1,3 @@
-import { archiveChat, unarchiveChat } from "../chatArchiving";
-import { isSessionArchived, useArchivedChatsStore } from "../store/archivedChatsStore";
 /**
  * AIChatSessionView renders the explicitly selected conversation.
  *
@@ -208,8 +206,6 @@ export function AIChatSessionView({
     focused = true,
     headerActions,
 }: AIChatSessionViewProps) {
-    const archivedEntries = useArchivedChatsStore(state => state.entries);
-    const allSessions = useChatStore(state => state.sessionsById);
     const [composerExpanded, setComposerExpanded] = useState(false);
     const bottomDockRef = useRef<HTMLDivElement>(null);
     const [bottomDockMeasurement, setBottomDockMeasurement] = useState<{
@@ -1039,7 +1035,6 @@ export function AIChatSessionView({
                         {sessionTitle}
                     </span>
                 )}
-                {session && !isSubagent && <button type="button" onClick={() => isSessionArchived(session, allSessions, archivedEntries) ? unarchiveChat(session.sessionId) : archiveChat(session.sessionId)}>{isSessionArchived(session, allSessions, archivedEntries) ? "Unarchive" : "Archive"}</button>}
                 {isSubagent ? (
                     <span
                         className="max-w-[45%] truncate rounded px-1.5 py-0.5 text-[10px]"
