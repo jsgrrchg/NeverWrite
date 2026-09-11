@@ -268,7 +268,7 @@ describe("AgentsSidebarPanel", () => {
         expect(useChatStore.getState().selectedRuntimeId).toBe("codex-acp");
     });
 
-    it("keeps open working agents in the order they became busy", async () => {
+    it("keeps chat order stable when opening and starting turns", async () => {
         const alpha = createSession(
             "session-alpha",
             "Alpha task",
@@ -316,8 +316,8 @@ describe("AgentsSidebarPanel", () => {
             const labels = screen
                 .getAllByTestId("agent-sidebar-item")
                 .map((item) => item.textContent ?? "");
-            expect(labels[0]).toContain("Alpha task");
-            expect(labels[1]).toContain("Beta task");
+            expect(labels[0]).toContain("Beta task");
+            expect(labels[1]).toContain("Alpha task");
         });
     });
 
@@ -653,43 +653,30 @@ describe("AgentsSidebarPanel", () => {
         }
     });
 
-    it("keeps working subagents in activation order under their parent", async () => {
-        const parent = createSession("session-parent", "Parent task", "streaming");
-        const heisenberg = createSession(
-            "session-heisenberg",
-            "Heisenberg",
-            "streaming",
-            100,
-            { parentSessionId: parent.sessionId },
-        );
-        const mill = createSession("session-mill", "Mill", "streaming", 300, {
-            parentSessionId: parent.sessionId,
+    it("promotes a completed subagent and its parent group only when the turn ends", () => {
+        const parent = createSession("parent", "Parent", "streaming");
+        const other = createSession("other", "Other", "idle");
+        const first = createSession("first", "First child", "streaming", 100, { parentSessionId: "parent" });
+        const second = createSession("second", "Second child", "streaming", 300, { parentSessionId: "parent" });
+        useChatStore.setState({
+            sessionsById: { parent, other, first, second },
+            sessionOrder: ["other", "parent", "first", "second"],
         });
-
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                [parent.sessionId]: parent,
-                [heisenberg.sessionId]: heisenberg,
-                [mill.sessionId]: mill,
-            },
-            sessionOrder: [
-                parent.sessionId,
-                heisenberg.sessionId,
-                mill.sessionId,
-            ],
-        }));
-
         renderComponent(<AgentsSidebarPanel />);
-
-        await waitFor(() => {
-            const labels = screen
-                .getAllByTestId("agent-sidebar-item")
-                .map((item) => item.textContent ?? "");
-            expect(labels[0]).toContain("Parent task");
-            expect(labels[1]).toContain("Heisenberg");
-            expect(labels[2]).toContain("Mill");
+        const labels = () => screen.getAllByTestId("agent-sidebar-item").map(item => item.getAttribute("aria-label"));
+        expect(labels()).toEqual(["Other", "Parent", "First child", "Second child"]);
+        act(() => {
+            selectChatForTest(second.sessionId);
+            useChatStore.getState().upsertSession({ ...second, persistedUpdatedAt: 1000 }, true);
         });
+        expect(labels()).toEqual(["Other", "Parent", "First child", "Second child"]);
+        act(() => useChatStore.getState().applyMessageCompleted({ session_id: "second", message_id: "second-result" }));
+        expect(labels()).toEqual(["Parent", "Second child", "First child", "Other"]);
+        act(() => useChatStore.getState().upsertSession({ ...first, persistedUpdatedAt: 2000 }, true));
+        expect(labels()).toEqual(["Parent", "Second child", "First child", "Other"]);
+        // Some runtimes report completion through a session snapshot.
+        act(() => useChatStore.getState().upsertSession({ ...first, status: "idle" }));
+        expect(labels()).toEqual(["Parent", "First child", "Second child", "Other"]);
     });
 
     it("keeps parent context visible when filtering by child content", () => {

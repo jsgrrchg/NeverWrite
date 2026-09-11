@@ -3,7 +3,6 @@ import {
     useCallback,
     useEffect,
     useMemo,
-    useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -18,7 +17,6 @@ import {
 import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import {
     isTerminalTab,
-    selectEditorWorkspaceTabs,
     selectFocusedEditorTab,
     useEditorStore,
 } from "../../app/store/editorStore";
@@ -43,7 +41,6 @@ import {
 } from "./sessionPresentation";
 import {
     buildAiSessionHierarchyGroups,
-    compareHierarchyGroupsByUpdatedAtDesc,
     countAiSessionChildren,
     type AiSessionHierarchyGroup,
 } from "./sessionHierarchy";
@@ -135,58 +132,6 @@ function formatAgentTimestamp(timestamp: number, compact = false): string {
 
 function isSessionWorking(session: AIChatSession) {
     return deriveActivityIndicator(session)?.tone === "working";
-}
-
-function compareOpenHierarchyGroups(
-    a: AiSessionHierarchyGroup,
-    b: AiSessionHierarchyGroup,
-    workingOrder: ReadonlyMap<string, number>,
-) {
-    const aOrder = getGroupWorkingOrder(a, workingOrder);
-    const bOrder = getGroupWorkingOrder(b, workingOrder);
-    const aWorking = aOrder !== undefined;
-    const bWorking = bOrder !== undefined;
-
-    if (aWorking && bWorking) {
-        return aOrder - bOrder;
-    }
-    if (aWorking !== bWorking) {
-        return aWorking ? -1 : 1;
-    }
-    return compareHierarchyGroupsByUpdatedAtDesc(a, b);
-}
-
-function compareSidebarHierarchySiblings(
-    left: AIChatSession,
-    right: AIChatSession,
-    workingOrder: ReadonlyMap<string, number>,
-) {
-    const leftOrder = workingOrder.get(left.sessionId);
-    const rightOrder = workingOrder.get(right.sessionId);
-    const leftWorking = leftOrder !== undefined;
-    const rightWorking = rightOrder !== undefined;
-
-    if (leftWorking && rightWorking) {
-        return leftOrder - rightOrder;
-    }
-    if (leftWorking !== rightWorking) {
-        return leftWorking ? -1 : 1;
-    }
-
-    return 0;
-}
-
-function getGroupWorkingOrder(
-    group: AiSessionHierarchyGroup,
-    workingOrder: ReadonlyMap<string, number>,
-) {
-    let earliest: number | undefined;
-    for (const sessionId of group.sessionIds) {
-        const order = workingOrder.get(sessionId);
-        if (order === undefined) continue;
-        earliest = earliest === undefined ? order : Math.min(earliest, order);
-    }
-    return earliest;
 }
 
 function loadCollapsedParentSessionIds() {
@@ -288,23 +233,7 @@ export function AgentsSidebarPanel() {
     const unpinChat = usePinnedChatsStore((state) => state.unpin);
     const reconcilePinned = usePinnedChatsStore((state) => state.reconcile);
     // Terminal agents retain editor tabs; conversations use dedicated metadata.
-    const openTerminalSessionIds = useEditorStore(
-        useShallow((state) => {
-            const ids = new Set<string>();
-            for (const tab of selectEditorWorkspaceTabs(state)) {
-                if (isTerminalTab(tab)) {
-                    // A Claude Code terminal tab being open means its agent
-                    // entry belongs in the "Open" section.
-                    ids.add(claudeTerminalAgentSessionId(tab.terminalId));
-                }
-            }
-            return ids;
-        }),
-    );
-
     const focusedWorkspaceChatSessionId = useChatTabsStore(state => state.view.mode === "conversation" ? state.view.sessionId : null);
-    const rememberedChats = useChatTabsStore(state => state.tabs);
-    const openSessionIds = useMemo(() => new Set([...openTerminalSessionIds, ...rememberedChats.map(tab => tab.sessionId)]), [openTerminalSessionIds, rememberedChats]);
 
     // When a Claude Code terminal tab is focused, mark its agent entry as
     // selected (the entry has no chat tab of its own).
@@ -317,7 +246,7 @@ export function AgentsSidebarPanel() {
         }),
     );
 
-    // Raw chronological list (persisted order already reflects updatedAt).
+    // The store preserves positions until a turn completes.
     const sessions = useMemo(
         () =>
             sessionOrder
@@ -330,68 +259,19 @@ export function AgentsSidebarPanel() {
     const normalizedFilter = filterText.trim().toLowerCase();
     const hasFilter = normalizedFilter.length > 0;
 
-    const workingOrderRef = useRef<Map<string, number>>(new Map());
-    const workingCounterRef = useRef(0);
-    const [workingOrderRevision, setWorkingOrderRevision] = useState(0);
-
-    useEffect(() => {
-        const map = workingOrderRef.current;
-        const liveSessionIds = new Set<string>();
-        let changed = false;
-
-        for (const session of sessions) {
-            liveSessionIds.add(session.sessionId);
-            const working = isSessionWorking(session);
-            const tracked = map.has(session.sessionId);
-            if (working && !tracked) {
-                workingCounterRef.current += 1;
-                map.set(session.sessionId, workingCounterRef.current);
-                changed = true;
-            } else if (!working && tracked) {
-                map.delete(session.sessionId);
-                changed = true;
-            }
-        }
-
-        for (const trackedId of Array.from(map.keys())) {
-            if (!liveSessionIds.has(trackedId)) {
-                map.delete(trackedId);
-                changed = true;
-            }
-        }
-
-        if (changed) {
-            setWorkingOrderRevision((value) => value + 1);
-        }
-    }, [sessions]);
-
     const pinnedRootIds = useMemo(
         () => new Set(Object.keys(pinnedEntries)),
         [pinnedEntries],
     );
     const hierarchy = useMemo(
-        () =>
-            buildAiSessionHierarchyGroups({
-                sessions,
-                normalizedFilter,
-                openSessionIds,
-                pinnedSessionIds: pinnedRootIds,
-                compareSiblings: (left, right) =>
-                    compareSidebarHierarchySiblings(
-                        left,
-                        right,
-                        workingOrderRef.current,
-                    ),
-            }),
-        // workingOrderRevision keeps this memo in sync with the ref-backed map.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [
-            normalizedFilter,
-            openSessionIds,
-            pinnedRootIds,
+        () => buildAiSessionHierarchyGroups({
             sessions,
-            workingOrderRevision,
-        ],
+            normalizedFilter,
+            pinnedSessionIds: pinnedRootIds,
+            // A zero comparison retains the input order for siblings.
+            compareSiblings: () => 0,
+        }),
+        [sessions, normalizedFilter, pinnedRootIds],
     );
 
     // Pins are root-owned: legacy child pins are pruned so subagents stay under
@@ -401,54 +281,42 @@ export function AgentsSidebarPanel() {
         reconcilePinned(hierarchy.rootSessionIds);
     }, [hierarchy.rootSessionIds, reconcilePinned, sessionInventoryLoaded]);
 
-    // Status sections are mutually exclusive.
-    const { pinnedGroups, openGroups, otherGroups, archivedGroups } = useMemo(() => {
+    // Opening a chat must not move it into a different section. Pins and
+    // archives remain explicit groups; all other conversations share one list.
+    const { pinnedGroups, activeGroups, archivedGroups } = useMemo(() => {
+        const order = new Map(sessionOrder.map((id, index) => [id, index]));
+        const groupPosition = (group: AiSessionHierarchyGroup) =>
+            Math.min(...group.sessionIds.map(id => order.get(id) ?? Number.MAX_SAFE_INTEGER));
+        const compareGroups = (a: AiSessionHierarchyGroup, b: AiSessionHierarchyGroup) =>
+            groupPosition(a) - groupPosition(b);
         const archived: AiSessionHierarchyGroup[] = [];
         const pinned: AiSessionHierarchyGroup[] = [];
-        const open: AiSessionHierarchyGroup[] = [];
-        const other: AiSessionHierarchyGroup[] = [];
+        const active: AiSessionHierarchyGroup[] = [];
         for (const group of hierarchy.groups) {
             if (isSessionArchived(group.root, sessionsById, archivedEntries)) {
                 archived.push(group);
             } else if (group.isPinnedRoot) {
                 pinned.push(group);
-            } else if (group.hasOpenSession) {
-                open.push(group);
             } else {
-                other.push(group);
+                active.push(group);
             }
         }
         pinned.sort((a, b) => {
             const aPinned = pinnedEntries[a.root.sessionId]?.pinnedAt ?? 0;
             const bPinned = pinnedEntries[b.root.sessionId]?.pinnedAt ?? 0;
-            if (bPinned !== aPinned) return bPinned - aPinned;
-            return compareHierarchyGroupsByUpdatedAtDesc(a, b);
+            return bPinned - aPinned || compareGroups(a, b);
         });
-        open.sort((a, b) =>
-            compareOpenHierarchyGroups(a, b, workingOrderRef.current),
-        );
-        other.sort(compareHierarchyGroupsByUpdatedAtDesc);
         return {
-            archivedGroups: archived.sort(compareHierarchyGroupsByUpdatedAtDesc),
+            archivedGroups: archived.sort(compareGroups),
             pinnedGroups: pinned,
-            openGroups: open,
-            otherGroups: other,
+            activeGroups: active.sort(compareGroups),
         };
-        // workingOrderRevision keeps this memo in sync with the ref-backed map.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hierarchy.groups, pinnedEntries, workingOrderRevision, archivedEntries, sessionsById]);
+    }, [hierarchy.groups, sessionOrder, pinnedEntries, archivedEntries, sessionsById]);
     const totalCount = sessions.length;
     const filteredCount = hierarchy.groups.reduce(
         (count, group) => count + 1 + group.visibleChildren.length,
         0,
     );
-    // Only decorate Open/All headers when there is more than one non-pinned
-    // section or when Pinned is already showing — otherwise a single "Open"
-    // header above a lonely list reads as noise.
-    const showOpenAllHeaders =
-        pinnedGroups.length > 0 ||
-        (openGroups.length > 0 && otherGroups.length > 0);
-
     const {
         editingKey,
         editValue,
@@ -844,20 +712,12 @@ export function AgentsSidebarPanel() {
                             {pinnedGroups.map(renderGroup)}
                         </AgentsSidebarSection>
                         <AgentsSidebarSection
-                            title="Open"
-                            count={openGroups.length}
-                            showHeader={showOpenAllHeaders}
+                            title="Chats"
+                            count={activeGroups.length}
+                            showHeader={pinnedGroups.length > 0}
                             headerMetrics={metrics.header}
                         >
-                            {openGroups.map(renderGroup)}
-                        </AgentsSidebarSection>
-                        <AgentsSidebarSection
-                            title="All"
-                            count={otherGroups.length}
-                            showHeader={showOpenAllHeaders}
-                            headerMetrics={metrics.header}
-                        >
-                            {otherGroups.map(renderGroup)}
+                            {activeGroups.map(renderGroup)}
                         </AgentsSidebarSection>
                         {archivedGroups.length > 0 && <section className="mt-3" aria-label="Archived chats">
                             <button

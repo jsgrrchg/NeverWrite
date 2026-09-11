@@ -2172,6 +2172,32 @@ describe("chatStore", () => {
         }
     });
 
+    it("moves an existing session only after its turn completes", async () => {
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const other = createSessionWithTrackedFiles("other", []);
+        useChatStore.getState().upsertSession(other, true);
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        await useChatStore.getState().loadSession(sessionId);
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") return { ...sessionPayload, status: "streaming" };
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"), sessionId);
+        await useChatStore.getState().sendMessage(sessionId);
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "partial", turn_complete: false });
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "final" });
+        expect(useChatStore.getState().sessionOrder).toEqual([sessionId, "other"]);
+        useChatStore.getState().upsertSession({ ...other, status: "streaming" });
+        useChatStore.getState().applyMessageCompleted({ session_id: "other", message_id: "other-result" });
+        // A repeated final event from the first turn must not promote it again.
+        useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "final" });
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+    });
+
     it("starts a new local work cycle when sending a message", async () => {
         await useChatStore.getState().initialize();
         invokeMock.mockImplementation(async (command, args) => {
@@ -5917,7 +5943,7 @@ describe("chatStore", () => {
         ).toHaveLength(0);
     });
 
-    it("moves the updated session to the top of the history order", async () => {
+    it("keeps streaming updates in place until the turn completes", async () => {
         await useChatStore.getState().initialize();
 
         useChatStore.getState().upsertSession(
@@ -5953,6 +5979,14 @@ describe("chatStore", () => {
             message_id: "assistant-1",
         });
 
+        expect(useChatStore.getState().sessionOrder).toEqual([
+            "codex-session-2",
+            "codex-session-1",
+        ]);
+        useChatStore.getState().applyMessageCompleted({
+            session_id: "codex-session-1",
+            message_id: "assistant-1",
+        });
         expect(useChatStore.getState().sessionOrder).toEqual([
             "codex-session-1",
             "codex-session-2",

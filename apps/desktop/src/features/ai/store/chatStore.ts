@@ -689,7 +689,7 @@ async function refreshPersistedHistoryInventory(vaultPath: string) {
         }
         return {
             sessionsById: nextSessionsById,
-            sessionOrder: sortSessionIdsByRecency(nextSessionsById),
+            sessionOrder: reconcileSessionOrder(state.sessionOrder, nextSessionsById),
             sessionInventoryLoaded: true,
         };
     });
@@ -3511,8 +3511,10 @@ function migrateSessionLocalState(
                 ...nextSessionsById,
                 [toSession.sessionId]: toSession,
             },
-            sessionOrder: touchSessionOrder(
-                state.sessionOrder.filter((id) => id !== fromSessionId),
+            sessionOrder: ensureSessionInOrder(
+                state.sessionOrder
+                    .filter((id) => id !== toSession.sessionId || id === fromSessionId)
+                    .map((id) => id === fromSessionId ? toSession.sessionId : id),
                 toSession.sessionId,
             ),
             activeSessionId:
@@ -4548,7 +4550,7 @@ function queuePendingInterruptedSend(
                         pendingManualSend: pending,
                     },
                 ),
-            sessionOrder: touchSessionOrder(state.sessionOrder, sessionId),
+            sessionOrder: ensureSessionInOrder(state.sessionOrder, sessionId),
         };
     });
     return queued;
@@ -7099,14 +7101,24 @@ function getSetupStatusForRuntime(
     return setupStatusByRuntimeId[runtimeId] ?? null;
 }
 
-function touchSessionOrder(sessionOrder: string[], sessionId: string) {
-    if (sessionOrder[0] === sessionId) {
-        return sessionOrder;
-    }
-    if (!sessionOrder.includes(sessionId)) {
-        return [sessionId, ...sessionOrder];
-    }
+function reconcileSessionOrder(sessionOrder: string[], sessionsById: Record<string, AIChatSession>) {
+    const known = new Set(sessionOrder);
+    return [
+        ...sessionOrder.filter((id) => sessionsById[id]),
+        ...sortSessionIdsByRecency(sessionsById).filter((id) => !known.has(id)),
+    ];
+}
 
+// Opening, prompting and streaming retain the existing position. Only a new
+// session needs a slot; completed turns explicitly promote their session below.
+function ensureSessionInOrder(sessionOrder: string[], sessionId: string) {
+    return sessionOrder.includes(sessionId)
+        ? sessionOrder
+        : [sessionId, ...sessionOrder];
+}
+
+function promoteCompletedSession(sessionOrder: string[], sessionId: string) {
+    if (sessionOrder[0] === sessionId) return sessionOrder;
     return [sessionId, ...sessionOrder.filter((id) => id !== sessionId)];
 }
 
@@ -9762,7 +9774,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                             },
                         ),
                     },
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         activeSessionId,
                     ),
@@ -10642,7 +10654,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         }
 
                         const nextSessionOrder =
-                            sortSessionIdsByRecency(nextSessionsById);
+                            reconcileSessionOrder(state.sessionOrder, nextSessionsById);
                         const nextActiveSessionId =
                             state.activeSessionId &&
                             nextSessionsById[state.activeSessionId]
@@ -11270,8 +11282,14 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                   scopedSession.sessionId,
                               )
                             : state.pendingAvailableCommandsBySessionId,
-                    sessionOrder: activate
-                        ? touchSessionOrder(
+                    sessionOrder: existing &&
+                        isSessionBusy(existing) &&
+                        nextSession.status === "idle" &&
+                        !existing.isResumingSession &&
+                        !nextSession.isResumingSession
+                        ? promoteCompletedSession(state.sessionOrder, scopedSession.sessionId)
+                        : activate
+                        ? ensureSessionInOrder(
                               state.sessionOrder,
                               scopedSession.sessionId,
                           )
@@ -11640,7 +11658,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                             failedAt,
                         ),
                     },
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         session_id,
                     ),
@@ -11705,7 +11723,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         session_id,
                         streamingSession,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         session_id,
                     ),
@@ -11821,10 +11839,9 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                             session_id,
                             null,
                         ),
-                    sessionOrder: touchSessionOrder(
-                        state.sessionOrder,
-                        session_id,
-                    ),
+                    sessionOrder: isSessionBusy(session) || session.activeWorkCycleId || activeQueuedMessage
+                        ? promoteCompletedSession(state.sessionOrder, session_id)
+                        : state.sessionOrder,
                 };
             });
 
@@ -11870,7 +11887,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         session_id,
                         thinkingSession,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         session_id,
                     ),
@@ -11920,7 +11937,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         session_id,
                         nextSession,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         session_id,
                     ),
@@ -12027,7 +12044,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         payload.session_id,
                         activitySession,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         payload.session_id,
                     ),
@@ -12096,7 +12113,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         payload.session_id,
                         nextSession,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         payload.session_id,
                     ),
@@ -12139,7 +12156,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         payload.session_id,
                         sessionWithImage,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         payload.session_id,
                     ),
@@ -12181,7 +12198,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         payload.session_id,
                         sessionWithPlan,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         payload.session_id,
                     ),
@@ -12299,7 +12316,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         payload.session_id,
                         sessionWithPermission,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         payload.session_id,
                     ),
@@ -12354,7 +12371,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         payload.session_id,
                         sessionWithUserInput,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         payload.session_id,
                     ),
@@ -12399,7 +12416,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                             payload.session_id,
                             completedSession,
                         ),
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             payload.session_id,
                         ),
@@ -12441,7 +12458,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         payload.session_id,
                         sessionWithUrlRequest,
                     ),
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         payload.session_id,
                     ),
@@ -13123,7 +13140,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     selectedRuntimeId:
                         state.sessionsById[sessionId]?.runtimeId ??
                         state.selectedRuntimeId,
-                    sessionOrder: touchSessionOrder(
+                    sessionOrder: ensureSessionInOrder(
                         state.sessionOrder,
                         sessionId,
                     ),
@@ -13705,7 +13722,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         item,
                     ],
                 },
-                sessionOrder: touchSessionOrder(state.sessionOrder, sessionId),
+                sessionOrder: ensureSessionInOrder(state.sessionOrder, sessionId),
             })),
 
         removeQueuedMessage: (sessionId, messageId) => {
@@ -14084,7 +14101,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                             finalizedEdit.nextQueuedMessagesBySessionId,
                         queuedMessageEditBySessionId:
                             finalizedEdit.nextQueuedMessageEditBySessionId,
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             resolvedSessionId,
                         ),
@@ -14501,7 +14518,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 },
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             sessionId,
                         ),
@@ -14518,7 +14535,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 message,
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             sessionId,
                         ),
@@ -14566,7 +14583,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 "This runtime does not support interactive user input requests in this build.",
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             resolvedSessionId,
                         ),
@@ -14653,7 +14670,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 },
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             resolvedSessionId,
                         ),
@@ -14671,7 +14688,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 message,
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             resolvedSessionId,
                         ),
@@ -14712,7 +14729,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 errorMessage,
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             resolvedSessionId,
                         ),
@@ -14810,7 +14827,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 message,
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             resolvedSessionId,
                         ),
@@ -14857,7 +14874,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 "This runtime does not support interactive URL requests in this build.",
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             resolvedSessionId,
                         ),
@@ -15006,7 +15023,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 },
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             resolvedSessionId,
                         ),
@@ -15024,7 +15041,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                                 message,
                             ),
                         },
-                        sessionOrder: touchSessionOrder(
+                        sessionOrder: ensureSessionInOrder(
                             state.sessionOrder,
                             resolvedSessionId,
                         ),
@@ -15962,7 +15979,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     sessionId,
                     null,
                 );
-            const remainingIds = sortSessionIdsByRecency(nextSessionsById);
+            const remainingIds = reconcileSessionOrder(state.sessionOrder, nextSessionsById);
             const nextActiveId =
                 state.activeSessionId === sessionId
                     ? (remainingIds[0] ?? null)
