@@ -156,7 +156,9 @@ describe("App note window", () => {
 
         const fileTabView = screen.getByTestId("file-tab-view");
         const panelWrapper = fileTabView.parentElement;
-        const windowContentWrapper = panelWrapper?.parentElement;
+        const documentWorkspaceSurface = panelWrapper?.parentElement;
+        const windowContentWrapper =
+            documentWorkspaceSurface?.parentElement?.parentElement?.parentElement;
 
         expect(panelWrapper).toHaveClass(
             "relative",
@@ -165,6 +167,10 @@ describe("App note window", () => {
             "min-w-0",
             "w-full",
             "overflow-hidden",
+        );
+        expect(documentWorkspaceSurface).toHaveAttribute(
+            "data-testid",
+            "document-workspace-surface",
         );
         expect(windowContentWrapper).toHaveClass(
             "flex-1",

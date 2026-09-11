@@ -293,7 +293,16 @@ describe("App web clipper routing", () => {
         expect(initialize).toHaveBeenCalled();
         expect(restoreWorkspace).not.toHaveBeenCalled();
         expect(reconcileRestoredWorkspaceTabs).not.toHaveBeenCalled();
-        expect(hydrateForVault).toHaveBeenCalledWith(persistedWorkspace);
+        expect(hydrateForVault).toHaveBeenCalledWith({
+            version: 2,
+            view: {
+                mode: "conversation",
+                sessionId: "persisted:history-1",
+            },
+            historyFilter: "all",
+            tabs: persistedWorkspace.tabs,
+            activeTabId: "chat-tab-1",
+        });
         expect(useChatTabsStore.getState().isReady).toBe(true);
     });
 
