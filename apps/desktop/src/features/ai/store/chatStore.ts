@@ -1,5 +1,5 @@
 import { openChatSessionInWorkspace } from "../chatPaneMovement";
-import { getArchiveIdentity, useArchivedChatsStore } from "./archivedChatsStore";
+import { getArchiveIdentity, getArchiveRoot, useArchivedChatsStore } from "./archivedChatsStore";
 import { create, type StateCreator } from "zustand";
 import { confirm, openUrl } from "@neverwrite/runtime";
 import {
@@ -14028,6 +14028,15 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 selection,
             );
             if (!queuedItem) return;
+
+            // Archive is organization state: a valid new message reactivates
+            // the conversation, including after a persisted session is rebound.
+            const archiveRoot = getArchiveRoot(session, get().sessionsById);
+            const archive = useArchivedChatsStore.getState();
+            for (const identity of new Set([getArchiveIdentity(archiveRoot), archiveRoot.sessionId])) {
+                if (archive.isArchived(identity)) archive.unarchive(identity);
+            }
+
             const pendingStop = _pendingStopBySessionId.get(resolvedSessionId);
 
             const queuedMessageEdit =

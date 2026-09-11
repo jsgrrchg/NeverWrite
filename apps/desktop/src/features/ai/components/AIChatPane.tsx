@@ -1,9 +1,3 @@
-import {
-    isSessionArchived,
-    useArchivedChatsStore,
-} from "../store/archivedChatsStore";
-import { unarchiveChat } from "../chatArchiving";
-import { HistoryTranscriptViewer } from "./HistoryTranscriptViewer";
 import { useChatPaneShortcuts } from "../useChatPaneShortcuts";
 import { useState } from "react";
 import { useLayoutStore } from "../../../app/store/layoutStore";
@@ -21,7 +15,6 @@ import { getSessionTitle } from "../sessionPresentation";
 export function AIChatPane() {
     useChatPaneShortcuts();
     const view = useChatTabsStore((state) => state.view);
-    const archiveEntries = useArchivedChatsStore((state) => state.entries);
     const sessions = useChatStore((state) => state.sessionsById);
     const focused = useChatTabsStore(
         (state) => state.focusedSurface === "chat",
@@ -36,8 +29,6 @@ export function AIChatPane() {
               ? view.returnSessionId
               : null;
     const session = sessionId ? sessions[sessionId] : null;
-    const archived =
-        session && isSessionArchived(session, sessions, archiveEntries);
     const showStandaloneHeader = view.mode !== "conversation";
     const paneActions = (
         <>
@@ -122,33 +113,7 @@ export function AIChatPane() {
                     display: view.mode === "history" ? "none" : undefined,
                 }}
             >
-                {archived ? (
-                    <div className="h-full min-h-0">
-                        <HistoryTranscriptViewer
-                            historySessionId={
-                                session.historySessionId ?? session.sessionId
-                            }
-                            compactHeader
-                            headerActions={
-                                <>
-                                    <button
-                                        type="button"
-                                        className="shrink-0 whitespace-nowrap"
-                                        onClick={() => {
-                                            if (!unarchiveChat(session.sessionId)) return;
-                                            void useChatStore
-                                                .getState()
-                                                .loadSession(session.sessionId);
-                                        }}
-                                    >
-                                        Unarchive
-                                    </button>
-                                    {paneActions}
-                                </>
-                            }
-                        />
-                    </div>
-                ) : sessionId ? (
+                {sessionId ? (
                     <AIChatSessionView
                         sessionId={sessionId}
                         focused={focused && view.mode === "conversation"}

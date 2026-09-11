@@ -1247,7 +1247,7 @@ export function AIChatSessionView({
                                 : "flex min-h-16 shrink flex-col"
                         }
                     >
-                        {session && isSessionArchived(session, allSessions, archivedEntries) ? <div className="p-3 text-xs">Archived conversation. <button type="button" onClick={() => unarchiveChat(session.sessionId)}>Unarchive and continue</button></div> : <AIChatComposer
+                        <AIChatComposer
                             key={sessionId}
                             sessionId={sessionId}
                             parts={composerParts}
@@ -1435,7 +1435,7 @@ export function AIChatSessionView({
                             onStop={() => {
                                 void chatActions.stopStreaming(sessionId);
                             }}
-                        />}
+                        />
                     </div>
                     </div>
                 </div>

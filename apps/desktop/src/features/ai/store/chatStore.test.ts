@@ -2110,6 +2110,68 @@ describe("chatStore", () => {
         });
     });
 
+    it.each([false, true])("reactivates an archived chat on send (persisted: %s)", async (persisted) => {
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const original = { ...useChatStore.getState().sessionsById[sessionId]!, historySessionId: sessionId };
+        useChatStore.getState().upsertSession(original, true);
+        const historyId = original.historySessionId!;
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        useArchivedChatsStore.getState().archive(historyId);
+        useArchivedChatsStore.getState().archive("unrelated-archived-chat");
+        const resumedId = persisted ? "resumed-archived-chat" : sessionId;
+        const resumeSession = vi.spyOn(useChatStore.getState(), "resumeSession");
+        if (persisted) {
+            useChatStore.getState().upsertSession({ ...original, runtimeState: "persisted_only" }, true);
+            resumeSession.mockImplementation(async () => {
+                useChatStore.getState().upsertSession({
+                    ...original,
+                    sessionId: resumedId,
+                    runtimeSessionId: resumedId,
+                    runtimeState: "live",
+                }, true);
+                return resumedId;
+            });
+        }
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, session_id: resumedId, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        try {
+            useChatStore.getState().setComposerParts(createTextParts("Continue archived chat"), sessionId);
+            expect(useArchivedChatsStore.getState().isArchived(historyId)).toBe(true);
+            await useChatStore.getState().sendMessage(sessionId);
+            expect(useArchivedChatsStore.getState().isArchived(historyId)).toBe(false);
+            expect(useArchivedChatsStore.getState().isArchived("unrelated-archived-chat")).toBe(true);
+            expect(invokeMock).toHaveBeenCalledWith("ai_send_message", expect.objectContaining({ sessionId: resumedId }));
+            expect(useChatStore.getState().sessionsById[resumedId]?.messages.some(
+                message => message.role === "user" && message.content === "Continue archived chat",
+            )).toBe(true);
+            if (persisted) expect(resumeSession).toHaveBeenCalledWith(sessionId);
+        } finally {
+            resumeSession.mockRestore();
+            useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        }
+    });
+
+    it("keeps an archived chat archived when there is no message to send", async () => {
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const historyId = useChatStore.getState().sessionsById[sessionId]!.historySessionId ?? sessionId;
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        useArchivedChatsStore.getState().archive(historyId);
+        try {
+            useChatStore.getState().setComposerParts(createTextParts("   "), sessionId);
+            await useChatStore.getState().sendMessage(sessionId);
+            expect(useArchivedChatsStore.getState().isArchived(historyId)).toBe(true);
+            expect(invokeMock.mock.calls.some(([command]) => command === "ai_send_message")).toBe(false);
+        } finally {
+            useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        }
+    });
+
     it("starts a new local work cycle when sending a message", async () => {
         await useChatStore.getState().initialize();
         invokeMock.mockImplementation(async (command, args) => {

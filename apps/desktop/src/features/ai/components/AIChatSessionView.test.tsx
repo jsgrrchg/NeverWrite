@@ -1,3 +1,5 @@
+import { useArchivedChatsStore } from "../store/archivedChatsStore";
+import { AIChatPane } from "./AIChatPane";
 import { getDesktopPlatform } from "../../../app/utils/platform";
 import { selectChatForTest } from "../../../test/test-utils";
 import { useChatTabsStore } from "../store/chatTabsStore";
@@ -188,6 +190,7 @@ function expectColumnAncestor(testId: string) {
 describe("AIChatSessionView", () => {
     beforeEach(() => {
         resetChatStore();
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
         useSettingsStore.getState().reset();
         composerMockState.onPasteImage = undefined;
         composerMockState.onSubmit = undefined;
@@ -212,6 +215,18 @@ describe("AIChatSessionView", () => {
         expect(header).toHaveTextContent("Explicit conversation");
         expect(header).toContainElement(screen.getByRole("button", { name: "New chat" }));
         expect(useEditorStore.getState().panes.every(pane => pane.tabs.length === 0)).toBe(true);
+    });
+
+    it("keeps the composer available in an archived conversation without restoring on open", () => {
+        setupWorkspaceSession();
+        useArchivedChatsStore.getState().archive("session-a");
+        renderComponent(<AIChatPane />);
+        const composer = screen.getByTestId("chat-composer");
+        expect(composer).toHaveAttribute("data-disabled", "false");
+        expect(screen.getAllByText("Workspace chat")).toHaveLength(1);
+        expect(screen.queryByText("Unarchive and continue")).toBeNull();
+        composer.focus();
+        expect(useArchivedChatsStore.getState().isArchived("session-a")).toBe(true);
     });
 
     it("locks provider changes after the conversation starts", () => {
