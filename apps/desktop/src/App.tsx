@@ -1,3 +1,6 @@
+import { migrateLegacyChatTabs, preserveLegacyChatTabsForVault } from "./features/ai/chatWorkspaceRestoration";
+import { openChatSessionInWorkspace, openChatHistoryInWorkspace } from "./features/ai/chatPaneMovement";
+import { ChatEditorWorkspace } from "./components/layout/ChatEditorWorkspace";
 import { ChatArchiveNotice } from "./features/ai/components/ChatArchiveNotice";
 import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -13,7 +16,6 @@ import { SidebarShell } from "./components/layout/SidebarShell";
 import { RightSidebarShell } from "./components/layout/RightSidebarShell";
 import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
-import { listChatWorkspaceHistoryReferences } from "./features/ai/chatWorkspaceRestoration";
 import { createCanonicalAgent } from "./features/ai/newAgentCreation";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 import { migrateLegacyTerminalTabsToWorkspace } from "./features/terminal/legacyTerminalMigration";
@@ -51,6 +53,7 @@ import {
     fileViewerNeedsTextContent,
     useEditorStore,
     isChatTab,
+    isChatHistoryTab,
     isFileTab,
     isNoteTab,
     isTerminalTab,
@@ -100,7 +103,8 @@ import {
     readSearchParam,
 } from "./app/utils/safeBrowser";
 import { getVaultChangeSyncStrategy } from "./app/utils/vaultChangeSync";
-import { logError } from "./app/utils/runtimeLog";
+import { safeStorageSetItem } from "./app/utils/safeStorage";
+import { logError, logWarn } from "./app/utils/runtimeLog";
 import {
     flushChatTabsPersistence,
     markChatTabsReady,
@@ -1601,152 +1605,26 @@ export default function App() {
         let cancelled = false;
 
         void (async () => {
-            const workspace = readPersistedChatWorkspace(vaultPath);
+            let workspace = readPersistedChatWorkspace(vaultPath);
             let restoredWorkspace = false;
-
             try {
-                const initialization = await useChatStore
-                    .getState()
-                    .initialize();
+                hydrateChatWorkspace(workspace);
+                const initialization = await useChatStore.getState().initialize({ createDefaultSession: false });
                 if (cancelled) return;
-
+                // Editor restoration may have migrated references while discovery ran.
+                workspace = readPersistedChatWorkspace(vaultPath) ?? workspace;
                 if (!initialization.sessionInventoryLoaded) {
-                    // Keep the persisted tab layout intact when session
-                    // discovery fails so we do not overwrite it with an empty
-                    // workspace on the next persistence flush.
                     hydrateChatWorkspace(workspace);
                     restoredWorkspace = true;
                     return;
                 }
-
                 const chatState = useChatStore.getState();
-                restoreChatWorkspace(
-                    workspace,
-                    Object.values(chatState.sessionsById).map((session) => ({
-                        sessionId: session.sessionId,
-                        historySessionId: session.historySessionId,
-                        runtimeId: session.runtimeId,
-                    })),
-                    chatState.activeSessionId,
-                );
+                restoreChatWorkspace(workspace, Object.values(chatState.sessionsById), null);
                 restoredWorkspace = true;
-
-                const restoredChatWorkspace = useChatTabsStore.getState();
-                const persistedChatMetadataBySessionId = new Map(
-                    (workspace?.tabs ?? []).map((tab) => [tab.sessionId, tab]),
-                );
-                const restoredChatMetadataBySessionId = new Map(
-                    restoredChatWorkspace.tabs.map((tab) => [
-                        tab.sessionId,
-                        tab,
-                    ]),
-                );
-                const restoredChatMetadataByHistoryId = new Map(
-                    restoredChatWorkspace.tabs.flatMap((tab) =>
-                        tab.historySessionId
-                            ? [[tab.historySessionId, tab] as const]
-                            : [],
-                    ),
-                );
-                const sessionIdByHistoryId = new Map(
-                    Object.values(chatState.sessionsById).flatMap((session) =>
-                        session.historySessionId
-                            ? [
-                                  [
-                                      session.historySessionId,
-                                      session.sessionId,
-                                  ] as const,
-                              ]
-                            : [],
-                    ),
-                );
-                const resolveEditorChatHistorySessionId = (
-                    sessionId: string,
-                    historySessionId?: string | null,
-                ) =>
-                    historySessionId ??
-                    chatState.sessionsById[sessionId]?.historySessionId ??
-                    persistedChatMetadataBySessionId.get(sessionId)
-                        ?.historySessionId ??
-                    restoredChatMetadataBySessionId.get(sessionId)
-                        ?.historySessionId ??
-                    (sessionId.startsWith("persisted:")
-                        ? sessionId.slice("persisted:".length)
-                        : null);
-
-                const initialChatHistoryReferences =
-                    listChatWorkspaceHistoryReferences(
-                        selectEditorWorkspaceTabs(
-                            useEditorStore.getState(),
-                        ).filter(isChatTab),
-                    );
-                for (const entry of initialChatHistoryReferences) {
-                    const resolvedHistorySessionId =
-                        resolveEditorChatHistorySessionId(
-                            entry.sessionId,
-                            entry.historySessionId,
-                        );
-                    if (!resolvedHistorySessionId) {
-                        continue;
-                    }
-
-                    const resolvedSessionId =
-                        sessionIdByHistoryId.get(resolvedHistorySessionId) ??
-                        restoredChatMetadataByHistoryId.get(
-                            resolvedHistorySessionId,
-                        )?.sessionId ??
-                        entry.sessionId;
-
-                    if (
-                        resolvedSessionId !== entry.sessionId ||
-                        resolvedHistorySessionId !== entry.historySessionId
-                    ) {
-                        useEditorStore
-                            .getState()
-                            .replaceAiSessionId(
-                                entry.sessionId,
-                                resolvedSessionId,
-                                resolvedHistorySessionId,
-                            );
-                    }
-                }
-
-                const editorState = useEditorStore.getState();
-                const focusedEditorTab = selectFocusedEditorTab(editorState);
-                const restoredChatHistoryReferences =
-                    listChatWorkspaceHistoryReferences(
-                        selectEditorWorkspaceTabs(editorState).filter(
-                            isChatTab,
-                        ),
-                    );
+                const restored = useChatTabsStore.getState();
                 await useChatStore.getState().reconcileRestoredWorkspaceTabs(
-                    restoredChatHistoryReferences.map((entry) => {
-                        const resolvedHistorySessionId =
-                            resolveEditorChatHistorySessionId(
-                                entry.sessionId,
-                                entry.historySessionId,
-                            );
-                        const metadata =
-                            restoredChatMetadataBySessionId.get(
-                                entry.sessionId,
-                            ) ??
-                            (resolvedHistorySessionId
-                                ? restoredChatMetadataByHistoryId.get(
-                                      resolvedHistorySessionId,
-                                  )
-                                : undefined);
-                        return {
-                            id: entry.id,
-                            sessionId: entry.sessionId,
-                            historySessionId: resolvedHistorySessionId ?? null,
-                            runtimeId:
-                                metadata?.runtimeId ??
-                                chatState.sessionsById[entry.sessionId]
-                                    ?.runtimeId ??
-                                null,
-                        };
-                    }),
-                    isChatTab(focusedEditorTab) ? focusedEditorTab.id : null,
+                    restored.tabs.map(tab => ({ id: tab.id, sessionId: tab.sessionId, historySessionId: tab.historySessionId ?? tab.conversationId ?? null, runtimeId: tab.runtimeId ?? null })),
+                    null,
                 );
             } catch (error) {
                 if (!restoredWorkspace) {
@@ -1979,6 +1857,22 @@ export default function App() {
                 ATTACH_EXTERNAL_TAB_EVENT,
                 (event) => {
                     if (disposed) return;
+                    const tab = event.payload.tab;
+                    if (isChatTab(tab) || isChatHistoryTab(tab)) {
+                        const sourcePath = event.payload.vaultPath;
+                        const currentPath = useVaultStore.getState().vaultPath;
+                        if (!sourcePath) {
+                            safeStorageSetItem(`neverwrite.chat-transfer-recovery:${tab.id}`, JSON.stringify(event.payload));
+                            logWarn("chat", "Saved legacy chat transfer for recovery: source vault is missing");
+                            return;
+                        }
+                        if (!preserveLegacyChatTabsForVault(sourcePath, [tab], tab.id)) return;
+                        if (sourcePath !== currentPath) { void openVaultWindow(sourcePath); return; }
+                        migrateLegacyChatTabs([tab], tab.id);
+                        if (isChatTab(tab)) openChatSessionInWorkspace(tab.sessionId);
+                        else openChatHistoryInWorkspace();
+                        return;
+                    }
                     for (const session of event.payload.aiSessions ?? []) {
                         useChatStore
                             .getState()
@@ -2143,7 +2037,7 @@ export default function App() {
             <WorkspaceTerminalHost />
                 <UnifiedBar windowMode="note" />
                 <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
-                    <EditorPaneContent emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />
+                    <ChatEditorWorkspace><EditorPaneContent emptyStateMessage="Esta ventana no tiene ninguna nota abierta" /></ChatEditorWorkspace>
                 </div>
                 <YouTubeModalHost />
                 <CommandPalette />
@@ -2181,7 +2075,7 @@ export default function App() {
                                     backgroundColor: "var(--bg-primary)",
                                 }}
                             >
-                                <MultiPaneWorkspace />
+                                <ChatEditorWorkspace><MultiPaneWorkspace /></ChatEditorWorkspace>
                             </div>
                         </div>
                     }

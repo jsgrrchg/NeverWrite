@@ -18,6 +18,7 @@ interface PinnedChatEntry {
 }
 
 interface PinnedChatsStore {
+    setVaultPath: () => void;
     entries: Record<string, PinnedChatEntry>;
     togglePin: (sessionId: string) => void;
     pin: (sessionId: string) => void;
@@ -69,7 +70,8 @@ function persistEntries(entries: Record<string, PinnedChatEntry>) {
 }
 
 export const usePinnedChatsStore = create<PinnedChatsStore>((set) => ({
-    entries: readHydratedEntries(),
+    entries: {},
+    setVaultPath: () => set({ entries: readHydratedEntries() }),
     togglePin: (sessionId) =>
         set((state) => {
             const next = { ...state.entries };
@@ -131,7 +133,3 @@ export const usePinnedChatsStore = create<PinnedChatsStore>((set) => ({
             return { entries: next };
         }),
 }));
-
-useVaultStore.subscribe((state, previous) => {
-    if (state.vaultPath !== previous.vaultPath) usePinnedChatsStore.setState({ entries: readHydratedEntries() });
-});

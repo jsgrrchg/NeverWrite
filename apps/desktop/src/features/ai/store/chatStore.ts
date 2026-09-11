@@ -1,3 +1,4 @@
+import { openChatSessionInWorkspace } from "../chatPaneMovement";
 import { getArchiveIdentity, useArchivedChatsStore } from "./archivedChatsStore";
 import { create, type StateCreator } from "zustand";
 import { confirm, openUrl } from "@neverwrite/runtime";
@@ -16220,13 +16221,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
 
             const activeSessionId = get().activeSessionId;
             if (activeSessionId) {
-                const activeSession = get().sessionsById[activeSessionId];
-                useEditorStore.getState().openChat(activeSessionId, {
-                    title: activeSession
-                        ? getSessionTitle(activeSession)
-                        : "Chat",
-                    historySessionId: activeSession?.historySessionId ?? null,
-                });
+                openChatSessionInWorkspace(activeSessionId);
                 appendSelectionToSession(activeSessionId);
                 return;
             }
@@ -16243,14 +16238,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     ) ?? nextState.activeSessionId;
                 if (!createdSessionId) return;
 
-                const createdSession =
-                    nextState.sessionsById[createdSessionId] ?? null;
-                useEditorStore.getState().openChat(createdSessionId, {
-                    title: createdSession
-                        ? getSessionTitle(createdSession)
-                        : "Chat",
-                    historySessionId: createdSession?.historySessionId ?? null,
-                });
+                openChatSessionInWorkspace(createdSessionId);
                 appendSelectionToSession(createdSessionId);
             })();
         },
@@ -16512,10 +16500,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     historySessionId: newHistoryId,
                     runtimeId: session.runtimeId,
                 });
-                useEditorStore.getState().openChat(forkedSessionId, {
-                    title: forkedTitle,
-                    historySessionId: newHistoryId,
-                });
+                openChatSessionInWorkspace(forkedSessionId);
             } catch (error) {
                 logError("chat-store", "Failed to fork session", error);
             }

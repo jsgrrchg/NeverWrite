@@ -7322,14 +7322,7 @@ describe("chatStore", () => {
                 runtimeId: "codex-acp",
             },
         ]);
-        expect(
-            useEditorStore
-                .getState()
-                .tabs.some(
-                    (tab) =>
-                        isChatTab(tab) && tab.sessionId === resumedSessionId,
-                ),
-        ).toBe(true);
+        expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: resumedSessionId });
         expect(
             useEditorStore
                 .getState()
@@ -22335,6 +22328,8 @@ describe("chatStore", () => {
             background: true,
         });
 
+        useChatTabsStore.getState().showConversation("session-last-focused");
+        useChatTabsStore.getState().setFocusedSurface("editor");
         useChatStore.getState().attachSelectionFromEditor();
 
         const targetParts =

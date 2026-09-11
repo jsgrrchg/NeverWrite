@@ -1,3 +1,5 @@
+import { useArchivedChatsStore } from "../../features/ai/store/archivedChatsStore";
+import { usePinnedChatsStore } from "../../features/ai/store/pinnedChatsStore";
 import { create } from "zustand";
 import { invoke } from "@neverwrite/runtime";
 import { perfCount, perfMeasure, perfNow } from "../utils/perfInstrumentation";
@@ -1143,3 +1145,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         });
     },
 }));
+
+useVaultStore.subscribe((state, previous) => {
+    if (state.vaultPath === previous.vaultPath) return;
+    useArchivedChatsStore.getState().setVaultPath(state.vaultPath);
+    usePinnedChatsStore.getState().setVaultPath();
+});

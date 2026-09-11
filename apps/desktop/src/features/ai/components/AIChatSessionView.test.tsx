@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "../store/chatTabsStore";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@neverwrite/runtime";
 import type { ReactNode } from "react";
@@ -15,7 +16,7 @@ import {
     MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "../imageAttachments";
-import { AIChatSessionView } from "./AIChatSessionView";
+import { AIChatSessionView as SessionView } from "./AIChatSessionView";
 import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 
 const composerMockState = vi.hoisted(() => ({
@@ -145,6 +146,12 @@ function createSession(sessionId: string, title: string): AIChatSession {
         visibleWorkCycleId: null,
         runtimeState: "live",
     };
+}
+
+function AIChatSessionView(props: { paneId?: string; tabId?: string; sessionId?: string; focused?: boolean }) {
+    const view = useChatTabsStore(state => state.view);
+    const sessionId = props.sessionId ?? (view.mode === "conversation" ? view.sessionId : "");
+    return <SessionView sessionId={sessionId} focused={props.focused} />;
 }
 
 function setupWorkspaceSession(sessionId = "session-a") {

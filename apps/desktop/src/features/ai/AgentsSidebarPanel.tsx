@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "./store/chatTabsStore";
 import {
     useCallback,
     useEffect,
@@ -310,7 +311,6 @@ export function AgentsSidebarPanel() {
     const claudeCodeEnabled = useSettingsStore(
         (state) => state.claudeCodeEnabled,
     );
-    const activeSessionId = useChatStore((state) => state.activeSessionId);
     const sessionsById = useChatStore((state) => state.sessionsById);
     const sessionOrder = useChatStore((state) => state.sessionOrder);
     const claudeCodeSetupStatus = useChatStore(
@@ -351,7 +351,7 @@ export function AgentsSidebarPanel() {
     // Sessions currently open as editor tabs across any pane. Drives the
     // "Open" section — mirrors Comando's behaviour of bubbling live tabs to
     // the top of the list.
-    const openSessionIds = useEditorStore(
+    const openTerminalSessionIds = useEditorStore(
         useShallow((state) => {
             const ids = new Set<string>();
             for (const tab of selectEditorWorkspaceTabs(state)) {
@@ -367,12 +367,9 @@ export function AgentsSidebarPanel() {
         }),
     );
 
-    const focusedWorkspaceChatSessionId = useEditorStore(
-        useShallow((state) => {
-            const focused = selectFocusedEditorTab(state);
-            return focused && isChatTab(focused) ? focused.sessionId : null;
-        }),
-    );
+    const focusedWorkspaceChatSessionId = useChatTabsStore(state => state.view.mode === "conversation" ? state.view.sessionId : null);
+    const rememberedChats = useChatTabsStore(state => state.tabs);
+    const openSessionIds = useMemo(() => new Set([...openTerminalSessionIds, ...rememberedChats.map(tab => tab.sessionId)]), [openTerminalSessionIds, rememberedChats]);
 
     // When a Claude Code terminal tab is focused, mark its agent entry as
     // selected (the entry has no chat tab of its own).
@@ -871,8 +868,7 @@ export function AgentsSidebarPanel() {
         (focusedTerminalAgentSessionId &&
         sessionsById[focusedTerminalAgentSessionId]
             ? focusedTerminalAgentSessionId
-            : null) ??
-        activeSessionId;
+            : null);
     const metrics = useMemo(
         () => buildAgentsSidebarMetrics(agentsSidebarScale),
         [agentsSidebarScale],
@@ -1462,19 +1458,6 @@ export function AgentsSidebarPanel() {
                                 })),
                             ],
                         },
-                        ...(isClaudeTerminalAgentSession(contextMenu.payload)
-                            ? []
-                            : [
-                                  {
-                                      label: "Open in New Tab",
-                                      action: () => {
-                                          void openChatSessionInWorkspace(
-                                              contextMenu.payload.sessionId,
-                                              { forceNewTab: true },
-                                          );
-                                      },
-                                  },
-                              ]),
                         { type: "separator" },
                         isClaudeTerminalAgentSession(contextMenu.payload)
                             ? {

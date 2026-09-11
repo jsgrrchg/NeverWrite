@@ -1,3 +1,6 @@
+import { isChatTab, isChatHistoryTab } from "./store/editorTabs";
+import { preserveLegacyChatTabsForVault } from "../features/ai/chatWorkspaceRestoration";
+import { openChatSessionInWorkspace, openChatHistoryInWorkspace } from "../features/ai/chatPaneMovement";
 import { emitTo } from "@neverwrite/runtime";
 import {
     WebviewWindow,
@@ -101,6 +104,7 @@ export interface DetachedWindowPayload {
 }
 
 export interface AttachExternalTabPayload {
+    vaultPath?: string | null;
     tab: TabInput;
     aiSessions?: AIChatSession[];
 }
@@ -401,6 +405,13 @@ export async function commitDetachedTabDrop({
     currentWorkspaceTabCount,
     closeTab,
 }: CommitDetachedTabDropOptions) {
+    if (isChatTab(tab) || isChatHistoryTab(tab)) {
+        if (vaultPath && preserveLegacyChatTabsForVault(vaultPath, [tab], tab.id)) {
+            if (isChatTab(tab)) openChatSessionInWorkspace(tab.sessionId);
+            else openChatHistoryInWorkspace();
+        }
+        return;
+    }
     const transferTab = prepareTabForDetachedTransfer(tab);
     const targetWindowLabel = await findWindowTabDropTarget(
         screenX,
@@ -412,6 +423,7 @@ export async function commitDetachedTabDrop({
     if (targetWindowLabel) {
         const aiSessions = collectAiSessionsForDetachedTransfer([tab]);
         await emitTo(targetWindowLabel, ATTACH_EXTERNAL_TAB_EVENT, {
+            vaultPath,
             tab: transferTab,
             ...(aiSessions.length > 0 ? { aiSessions } : {}),
         } satisfies AttachExternalTabPayload);
@@ -517,6 +529,13 @@ export async function openDetachedNoteWindow(
         position?: { x: number; y: number };
     },
 ) {
+    if (payload.vaultPath && payload.tabs.some(tab => isChatTab(tab) || isChatHistoryTab(tab))) {
+        if (!preserveLegacyChatTabsForVault(payload.vaultPath, payload.tabs, payload.activeTabId)) throw new Error("Could not preserve detached chat references");
+        await openVaultWindow(payload.vaultPath);
+        const tabs = payload.tabs.filter(tab => !isChatTab(tab) && !isChatHistoryTab(tab));
+        if (!tabs.length) return;
+        payload = { ...payload, tabs, activeTabId: tabs.some(tab => tab.id === payload.activeTabId) ? payload.activeTabId : tabs[0].id };
+    }
     const label = `${DETACHED_WINDOW_PREFIX}-${crypto.randomUUID()}`;
     await safeSetItem(
         getDetachedWindowStorageKey(label),

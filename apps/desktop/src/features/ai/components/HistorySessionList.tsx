@@ -3,6 +3,7 @@ import {
     useEffect,
     useMemo,
     useState,
+    useRef,
     type MouseEvent,
 } from "react";
 import { aiSearchSessionContent, type SessionSearchResult } from "../api";
@@ -29,6 +30,7 @@ interface HistorySessionListProps {
     runtimes: AIRuntimeOption[];
     selectedSessionId: string | null;
     onSelectSession: (sessionId: string) => void;
+    onReconcileSelection?: (sessionId: string | null) => void;
     onRestoreSession: (sessionId: string) => void;
     onDeleteSession: (sessionId: string) => void;
     onDeleteSessions: (sessionIds: string[]) => void;
@@ -61,6 +63,7 @@ export function HistorySessionList({
     runtimes,
     selectedSessionId,
     onSelectSession,
+    onReconcileSelection,
     onRestoreSession,
     onDeleteSession,
     onDeleteSessions,
@@ -100,6 +103,14 @@ export function HistorySessionList({
             ]),
         [hierarchy.groups],
     );
+    const previousVisibleIds = useRef<string[]>([]);
+    useEffect(() => {
+        if (onReconcileSelection && !visibleHistoryIds.includes(selectedSessionId ?? "")) {
+            const previousIndex = previousVisibleIds.current.indexOf(selectedSessionId ?? "");
+            onReconcileSelection(visibleHistoryIds[Math.min(Math.max(previousIndex, 0), visibleHistoryIds.length - 1)] ?? null);
+        }
+        previousVisibleIds.current = visibleHistoryIds;
+    }, [visibleHistoryIds, selectedSessionId, onReconcileSelection]);
     const visibleHistoryIdSet = useMemo(
         () => new Set(visibleHistoryIds),
         [visibleHistoryIds],
@@ -583,6 +594,7 @@ function ContentSearchResults({
     results: SessionSearchResult[];
     selectedHistoryId: string | null | undefined;
     onSelectSession: (sessionId: string) => void;
+    onReconcileSelection?: (sessionId: string | null) => void;
 }) {
     if (results.length === 0) {
         return (

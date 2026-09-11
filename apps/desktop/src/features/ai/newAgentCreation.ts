@@ -14,10 +14,8 @@ export function canCreateClaudeCodeAgent() {
     return setupStatus?.authReady === true && !setupStatus.onboardingRequired;
 }
 
-export function createCanonicalAgent(paneId?: string) {
-    return paneId
-        ? createNewChatInWorkspace(undefined, { paneId })
-        : createNewChatInWorkspace();
+export function createCanonicalAgent() {
+    return createNewChatInWorkspace();
 }
 
 export function createClaudeCodeAgent(paneId?: string) {

@@ -1,3 +1,4 @@
+import { readArchivedChats } from "./archivedChatsStore";
 import { create } from "zustand";
 import {
     safeStorageGetItem,
@@ -6,7 +7,7 @@ import {
 import { useVaultStore } from "../../../app/store/vaultStore";
 
 const CHAT_TABS_STORAGE_KEY_PREFIX = "neverwrite.chat.tabs:";
-const CHAT_TABS_PERSIST_VERSION = 1;
+const CHAT_TABS_PERSIST_VERSION = 2;
 
 export interface ChatWorkspaceTab {
     id: string;
@@ -19,7 +20,9 @@ export interface ChatWorkspaceTab {
 }
 
 export interface PersistedChatWorkspace {
-    version: 1;
+    version: 1 | 2;
+    view?: ChatPaneView;
+    historyFilter?: ChatHistoryFilter;
     tabs: ChatWorkspaceTab[];
     activeTabId: string | null;
 }
@@ -155,7 +158,7 @@ function resolveActiveTabId(
 function normalizeWorkspace(
     payload: PersistedChatWorkspace | null,
 ): PersistedChatWorkspace | null {
-    if (!payload || payload.version !== CHAT_TABS_PERSIST_VERSION) {
+    if (!payload || (payload.version !== 1 && payload.version !== CHAT_TABS_PERSIST_VERSION)) {
         return null;
     }
 
@@ -164,19 +167,36 @@ function normalizeWorkspace(
     return {
         version: CHAT_TABS_PERSIST_VERSION,
         tabs,
+        view: normalizePaneView(payload.view),
+        historyFilter: normalizeHistoryFilter(payload.historyFilter),
         activeTabId: resolveActiveTabId(tabs, payload.activeTabId),
     };
+}
+
+function normalizeHistoryFilter(value: unknown): ChatHistoryFilter {
+    return value === "active" || value === "archived" ? value : "all";
+}
+function normalizePaneView(value: unknown): ChatPaneView {
+    if (!value || typeof value !== "object") return { mode: "empty" };
+    const view = value as Partial<Extract<ChatPaneView, { mode: "conversation" }>> & { selectedHistorySessionId?: unknown; mode?: string };
+    if (view.mode === "conversation" && typeof view.sessionId === "string" && view.sessionId) return { mode: "conversation", sessionId: view.sessionId };
+    if ((value as { mode?: string }).mode === "history") return { mode: "history", selectedHistorySessionId: typeof view.selectedHistorySessionId === "string" ? view.selectedHistorySessionId : null, returnSessionId: null };
+    return { mode: "empty" };
 }
 
 function buildPersistedWorkspace(
     tabs: ChatWorkspaceTab[],
     activeTabId: string | null,
+    view: ChatPaneView = { mode: "empty" },
+    historyFilter: ChatHistoryFilter = "all",
 ): PersistedChatWorkspace {
     const normalizedTabs = normalizeTabs(tabs, activeTabId);
 
     return {
         version: CHAT_TABS_PERSIST_VERSION,
         tabs: normalizedTabs,
+        view: view.mode === "conversation" ? { ...view, sessionId: normalizedTabs.find(tab => tab.sessionId === view.sessionId)?.conversationId ?? view.sessionId } : view.mode === "history" ? { ...view, returnSessionId: null } : view,
+        historyFilter,
         activeTabId: resolveActiveTabId(normalizedTabs, activeTabId),
     };
 }
@@ -186,11 +206,13 @@ function normalizeParsedWorkspace(raw: unknown): PersistedChatWorkspace | null {
 
     const candidate = raw as {
         version?: unknown;
+        view?: unknown;
+        historyFilter?: unknown;
         tabs?: unknown;
         activeTabId?: unknown;
     };
 
-    if (candidate.version !== CHAT_TABS_PERSIST_VERSION) return null;
+    if (candidate.version !== 1 && candidate.version !== CHAT_TABS_PERSIST_VERSION) return null;
     if (!Array.isArray(candidate.tabs)) return null;
 
     const tabs = candidate.tabs
@@ -253,6 +275,13 @@ function normalizeParsedWorkspace(raw: unknown): PersistedChatWorkspace | null {
         typeof candidate.activeTabId === "string"
             ? candidate.activeTabId
             : null,
+        candidate.version === 1 ? (() => {
+            const archived = readArchivedChats(useVaultStore.getState().vaultPath);
+            const active = tabs.find(tab => tab.id === candidate.activeTabId);
+            const recovered = [active, ...tabs].find(tab => tab && !archived[resolveTabConversationId(tab)]);
+            return recovered ? { mode: "conversation", sessionId: recovered.sessionId } : { mode: "empty" };
+        })() : normalizePaneView(candidate.view),
+        normalizeHistoryFilter(candidate.historyFilter),
     );
 }
 
@@ -371,14 +400,8 @@ function flushPendingPersistence() {
         return;
     }
 
-    lastPersistedJsonByVaultPath.set(
-        pendingPersistVaultPath,
-        pendingPersistJson,
-    );
-    safeStorageSetItem(
-        getChatTabsStorageKey(pendingPersistVaultPath),
-        pendingPersistJson,
-    );
+    if (!safeStorageSetItem(getChatTabsStorageKey(pendingPersistVaultPath), pendingPersistJson)) return;
+    lastPersistedJsonByVaultPath.set(pendingPersistVaultPath, pendingPersistJson);
     pendingPersistVaultPath = null;
     pendingPersistJson = null;
 }
@@ -388,14 +411,14 @@ export function markChatTabsReady() {
 }
 
 export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
-    dedicatedPaneEnabled: false,
+    dedicatedPaneEnabled: true,
     view: { mode: "empty" },
     historyFilter: "all",
     focusedSurface: "editor",
     navigationRevision: 0,
     showConversation: (sessionId) => {
         if (!sessionId) return;
-        get().ensureSessionTab(sessionId);
+        if (!get().tabs.some(tab => tab.sessionId === sessionId)) get().ensureSessionTab(sessionId);
         set(state => ({ view: { mode: "conversation", sessionId }, focusedSurface: "chat", navigationRevision: state.navigationRevision + 1 }));
     },
     showHistory: () => set(state => ({
@@ -478,7 +501,7 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         set((state) => {
             const existing = state.tabs.find(
                 (tab) =>
-                    resolveTabConversationId(tab) === requestedConversationId,
+                    resolveTabConversationId(tab) === requestedConversationId || (!historySessionId && tab.sessionId === sessionId),
             );
             if (existing) {
                 ensuredTabId = existing.id;
@@ -615,6 +638,8 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         const workspace = normalizeWorkspace(payload);
         set({
             tabs: workspace?.tabs ?? [],
+            view: workspace?.view ?? { mode: "empty" },
+            historyFilter: workspace?.historyFilter ?? "all",
             activeTabId: workspace?.activeTabId ?? null,
         });
     },
@@ -682,11 +707,11 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
                     }
 
                     const historySessionId = resolveTabHistorySessionId(tab);
-                    if (!historySessionId) return null;
+                    if (!historySessionId) return tab;
 
                     const resolvedSessionId =
                         sessionIdByHistoryId.get(historySessionId);
-                    if (!resolvedSessionId) return null;
+                    if (!resolvedSessionId) return tab;
 
                     return {
                         ...tab,
@@ -721,9 +746,14 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
             activeTabId = fallbackTab.id;
         }
 
+        const savedView = workspace?.view;
+        const selectedId = savedView?.mode === "conversation" ? savedView.sessionId : null;
+        const binding = selectedId ? tabs.find(tab => tab.sessionId === selectedId || resolveTabConversationId(tab) === selectedId) : null;
         set({
             tabs,
             activeTabId,
+            view: savedView?.mode === "history" ? { ...savedView, returnSessionId: null } : binding ? { mode: "conversation", sessionId: binding.sessionId } : savedView ?? { mode: "empty" },
+            historyFilter: workspace?.historyFilter ?? "all",
         });
     },
 
@@ -790,7 +820,7 @@ useChatTabsStore.subscribe((state) => {
     if (!state.isReady) return;
 
     // Cheap fingerprint to skip expensive serialization when nothing relevant changed
-    let sig = state.activeTabId ?? "";
+    let sig = `${useVaultStore.getState().vaultPath}|${state.activeTabId ?? ""}|${JSON.stringify(state.view)}|${state.historyFilter}`;
     for (const t of state.tabs) {
         sig += `|${t.id}|${t.conversationId ?? ""}|${t.sessionId ?? ""}|${t.historySessionId ?? ""}|${t.runtimeId ?? ""}|${t.pinned ? "1" : "0"}`;
     }
@@ -800,7 +830,7 @@ useChatTabsStore.subscribe((state) => {
     const vaultPath = useVaultStore.getState().vaultPath;
     if (!vaultPath) return;
 
-    const workspace = buildPersistedWorkspace(state.tabs, state.activeTabId);
+    const workspace = buildPersistedWorkspace(state.tabs, state.activeTabId, state.view, state.historyFilter);
     const json = JSON.stringify(workspace);
     if (lastPersistedJsonByVaultPath.get(vaultPath) === json) return;
 
@@ -808,6 +838,7 @@ useChatTabsStore.subscribe((state) => {
         clearTimeout(persistTimer);
     }
 
+    if (pendingPersistVaultPath && pendingPersistVaultPath !== vaultPath) flushPendingPersistence();
     pendingPersistVaultPath = vaultPath;
     pendingPersistJson = json;
     persistTimer = setTimeout(() => {
@@ -836,4 +867,14 @@ export function resetChatTabsStore() {
         tabs: [],
         activeTabId: null,
     });
+}
+
+// Migration writes synchronously before removing legacy editor tabs. A failed
+// write leaves the original editor snapshot available for the next startup.
+export function persistChatNavigationNow() {
+    const vaultPath = useVaultStore.getState().vaultPath;
+    if (!vaultPath) return false;
+    flushChatTabsPersistence();
+    const state = useChatTabsStore.getState();
+    return safeStorageSetItem(getChatTabsStorageKey(vaultPath), JSON.stringify(buildPersistedWorkspace(state.tabs, state.activeTabId, state.view, state.historyFilter)));
 }

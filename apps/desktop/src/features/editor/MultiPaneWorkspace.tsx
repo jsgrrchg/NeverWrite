@@ -29,12 +29,8 @@ import {
 } from "../ai/dragEvents";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { logError } from "../../app/utils/runtimeLog";
-import {
-    AGENT_SIDEBAR_DRAG_EVENT,
-    type AgentSidebarDragDetail,
-} from "../ai/agentSidebarDragEvents";
+
 import { isCancellableChatTurnStatus } from "../ai/chatTurnStatus";
-import { openOrMoveChatSessionAtDropTarget } from "../ai/chatPaneMovement";
 import { useChatStore } from "../ai/store/chatStore";
 import type { AIChatSessionStatus } from "../ai/types";
 import { WorkspaceSplitContainer } from "./WorkspaceSplitContainer";
@@ -48,11 +44,9 @@ import {
 import {
     CROSS_PANE_TAB_DROP_PREVIEW_EVENT,
     dispatchCrossPaneTabDropPreview,
-    resolveWorkspaceTabDropIntent,
     type CrossPaneTabDropPreview,
 } from "./workspaceTabDropPreview";
 
-const AGENT_SIDEBAR_DROP_SOURCE_PANE_ID = "__agents-sidebar__";
 
 interface ActiveAgentStopTarget {
     sessionId: string | null;
@@ -591,47 +585,6 @@ export function MultiPaneWorkspace() {
             window.removeEventListener(
                 FILE_TREE_NOTE_DRAG_EVENT,
                 handleTreeDrag,
-            );
-        };
-    }, []);
-
-    useEffect(() => {
-        const handleAgentDrag = (event: Event) => {
-            const detail = (event as CustomEvent<AgentSidebarDragDetail>)
-                .detail;
-
-            if (detail.phase === "cancel") {
-                dispatchCrossPaneTabDropPreview(null);
-                return;
-            }
-
-            const { target, preview } = resolveWorkspaceTabDropIntent({
-                sourcePaneId: AGENT_SIDEBAR_DROP_SOURCE_PANE_ID,
-                tabId: `agent:${detail.sessionId}`,
-                clientX: detail.x,
-                clientY: detail.y,
-            });
-            dispatchCrossPaneTabDropPreview(preview);
-
-            if (
-                detail.phase !== "end" ||
-                (target.type !== "strip" &&
-                    target.type !== "pane-center" &&
-                    target.type !== "split")
-            ) {
-                return;
-            }
-
-            dispatchCrossPaneTabDropPreview(null);
-            openOrMoveChatSessionAtDropTarget(detail.sessionId, target);
-        };
-
-        window.addEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleAgentDrag);
-        return () => {
-            dispatchCrossPaneTabDropPreview(null);
-            window.removeEventListener(
-                AGENT_SIDEBAR_DRAG_EVENT,
-                handleAgentDrag,
             );
         };
     }, []);

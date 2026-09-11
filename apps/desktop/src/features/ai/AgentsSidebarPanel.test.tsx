@@ -1063,26 +1063,14 @@ describe("AgentsSidebarPanel", () => {
         expect(deleteSession).not.toHaveBeenCalled();
     });
 
-    it("opens a thread in a new tab from the context menu", async () => {
+    it("offers Archive and Delete as separate actions without editor tab creation", () => {
         const session = createSession("session-alpha", "Alpha task");
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [session.sessionId]: session },
-            sessionOrder: [session.sessionId],
-        }));
-
+        useChatStore.setState({ sessionsById: { [session.sessionId]: session }, sessionOrder: [session.sessionId] });
         renderComponent(<AgentsSidebarPanel />);
-
         fireEvent.contextMenu(screen.getByTestId("agent-sidebar-item"));
-        fireEvent.click(
-            await screen.findByRole("button", { name: "Open in New Tab" }),
-        );
-
-        await waitFor(() => {
-            expect(
-                chatPaneMovementMock.openChatSessionInWorkspace,
-            ).toHaveBeenCalledWith(session.sessionId, { forceNewTab: true });
-        });
+        expect(screen.queryByRole("button", { name: "Open in New Tab" })).toBeNull();
+        expect(screen.getByRole("button", { name: "Archive" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
     });
 
     it("closes a Claude Code terminal agent instead of deleting it", async () => {

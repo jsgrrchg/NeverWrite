@@ -1,3 +1,4 @@
+import { useLayoutStore } from "../../app/store/layoutStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
 import {
     isChatTab,
@@ -9,7 +10,7 @@ import {
 
 export function getFocusedWorkspaceChatSessionId() {
     const navigation = useChatTabsStore.getState();
-    if (navigation.dedicatedPaneEnabled) return navigation.focusedSurface === "chat" && navigation.view.mode === "conversation" ? navigation.view.sessionId : null;
+    if (navigation.dedicatedPaneEnabled) return useLayoutStore.getState().chatPaneVisible && navigation.focusedSurface === "chat" && navigation.view.mode === "conversation" ? navigation.view.sessionId : null;
     const editor = useEditorStore.getState();
     const focusedPaneId = selectFocusedPaneId(editor);
     const activeTab = selectEditorPaneActiveTab(editor, focusedPaneId);
@@ -18,7 +19,7 @@ export function getFocusedWorkspaceChatSessionId() {
 
 export function getVisibleWorkspaceChatSessionIds() {
     const navigation = useChatTabsStore.getState();
-    if (navigation.dedicatedPaneEnabled) return navigation.view.mode === "conversation" ? [navigation.view.sessionId] : [];
+    if (navigation.dedicatedPaneEnabled) return useLayoutStore.getState().chatPaneVisible && navigation.view.mode === "conversation" ? [navigation.view.sessionId] : [];
     const sessionIds = new Set<string>();
     for (const tab of selectEditorWorkspaceTabs(useEditorStore.getState())) {
         if (!isChatTab(tab)) continue;

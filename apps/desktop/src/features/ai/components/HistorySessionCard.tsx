@@ -1,3 +1,6 @@
+import { archiveChat, unarchiveChat } from "../chatArchiving";
+import { isSessionArchived, useArchivedChatsStore } from "../store/archivedChatsStore";
+import { useChatStore } from "../store/chatStore";
 import { useCallback, useMemo, useState, type MouseEvent } from "react";
 import {
     ContextMenu,
@@ -54,6 +57,9 @@ export function HistorySessionCard({
     onExport,
     onRename,
 }: HistorySessionCardProps) {
+    const entries = useArchivedChatsStore(state => state.entries);
+    const sessions = useChatStore(state => state.sessionsById);
+    const archived = isSessionArchived(session, sessions, entries);
     const [hovered, setHovered] = useState(false);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<void> | null>(null);
@@ -87,10 +93,11 @@ export function HistorySessionCard({
         () => {
             const entries: ContextMenuEntry[] = [
                 {
-                    label: "Restore in chat",
+                    label: archived ? "Open archived chat" : "Open chat",
                     action: onOpen,
                 },
             ];
+            if (!session.parentSessionId) entries.push({ label: archived ? "Unarchive" : "Archive", action: () => archived ? unarchiveChat(session.sessionId) : archiveChat(session.sessionId) });
             if (canRename) {
                 entries.push({
                     label: "Rename chat",
@@ -132,6 +139,9 @@ export function HistorySessionCard({
             onDelete,
             onExport,
             onFork,
+            archived,
+            session.sessionId,
+            session.parentSessionId,
             onOpen,
             startEditing,
             stableSessionId,
@@ -223,6 +233,7 @@ export function HistorySessionCard({
                             }}
                         >
                             {title}
+                        {archived && <span className="ml-2 text-[10px]">Archived</span>}
                             {hasCustomTitle(session) && (
                                 <svg
                                     width="10"

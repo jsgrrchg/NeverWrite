@@ -1,3 +1,4 @@
+import { useChatTabsStore, resetChatTabsStore } from "../store/chatTabsStore";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
@@ -53,6 +54,8 @@ function createSession(
 describe("AIChatHistoryWorkspaceView", () => {
     beforeEach(() => {
         resetChatStore();
+        resetChatTabsStore();
+        useChatTabsStore.getState().showHistory();
         vi.clearAllMocks();
         useEditorStore.getState().hydrateWorkspace(
             [
@@ -101,15 +104,8 @@ describe("AIChatHistoryWorkspaceView", () => {
 
         await waitFor(() => {
             expect(loadSession).toHaveBeenCalledWith("session-a");
-            expect(
-                useEditorStore
-                    .getState()
-                    .tabs.some(
-                        (tab) =>
-                            tab.kind === "ai-chat" &&
-                            tab.sessionId === "session-a",
-                    ),
-            ).toBe(true);
+            expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: "session-a" });
+            expect(useEditorStore.getState().tabs).toEqual([]);
         });
     });
 

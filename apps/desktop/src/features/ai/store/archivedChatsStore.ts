@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { useVaultStore } from "../../../app/store/vaultStore";
 import { safeStorageGetItem, safeStorageSetItem } from "../../../app/utils/safeStorage";
 import { getAiSessionLookupKeys } from "../sessionHierarchy";
 import type { AIChatSession } from "../types";
@@ -60,8 +59,8 @@ export const useArchivedChatsStore = create<ArchivedChatsStore>((set, get) => {
         set({ entries });
     };
     return {
-        vaultPath: useVaultStore.getState().vaultPath,
-        entries: readArchivedChats(useVaultStore.getState().vaultPath),
+        vaultPath: null,
+        entries: {},
         setVaultPath: (vaultPath) => {
             if (get().vaultPath !== vaultPath) set({ vaultPath, entries: readArchivedChats(vaultPath) });
         },
@@ -81,4 +80,3 @@ export const useArchivedChatsStore = create<ArchivedChatsStore>((set, get) => {
         },
     };
 });
-useVaultStore.subscribe((state) => useArchivedChatsStore.getState().setVaultPath(state.vaultPath));

@@ -1,11 +1,12 @@
+import { useLayoutStore } from "./layoutStore";
+import { useChatTabsStore } from "../../features/ai/store/chatTabsStore";
+import { migrateLegacyChatTabs } from "../../features/ai/chatWorkspaceRestoration";
 import type { StoreApi } from "zustand";
 import type { EditorTarget } from "../../features/editor/editorTargetResolver";
 import { isAiReviewEnabledForCurrentVault } from "../../features/editor/editorReviewGate";
 import {
     buildChatTabFromHistory,
     buildTabFromHistory,
-    createChatHistoryTab,
-    createChatTab,
     createFileHistoryEntry,
     createGraphTab,
     createMapTab,
@@ -1155,6 +1156,7 @@ function openOrReuseHistoryTab(
 }
 
 function normalizeHydratedTab(tab: TabInput): Tab | null {
+    if (isChatTab(tab) || isChatHistoryTab(tab)) return null;
     if (isReviewTab(tab)) {
         return null;
     }
@@ -1177,6 +1179,7 @@ function normalizeHydratedTab(tab: TabInput): Tab | null {
 }
 
 function normalizeExternalTab(tab: TabInput): Tab | null {
+    if (isChatTab(tab) || isChatHistoryTab(tab)) return null;
     if (isPdfTab(tab)) {
         const shouldApplyInitialZoom =
             tab.fitWidth === undefined &&
@@ -2366,34 +2369,8 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         openChatHistory: () => {
-            set((state) => {
-                const existing = selectEditorWorkspaceTabs(state).find((tab) =>
-                    isChatHistoryTab(tab),
-                );
-                if (existing) {
-                    const workspace = getEffectivePaneWorkspace(state);
-                    const targetPane = findPaneContainingTab(
-                        workspace.panes,
-                        existing.id,
-                    );
-                    if (!targetPane) {
-                        return state;
-                    }
-                    return (
-                        activatePaneTab(
-                            workspace,
-                            targetPane.id,
-                            existing.id,
-                        ) ?? state
-                    );
-                }
-                const newTab = createChatHistoryTab();
-                return (
-                    mutateFocusedPaneWorkspace(state, (pane) =>
-                        insertNormalizedTab(pane, newTab),
-                    ) ?? state
-                );
-            });
+            useChatTabsStore.getState().showHistory();
+            useLayoutStore.getState().setChatPaneVisible(true);
         },
 
         openFile: (
@@ -2595,200 +2572,11 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         openChat: (sessionId, options) => {
-            set((state) => {
-                const workspace = getEffectivePaneWorkspace(state);
-                const requestedHistorySessionId =
-                    options?.historySessionId ?? null;
-
-                const existingPane = workspace.panes.find((pane) =>
-                    pane.tabs.some(
-                        (tab) =>
-                            isChatTab(tab) &&
-                            (tab.sessionId === sessionId ||
-                                (!!requestedHistorySessionId &&
-                                    tab.historySessionId ===
-                                        requestedHistorySessionId)),
-                    ),
-                );
-                const existing =
-                    existingPane?.tabs.find(
-                        (tab): tab is ChatTab =>
-                            isChatTab(tab) &&
-                            (tab.sessionId === sessionId ||
-                                (!!requestedHistorySessionId &&
-                                    tab.historySessionId ===
-                                        requestedHistorySessionId)),
-                    ) ?? null;
-                if (existingPane && existing && !options?.forceNewTab) {
-                    const nextTitle = options?.title ?? existing.title;
-                    const nextHistorySessionId =
-                        requestedHistorySessionId ?? existing.historySessionId;
-                    const nextConversationId =
-                        requestedHistorySessionId ??
-                        existing.conversationId ??
-                        sessionId;
-                    const nextTab =
-                        nextTitle === existing.title &&
-                        existing.sessionId === sessionId &&
-                        existing.historySessionId === nextHistorySessionId &&
-                        existing.conversationId === nextConversationId
-                            ? existing
-                            : {
-                                  ...existing,
-                                  title: nextTitle,
-                                  conversationId: nextConversationId,
-                                  sessionId,
-                                  ...(nextHistorySessionId
-                                      ? {
-                                            historySessionId:
-                                                nextHistorySessionId,
-                                        }
-                                      : {}),
-                              };
-                    const nextPane =
-                        nextTab === existing
-                            ? existingPane
-                            : createEditorPaneState(existingPane.id, {
-                                  ...existingPane,
-                                  tabs: existingPane.tabs.map((tab) =>
-                                      tab.id === existing.id
-                                          ? nextTab
-                                          : tab,
-                                  ),
-                              });
-                    if (options?.background) {
-                        if (nextPane === existingPane) {
-                            return state;
-                        }
-                        return buildWorkspaceSnapshot({
-                            panes: workspace.panes.map((pane) =>
-                                pane.id === existingPane.id ? nextPane : pane,
-                            ),
-                            focusedPaneId: workspace.focusedPaneId,
-                            layoutTree: workspace.layoutTree,
-                        });
-                    }
-                    const projection = activatePaneTab(
-                        {
-                            layoutTree: workspace.layoutTree,
-                            panes: workspace.panes.map((pane) =>
-                                pane.id === existingPane.id ? nextPane : pane,
-                            ),
-                            focusedPaneId: existingPane.id,
-                        },
-                        existingPane.id,
-                        existing.id,
-                    );
-                    return (
-                        projection ??
-                        buildWorkspaceSnapshot({
-                            panes: workspace.panes.map((pane) =>
-                                pane.id === existingPane.id ? nextPane : pane,
-                            ),
-                            focusedPaneId: existingPane.id,
-                            layoutTree: workspace.layoutTree,
-                        })
-                    );
-                }
-
-                const targetPaneId =
-                    options?.paneId ?? workspace.focusedPaneId ?? null;
-                const targetPane = targetPaneId
-                    ? (workspace.panes.find((p) => p.id === targetPaneId) ??
-                      null)
-                    : null;
-                const focusedPane =
-                    targetPane ?? selectEditorPaneState(workspace);
-
-                if (
-                    getTabOpenBehavior() === "history" &&
-                    !options?.background &&
-                    options?.insertIndex === undefined &&
-                    !options?.forceNewTab
-                ) {
-                    const activeChat = focusedPane.tabs.find(
-                        (tab): tab is ChatTab =>
-                            tab.id === focusedPane.activeTabId &&
-                            isChatTab(tab),
-                    );
-                    if (activeChat) {
-                        const normalized = ensureChatTabHistory(activeChat);
-                        const history = normalized.history.slice(
-                            0,
-                            normalized.historyIndex + 1,
-                        );
-                        history.push({
-                            sessionId,
-                            ...(requestedHistorySessionId
-                                ? {
-                                      historySessionId:
-                                          requestedHistorySessionId,
-                                  }
-                                : {}),
-                            title: options?.title ?? "Chat",
-                        });
-                        const nextTab = buildChatTabFromHistory(
-                            normalized.id,
-                            history,
-                            history.length - 1,
-                        );
-                        return buildWorkspaceSnapshot({
-                            panes: workspace.panes.map((pane) =>
-                                pane.id === focusedPane.id
-                                    ? createEditorPaneState(pane.id, {
-                                          ...pane,
-                                          tabs: replaceTab(
-                                              pane.tabs,
-                                              normalized.id,
-                                              nextTab,
-                                          ),
-                                      })
-                                    : pane,
-                            ),
-                            focusedPaneId: focusedPane.id,
-                            layoutTree: workspace.layoutTree,
-                        });
-                    }
-                }
-
-                const newTab: ChatTab = createChatTab(
-                    sessionId,
-                    options?.title ?? "Chat",
-                    requestedHistorySessionId,
-                );
-
-                const nextPane = options?.background
-                    ? createEditorPaneState(focusedPane.id, {
-                          ...focusedPane,
-                          tabs: [...focusedPane.tabs, newTab],
-                      })
-                    : createEditorPaneState(
-                          focusedPane.id,
-                          insertNormalizedTab(
-                              focusedPane,
-                              newTab,
-                              options?.insertIndex,
-                          ),
-                      );
-
-                if (options?.background) {
-                    return buildWorkspaceSnapshot({
-                        panes: workspace.panes.map((pane) =>
-                            pane.id === focusedPane.id ? nextPane : pane,
-                        ),
-                        focusedPaneId: workspace.focusedPaneId,
-                        layoutTree: workspace.layoutTree,
-                    });
-                }
-
-                return buildWorkspaceSnapshot({
-                    panes: workspace.panes.map((pane) =>
-                        pane.id === focusedPane.id ? nextPane : pane,
-                    ),
-                    focusedPaneId: focusedPane.id,
-                    layoutTree: workspace.layoutTree,
-                });
-            });
+            useChatTabsStore.getState().ensureSessionTab(sessionId, options?.historySessionId);
+            if (!options?.background) {
+                useChatTabsStore.getState().showConversation(sessionId);
+                useLayoutStore.getState().setChatPaneVisible(true);
+            }
         },
 
         closeChat: (sessionId) => {
@@ -4309,6 +4097,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         hydrateWorkspace: (panes, focusedPaneId, layoutTree) => {
+            migrateLegacyChatTabs(panes.flatMap(pane => pane.tabs), panes.find(pane => pane.id === focusedPaneId)?.activeTabId ?? null);
             const seenSingletonKinds = new Set<string>();
             const hydratedPanes = panes.flatMap((pane, index) => {
                 const hydratedTabs: Tab[] = pane.tabs.flatMap((tab): Tab[] => {
@@ -4327,6 +4116,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                     return [normalized];
                 });
 
+                if (pane.tabs.length > 0 && hydratedTabs.length === 0) return [];
                 return [
                     createEditorPaneState(
                         pane.id?.trim() || `pane-${index + 1}`,
@@ -4375,6 +4165,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             pinnedTabIds = [],
             options = {},
         ) => {
+            migrateLegacyChatTabs(tabs, activeTabId);
             // Detached windows and a few test helpers still hydrate a
             // single-pane workspace directly through this API.
             const seenSingletonKinds = new Set<string>();

@@ -1,3 +1,4 @@
+import { isSessionArchived, useArchivedChatsStore } from "./store/archivedChatsStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
 import { getSelectedChatSessionId } from "./chatWorkspaceSelectors";
 import { useEffect, useRef } from "react";
@@ -250,7 +251,9 @@ export function AIChatWorkspaceHost({
                 return;
             }
 
-            if (latestNeedsLiveResumeContextHydration) {
+            if (latestSession && isSessionArchived(latestSession, useChatStore.getState().sessionsById, useArchivedChatsStore.getState().entries)) {
+                await chatActions.ensureSessionTranscriptLoaded(activeChatSessionId, "full");
+            } else if (latestNeedsLiveResumeContextHydration) {
                 await chatActions.ensureSessionTranscriptLoaded(
                     activeChatSessionId,
                     "full",
