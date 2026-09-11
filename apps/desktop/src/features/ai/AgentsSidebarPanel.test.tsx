@@ -1,3 +1,4 @@
+import { useUnreadChatsStore } from "./store/unreadChatsStore";
 import { selectChatForTest } from "../../test/test-utils";
 import { useArchivedChatsStore } from "./store/archivedChatsStore";
 import { archiveChat, useArchiveNoticeStore } from "./chatArchiving";
@@ -96,6 +97,7 @@ function firePointer(
 describe("AgentsSidebarPanel", () => {
     beforeEach(() => {
         resetChatStore();
+        useUnreadChatsStore.setState({ entries: {} });
         resetTerminalRuntimeStoreForTests();
         vi.clearAllMocks();
         useVaultStore.setState({
@@ -136,6 +138,18 @@ describe("AgentsSidebarPanel", () => {
             selectedRuntimeId: "codex-acp",
             sessionInventoryLoaded: true,
         });
+    });
+
+    it.each([false, true])("shows a themed unread indicator (archived: %s)", (archived) => {
+        const session = createSession("unread", "Unread response");
+        useChatStore.setState({ sessionsById: { unread: session }, sessionOrder: ["unread"] });
+        useUnreadChatsStore.setState({ entries: { unread: true } });
+        if (archived) useArchivedChatsStore.getState().archive("unread");
+        renderComponent(<AgentsSidebarPanel />);
+        if (archived) fireEvent.click(screen.getByRole("button", { name: "Archived (1)" }));
+        expect(screen.getByRole("img", { name: "Turn completed, unread" }).style.backgroundColor).toBe("var(--accent)");
+        act(() => useUnreadChatsStore.getState().markRead("unread"));
+        expect(screen.queryByRole("img", { name: "Turn completed, unread" })).toBeNull();
     });
 
     it("archives a working root with its child and supports Undo", () => {

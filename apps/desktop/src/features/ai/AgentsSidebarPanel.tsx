@@ -1,3 +1,4 @@
+import { useUnreadChatsStore } from "./store/unreadChatsStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
 import {
     useCallback,
@@ -226,6 +227,7 @@ export function AgentsSidebarPanel() {
     const deleteSession = useChatStore((state) => state.deleteSession);
     const renameSession = useChatStore((state) => state.renameSession);
 
+    const unreadEntries = useUnreadChatsStore(state => state.entries);
     const archivedEntries = useArchivedChatsStore(state => state.entries);
     const [archivedExpanded, setArchivedExpanded] = useState(false);
     const pinnedEntries = usePinnedChatsStore((state) => state.entries);
@@ -495,6 +497,7 @@ export function AgentsSidebarPanel() {
                 canRename={canRename}
                 depth={options?.depth ?? 0}
                 indicator={indicator}
+                isUnread={Boolean(unreadEntries[session.sessionId])}
                 childCount={options?.childCount ?? 0}
                 isCollapsed={options?.isCollapsed ?? false}
                 isRenaming={editingKey === session.sessionId}

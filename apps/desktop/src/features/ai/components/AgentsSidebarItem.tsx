@@ -38,6 +38,7 @@ export interface AgentsSidebarItemProps {
     isActive: boolean;
     isPinned: boolean;
     isArchived?: boolean;
+    isUnread?: boolean;
     onToggleArchive?: () => void;
     canPin?: boolean;
     canRename?: boolean;
@@ -114,6 +115,7 @@ export function AgentsSidebarItem({
     canRename = true,
     depth = 0,
     indicator,
+    isUnread = false,
     childCount = 0,
     isCollapsed = false,
     isRenaming,
@@ -405,6 +407,16 @@ export function AgentsSidebarItem({
                         {title}
                     </span>
                 )}
+
+            {isUnread && (
+                <span
+                    role="img"
+                    aria-label="Turn completed, unread"
+                    title="Turn completed, unread"
+                    className="h-1.5 w-1.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: "var(--accent)" }}
+                />
+            )}
 
             {/* Keep provider marks aligned; expansion is a row action, not a
                 leading tree gutter. */}

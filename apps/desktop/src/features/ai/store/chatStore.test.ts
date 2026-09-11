@@ -1,3 +1,4 @@
+import { useUnreadChatsStore } from "./unreadChatsStore";
 import { useArchivedChatsStore } from "./archivedChatsStore";
 import { selectChatForTest } from "../../../test/test-utils";
 import { confirm, invoke, listen, openUrl } from "@neverwrite/runtime";
@@ -2173,6 +2174,7 @@ describe("chatStore", () => {
     });
 
     it("moves an existing session only after its turn completes", async () => {
+        useUnreadChatsStore.setState({ entries: {} });
         await useChatStore.getState().initialize();
         const sessionId = getActiveSessionId();
         const other = createSessionWithTrackedFiles("other", []);
@@ -2189,13 +2191,17 @@ describe("chatStore", () => {
         expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
         useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "partial", turn_complete: false });
         expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        expect(useUnreadChatsStore.getState().entries[sessionId]).toBeUndefined();
         useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "final" });
+        expect(useUnreadChatsStore.getState().entries[sessionId]).toBe(true);
+        useUnreadChatsStore.getState().markRead(sessionId);
         expect(useChatStore.getState().sessionOrder).toEqual([sessionId, "other"]);
         useChatStore.getState().upsertSession({ ...other, status: "streaming" });
         useChatStore.getState().applyMessageCompleted({ session_id: "other", message_id: "other-result" });
-        // A repeated final event from the first turn must not promote it again.
+        // A repeated final event must not promote it or mark it unread again.
         useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "final" });
         expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        expect(useUnreadChatsStore.getState().entries[sessionId]).toBeUndefined();
     });
 
     it("starts a new local work cycle when sending a message", async () => {

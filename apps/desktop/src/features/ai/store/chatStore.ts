@@ -114,6 +114,7 @@ import {
     resolveNoteTargetForPath,
 } from "../../editor/editorTargetResolver";
 import { getExternalReloadBaselineCandidate } from "../../editor/externalReloadBaselineCache";
+import { useUnreadChatsStore } from "./unreadChatsStore";
 import { usePinnedChatsStore } from "./pinnedChatsStore";
 import { useChatTabsStore } from "./chatTabsStore";
 import {
@@ -3537,6 +3538,7 @@ function migrateSessionLocalState(
     _queueDrainLocks.delete(fromSessionId);
     replaceChatRowUiSessionId(fromSessionId, toSession.sessionId);
     useArchivedChatsStore.getState().replaceSessionId(fromSessionId, getArchiveIdentity(toSession));
+    useUnreadChatsStore.getState().replaceSessionId(fromSessionId, toSession.sessionId);
     usePinnedChatsStore
         .getState()
         .replaceSessionId(fromSessionId, toSession.sessionId);
@@ -7118,6 +7120,7 @@ function ensureSessionInOrder(sessionOrder: string[], sessionId: string) {
 }
 
 function promoteCompletedSession(sessionOrder: string[], sessionId: string) {
+    useUnreadChatsStore.getState().markCompleted(sessionId);
     if (sessionOrder[0] === sessionId) return sessionOrder;
     return [sessionId, ...sessionOrder.filter((id) => id !== sessionId)];
 }
@@ -15934,6 +15937,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             useArchivedChatsStore.getState().unarchive(historySessionId);
             useArchivedChatsStore.getState().unarchive(sessionId);
             usePinnedChatsStore.getState().unpin(sessionId);
+            useUnreadChatsStore.getState().markRead(sessionId);
             useEditorStore.getState().closeReview(sessionId);
             useEditorStore.getState().closeChat(sessionId);
             useChatTabsStore.getState().removeTabsForSession(sessionId);
@@ -16045,6 +16049,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             if (useVaultStore.getState().vaultPath !== vaultPath) return;
             useArchivedChatsStore.getState().reconcile([], true);
             usePinnedChatsStore.getState().reconcile([]);
+            useUnreadChatsStore.getState().clear();
             // Close all review and chat tabs before clearing sessions
             const editor = useEditorStore.getState();
             for (const sessionId of Object.keys(get().sessionsById)) {
