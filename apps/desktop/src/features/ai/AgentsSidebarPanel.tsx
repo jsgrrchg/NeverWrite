@@ -473,7 +473,7 @@ export function AgentsSidebarPanel() {
         const isPinned = Boolean(pinnedEntries[session.sessionId]);
         const indicator = deriveActivityIndicator(session);
         const updatedAt = getSessionUpdatedAt(session);
-        const timestampLabel = formatAgentTimestamp(updatedAt, isSessionArchived(session, sessionsById, archivedEntries));
+        const timestampLabel = formatAgentTimestamp(updatedAt, isSubagent || isSessionArchived(session, sessionsById, archivedEntries));
         const dragTitle = getSessionTitleText(session);
         const updateDragPreview = (clientX: number, clientY: number) => {
             setDragPreview({
@@ -491,11 +491,12 @@ export function AgentsSidebarPanel() {
                 timestampLabel={timestampLabel}
                 isActive={activeSidebarId === session.sessionId}
                 isPinned={canPin && isPinned}
+                compact={isSubagent}
                 isArchived={isSessionArchived(session, sessionsById, archivedEntries)}
                 onToggleArchive={!isSubagent && !isClaudeTerminalAgentSession(session) ? () => isSessionArchived(session, sessionsById, archivedEntries) ? unarchiveChat(session.sessionId) : archiveChat(session.sessionId) : undefined}
                 canPin={canPin && !isSessionArchived(session, sessionsById, archivedEntries)}
                 canRename={canRename}
-                depth={options?.depth ?? 0}
+                depth={options?.depth ?? (isSubagent ? 1 : 0)}
                 indicator={indicator}
                 isUnread={Boolean(unreadEntries[session.sessionId])}
                 childCount={options?.childCount ?? 0}

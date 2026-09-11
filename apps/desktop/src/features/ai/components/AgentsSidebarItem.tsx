@@ -38,6 +38,7 @@ export interface AgentsSidebarItemProps {
     isActive: boolean;
     isPinned: boolean;
     isArchived?: boolean;
+    compact?: boolean;
     isUnread?: boolean;
     onToggleArchive?: () => void;
     canPin?: boolean;
@@ -110,6 +111,7 @@ export function AgentsSidebarItem({
     isActive,
     isPinned,
     isArchived = false,
+    compact = false,
     onToggleArchive,
     canPin = true,
     canRename = true,
@@ -270,6 +272,8 @@ export function AgentsSidebarItem({
         };
     };
 
+    const isCompact = compact || isArchived;
+
     return (
         <div
             role="button"
@@ -279,15 +283,15 @@ export function AgentsSidebarItem({
             title={title}
             aria-label={title}
             className={`group flex w-full cursor-pointer items-center focus-visible:outline-2 focus-visible:outline-(--accent) ${
-                isArchived ? "flex-nowrap rounded-md" : "flex-wrap rounded-lg"
+                isCompact ? "flex-nowrap rounded-md" : "flex-wrap rounded-lg"
             }`}
             style={{
                 columnGap: metrics.inlineGap,
-                rowGap: isArchived ? 0 : 4,
-                minHeight: isArchived ? metrics.titleFontSize * 3 : undefined,
-                border: isArchived ? "1px solid transparent" : "1px solid var(--border)",
-                padding: `${isArchived ? 4 : metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
-                paddingLeft: metrics.rowPaddingLeft + depth * 14,
+                rowGap: isCompact ? 0 : 4,
+                minHeight: isCompact ? metrics.titleFontSize * 3 : undefined,
+                border: isCompact ? "1px solid transparent" : "1px solid var(--border)",
+                padding: `${isCompact ? 4 : metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
+                paddingLeft: metrics.rowPaddingLeft + depth * 24,
                 backgroundColor: isActive
                     ? "color-mix(in srgb, var(--accent) 14%, transparent)"
                     : "transparent",
@@ -362,7 +366,7 @@ export function AgentsSidebarItem({
                 event.currentTarget.style.backgroundColor = "transparent";
             }}
         >
-            {isArchived && (
+            {isCompact && (
                 <span
                     className={`shrink-0 transition-opacity ${isActive ? "opacity-100" : "opacity-40 group-hover:opacity-100 group-focus-within:opacity-100"}`}
                     title={getRuntimeDisplayName(session.runtimeId)}
@@ -515,7 +519,22 @@ export function AgentsSidebarItem({
                     </button>
                 ) : null}
 
-            {isArchived ? (
+            {isCompact && !isArchived ? (
+                <span
+                    className="shrink-0"
+                    title={indicator?.title}
+                    style={{
+                        fontSize: metrics.timestampFontSize,
+                        color: indicator?.tone === "danger"
+                            ? "var(--diff-remove)"
+                            : indicator?.tone === "working"
+                              ? "var(--diff-warn)"
+                              : "var(--text-secondary)",
+                    }}
+                >
+                    {indicator?.tone === "working" ? "Working…" : indicator?.tone === "danger" ? "Error" : timestampLabel}
+                </span>
+            ) : isArchived ? (
                 <span className="grid shrink-0 items-center" style={{ fontSize: metrics.timestampFontSize }}>
                     <span
                         className={`col-start-1 row-start-1 text-right ${onToggleArchive ? "group-hover:opacity-0 group-focus-within:opacity-0" : ""}`}
