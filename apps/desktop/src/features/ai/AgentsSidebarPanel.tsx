@@ -277,9 +277,9 @@ function buildAgentsSidebarMetrics(scalePercent: number): {
         item: {
             rowPaddingX: scaleMetric(8, scale, 7),
             rowPaddingLeft: scaleMetric(12, scale, 10),
-            rowPaddingY: scaleMetric(4, scale, 3),
+            rowPaddingY: scaleMetric(8, scale, 6),
             inlineGap: scaleMetric(6, scale, 5),
-            titleFontSize: scaleMetric(11.5, scale, 10.5),
+            titleFontSize: scaleMetric(12, scale, 11),
             timestampFontSize: scaleMetric(10, scale, 9),
             providerIconSize: scaleMetric(12, scale, 10),
             pinButtonSize: scaleMetric(16, scale, 14),
@@ -1528,12 +1528,12 @@ function AgentSidebarDragGhost({ preview }: { preview: AgentDragPreview }) {
                 alignItems: "center",
                 gap: 6,
                 maxWidth: 220,
-                borderRadius: 6,
+                borderRadius: 8,
                 border: "1px solid var(--border)",
                 background: "var(--bg-secondary)",
                 color: "var(--text-primary)",
                 boxShadow: "0 8px 18px rgba(0,0,0,0.18)",
-                padding: "5px 8px",
+                padding: "10px 12px",
                 transform: "translate3d(0, 0, 0)",
             }}
         >

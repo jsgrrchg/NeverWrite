@@ -5,10 +5,9 @@ import {
 } from "react";
 import { AIProviderIcon } from "./AIProviderIcon";
 import type { AIChatSession } from "../types";
+import { getRuntimeDisplayName } from "../utils/runtimeMetadata";
 
-// Comando-style session row for the left sidebar Agents panel. Keep the row
-// deliberately single-line: the list is for switching threads, not reading
-// transcripts. The full context remains available in the editor chat tab.
+// A conversation card keeps its title separate from provider and activity.
 
 export type AgentsSidebarActivityIndicator = {
     readonly tone: "working" | "danger";
@@ -272,9 +271,13 @@ export function AgentsSidebarItem({
             tabIndex={0}
             data-testid="agent-sidebar-item"
             title={title}
-            className="group flex w-full cursor-pointer items-center rounded-md"
+            aria-label={title}
+            className="group flex w-full cursor-pointer flex-wrap items-center rounded-lg focus-visible:outline-2 focus-visible:outline-(--accent)"
             style={{
-                gap: metrics.inlineGap,
+                columnGap: metrics.inlineGap,
+                rowGap: 4,
+                border: "1px solid var(--border)",
+                boxShadow: isActive ? "inset 3px 0 var(--accent)" : undefined,
                 padding: `${metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
                 paddingLeft: metrics.rowPaddingLeft + depth * 14,
                 backgroundColor: isActive
@@ -351,12 +354,6 @@ export function AgentsSidebarItem({
                 event.currentTarget.style.backgroundColor = "transparent";
             }}
         >
-            <AIProviderIcon
-                runtimeId={session.runtimeId}
-                size={metrics.providerIconSize}
-                className="shrink-0"
-            />
-
             {isRenaming ? (
                     <input
                         ref={renameInputRef}
@@ -489,6 +486,9 @@ export function AgentsSidebarItem({
                     </button>
                 ) : null}
 
+            <div className="flex w-full min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)", fontSize: metrics.timestampFontSize }}>
+                <AIProviderIcon runtimeId={session.runtimeId} size={metrics.providerIconSize} />
+                <span className="min-w-0 flex-1 truncate">{getRuntimeDisplayName(session.runtimeId)}</span>
             <span
                 className="shrink-0 text-[10px]"
                 title={indicator?.title}
@@ -509,6 +509,7 @@ export function AgentsSidebarItem({
                       ? "Error"
                       : timestampLabel}
             </span>
+            </div>
         </div>
     );
 }

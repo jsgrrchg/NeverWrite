@@ -498,6 +498,23 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
+    it("keeps card pin and rename actions separate from opening", async () => {
+        const session = createSession("card-session", "Card title");
+        useChatStore.setState({ sessionsById: { [session.sessionId]: session }, sessionOrder: [session.sessionId] });
+        renderComponent(<AgentsSidebarPanel />);
+        expect(screen.getByRole("button", { name: "Card title" })).toBeTruthy();
+        expect(screen.getByText("Codex")).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: "Pin to sidebar" }));
+        expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeTruthy();
+        expect(chatPaneMovementMock.openChatSessionInWorkspace).not.toHaveBeenCalled();
+        fireEvent.doubleClick(screen.getByRole("button", { name: "Card title" }));
+        const input = screen.getByDisplayValue("Card title");
+        fireEvent.change(input, { target: { value: "Renamed card" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(screen.getByRole("button", { name: "Renamed card" })).toBeTruthy());
+        expect(chatPaneMovementMock.openChatSessionInWorkspace).not.toHaveBeenCalled();
+    });
+
     it("does not open a thread from a nested row control", () => {
         const session = createSession("session-alpha", "Alpha task");
         useChatStore.setState((state) => ({
