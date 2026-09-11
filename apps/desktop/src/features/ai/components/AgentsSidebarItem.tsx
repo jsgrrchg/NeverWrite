@@ -281,7 +281,6 @@ export function AgentsSidebarItem({
                 columnGap: metrics.inlineGap,
                 rowGap: 4,
                 border: "1px solid var(--border)",
-                boxShadow: isActive ? "inset 3px 0 var(--accent)" : undefined,
                 padding: `${metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
                 paddingLeft: metrics.rowPaddingLeft + depth * 14,
                 backgroundColor: isActive
