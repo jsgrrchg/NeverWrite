@@ -49,14 +49,27 @@ export function AIChatPane() {
             </button>
             <button
                 type="button"
-                className="shrink-0 whitespace-nowrap"
+                className="inline-flex shrink-0 items-center justify-center rounded-md opacity-70 transition-[background-color,opacity,transform] duration-150 ease-out hover:bg-gray-500/30 hover:opacity-100 active:bg-gray-500/55 active:scale-90"
+                style={{ width: 20, height: 20, color: "var(--text-secondary)" }}
                 aria-label="Hide chat pane"
                 onClick={() => {
                     layout.setChatPaneVisible(false);
                     nav.setFocusedSurface("editor");
                 }}
             >
-                ×
+                <svg
+                    width={13}
+                    height={13}
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.1"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                >
+                    <path d="M4 4l8 8M4 12l8-8" />
+                </svg>
             </button>
         </>
     );
