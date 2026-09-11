@@ -16,6 +16,7 @@ import { useChatTabsStore } from "../store/chatTabsStore";
 import { useChatStore } from "../store/chatStore";
 import { AIChatSessionView } from "./AIChatSessionView";
 import { AIChatHistoryWorkspaceView } from "./AIChatHistoryWorkspaceView";
+import { getSessionTitle } from "../sessionPresentation";
 
 export function AIChatPane() {
     useChatPaneShortcuts();
@@ -37,6 +38,44 @@ export function AIChatPane() {
     const session = sessionId ? sessions[sessionId] : null;
     const archived =
         session && isSessionArchived(session, sessions, archiveEntries);
+    const showStandaloneHeader = view.mode !== "conversation";
+    const paneActions = (
+        <>
+            <button
+                type="button"
+                className="shrink-0 whitespace-nowrap"
+                onClick={() => void createNewChatInWorkspace()}
+            >
+                New chat
+            </button>
+            <button
+                type="button"
+                className="shrink-0 whitespace-nowrap"
+                aria-label="Chat pane position"
+                onClick={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setMenu({
+                        x: rect.left,
+                        y: rect.bottom,
+                        payload: undefined,
+                    });
+                }}
+            >
+                ⋯
+            </button>
+            <button
+                type="button"
+                className="shrink-0 whitespace-nowrap"
+                aria-label="Hide chat pane"
+                onClick={() => {
+                    layout.setChatPaneVisible(false);
+                    nav.setFocusedSurface("editor");
+                }}
+            >
+                ×
+            </button>
+        </>
+    );
     return (
         <section
             aria-label="Chat pane"
@@ -48,62 +87,35 @@ export function AIChatPane() {
             onFocusCapture={() => nav.setFocusedSurface("chat")}
             onPointerDownCapture={() => nav.setFocusedSurface("chat")}
         >
-            <header
-                className="flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs"
-                style={{ borderColor: "var(--border)" }}
-            >
-                {view.mode === "history" && (
-                    <button
-                        type="button"
-                        onClick={() =>
-                            nav.returnFromHistory(
-                                Object.keys(
-                                    useChatStore.getState().sessionsById,
-                                ),
-                            )
-                        }
-                    >
-                        Back
-                    </button>
-                )}
-                <span className="min-w-0 flex-1 truncate">
-                    {view.mode === "history" ? "Chat history" : "Chat"}
-                </span>
-                <button
-                    type="button"
-                    onClick={() => void createNewChatInWorkspace()}
+            {showStandaloneHeader && (
+                <header
+                    className="flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs"
+                    style={{ borderColor: "var(--border)" }}
                 >
-                    New chat
-                </button>
-                <button type="button" onClick={() => nav.showHistory()}>
-                    History
-                </button>
-                <button
-                    type="button"
-                    aria-label="Chat pane position"
-                    onClick={(event) => {
-                        const rect =
-                            event.currentTarget.getBoundingClientRect();
-                        setMenu({
-                            x: rect.left,
-                            y: rect.bottom,
-                            payload: undefined,
-                        });
-                    }}
-                >
-                    ⋯
-                </button>
-                <button
-                    type="button"
-                    aria-label="Hide chat pane"
-                    onClick={() => {
-                        layout.setChatPaneVisible(false);
-                        nav.setFocusedSurface("editor");
-                    }}
-                >
-                    ×
-                </button>
-            </header>
+                    {view.mode === "history" && (
+                        <button
+                            type="button"
+                            onClick={() =>
+                                nav.returnFromHistory(
+                                    Object.keys(
+                                        useChatStore.getState().sessionsById,
+                                    ),
+                                )
+                            }
+                        >
+                            Back
+                        </button>
+                    )}
+                    <span className="min-w-0 flex-1 truncate">
+                        {view.mode === "history"
+                            ? "Chat history"
+                            : session
+                              ? getSessionTitle(session)
+                              : "Chat"}
+                    </span>
+                    {paneActions}
+                </header>
+            )}
             <div
                 className="min-h-0 flex-1"
                 style={{
@@ -111,34 +123,36 @@ export function AIChatPane() {
                 }}
             >
                 {archived ? (
-                    <div className="flex h-full min-h-0 flex-col">
-                        <div className="flex shrink-0 items-center justify-between p-2 text-xs">
-                            <span>Archived</span>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    if (!unarchiveChat(session.sessionId)) return;
-                                    void useChatStore
-                                        .getState()
-                                        .loadSession(session.sessionId);
-                                }}
-                            >
-                                Unarchive and continue
-                            </button>
-                        </div>
-                        <div className="min-h-0 flex-1">
-                            <HistoryTranscriptViewer
-                                historySessionId={
-                                    session.historySessionId ??
-                                    session.sessionId
-                                }
-                            />
-                        </div>
+                    <div className="h-full min-h-0">
+                        <HistoryTranscriptViewer
+                            historySessionId={
+                                session.historySessionId ?? session.sessionId
+                            }
+                            compactHeader
+                            headerActions={
+                                <>
+                                    <button
+                                        type="button"
+                                        className="shrink-0 whitespace-nowrap"
+                                        onClick={() => {
+                                            if (!unarchiveChat(session.sessionId)) return;
+                                            void useChatStore
+                                                .getState()
+                                                .loadSession(session.sessionId);
+                                        }}
+                                    >
+                                        Unarchive
+                                    </button>
+                                    {paneActions}
+                                </>
+                            }
+                        />
                     </div>
                 ) : sessionId ? (
                     <AIChatSessionView
                         sessionId={sessionId}
                         focused={focused && view.mode === "conversation"}
+                        headerActions={paneActions}
                     />
                 ) : (
                     <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-sm">

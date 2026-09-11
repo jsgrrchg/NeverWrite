@@ -50,8 +50,6 @@ import { AIChatContextUsageBar } from "./AIChatContextUsageBar";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
-import { formatShortcutAction } from "../../../app/shortcuts/format";
-import { getDesktopPlatform } from "../../../app/utils/platform";
 import { AIDiscardedRootsBanner } from "./AIDiscardedRootsBanner";
 import { useInlineRename } from "./useInlineRename";
 import { getAiChatContentColumnStyle } from "./chatContentLayout";
@@ -202,9 +200,14 @@ function ChatContentColumn({
 interface AIChatSessionViewProps {
     sessionId: string;
     focused?: boolean;
+    headerActions?: ReactNode;
 }
 
-export function AIChatSessionView({ sessionId, focused = true }: AIChatSessionViewProps) {
+export function AIChatSessionView({
+    sessionId,
+    focused = true,
+    headerActions,
+}: AIChatSessionViewProps) {
     const archivedEntries = useArchivedChatsStore(state => state.entries);
     const allSessions = useChatStore(state => state.sessionsById);
     const [composerExpanded, setComposerExpanded] = useState(false);
@@ -959,7 +962,6 @@ export function AIChatSessionView({ sessionId, focused = true }: AIChatSessionVi
 
     const isSubagent = Boolean(session?.parentSessionId?.trim());
     const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
-    const findDisabled = composerExpanded;
 
     const startTitleEdit = useCallback(() => {
         if (!session || !sessionId || isSubagent) return;
@@ -990,6 +992,7 @@ export function AIChatSessionView({ sessionId, focused = true }: AIChatSessionVi
         >
             {/* Compact local session header for the workspace chat tab */}
             <div
+                data-testid="chat-session-header"
                 className="flex items-center gap-2 px-3 py-1 text-xs shrink-0"
                 style={{
                     height: 31,
@@ -1084,47 +1087,7 @@ export function AIChatSessionView({ sessionId, focused = true }: AIChatSessionVi
                         </svg>
                     </button>
                 ) : null}
-                <button
-                    type="button"
-                    onClick={() => {
-                        if (findDisabled) return;
-                        setFindOpen((value) => !value);
-                    }}
-                    disabled={findDisabled}
-                    aria-label="Find in chat"
-                    aria-pressed={findOpen}
-                    title={
-                        findDisabled
-                            ? "Find is unavailable while the composer is expanded"
-                            : `Find in chat (${formatShortcutAction(
-                                  "find_in_note",
-                                  getDesktopPlatform(),
-                              )})`
-                    }
-                    className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
-                    style={{
-                        color: findOpen
-                            ? "var(--accent)"
-                            : "var(--text-secondary)",
-                        border: "none",
-                        backgroundColor: "transparent",
-                        opacity: findDisabled ? 0.45 : 1,
-                    }}
-                >
-                    <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <circle cx="6" cy="6" r="4" />
-                        <path d="M9 9L12.5 12.5" />
-                    </svg>
-                </button>
+                {headerActions}
             </div>
 
             <AIChatRuntimeBanner
