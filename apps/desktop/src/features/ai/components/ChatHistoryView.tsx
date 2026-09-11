@@ -1,3 +1,4 @@
+import { useElementWidth } from "../../../components/layout/useElementWidth";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { useEditorStore } from "../../../app/store/editorStore";
@@ -35,6 +36,9 @@ export function ChatHistoryView({
     onRequestClose,
     showBackButton = true,
 }: ChatHistoryViewProps) {
+    const { ref: containerRef, width: availableWidth } = useElementWidth<HTMLDivElement>();
+    const narrow = availableWidth !== null && availableWidth < 640;
+    const [showTranscript, setShowTranscript] = useState(false);
     const sessionsById = useChatStore((s) => s.sessionsById);
     const sessionOrder = useChatStore((s) => s.sessionOrder);
     const runtimes = useChatStore((s) => s.runtimes);
@@ -255,6 +259,7 @@ export function ChatHistoryView({
 
     return (
         <div
+            ref={containerRef}
             className="flex h-full min-h-0 flex-col"
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
@@ -329,7 +334,8 @@ export function ChatHistoryView({
                     ref={listPanelRef}
                     className="shrink-0"
                     style={{
-                        width: listWidth,
+                        display: narrow && showTranscript ? "none" : undefined,
+                        width: narrow ? "100%" : Math.min(listWidth, Math.max(MIN_LIST_WIDTH, (availableWidth ?? 1000) - 320)),
                         borderRight: "1px solid var(--border)",
                     }}
                 >
@@ -337,7 +343,7 @@ export function ChatHistoryView({
                         sessions={sessions}
                         runtimes={runtimeOptions}
                         selectedSessionId={selectedHistorySessionId}
-                        onSelectSession={onSelectHistorySessionId}
+                        onSelectSession={id => { onSelectHistorySessionId(id); setShowTranscript(true); }}
                         onRestoreSession={handleRestoreSession}
                         onDeleteSession={handleDeleteSession}
                         onDeleteSessions={handleDeleteSessions}
@@ -351,6 +357,7 @@ export function ChatHistoryView({
                 <div
                     className="relative shrink-0 cursor-col-resize touch-none"
                     style={{
+                        display: narrow ? "none" : undefined,
                         width: RESIZER_HITBOX,
                         marginLeft: -RESIZER_OVERLAP,
                         marginRight: -RESIZER_OVERLAP,
@@ -370,7 +377,9 @@ export function ChatHistoryView({
                 </div>
 
                 {/* Transcript viewer (detail) */}
-                <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-1 flex-col" style={{ display: narrow && !showTranscript ? "none" : undefined }}>
+                    {narrow && <button type="button" className="shrink-0 p-2 text-left text-xs" onClick={() => setShowTranscript(false)}>Back to conversations</button>}
+                    <div className="min-h-0 flex-1">
                     {selectedHistorySessionId ? (
                         <HistoryTranscriptViewer
                             historySessionId={selectedHistorySessionId}
@@ -393,6 +402,7 @@ export function ChatHistoryView({
                             Select a conversation to view
                         </div>
                     )}
+                    </div>
                 </div>
             </div>
 

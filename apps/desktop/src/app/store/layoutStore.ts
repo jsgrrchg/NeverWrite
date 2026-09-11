@@ -44,7 +44,32 @@ export interface ActiveSidebarViews {
     right: SidebarView;
 }
 
+export type ChatPanePlacement = "follow-agents" | "left" | "right";
+const CHAT_PANE_KEY = "neverwrite.chat-pane.layout.v1";
+export const MIN_CHAT_PANE_WIDTH = 320;
+export const MIN_CHAT_EDITOR_WIDTH = 320;
+export function normalizeChatPaneWidth(width: number) {
+    return Number.isFinite(width) ? Math.max(MIN_CHAT_PANE_WIDTH, Math.min(1600, width)) : 480;
+}
+function readChatPaneLayout() {
+    const stored = parseStoredJson(CHAT_PANE_KEY) as Partial<LayoutStore> | undefined;
+    return {
+        chatPanePlacement: stored?.chatPanePlacement === "left" || stored?.chatPanePlacement === "right" ? stored.chatPanePlacement : "follow-agents" as ChatPanePlacement,
+        chatPaneWidth: normalizeChatPaneWidth(stored?.chatPaneWidth ?? 480),
+        chatPaneVisible: stored?.chatPaneVisible !== false,
+    };
+}
+export function selectChatPaneSide(state: Pick<LayoutStore, "chatPanePlacement" | "movableSidebarPlacement">): SidebarSide {
+    return state.chatPanePlacement === "follow-agents" ? state.movableSidebarPlacement.agents : state.chatPanePlacement;
+}
+
 interface LayoutStore {
+    chatPanePlacement: ChatPanePlacement;
+    chatPaneWidth: number;
+    chatPaneVisible: boolean;
+    setChatPanePlacement: (placement: ChatPanePlacement) => void;
+    setChatPaneWidth: (width: number) => void;
+    setChatPaneVisible: (visible: boolean) => void;
     sidebarCollapsed: boolean;
     sidebarWidth: number;
     activeSidebarView: ActiveSidebarViews;
@@ -79,6 +104,9 @@ interface LayoutStore {
 
 type LayoutSnapshot = Pick<
     LayoutStore,
+    | "chatPanePlacement"
+    | "chatPaneWidth"
+    | "chatPaneVisible"
     | "sidebarCollapsed"
     | "sidebarWidth"
     | "activeSidebarView"
@@ -150,6 +178,7 @@ export function readHydratedLayoutSnapshot(): LayoutSnapshot {
         right: normalizeActiveSidebarView("right", rightCandidate, placement),
     };
     return {
+        ...readChatPaneLayout(),
         sidebarCollapsed: safeStorageGetItem(SIDEBAR_COLLAPSED_KEY) === "true",
         sidebarWidth: parseStoredNumber(
             SIDEBAR_WIDTH_KEY,
@@ -192,6 +221,9 @@ function getFileTreeScrollKey(vaultPath: string | null | undefined) {
 
 export function createDefaultLayoutState(): LayoutSnapshot {
     return {
+        chatPanePlacement: "follow-agents",
+        chatPaneWidth: 480,
+        chatPaneVisible: true,
         sidebarCollapsed: false,
         sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
         activeSidebarView: { left: "agents", right: "files" },
@@ -204,6 +236,19 @@ export function createDefaultLayoutState(): LayoutSnapshot {
 
 export const useLayoutStore = create<LayoutStore>((set, get) => ({
     ...createDefaultLayoutState(),
+    setChatPanePlacement: (chatPanePlacement) => {
+        set({ chatPanePlacement });
+        persistJson(CHAT_PANE_KEY, { chatPanePlacement, chatPaneWidth: get().chatPaneWidth, chatPaneVisible: get().chatPaneVisible });
+    },
+    setChatPaneWidth: (width) => {
+        const chatPaneWidth = normalizeChatPaneWidth(width);
+        set({ chatPaneWidth });
+        persistJson(CHAT_PANE_KEY, { chatPaneWidth, chatPanePlacement: get().chatPanePlacement, chatPaneVisible: get().chatPaneVisible });
+    },
+    setChatPaneVisible: (chatPaneVisible) => {
+        set({ chatPaneVisible });
+        persistJson(CHAT_PANE_KEY, { chatPaneVisible, chatPaneWidth: get().chatPaneWidth, chatPanePlacement: get().chatPanePlacement });
+    },
     rightPanelExpanded: false,
     fileTreeScrollTopByVault: {},
     activateSidebarView: (side, view) =>
