@@ -1,3 +1,5 @@
+import { archiveChat, unarchiveChat } from "../chatArchiving";
+import { isSessionArchived, useArchivedChatsStore } from "../store/archivedChatsStore";
 /**
  * AIChatSessionView — renders a single chat session inside an editor workspace pane.
  *
@@ -211,6 +213,8 @@ interface AIChatSessionViewProps {
 }
 
 export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
+    const archivedEntries = useArchivedChatsStore(state => state.entries);
+    const allSessions = useChatStore(state => state.sessionsById);
     const [composerExpanded, setComposerExpanded] = useState(false);
     const bottomDockRef = useRef<HTMLDivElement>(null);
     const [bottomDockMeasurement, setBottomDockMeasurement] = useState<{
@@ -1066,6 +1070,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                         {sessionTitle}
                     </span>
                 )}
+                {session && !isSubagent && <button type="button" onClick={() => isSessionArchived(session, allSessions, archivedEntries) ? unarchiveChat(session.sessionId) : archiveChat(session.sessionId)}>{isSessionArchived(session, allSessions, archivedEntries) ? "Unarchive" : "Archive"}</button>}
                 {isSubagent ? (
                     <span
                         className="max-w-[45%] truncate rounded px-1.5 py-0.5 text-[10px]"
@@ -1313,7 +1318,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                                 : "flex min-h-16 shrink flex-col"
                         }
                     >
-                        <AIChatComposer
+                        {session && isSessionArchived(session, allSessions, archivedEntries) ? <div className="p-3 text-xs">Archived conversation. <button type="button" onClick={() => unarchiveChat(session.sessionId)}>Unarchive and continue</button></div> : <AIChatComposer
                             key={sessionId}
                             sessionId={sessionId}
                             parts={composerParts}
@@ -1501,7 +1506,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                             onStop={() => {
                                 void chatActions.stopStreaming(sessionId);
                             }}
-                        />
+                        />}
                     </div>
                     </div>
                 </div>

@@ -1,3 +1,5 @@
+import { useArchivedChatsStore } from "./store/archivedChatsStore";
+import { useArchiveNoticeStore } from "./chatArchiving";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { confirm } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -102,6 +104,7 @@ describe("AgentsSidebarPanel", () => {
             entries: [],
         });
         usePinnedChatsStore.setState({ entries: {} });
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
         useChatFoldersStore.setState({
             folders: {},
             folderOrder: [],
@@ -139,6 +142,30 @@ describe("AgentsSidebarPanel", () => {
             selectedRuntimeId: "codex-acp",
             sessionInventoryLoaded: true,
         });
+    });
+
+    it("archives a working root with its child, preserves its folder and supports Undo", () => {
+        const root = createSession("root", "Root task", "streaming");
+        const child = createSession("child", "Child task", "idle", 10, { parentSessionId: "root" });
+        useChatStore.setState({ sessionsById: { root, child }, sessionOrder: ["root", "child"] });
+        usePinnedChatsStore.getState().pin("root");
+        const folder = useChatFoldersStore.getState().createFolder("Research")!;
+        useChatFoldersStore.getState().moveSession("root", folder);
+        renderComponent(<AgentsSidebarPanel />);
+        fireEvent.click(screen.getAllByRole("button", { name: "Archive chat" })[0]);
+        expect(usePinnedChatsStore.getState().entries.root).toBeUndefined();
+        expect(useChatFoldersStore.getState().sessionFolderIds.root).toBe(folder);
+        expect(useChatStore.getState().sessionsById.root.status).toBe("streaming");
+        expect(screen.queryByText("Root task")).toBeNull();
+        const archived = screen.getByRole("button", { name: "Archived (1)" });
+        expect(archived.getAttribute("aria-expanded")).toBe("false");
+        fireEvent.change(screen.getByRole("textbox", { name: "Filter threads" }), { target: { value: "Root task" } });
+        expect(screen.getByText("Root task")).toBeTruthy();
+        fireEvent.change(screen.getByRole("textbox", { name: "Filter threads" }), { target: { value: "" } });
+        expect(archived.getAttribute("aria-expanded")).toBe("false");
+        act(() => useArchiveNoticeStore.getState().notice?.undo());
+        expect(useArchivedChatsStore.getState().entries).toEqual({});
+        expect(screen.getAllByText("Root task").length).toBeGreaterThan(0);
     });
 
     it("does not prune persisted folder assignments while cold-start inventory is loading", () => {

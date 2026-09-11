@@ -1,3 +1,4 @@
+import { ChatArchiveNotice } from "./features/ai/components/ChatArchiveNotice";
 import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { getCurrentWindow } from "@neverwrite/runtime";
@@ -2138,7 +2139,8 @@ export default function App() {
         return (
             <div className="h-full min-h-0 min-w-0 flex flex-col overflow-hidden">
                 <AIChatDetachedWindowHost />
-                <WorkspaceTerminalHost />
+                <ChatArchiveNotice />
+            <WorkspaceTerminalHost />
                 <UnifiedBar windowMode="note" />
                 <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
                     <EditorPaneContent emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />
@@ -2156,6 +2158,7 @@ export default function App() {
                 startupReady={chatTabsReady}
                 listenWithoutChatTabs
             />
+            <ChatArchiveNotice />
             <WorkspaceTerminalHost />
 
             {/* EditorChromeBar only renders on Windows and Linux (to reserve

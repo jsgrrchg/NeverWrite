@@ -37,6 +37,8 @@ export interface AgentsSidebarItemProps {
     timestampLabel: string;
     isActive: boolean;
     isPinned: boolean;
+    isArchived?: boolean;
+    onToggleArchive?: () => void;
     canPin?: boolean;
     canRename?: boolean;
     depth?: number;
@@ -106,6 +108,8 @@ export function AgentsSidebarItem({
     timestampLabel,
     isActive,
     isPinned,
+    isArchived = false,
+    onToggleArchive,
     canPin = true,
     canRename = true,
     depth = 0,
@@ -444,6 +448,9 @@ export function AgentsSidebarItem({
                 />
             ) : null}
 
+            {onToggleArchive && <button type="button" aria-label={isArchived ? "Unarchive chat" : "Archive chat"} title={isArchived ? "Unarchive chat" : "Archive chat"} className="shrink-0 rounded opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={event => { event.stopPropagation(); onToggleArchive(); }}>
+                <svg width={metrics.pinIconSize} height={metrics.pinIconSize} viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M2 3h12v3H2zM3 6v7h10V6M6 9h4" /></svg>
+            </button>}
             {canPin ? (
                     <button
                         type="button"
@@ -489,6 +496,7 @@ export function AgentsSidebarItem({
             <div className="flex w-full min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)", fontSize: metrics.timestampFontSize }}>
                 <AIProviderIcon runtimeId={session.runtimeId} size={metrics.providerIconSize} />
                 <span className="min-w-0 flex-1 truncate">{getRuntimeDisplayName(session.runtimeId)}</span>
+                {isArchived && <span>Archived</span>}
             <span
                 className="shrink-0 text-[10px]"
                 title={indicator?.title}

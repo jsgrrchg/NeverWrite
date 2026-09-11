@@ -56,6 +56,8 @@ import {
     isClaudeTerminalAgentSession,
 } from "./claudeTerminalAgentSession";
 import { useChatStore } from "./store/chatStore";
+import { archiveChat, unarchiveChat } from "./chatArchiving";
+import { isSessionArchived, useArchivedChatsStore } from "./store/archivedChatsStore";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
 import {
     useChatFoldersStore,
@@ -320,6 +322,8 @@ export function AgentsSidebarPanel() {
     const deleteSession = useChatStore((state) => state.deleteSession);
     const renameSession = useChatStore((state) => state.renameSession);
 
+    const archivedEntries = useArchivedChatsStore(state => state.entries);
+    const [archivedExpanded, setArchivedExpanded] = useState(false);
     const pinnedEntries = usePinnedChatsStore((state) => state.entries);
     const togglePinnedChat = usePinnedChatsStore((state) => state.togglePin);
     const unpinChat = usePinnedChatsStore((state) => state.unpin);
@@ -461,8 +465,9 @@ export function AgentsSidebarPanel() {
     // Pins are root-owned: legacy child pins are pruned so subagents stay under
     // their parent instead of jumping into a separate Pinned bucket.
     useEffect(() => {
+        if (!sessionInventoryLoaded) return;
         reconcilePinned(hierarchy.rootSessionIds);
-    }, [hierarchy.rootSessionIds, reconcilePinned]);
+    }, [hierarchy.rootSessionIds, reconcilePinned, sessionInventoryLoaded]);
     useEffect(() => {
         if (!sessionInventoryLoaded) return;
         reconcileFolders(hierarchy.rootSessionIds);
@@ -471,12 +476,15 @@ export function AgentsSidebarPanel() {
     // Shortcut sections are mutually exclusive with each other. They are not
     // a partition of folder navigation: a foldered chat may intentionally
     // also appear in Pinned or Open for quick access.
-    const { pinnedGroups, openGroups, otherGroups } = useMemo(() => {
+    const { pinnedGroups, openGroups, otherGroups, archivedGroups } = useMemo(() => {
+        const archived: AiSessionHierarchyGroup[] = [];
         const pinned: AiSessionHierarchyGroup[] = [];
         const open: AiSessionHierarchyGroup[] = [];
         const other: AiSessionHierarchyGroup[] = [];
         for (const group of hierarchy.groups) {
-            if (group.isPinnedRoot) {
+            if (isSessionArchived(group.root, sessionsById, archivedEntries)) {
+                archived.push(group);
+            } else if (group.isPinnedRoot) {
                 pinned.push(group);
             } else if (group.hasOpenSession) {
                 open.push(group);
@@ -495,13 +503,14 @@ export function AgentsSidebarPanel() {
         );
         other.sort(compareHierarchyGroupsByUpdatedAtDesc);
         return {
+            archivedGroups: archived.sort(compareHierarchyGroupsByUpdatedAtDesc),
             pinnedGroups: pinned,
             openGroups: open,
             otherGroups: other,
         };
         // workingOrderRevision keeps this memo in sync with the ref-backed map.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hierarchy.groups, pinnedEntries, workingOrderRevision]);
+    }, [hierarchy.groups, pinnedEntries, workingOrderRevision, archivedEntries, sessionsById]);
     const orderedFolders = useMemo(
         () => {
             const unordered = Object.values(chatFolders).sort(
@@ -528,13 +537,14 @@ export function AgentsSidebarPanel() {
         const groups = new Map<string, AiSessionHierarchyGroup[]>();
         for (const folder of orderedFolders) groups.set(folder.id, []);
         for (const group of hierarchy.groups) {
+            if (isSessionArchived(group.root, sessionsById, archivedEntries)) continue;
             const folderId = sessionFolderIds[group.root.sessionId];
             if (folderId && groups.has(folderId)) {
                 groups.get(folderId)?.push(group);
             }
         }
         return groups;
-    }, [hierarchy.groups, orderedFolders, sessionFolderIds]);
+    }, [hierarchy.groups, orderedFolders, sessionFolderIds, archivedEntries, sessionsById]);
     const unfiledGroups = useMemo(
         () =>
             otherGroups.filter(
@@ -597,8 +607,8 @@ export function AgentsSidebarPanel() {
             });
             if (!approved) return;
 
-            unpinChat(session.sessionId);
             await deleteSession(session.sessionId);
+            unpinChat(session.sessionId);
         },
         [deleteSession, sessions, unpinChat],
     );
@@ -929,7 +939,9 @@ export function AgentsSidebarPanel() {
                 timestampLabel={timestampLabel}
                 isActive={activeSidebarId === session.sessionId}
                 isPinned={canPin && isPinned}
-                canPin={canPin}
+                isArchived={isSessionArchived(session, sessionsById, archivedEntries)}
+                onToggleArchive={!isSubagent && !isClaudeTerminalAgentSession(session) ? () => isSessionArchived(session, sessionsById, archivedEntries) ? unarchiveChat(session.sessionId) : archiveChat(session.sessionId) : undefined}
+                canPin={canPin && !isSessionArchived(session, sessionsById, archivedEntries)}
                 canRename={canRename}
                 depth={options?.depth ?? 0}
                 indicator={indicator}
@@ -1374,6 +1386,10 @@ export function AgentsSidebarPanel() {
                         >
                             {unfiledGroups.map(renderGroup)}
                         </AgentsSidebarSection>
+                        {archivedGroups.length > 0 && <section className="mt-3" aria-label="Archived chats">
+                            <button type="button" className="w-full px-2 py-2 text-left text-xs" aria-expanded={hasFilter || archivedExpanded} onClick={() => setArchivedExpanded(value => !value)}>Archived ({archivedGroups.length})</button>
+                            {(hasFilter || archivedExpanded) && <div className="flex flex-col gap-1.5">{archivedGroups.map(renderGroup)}</div>}
+                        </section>}
                     </>
                 )}
             </div>
@@ -1383,11 +1399,15 @@ export function AgentsSidebarPanel() {
                     menu={contextMenu}
                     onClose={() => setContextMenu(null)}
                     entries={[
+                        ...(!isSubagentSession(contextMenu.payload) && !isClaudeTerminalAgentSession(contextMenu.payload) ? [{
+                            label: isSessionArchived(contextMenu.payload, sessionsById, archivedEntries) ? "Unarchive" : "Archive",
+                            action: () => isSessionArchived(contextMenu.payload, sessionsById, archivedEntries) ? unarchiveChat(contextMenu.payload.sessionId) : archiveChat(contextMenu.payload.sessionId),
+                        }] : []),
                         {
                             label: pinnedEntries[contextMenu.payload.sessionId]
                                 ? "Unpin from Sidebar"
                                 : "Pin to Sidebar",
-                            disabled: isSubagentSession(contextMenu.payload),
+                            disabled: isSubagentSession(contextMenu.payload) || isSessionArchived(contextMenu.payload, sessionsById, archivedEntries),
                             action: () =>
                                 togglePinnedChat(contextMenu.payload.sessionId),
                         },

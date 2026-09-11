@@ -1,3 +1,4 @@
+import { getArchiveIdentity, useArchivedChatsStore } from "./archivedChatsStore";
 import { create, type StateCreator } from "zustand";
 import { confirm, openUrl } from "@neverwrite/runtime";
 import {
@@ -3536,6 +3537,7 @@ function migrateSessionLocalState(
     clearStaleStreamingCheck(fromSessionId);
     _queueDrainLocks.delete(fromSessionId);
     replaceChatRowUiSessionId(fromSessionId, toSession.sessionId);
+    useArchivedChatsStore.getState().replaceSessionId(fromSessionId, getArchiveIdentity(toSession));
     usePinnedChatsStore
         .getState()
         .replaceSessionId(fromSessionId, toSession.sessionId);
@@ -15907,10 +15909,12 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 await aiDeleteRuntimeSession(sessionId).catch(() => {});
             }
             if (vaultPath) {
-                await aiDeleteSessionHistory(vaultPath, historySessionId).catch(
-                    () => {},
-                );
+                await aiDeleteSessionHistory(vaultPath, historySessionId);
             }
+            useArchivedChatsStore.getState().unarchive(historySessionId);
+            useArchivedChatsStore.getState().unarchive(sessionId);
+            usePinnedChatsStore.getState().unpin(sessionId);
+            useChatFoldersStore.getState().moveSession(sessionId, null);
             deletePersistedHistoryCacheEntry(vaultPath, historySessionId);
             useEditorStore.getState().closeReview(sessionId);
             useEditorStore.getState().closeChat(sessionId);

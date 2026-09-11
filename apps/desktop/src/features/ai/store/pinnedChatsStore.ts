@@ -1,3 +1,4 @@
+import { useVaultStore } from "../../../app/store/vaultStore";
 import { create } from "zustand";
 import {
     safeStorageGetItem,
@@ -10,6 +11,7 @@ import { logWarn } from "../../../app/utils/runtimeLog";
 // pins to be per-vault or shared across devices the data can migrate.
 
 const PINNED_CHATS_KEY = "neverwrite.chats.pinnedIds";
+const getStorageKey = () => `${PINNED_CHATS_KEY}:${useVaultStore.getState().vaultPath ?? ""}`;
 
 interface PinnedChatEntry {
     pinnedAt: number;
@@ -25,7 +27,14 @@ interface PinnedChatsStore {
 }
 
 function readHydratedEntries(): Record<string, PinnedChatEntry> {
-    const raw = safeStorageGetItem(PINNED_CHATS_KEY);
+    const path = useVaultStore.getState().vaultPath;
+    if (!path) return {};
+    let raw = safeStorageGetItem(getStorageKey());
+    if (!raw && !safeStorageGetItem(`${PINNED_CHATS_KEY}.migrated`)) {
+        raw = safeStorageGetItem(PINNED_CHATS_KEY);
+        if (raw && !safeStorageSetItem(getStorageKey(), raw)) return {};
+        safeStorageSetItem(`${PINNED_CHATS_KEY}.migrated`, "1");
+    }
     if (!raw) return {};
     try {
         const parsed = JSON.parse(raw);
@@ -56,7 +65,7 @@ function readHydratedEntries(): Record<string, PinnedChatEntry> {
 }
 
 function persistEntries(entries: Record<string, PinnedChatEntry>) {
-    safeStorageSetItem(PINNED_CHATS_KEY, JSON.stringify(entries));
+    if (useVaultStore.getState().vaultPath) safeStorageSetItem(getStorageKey(), JSON.stringify(entries));
 }
 
 export const usePinnedChatsStore = create<PinnedChatsStore>((set) => ({
@@ -122,3 +131,7 @@ export const usePinnedChatsStore = create<PinnedChatsStore>((set) => ({
             return { entries: next };
         }),
 }));
+
+useVaultStore.subscribe((state, previous) => {
+    if (state.vaultPath !== previous.vaultPath) usePinnedChatsStore.setState({ entries: readHydratedEntries() });
+});
