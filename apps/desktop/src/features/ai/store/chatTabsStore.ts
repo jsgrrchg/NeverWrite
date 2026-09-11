@@ -24,7 +24,25 @@ export interface PersistedChatWorkspace {
     activeTabId: string | null;
 }
 
+export type ChatPaneView =
+    | { mode: "conversation"; sessionId: string }
+    | { mode: "history"; selectedHistorySessionId: string | null; returnSessionId: string | null }
+    | { mode: "empty" };
+export type ChatHistoryFilter = "all" | "active" | "archived";
+
 interface ChatTabsStore {
+    dedicatedPaneEnabled: boolean;
+    view: ChatPaneView;
+    historyFilter: ChatHistoryFilter;
+    focusedSurface: "chat" | "editor";
+    navigationRevision: number;
+    showConversation: (sessionId: string) => void;
+    showHistory: () => void;
+    selectHistoryEntry: (historySessionId: string | null) => void;
+    returnFromHistory: (validSessionIds: Iterable<string>) => void;
+    showEmpty: () => void;
+    setFocusedSurface: (surface: "chat" | "editor") => void;
+    setHistoryFilter: (filter: ChatHistoryFilter) => void;
     isReady: boolean;
     tabs: ChatWorkspaceTab[];
     activeTabId: string | null;
@@ -370,6 +388,31 @@ export function markChatTabsReady() {
 }
 
 export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
+    dedicatedPaneEnabled: false,
+    view: { mode: "empty" },
+    historyFilter: "all",
+    focusedSurface: "editor",
+    navigationRevision: 0,
+    showConversation: (sessionId) => {
+        if (!sessionId) return;
+        get().ensureSessionTab(sessionId);
+        set(state => ({ view: { mode: "conversation", sessionId }, focusedSurface: "chat", navigationRevision: state.navigationRevision + 1 }));
+    },
+    showHistory: () => set(state => ({
+        view: state.view.mode === "history" ? state.view : { mode: "history", selectedHistorySessionId: null, returnSessionId: state.view.mode === "conversation" ? state.view.sessionId : null },
+        focusedSurface: "chat",
+        navigationRevision: state.navigationRevision + 1,
+    })),
+    selectHistoryEntry: (selectedHistorySessionId) => set(state => state.view.mode === "history" ? { view: { ...state.view, selectedHistorySessionId } } : state),
+    returnFromHistory: (validIds) => {
+        const view = get().view;
+        if (view.mode !== "history") return;
+        if (view.returnSessionId && new Set(validIds).has(view.returnSessionId)) get().showConversation(view.returnSessionId);
+        else get().showEmpty();
+    },
+    showEmpty: () => set(state => ({ view: { mode: "empty" }, navigationRevision: state.navigationRevision + 1 })),
+    setFocusedSurface: (focusedSurface) => set({ focusedSurface }),
+    setHistoryFilter: (historyFilter) => set({ historyFilter }),
     isReady: false,
     tabs: [],
     activeTabId: null,
@@ -500,6 +543,9 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
     },
 
     removeTabsForSession: (sessionId) => {
+        const view = get().view;
+        if (view.mode === "conversation" && view.sessionId === sessionId) get().showEmpty();
+        if (view.mode === "history" && view.returnSessionId === sessionId) set({ view: { ...view, returnSessionId: null } });
         set((state) => {
             const removedTabIndexes = state.tabs.reduce<number[]>(
                 (indexes, tab, index) =>
@@ -692,6 +738,10 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         }
 
         set((state) => {
+            const view = state.view.mode === "conversation" && state.view.sessionId === oldSessionId
+                ? { ...state.view, sessionId: newSessionId }
+                : state.view.mode === "history" && state.view.returnSessionId === oldSessionId
+                  ? { ...state.view, returnSessionId: newSessionId } : state.view;
             const activeTabId = state.activeTabId;
             const tabs = normalizeTabs(
                 state.tabs.map((tab) =>
@@ -719,12 +769,15 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
             return {
                 tabs,
                 activeTabId: resolveActiveTabId(tabs, activeTabId),
+                view,
             };
         });
     },
 
     reset: () => {
         set({
+            view: { mode: "empty" },
+            focusedSurface: "editor",
             tabs: [],
             activeTabId: null,
         });
@@ -777,6 +830,8 @@ export function resetChatTabsStore() {
     lastPersistedJsonByVaultPath.clear();
 
     useChatTabsStore.setState({
+        view: { mode: "empty" },
+        focusedSurface: "editor",
         isReady: false,
         tabs: [],
         activeTabId: null,

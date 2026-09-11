@@ -1,3 +1,5 @@
+import { useChatTabsStore } from "./store/chatTabsStore";
+import { getSelectedChatSessionId } from "./chatWorkspaceSelectors";
 import { useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -30,6 +32,7 @@ function hasVisibleAiComposerDropZone(targetSessionId?: string) {
 }
 
 function getActiveEditorChatSessionId() {
+    if (useChatTabsStore.getState().dedicatedPaneEnabled) return getSelectedChatSessionId();
     const activeTab = selectFocusedEditorTab(useEditorStore.getState());
     return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
 }
@@ -112,7 +115,8 @@ export function AIChatWorkspaceHost({
     initializeWithoutChatTabs = false,
 }: AIChatWorkspaceHostProps) {
     const vaultPath = useVaultStore((state) => state.vaultPath);
-    const { hasChatTabs, activeChatSessionId } = useEditorStore(
+    const navigation = useChatTabsStore(useShallow(state => ({ enabled: state.dedicatedPaneEnabled, view: state.view, focused: state.focusedSurface })));
+    const legacyPresence = useEditorStore(
         useShallow((state) => {
             const tabs = selectEditorWorkspaceTabs(state);
             const activeTab = selectFocusedEditorTab(state);
@@ -125,6 +129,9 @@ export function AIChatWorkspaceHost({
             };
         }),
     );
+    const { hasChatTabs, activeChatSessionId } = navigation.enabled
+        ? { hasChatTabs: navigation.view.mode === "conversation", activeChatSessionId: navigation.view.mode === "conversation" ? navigation.view.sessionId : null }
+        : legacyPresence;
     const activeChatSession = useChatStore((state) =>
         activeChatSessionId
             ? (state.sessionsById[activeChatSessionId] ?? null)
@@ -169,12 +176,12 @@ export function AIChatWorkspaceHost({
     ]);
 
     useEffect(() => {
-        if (!activeChatSessionId) {
+        if (!activeChatSessionId || (navigation.enabled && navigation.focused !== "chat")) {
             return;
         }
 
         chatActions.markSessionFocused(activeChatSessionId);
-    }, [activeChatSessionId, chatActions]);
+    }, [activeChatSessionId, chatActions, navigation.enabled, navigation.focused]);
 
     useEffect(() => {
         if (

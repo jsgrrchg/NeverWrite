@@ -208,11 +208,13 @@ function ChatContentColumn({
 }
 
 interface AIChatSessionViewProps {
+    sessionId?: string;
+    focused?: boolean;
     paneId?: string;
     tabId?: string;
 }
 
-export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
+export function AIChatSessionView({ paneId, tabId, sessionId: explicitSessionId, focused = true }: AIChatSessionViewProps) {
     const archivedEntries = useArchivedChatsStore(state => state.entries);
     const allSessions = useChatStore(state => state.sessionsById);
     const [composerExpanded, setComposerExpanded] = useState(false);
@@ -230,6 +232,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     // Resolve sessionId from this column's ChatTab (stacked) or the pane's
     // active ChatTab (normal mode, when no explicit tabId is bound).
     const sessionId = useEditorStore((state) => {
+        if (explicitSessionId !== undefined) return explicitSessionId;
         const tab = tabId
             ? selectPaneTab(state, paneId, tabId)
             : selectEditorPaneActiveTab(state, paneId);
@@ -940,7 +943,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     useEffect(() => {
         if (!findOpen) return;
         const handleEscape = (event: KeyboardEvent) => {
-            if (event.defaultPrevented || event.key !== "Escape") return;
+            if (!focused || event.defaultPrevented || event.key !== "Escape") return;
             if (
                 event.metaKey ||
                 event.ctrlKey ||
@@ -960,7 +963,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
 
         window.addEventListener("keydown", handleEscape, true);
         return () => window.removeEventListener("keydown", handleEscape, true);
-    }, [findOpen, paneId]);
+    }, [findOpen, paneId, focused]);
 
     useLayoutEffect(() => {
         if (composerExpanded) {

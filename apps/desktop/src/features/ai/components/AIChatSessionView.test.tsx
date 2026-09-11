@@ -194,6 +194,14 @@ describe("AIChatSessionView", () => {
         });
     });
 
+    it("renders an explicit conversation with no editor chat tabs", () => {
+        useChatStore.setState({ sessionsById: { explicit: createSession("explicit", "Explicit conversation") } });
+        useEditorStore.getState().hydrateTabs([], null);
+        renderComponent(<AIChatSessionView sessionId="explicit" focused />);
+        expect(screen.getByText("Explicit conversation")).toBeTruthy();
+        expect(useEditorStore.getState().panes.every(pane => pane.tabs.length === 0)).toBe(true);
+    });
+
     it("locks provider changes after the conversation starts", () => {
         setupWorkspaceSession();
         useChatStore.setState((state) => ({
