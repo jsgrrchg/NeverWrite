@@ -617,20 +617,13 @@ export function AgentsSidebarPanel() {
             </div>
 
             <div
-                className="flex shrink-0 items-center justify-between px-3 pt-1.5 pb-1 text-[10.5px]"
+                className="flex shrink-0 items-center justify-end px-3 pt-1.5 pb-1 text-[10.5px]"
                 style={{
                     color: "var(--text-secondary)",
                     fontSize: metrics.summaryFontSize,
                     padding: `${metrics.summaryPaddingTop}px ${metrics.summaryPaddingX}px ${metrics.summaryPaddingBottom}px`,
                 }}
             >
-                <span>
-                    {hasFilter
-                        ? `${filteredCount} of ${totalCount}`
-                        : totalCount === 1
-                          ? "1 thread"
-                          : `${totalCount} threads`}
-                </span>
                 <div className="flex items-center gap-1">
                     <button
                         type="button"
