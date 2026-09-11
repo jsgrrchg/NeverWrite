@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
     getChatEditorWidths,
     MIN_CHAT_EDITOR_WIDTH,
@@ -15,122 +15,108 @@ export function ChatEditorWorkspace({ children }: { children: ReactNode }) {
     const visible = useLayoutStore((state) => state.chatPaneVisible);
     const preferred = useLayoutStore((state) => state.chatPaneWidth);
     const side = useLayoutStore(selectChatPaneSide);
-    const focused = useChatTabsStore((state) => state.focusedSurface);
     const hasEditorTabs = useEditorStore((state) =>
         state.panes.some((pane) => pane.tabs.length > 0),
     );
+    const [resizing, setResizing] = useState(false);
     const drag = useRef<{ x: number; width: number } | null>(null);
-    const { narrow, chatWidth } = getChatEditorWidths(width ?? 1200, preferred);
+    const { chatWidth } = getChatEditorWidths(width ?? 1200, preferred);
     const showChat =
-        !hasEditorTabs || (visible && (!narrow || focused === "chat"));
+        !hasEditorTabs || visible;
     const showEditor =
-        hasEditorTabs && (!visible || !narrow || focused === "editor");
+        hasEditorTabs;
     return (
         <div ref={ref} className="flex h-full min-h-0 min-w-0 flex-col">
-            {hasEditorTabs && (!visible || narrow) && (
-                <div
-                    className="flex shrink-0 justify-end gap-3 px-3 py-1 text-xs"
-                    style={{ background: "var(--bg-secondary)" }}
-                >
-                    <button
-                        type="button"
-                        aria-pressed={showEditor}
-                        onClick={() =>
-                            useChatTabsStore
-                                .getState()
-                                .setFocusedSurface("editor")
-                        }
-                    >
-                        Editor
-                    </button>
-                    <button
-                        type="button"
-                        aria-pressed={showChat}
-                        onClick={() => {
-                            useLayoutStore.getState().setChatPaneVisible(true);
-                            useChatTabsStore
-                                .getState()
-                                .setFocusedSurface("chat");
-                        }}
-                    >
-                        Chat
-                    </button>
-                </div>
-            )}
             <div className="flex min-h-0 min-w-0 flex-1">
                 <div
                     data-testid="dedicated-chat-surface"
                     className="min-h-0 min-w-0 shrink-0"
                     style={{
                         display: showChat ? undefined : "none",
-                        width: !hasEditorTabs || narrow ? "100%" : chatWidth,
+                        width: !hasEditorTabs ? "100%" : chatWidth,
                         order: side === "left" ? 0 : 2,
                     }}
                 >
                     <AIChatPane />
                 </div>
                 <div
-                    role="separator"
-                    aria-label="Resize chat pane"
-                    aria-orientation="vertical"
-                    aria-valuenow={Math.round(chatWidth)}
-                    tabIndex={0}
-                    className="shrink-0 cursor-col-resize touch-none"
+                    className="relative shrink-0"
                     style={{
-                        display:
-                            hasEditorTabs && visible && !narrow
-                                ? undefined
-                                : "none",
-                        width: 6,
+                        display: hasEditorTabs && visible ? undefined : "none",
+                        width: 1,
                         order: 1,
-                        background: "var(--border)",
+                        zIndex: 10,
+                        background: "color-mix(in srgb, var(--border) 40%, transparent)",
                     }}
-                    onKeyDown={(event) => {
-                        if (
-                            event.key !== "ArrowLeft" &&
-                            event.key !== "ArrowRight"
-                        )
-                            return;
-                        event.preventDefault();
-                        const delta =
-                            (event.key === "ArrowRight" ? 20 : -20) *
-                            (side === "left" ? 1 : -1);
-                        useLayoutStore
-                            .getState()
-                            .setChatPaneWidth(chatWidth + delta);
-                    }}
-                    onPointerDown={(event) => {
-                        event.preventDefault();
-                        drag.current = { x: event.clientX, width: chatWidth };
-                        event.currentTarget.setPointerCapture(event.pointerId);
-                    }}
-                    onPointerMove={(event) => {
-                        if (!drag.current) return;
-                        const next =
-                            drag.current.width +
-                            (event.clientX - drag.current.x) *
+                >
+                    <div
+                        role="separator"
+                        aria-label="Resize chat pane"
+                        aria-orientation="vertical"
+                        aria-valuenow={Math.round(chatWidth)}
+                        tabIndex={0}
+                        className="group/resizer absolute h-full cursor-col-resize touch-none outline-none"
+                        style={{ left: -4.5, width: 10 }}
+                        onKeyDown={(event) => {
+                            if (
+                                event.key !== "ArrowLeft" &&
+                                event.key !== "ArrowRight"
+                            )
+                                return;
+                            event.preventDefault();
+                            const delta =
+                                (event.key === "ArrowRight" ? 20 : -20) *
                                 (side === "left" ? 1 : -1);
-                        useLayoutStore
-                            .getState()
-                            .setChatPaneWidth(
-                                Math.min(
-                                    next,
-                                    (width ?? 1200) - MIN_CHAT_EDITOR_WIDTH - 6,
-                                ),
-                            );
-                    }}
-                    onPointerUp={() => {
-                        drag.current = null;
-                    }}
-                    onPointerCancel={() => {
-                        drag.current = null;
-                    }}
-                    onLostPointerCapture={() => {
-                        drag.current = null;
-                    }}
-                />
+                            useLayoutStore
+                                .getState()
+                                .setChatPaneWidth(chatWidth + delta);
+                        }}
+                        onPointerDown={(event) => {
+                            event.preventDefault();
+                            setResizing(true);
+                            drag.current = { x: event.clientX, width: chatWidth };
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                        }}
+                        onPointerMove={(event) => {
+                            if (!drag.current) return;
+                            const next =
+                                drag.current.width +
+                                (event.clientX - drag.current.x) *
+                                    (side === "left" ? 1 : -1);
+                            useLayoutStore
+                                .getState()
+                                .setChatPaneWidth(
+                                    Math.min(
+                                        next,
+                                        (width ?? 1200) - MIN_CHAT_EDITOR_WIDTH - 1,
+                                    ),
+                                );
+                        }}
+                        onPointerUp={() => {
+                            drag.current = null;
+                            setResizing(false);
+                        }}
+                        onPointerCancel={() => {
+                            drag.current = null;
+                            setResizing(false);
+                        }}
+                        onLostPointerCapture={() => {
+                            drag.current = null;
+                            setResizing(false);
+                        }}
+                    >
+                        <div
+                            aria-hidden="true"
+                            className="absolute inset-y-0 left-1/2 w-[3px] -translate-x-1/2 rounded-full opacity-0 transition-opacity duration-150 group-hover/resizer:opacity-100 group-focus-visible/resizer:opacity-100"
+                            style={{
+                                background: "color-mix(in srgb, var(--accent) 40%, var(--border))",
+                                opacity: resizing ? 1 : undefined,
+                            }}
+                        />
+                    </div>
+                </div>
                 <div
-                    className="min-h-0 min-w-0 flex-1"
+                    className="min-h-0 min-w-0 flex-1 overflow-hidden"
                     data-testid="document-workspace-surface"
                     style={{
                         display: showEditor ? undefined : "none",
