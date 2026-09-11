@@ -114,7 +114,6 @@ import {
     resolveNoteTargetForPath,
 } from "../../editor/editorTargetResolver";
 import { getExternalReloadBaselineCandidate } from "../../editor/externalReloadBaselineCache";
-import { useChatFoldersStore } from "./chatFoldersStore";
 import { usePinnedChatsStore } from "./pinnedChatsStore";
 import { useChatTabsStore } from "./chatTabsStore";
 import {
@@ -3537,9 +3536,6 @@ function migrateSessionLocalState(
     replaceChatRowUiSessionId(fromSessionId, toSession.sessionId);
     useArchivedChatsStore.getState().replaceSessionId(fromSessionId, getArchiveIdentity(toSession));
     usePinnedChatsStore
-        .getState()
-        .replaceSessionId(fromSessionId, toSession.sessionId);
-    useChatFoldersStore
         .getState()
         .replaceSessionId(fromSessionId, toSession.sessionId);
     useChatTabsStore
@@ -15912,7 +15908,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             useArchivedChatsStore.getState().unarchive(historySessionId);
             useArchivedChatsStore.getState().unarchive(sessionId);
             usePinnedChatsStore.getState().unpin(sessionId);
-            useChatFoldersStore.getState().moveSession(sessionId, null);
             useEditorStore.getState().closeReview(sessionId);
             useEditorStore.getState().closeChat(sessionId);
             useChatTabsStore.getState().removeTabsForSession(sessionId);
@@ -16024,7 +16019,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             if (useVaultStore.getState().vaultPath !== vaultPath) return;
             useArchivedChatsStore.getState().reconcile([], true);
             usePinnedChatsStore.getState().reconcile([]);
-            useChatFoldersStore.getState().reconcile([]);
             // Close all review and chat tabs before clearing sessions
             const editor = useEditorStore.getState();
             for (const sessionId of Object.keys(get().sessionsById)) {

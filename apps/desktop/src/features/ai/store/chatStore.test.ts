@@ -40,7 +40,6 @@ import {
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
-import { useChatFoldersStore } from "./chatFoldersStore";
 import { usePinnedChatsStore } from "./pinnedChatsStore";
 import {
     disposeChatStoreRuntime,
@@ -592,11 +591,6 @@ describe("chatStore", () => {
         resetChatStore();
         resetChatTabsStore();
         usePinnedChatsStore.setState({ entries: {} });
-        useChatFoldersStore.setState({
-            folders: {},
-            sessionFolderIds: {},
-            collapsedFolderIds: [],
-        });
         resetExternalReloadBaselinesForTests();
         vi.clearAllMocks();
         delete (globalThis as Record<string, unknown>)
@@ -1987,16 +1981,9 @@ describe("chatStore", () => {
         );
     });
 
-    it("keeps sidebar pins and folders when a provisional session becomes live", async () => {
+    it("keeps sidebar pins when a provisional session becomes live", async () => {
         const provisionalSessionId = "pending-session";
         const liveSessionId = sessionPayload.session_id;
-        const folderId = useChatFoldersStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useChatFoldersStore
-            .getState()
-            .moveSession(provisionalSessionId, folderId);
         usePinnedChatsStore.getState().pin(provisionalSessionId);
         useChatStore.setState((state) => ({
             ...state,
@@ -2028,9 +2015,6 @@ describe("chatStore", () => {
             [liveSessionId]: expect.objectContaining({
                 pinnedAt: expect.any(Number),
             }),
-        });
-        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
-            [liveSessionId]: folderId,
         });
     });
 
@@ -2528,8 +2512,6 @@ describe("chatStore", () => {
         useChatStore.setState({ sessionsById: { [session.sessionId]: session }, sessionOrder: [session.sessionId] });
         useArchivedChatsStore.getState().archive(session.historySessionId!);
         usePinnedChatsStore.getState().pin(session.sessionId);
-        const folder = useChatFoldersStore.getState().createFolder("Research")!;
-        useChatFoldersStore.getState().moveSession(session.sessionId, folder);
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_delete_session_history") throw new Error("disk unavailable");
             return defaultInvokeImplementation(command, args);
@@ -2537,13 +2519,11 @@ describe("chatStore", () => {
         await expect(useChatStore.getState().deleteSession(session.sessionId)).rejects.toThrow("disk unavailable");
         expect(useArchivedChatsStore.getState().isArchived(session.historySessionId!)).toBe(true);
         expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeDefined();
-        expect(useChatFoldersStore.getState().sessionFolderIds[session.sessionId]).toBe(folder);
         expect(useChatStore.getState().sessionsById[session.sessionId]).toBeDefined();
         invokeMock.mockImplementation(defaultInvokeImplementation);
         await useChatStore.getState().deleteSession(session.sessionId);
         expect(useArchivedChatsStore.getState().isArchived(session.historySessionId!)).toBe(false);
         expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeUndefined();
-        expect(useChatFoldersStore.getState().sessionFolderIds[session.sessionId]).toBeUndefined();
         expect(useChatStore.getState().sessionsById[session.sessionId]).toBeUndefined();
     });
 
