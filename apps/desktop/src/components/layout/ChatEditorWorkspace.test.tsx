@@ -1,12 +1,19 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getChatEditorWidths, createDefaultLayoutState, readHydratedLayoutSnapshot, selectChatPaneSide, useLayoutStore } from "../../app/store/layoutStore";
+import { useEditorStore } from "../../app/store/editorStore";
+import { useChatTabsStore } from "../../features/ai/store/chatTabsStore";
 import { ChatEditorWorkspace } from "./ChatEditorWorkspace";
 import { safeStorageClear } from "../../app/utils/safeStorage";
 
 vi.mock("../../features/ai/components/AIChatPane", () => ({ AIChatPane: () => <input aria-label="Draft" defaultValue="Keep me" /> }));
 describe("dedicated chat layout", () => {
-    beforeEach(() => { safeStorageClear(); useLayoutStore.setState(createDefaultLayoutState()); });
+    beforeEach(() => {
+        safeStorageClear();
+        useLayoutStore.setState(createDefaultLayoutState());
+        useChatTabsStore.getState().reset();
+        useEditorStore.getState().hydrateTabs([], null);
+    });
     it("follows Agents, permits an override and restores following", () => {
         const layout = useLayoutStore.getState();
         layout.moveSidebarView("agents", "right");
@@ -19,6 +26,7 @@ describe("dedicated chat layout", () => {
         expect(readHydratedLayoutSnapshot().chatPaneWidth).toBe(700);
     });
     it("keeps the composer mounted when moving, resizing and hiding", () => {
+        useEditorStore.getState().openNote("note-1", "Note", "# Note");
         render(<ChatEditorWorkspace><span>Editor contents</span></ChatEditorWorkspace>);
         const input = screen.getByRole("textbox", { name: "Draft" });
         fireEvent.change(input, { target: { value: "My draft" } });
@@ -35,5 +43,34 @@ describe("dedicated chat layout", () => {
         expect(getChatEditorWidths(800, 700)).toEqual({ narrow: false, chatWidth: 474 });
         expect(getChatEditorWidths(500, 700)).toEqual({ narrow: true, chatWidth: 500 });
         expect(useLayoutStore.getState().chatPaneWidth).toBe(480);
+    });
+    it("uses the full workspace for chat until an editor tab opens", () => {
+        render(<ChatEditorWorkspace><span>Editor contents</span></ChatEditorWorkspace>);
+
+        const chat = screen.getByTestId("dedicated-chat-surface");
+        const editor = screen.getByTestId("document-workspace-surface");
+        const separator = screen.getByRole("separator", { hidden: true });
+
+        expect(chat).toHaveStyle({ width: "100%" });
+        expect(editor).toHaveStyle({ display: "none" });
+        expect(separator).toHaveStyle({ display: "none" });
+
+        act(() => {
+            useEditorStore.getState().openNote("note-1", "Note", "# Note");
+        });
+
+        expect(chat).toHaveStyle({ width: "480px" });
+        expect(editor.style.display).toBe("");
+        expect(separator.style.display).toBe("");
+
+        act(() => {
+            useEditorStore
+                .getState()
+                .closeTab(useEditorStore.getState().activeTabId!);
+        });
+
+        expect(chat).toHaveStyle({ width: "100%" });
+        expect(editor).toHaveStyle({ display: "none" });
+        expect(separator).toHaveStyle({ display: "none" });
     });
 });

@@ -5,6 +5,7 @@ import {
     selectChatPaneSide,
     useLayoutStore,
 } from "../../app/store/layoutStore";
+import { useEditorStore } from "../../app/store/editorStore";
 import { AIChatPane } from "../../features/ai/components/AIChatPane";
 import { useChatTabsStore } from "../../features/ai/store/chatTabsStore";
 import { useElementWidth } from "./useElementWidth";
@@ -15,13 +16,18 @@ export function ChatEditorWorkspace({ children }: { children: ReactNode }) {
     const preferred = useLayoutStore((state) => state.chatPaneWidth);
     const side = useLayoutStore(selectChatPaneSide);
     const focused = useChatTabsStore((state) => state.focusedSurface);
+    const hasEditorTabs = useEditorStore((state) =>
+        state.panes.some((pane) => pane.tabs.length > 0),
+    );
     const drag = useRef<{ x: number; width: number } | null>(null);
     const { narrow, chatWidth } = getChatEditorWidths(width ?? 1200, preferred);
-    const showChat = visible && (!narrow || focused === "chat");
-    const showEditor = !visible || !narrow || focused === "editor";
+    const showChat =
+        !hasEditorTabs || (visible && (!narrow || focused === "chat"));
+    const showEditor =
+        hasEditorTabs && (!visible || !narrow || focused === "editor");
     return (
         <div ref={ref} className="flex h-full min-h-0 min-w-0 flex-col">
-            {(!visible || narrow) && (
+            {hasEditorTabs && (!visible || narrow) && (
                 <div
                     className="flex shrink-0 justify-end gap-3 px-3 py-1 text-xs"
                     style={{ background: "var(--bg-secondary)" }}
@@ -57,7 +63,7 @@ export function ChatEditorWorkspace({ children }: { children: ReactNode }) {
                     className="min-h-0 min-w-0 shrink-0"
                     style={{
                         display: showChat ? undefined : "none",
-                        width: narrow ? "100%" : chatWidth,
+                        width: !hasEditorTabs || narrow ? "100%" : chatWidth,
                         order: side === "left" ? 0 : 2,
                     }}
                 >
@@ -71,7 +77,10 @@ export function ChatEditorWorkspace({ children }: { children: ReactNode }) {
                     tabIndex={0}
                     className="shrink-0 cursor-col-resize touch-none"
                     style={{
-                        display: visible && !narrow ? undefined : "none",
+                        display:
+                            hasEditorTabs && visible && !narrow
+                                ? undefined
+                                : "none",
                         width: 6,
                         order: 1,
                         background: "var(--border)",
