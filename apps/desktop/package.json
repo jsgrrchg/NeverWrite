@@ -38,7 +38,7 @@
         "electron:release:local": "node scripts/build-electron-release.mjs",
         "test:claude-runtime": "node --test scripts/claude-runtime-contracts.test.mjs",
         "claude:prepare": "node scripts/prepare-claude-runtime.mjs",
-        "test:claude-preparation": "node --test scripts/claude-runtime.test.mjs",
+        "test:claude-preparation": "node --test scripts/claude-runtime.test.mjs scripts/claude-upstream-watch.test.mjs",
         "claude:smoke": "node scripts/smoke-claude-runtime.mjs"
     },
     "dependencies": {

@@ -258,7 +258,7 @@ These `NEVERWRITE_*` variables are relevant to AI runtime setup and packaging:
 | `NEVERWRITE_EMBEDDED_NODE_BIN` | Packaging override for the embedded Node binary used by bundled Claude. |
 | `NEVERWRITE_EMBEDDED_NODE_BIN_ARM64` / `NEVERWRITE_EMBEDDED_NODE_BIN_X64` | Packaging overrides for macOS universal embedded Node inputs. |
 | `NEVERWRITE_EMBEDDED_NODE_VERSION` | Embedded Node download version used by sidecar staging when no Node binary override is supplied. |
-| `NEVERWRITE_CLAUDE_EMBEDDED_DIR` | Packaging override for the Claude embedded runtime source directory. |
+| `NEVERWRITE_CLAUDE_EMBEDDED_DIR` | Packaging override for a complete prepared Claude runtime at the pinned baseline, with native packages for the target. |
 | `NEVERWRITE_ELECTRON_RELEASE_TARGET` | Default Rust target for `stage-electron-sidecar.mjs`. |
 | `NEVERWRITE_ELECTRON_OUTPUT_DIR` | Electron release output directory override. |
 
@@ -315,9 +315,13 @@ Runtime staging is handled by
 - Builds or resolves the target-specific Codex runtime pair: `codex-acp` and `codex-code-mode-host`. Both are built by one Cargo invocation with the committed lockfile and the same verified V8 archive/binding pair.
 - Inspects Mach-O, PE, or ELF headers before staging so host-architecture artifacts cannot be reused accidentally for a cross-compiled target. macOS slices are checked before `lipo`, and the produced universal binaries are checked again afterward.
 - Downloads or uses an overridden embedded Node runtime.
-- Resolves the Claude embedded runtime from `apps/desktop/embedded/claude-agent-acp`,
-  `vendor/Claude-agent-acp-upstream`, or `NEVERWRITE_CLAUDE_EMBEDDED_DIR`.
-- Installs required Claude production dependencies and target-specific optional packages.
+- Prepares the pinned Claude npm dependency from `apps/desktop/runtimes/claude/`,
+  preserving its TaskList patch and locked production dependencies. Explicit
+  `NEVERWRITE_CLAUDE_EMBEDDED_DIR` or `apps/desktop/embedded/claude-agent-acp`
+  overrides must already be complete prepared runtimes; staging validates them
+  without installing into the override directory.
+- Includes and verifies target-specific native Claude packages. Preparation is
+  shared with development and writes `.cache/claude-runtime/<target>/`.
 - Copies resources to `apps/desktop/out/native-backend/`.
 
 The Electron builder config stages `apps/desktop/out/native-backend/` into the
@@ -331,13 +335,20 @@ release-critical resources:
 - `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
 - `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
 
+The hook also checks the patched JavaScript baseline, production package versions,
+and native Claude CLI architectures. The packaged-sidecar smoke exercises Claude
+with the embedded Node, a local Anthropic mock, an actual file Read, a final ACP
+assistant response and cancellation. See the
+[runtime maintenance guide](../apps/desktop/runtimes/claude/README.md) for the
+preparer, override contract and cross-platform smoke matrix.
+
 The release workflow [`release-desktop.yml`](../.github/workflows/release-desktop.yml) builds the lockfile-pinned, target-specific Codex runtime pair, requires checksum-verified V8 artifacts for both binaries, downloads embedded Node for the target, exports the bundle override variables, and verifies macOS universal binaries for the native backend, both Codex binaries, and embedded Node.
 
 Current packaging expectations:
 
 - Codex is bundled as a native runtime pair: the `codex-acp` sidecar and the
   `codex-code-mode-host` companion.
-- Claude is bundled through embedded Node plus vendored runtime files.
+- Claude is bundled through embedded Node plus the prepared npm runtime.
 - Grok is integrated but not bundled by default.
 - Kilo is integrated but not bundled by default.
 - OpenCode is integrated but not bundled by default.
@@ -414,8 +425,8 @@ GUI-launched apps often inherit a different PATH than interactive shells.
 
 ### Packaged vs Development Differences
 
-Development can resolve Codex and Claude from vendor paths if those artifacts
-exist. Packaged builds should resolve Codex and Claude from
+Development resolves Codex from its vendor binary and Claude from its prepared
+host-target cache (`npm run claude:prepare`). Packaged builds resolve both from
 `NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR`, which Electron sets to the staged
 resources directory. Grok, Kilo, and OpenCode still require an external
 CLI or explicit runtime override in both development and packaged builds.

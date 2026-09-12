@@ -59,3 +59,31 @@ claiming platform-wide release validation.
 Do not update the runtime version during the distribution migration. A future
 update must compare the full production graph and rerun contracts and packaged
 smokes. Remove the patch only after its tests pass on unmodified upstream output.
+
+## Product compatibility
+
+NeverWrite retains runtime ID `claude-acp`, persisted history and configuration,
+the existing queue, authentication probes and provider routing. The backend
+advertises filesystem access and form/URL elicitation. It does not enable native
+subagent sessions, AIR async tasks, legacy subagent transcripts or steering.
+Claude native resume remains disabled; forks use NeverWrite's persisted history.
+
+The client consumes session titles while preserving explicit manual renames,
+generic model/effort/mode options, compaction tool activity and usage Markdown.
+The push-only authStatus, goal, AIR session-failure and JetBrains file-audit
+extensions remain outside the current client integration. NeverWrite's own
+filesystem/diff tracking remains authoritative for inline review and accept/reject.
+Provider routing is applied before session creation, preserving upstream's
+settings-tier enforcement against competing project/user routing settings.
+
+Relevant existing validation includes `cargo test -p neverwrite-native-backend`,
+desktop chat/history/settings/review tests, `npm run electron:ai-runtime:smoke`,
+and the runtime-specific contracts above. A real-account login/provider check
+is separate from the deterministic, credential-free packaged smoke.
+
+## Rollback
+
+Revert the distribution migration as one unit: dependency manifest/lockfile,
+patch, preparer, resolver, packaging, CI and snapshot deletion. Rebuild the app
+from that revision. Never mix an adapter with another revision's SDK/native
+packages. This migration introduces no persisted-data schema changes.

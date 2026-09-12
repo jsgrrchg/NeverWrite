@@ -45,6 +45,7 @@ apps/
     src-electron/       Electron main/preload/shared IPC code
     native-backend/     Rust sidecar binary used by the desktop app
     scripts/            Desktop build, sidecar staging, smoke tests, packaging
+    runtimes/claude/     Pinned npm runtime, lockfile, TaskList patch, compatibility baseline
   web-clipper/          WXT + React browser extension
 
 crates/
@@ -56,7 +57,6 @@ crates/
 
 vendor/
   codex-acp/            Vendored Codex ACP adapter used for release builds
-  Claude-agent-acp-upstream/
                         Vendored Claude ACP runtime snapshot and dist output
   acp12/                Vendored legacy ACP crates used by the native backend
                         for Grok compatibility

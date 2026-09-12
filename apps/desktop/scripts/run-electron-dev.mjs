@@ -1,5 +1,4 @@
 import { execFile, spawn } from "node:child_process";
-import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

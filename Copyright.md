@@ -274,21 +274,21 @@ The bundled dictionary metadata lives in
 
 ---
 
-## Vendored Dependencies
+## Embedded Runtime Dependencies
 
 | Package                          | License     | Source                                  |
 | -------------------------------- | ----------- | --------------------------------------- |
 | codex-acp 0.16.0                 | Apache-2.0  | github.com/zed-industries/codex-acp     |
 | OpenAI Codex runtime rust-v0.150.0 | Apache-2.0 | github.com/openai/codex                 |
-| Claude-agent-acp-upstream        | Apache-2.0  | Anthropic                               |
+| @agentclientprotocol/claude-agent-acp 0.75.1 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
 
 ---
 
-## Modified Vendored Code
+## Modified Third-Party Code
 
-The following vendored packages have been modified by NeverWrite contributors.
+The following embedded packages have been modified by NeverWrite contributors.
 As required by the Apache-2.0 license, modifications are documented below.
 
 ### `vendor/codex-acp` — Zed Industries (Apache-2.0)
@@ -307,14 +307,18 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 | `src/lib.rs`, `src/main.rs` | Adjusted crate wiring and compile limits for the promoted runtime graph |
 | `vendor/codex-utils-pty/` | Maintains the standalone PTY snapshot on the upstream 0.150.0 source, including Unix process-group and Windows ConPTY lifecycle hardening |
 
-### `vendor/Claude-agent-acp-upstream` — Anthropic (Apache-2.0)
+### `@agentclientprotocol/claude-agent-acp` — Zed Industries (Apache-2.0)
 
-| File                  | Nature of changes                                              |
-| --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.75.1` (`3e23c5b960b66a6d2c892e7524c952e731c076a7`) with the bounded NeverWrite modifications listed below |
-| `src/tools.ts`        | Replaced the ambiguous textual `TaskList` fallback regex with linear string parsing to prevent excessive backtracking while preserving owners, dependencies, and malformed suffixes as subject text |
-| `src/tests/tools.test.ts` | Added regression coverage for owner/dependency parsing and adversarial malformed `TaskList` output |
-| `dist/`               | Generated from the locally modified vendored source and force-added because upstream ignores build output |
+The published npm dependency is pinned to `0.75.1`, upstream commit
+`3e23c5b960b66a6d2c892e7524c952e731c076a7`. Its source and generated output are
+not committed to this repository. The runtime preparer preserves the published
+license and applies the following local modification before packaging:
+
+| File | Nature of changes |
+| ---- | ----------------- |
+| `dist/tools.js` | Replaces the ambiguous textual `TaskList` fallback regex with linear string parsing, preserving owners, dependencies, and malformed suffixes as subject text. |
+| `apps/desktop/runtimes/claude/patches/` | Stores the bounded patch and expected before/after checksums. |
+| `apps/desktop/scripts/claude-runtime-contracts.test.mjs` | Tests the actual installed parser, including adversarial input under an external timeout. |
 
 > All original copyright notices and license headers have been preserved.
 > The full text of the Apache-2.0 license is available at
