@@ -5,6 +5,19 @@ This private installation manifest pins the published Claude ACP adapter to
 snapshot; `baseline.json` records that comparison without retaining upstream
 source. The only additional runtime package is the adapter itself.
 
+Development and release staging use the same preparer. The native backend keeps
+its existing override precedence and serialized runtime source values; its local
+Claude fallback now points at the generated host-target directory. Releases still
+ship Node and `embedded/claude-agent-acp/dist/index.js` outside the ASAR.
+
+`NEVERWRITE_CLAUDE_EMBEDDED_DIR` remains the highest-priority staging override,
+followed by `apps/desktop/embedded/claude-agent-acp`. These now designate a complete
+prepared runtime at the pinned baseline, including native packages for the target.
+They are validated without modification. Prepare an override with this script
+and copy its output; a source-only checkout requiring `npm ci` is no longer a
+staging input. Runtime executable overrides in settings and
+`NEVERWRITE_CLAUDE_ACP_BIN` retain their existing behavior.
+
 From `apps/desktop`, run `npm ci` then `npm run claude:prepare`. Preparation uses
 an isolated lockfile install, includes native optional packages for the requested
 target, applies the TaskList patch explicitly, and generates

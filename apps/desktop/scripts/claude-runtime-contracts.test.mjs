@@ -5,12 +5,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { claudeRuntimePath } from "./claude-runtime.mjs";
 
-const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const runtimeRoot = process.env.NEVERWRITE_CLAUDE_CONTRACT_RUNTIME
-    || path.resolve(appRoot, "../../vendor/Claude-agent-acp-upstream");
+    || claudeRuntimePath();
 const baseline = JSON.parse(await fs.readFile(
     new URL("../runtimes/claude/baseline.json", import.meta.url), "utf8",
 ));

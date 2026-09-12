@@ -208,3 +208,14 @@ export async function prepareClaudeRuntime(target = claudeHostTarget(), { force 
         await fs.rm(lockDirectory, { recursive: true, force: true });
     }
 }
+
+export async function resolveClaudeRuntimeSource(target, { configuredSource, embeddedSource } = {}) {
+    // Explicit overrides never silently fall back to another installation.
+    const source = configuredSource || (embeddedSource
+        && await fs.stat(embeddedSource).catch(() => null) ? embeddedSource : null);
+    if (source) {
+        await validateClaudeRuntime(source, target);
+        return source;
+    }
+    return prepareClaudeRuntime(target);
+}

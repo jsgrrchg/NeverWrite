@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import {
     applyClaudePatch, claudeInputs, claudePackage, normalizedRuntimeHash,
-    requiredClaudePlatformPackages, validateClaudeRuntime,
+    requiredClaudePlatformPackages, resolveClaudeRuntimeSource, validateClaudeRuntime,
 } from "./claude-runtime.mjs";
 
 test("isolated lock retains every baseline production version and integrity", async () => {
@@ -82,4 +82,12 @@ test("patch rejects a mismatched published input before running patch-package", 
     await fs.writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ version: "9.9.9" }));
     const { checksums } = await claudeInputs("x86_64-unknown-linux-gnu");
     await assert.rejects(applyClaudePatch(root, checksums), /exact, unmodified/);
+});
+
+test("an incomplete explicit override fails instead of selecting the cached runtime", async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-override-"));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    await assert.rejects(resolveClaudeRuntimeSource("x86_64-unknown-linux-gnu", {
+        configuredSource: root,
+    }), /ENOENT/);
 });

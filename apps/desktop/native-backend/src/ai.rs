@@ -8323,12 +8323,14 @@ fn resolve_base_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> Reso
     }
 
     if runtime_id == CLAUDE_RUNTIME_ID {
-        let vendor = claude_vendor_entry_path();
-        if vendor.is_file() && claude_runtime_dependencies_ready(&vendor) {
+        if let Some(entry) = claude_dependency_entry_path()
+            .filter(|entry| entry.is_file() && claude_runtime_dependencies_ready(entry))
+        {
             return ResolvedAcpCommand {
-                display: Some(vendor.display().to_string()),
+                display: Some(entry.display().to_string()),
                 program: Some(PathBuf::from("node")),
-                args: vec![vendor.display().to_string()],
+                args: vec![entry.display().to_string()],
+                // Keep the serialized local-runtime source compatible with saved UI state.
                 source: AiRuntimeBinarySource::Vendor,
             };
         }
@@ -9480,9 +9482,26 @@ fn codex_vendor_binary_path() -> PathBuf {
         .join(runtime_binary_name("codex-acp"))
 }
 
-fn claude_vendor_entry_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../vendor/Claude-agent-acp-upstream/dist/index.js")
+fn claude_dependency_target(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("windows", "aarch64") => Some("aarch64-pc-windows-msvc"),
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        _ => None,
+    }
+}
+
+fn claude_dependency_entry_path() -> Option<PathBuf> {
+    let target = claude_dependency_target(std::env::consts::OS, std::env::consts::ARCH)?;
+    Some(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../.cache/claude-runtime")
+            .join(target)
+            .join("dist/index.js"),
+    )
 }
 
 fn claude_runtime_dependencies_ready(entry: &Path) -> bool {
@@ -11295,6 +11314,29 @@ mod tests {
         let empty = normalize_additional_roots(Some(vec![]));
         assert!(empty.kept.is_empty());
         assert!(empty.discarded.is_empty());
+    }
+
+    #[test]
+    fn claude_dependency_paths_match_prepared_host_targets() {
+        for (os, arch, target) in [
+            ("macos", "aarch64", "aarch64-apple-darwin"),
+            ("macos", "x86_64", "x86_64-apple-darwin"),
+            ("windows", "aarch64", "aarch64-pc-windows-msvc"),
+            ("windows", "x86_64", "x86_64-pc-windows-msvc"),
+            ("linux", "aarch64", "aarch64-unknown-linux-gnu"),
+            ("linux", "x86_64", "x86_64-unknown-linux-gnu"),
+        ] {
+            assert_eq!(claude_dependency_target(os, arch), Some(target));
+        }
+        assert_eq!(claude_dependency_target("linux", "unknown"), None);
+        let entry = claude_dependency_entry_path().unwrap();
+        let target =
+            claude_dependency_target(std::env::consts::OS, std::env::consts::ARCH).unwrap();
+        assert!(entry.ends_with(
+            Path::new(".cache/claude-runtime")
+                .join(target)
+                .join("dist/index.js")
+        ));
     }
 
     #[test]

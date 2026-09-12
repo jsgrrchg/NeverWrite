@@ -1,5 +1,4 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -7,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { isWindows } from "./common.mjs";
+import { prepareClaudeRuntime } from "./claude-runtime.mjs";
 import {
     parseRustcHostTarget,
     resolveCodexV8CargoEnvironment,
@@ -20,11 +20,6 @@ import {
 
 const rootDir = fileURLToPath(new URL("..", import.meta.url));
 const workspaceRoot = path.resolve(rootDir, "../..");
-const claudeRuntimeDir = path.join(
-    workspaceRoot,
-    "vendor",
-    "Claude-agent-acp-upstream",
-);
 const rendererUrl = "http://127.0.0.1:5174";
 const execFileAsync = promisify(execFile);
 
@@ -77,55 +72,6 @@ function runOnce(command, args, env = {}, cwd = rootDir) {
     });
 }
 
-async function ensureClaudeRuntimeDependencies() {
-    const packageLockPath = path.join(claudeRuntimeDir, "package-lock.json");
-    const packageLock = await fs.readFile(packageLockPath);
-    const expectedStamp = createHash("sha256")
-        .update(packageLock)
-        .digest("hex");
-    const stampPath = path.join(
-        claudeRuntimeDir,
-        "node_modules",
-        ".neverwrite-production-lock",
-    );
-    const requiredPackages = [
-        "@agentclientprotocol/sdk",
-        "@anthropic-ai/claude-agent-sdk",
-        "zod",
-    ];
-    const installedStamp = await fs.readFile(stampPath, "utf8").catch(() => "");
-    const dependenciesPresent = await Promise.all(
-        requiredPackages.map((packageName) =>
-            fs
-                .access(
-                    path.join(
-                        claudeRuntimeDir,
-                        "node_modules",
-                        packageName,
-                        "package.json",
-                    ),
-                )
-                .then(() => true)
-                .catch(() => false),
-        ),
-    );
-    if (
-        installedStamp.trim() === expectedStamp &&
-        dependenciesPresent.every(Boolean)
-    ) {
-        return;
-    }
-
-    console.log("Installing Claude ACP production dependencies.");
-    await runOnce(
-        "npm",
-        ["ci", "--omit=dev", "--include=optional", "--no-audit", "--no-fund"],
-        {},
-        claudeRuntimeDir,
-    );
-    await fs.writeFile(stampPath, `${expectedStamp}\n`, "utf8");
-}
-
 function waitForRenderer() {
     return new Promise((resolve, reject) => {
         const startedAt = Date.now();
@@ -162,7 +108,7 @@ process.on("unhandledRejection", (error) => {
 });
 
 async function main() {
-    await ensureClaudeRuntimeDependencies();
+    await prepareClaudeRuntime();
 
     const { stdout: rustcVersion } = await execFileAsync("rustc", ["-vV"], {
         cwd: workspaceRoot,
