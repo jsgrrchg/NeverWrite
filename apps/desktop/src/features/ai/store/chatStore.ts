@@ -115,6 +115,7 @@ import {
 } from "../../editor/editorTargetResolver";
 import { getExternalReloadBaselineCandidate } from "../../editor/externalReloadBaselineCache";
 import { useUnreadChatsStore } from "./unreadChatsStore";
+import { reconcileInheritedAcpOptions } from "../acpSelection";
 import { usePinnedChatsStore } from "./pinnedChatsStore";
 import { useChatTabsStore } from "./chatTabsStore";
 import {
@@ -179,6 +180,7 @@ import {
 } from "../conversationTurnRouting";
 import {
     getDefaultConversationSelection,
+    getSessionCatalogKey,
     type PreparedConversationTurnCatalog,
 } from "../conversationPickerModel";
 import {
@@ -7328,7 +7330,7 @@ const _pendingTurnSelectionByConversationId = new Map<
     string,
     ConversationSelection
 >();
-const _pendingTurnCatalogKeyByConversationId = new Map<string, string>();
+const _pendingTurnCatalogSelectionByConversationId = new Map<string, ConversationSelection>();
 // Keep probe ids on globalThis so Vite HMR cannot forget them while an async
 // ACP probe is running. Session-created/list events must never project these
 // implementation-detail sessions as user-visible conversations.
@@ -8877,9 +8879,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
     async function syncQueuedMessageConfig(
         sessionId: string,
         queuedItem: QueuedChatMessage,
+        previousOptions: AIChatSession["configOptions"],
     ) {
         let session = get().sessionsById[sessionId];
         if (!session) return null;
+        const knownOptions = [...previousOptions, ...session.configOptions];
 
         const selectedModelId =
             getModelConfigOption(session)?.value ?? session.modelId;
@@ -8929,6 +8933,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             normalizedModeId !== session.modeId &&
             normalizedModeIsAvailable
         ) {
+            knownOptions.push(...session.configOptions);
             session = await aiSetMode(sessionId, normalizedModeId);
             get().upsertSession(session);
         }
@@ -8938,16 +8943,30 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
 
         const modeOptionId = getModeConfigOption(session)?.id ?? null;
         const modelOptionId = getModelConfigOption(session)?.id ?? null;
-        for (const option of session.configOptions) {
+        let effectiveSelection = reconcileInheritedAcpOptions(
+            session,
+            {
+                runtimeId: session.runtimeId,
+                modelId: queuedItem.modelId ?? session.modelId,
+                modeId: normalizedModeId,
+                options: queuedItem.optionsSnapshot,
+            },
+            knownOptions,
+        );
+        for (const optionId of Object.keys(effectiveSelection.options)) {
+            const option = session.configOptions.find(
+                (candidate) => candidate.id === optionId,
+            );
             if (
+                !option ||
                 option.id === modeOptionId ||
                 option.id === modelOptionId ||
-                !(option.id in queuedItem.optionsSnapshot)
+                !(option.id in effectiveSelection.options)
             ) {
                 continue;
             }
 
-            const nextValue = queuedItem.optionsSnapshot[option.id];
+            const nextValue = effectiveSelection.options[option.id];
             if (
                 nextValue === option.value ||
                 !option.options.some(
@@ -8957,10 +8976,16 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 continue;
             }
 
+            knownOptions.push(...session.configOptions);
             session = await aiSetConfigOption(sessionId, option.id, nextValue);
             get().upsertSession(session);
             session = get().sessionsById[sessionId] ?? session;
             if (!session) return null;
+            effectiveSelection = reconcileInheritedAcpOptions(
+                session,
+                effectiveSelection,
+                knownOptions,
+            );
         }
 
         const normalizedSelection = normalizeConversationSelectionForSession(
@@ -8976,15 +9001,17 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         const modeOption = getModeConfigOption(session);
         const nextOptionsSnapshot = modeOption
             ? {
-                  ...queuedItem.optionsSnapshot,
+                  ...effectiveSelection.options,
                   [modeOption.id]: normalizedSelection.modeId,
               }
-            : queuedItem.optionsSnapshot;
+            : effectiveSelection.options;
         const nextQueuedItem =
             queuedItem.modeId === normalizedSelection.modeId &&
-            (!modeOption ||
-                queuedItem.optionsSnapshot[modeOption.id] ===
-                    normalizedSelection.modeId)
+            Object.keys(queuedItem.optionsSnapshot).length ===
+                Object.keys(nextOptionsSnapshot).length &&
+            Object.entries(nextOptionsSnapshot).every(
+                ([id, value]) => queuedItem.optionsSnapshot[id] === value,
+            )
                 ? queuedItem
                 : {
                       ...queuedItem,
@@ -8999,17 +9026,65 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             );
         }
 
+        // Waiting messages for this same model also own saved preferences.
+        // Reconcile them while the old catalog is still available, before a
+        // later turn can lose the evidence that these values were inherited.
+        const configuredSession = session;
+        set((state) => {
+            const queued = state.queuedMessagesBySessionId[sessionId];
+            if (!queued?.length) return state;
+            const reconciled = queued.map((item) => {
+                const selection = {
+                    runtimeId: item.runtimeId ?? configuredSession.runtimeId,
+                    modelId: item.modelId ?? configuredSession.modelId,
+                    modeId: item.modeId ?? configuredSession.modeId,
+                    options: item.optionsSnapshot,
+                };
+                const nextSelection = reconcileInheritedAcpOptions(
+                    configuredSession,
+                    selection,
+                    knownOptions,
+                );
+                return conversationSelectionsEqual(selection, nextSelection)
+                    ? item
+                    : { ...item, optionsSnapshot: nextSelection.options };
+            });
+            if (reconciled.every((item, index) => item === queued[index]))
+                return state;
+            return {
+                queuedMessagesBySessionId: {
+                    ...state.queuedMessagesBySessionId,
+                    [sessionId]: reconciled,
+                },
+            };
+        });
+
         return { session, queuedItem: nextQueuedItem };
+    }
+
+    function inheritedConversationOptions(
+        sourceSession: AIChatSession,
+        runtime: AIRuntimeDescriptor | undefined,
+    ) {
+        return [
+            ...sourceSession.configOptions,
+            ...(sourceSession.conversationBindings?.providerBindings.flatMap(
+                (binding) => binding.configOptions,
+            ) ?? []),
+            ...(runtime?.configOptions ?? []),
+        ];
     }
 
     async function configureConversationTurnSession(
         initialSession: AIChatSession,
         selection: ConversationSelection,
+        previousOptions: AIChatSession["configOptions"],
     ) {
         let session = initialSession;
-        const initiallyAvailableOptionIds = new Set(
-            initialSession.configOptions.map((option) => option.id),
-        );
+        const knownOptions = [
+            ...previousOptions,
+            ...initialSession.configOptions,
+        ];
         if (
             selection.modelId &&
             selection.modelId !==
@@ -9044,6 +9119,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             normalizedSelection.modeId !== session.modeId &&
             normalizedModeIsAvailable
         ) {
+            knownOptions.push(...session.configOptions);
             session = await aiSetMode(
                 session.sessionId,
                 normalizedSelection.modeId,
@@ -9051,34 +9127,23 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         }
         const modeOption = getModeConfigOption(session);
 
-        const effectiveSelection = {
-            ...normalizedSelection,
-            options: Object.fromEntries(
-                Object.entries({
+        let effectiveSelection = reconcileInheritedAcpOptions(
+            session,
+            {
+                ...normalizedSelection,
+                options: {
                     ...normalizedSelection.options,
                     ...(modeOption
                         ? { [modeOption.id]: normalizedSelection.modeId }
                         : {}),
-                }).filter(([optionId]) => {
-                    const isAvailable = session.configOptions.some(
-                        (option) => option.id === optionId,
-                    );
-                    // ACP option catalogs may change after selecting a model.
-                    // An option that was valid for the session's initial model
-                    // is no longer part of the requested selection when the
-                    // target model removes it. Truly unknown option ids remain
-                    // strict and are rejected by the validation below.
-                    return (
-                        isAvailable ||
-                        !initiallyAvailableOptionIds.has(optionId)
-                    );
-                }),
-            ),
-        };
+                },
+            },
+            knownOptions,
+        );
         const modelOptionId = getModelConfigOption(session)?.id ?? null;
-        for (const [optionId, value] of Object.entries(
-            effectiveSelection.options,
-        )) {
+        for (const optionId of Object.keys(effectiveSelection.options)) {
+            if (!(optionId in effectiveSelection.options)) continue;
+            const value = effectiveSelection.options[optionId];
             const option = session.configOptions.find(
                 (candidate) => candidate.id === optionId,
             );
@@ -9091,10 +9156,18 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             ) {
                 continue;
             }
+            knownOptions.push(...session.configOptions);
             session = await aiSetConfigOption(
                 session.sessionId,
                 option.id,
                 value,
+            );
+            // Each response replaces the full catalog, including dependencies
+            // of options applied earlier in this loop.
+            effectiveSelection = reconcileInheritedAcpOptions(
+                session,
+                effectiveSelection,
+                knownOptions,
             );
         }
 
@@ -9346,6 +9419,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             const configured = await configureConversationTurnSession(
                 runtimeSession,
                 resolvedSelection,
+                inheritedConversationOptions(input.sourceSession, runtime),
             );
             runtimeSession = configured.session;
             resolvedSelection = configured.selection;
@@ -9443,6 +9517,13 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         }
 
         const requestedRuntimeId = currentItem.runtimeId ?? session.runtimeId;
+        // Capture persisted metadata before resume/model mutations replace it.
+        const inheritedOptions = inheritedConversationOptions(
+            session,
+            get().runtimes.find(
+                (runtime) => runtime.runtime.id === requestedRuntimeId,
+            ),
+        );
         const initialProviderChangeRequested =
             requestedRuntimeId !== session.runtimeId;
         if (
@@ -9596,6 +9677,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const synced = await syncQueuedMessageConfig(
                     activeSessionId,
                     currentItem,
+                    inheritedOptions,
                 );
                 if (!synced) return;
                 session = synced.session;
@@ -10392,7 +10474,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     setupStatusByRuntimeId,
                 ) ??
                 defaultRuntimeId ??
-                getImplicitDefaultAcpRuntimeId(runtimes, setupStatusByRuntimeId);
+                getImplicitDefaultAcpRuntimeId(
+                    runtimes,
+                    setupStatusByRuntimeId,
+                );
 
             set({
                 runtimes,
@@ -13413,13 +13498,16 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
 
         prepareConversationTurnCatalog: async (conversationId, selection) => {
             const requestKey = getPreparedTurnCatalogKey(selection);
+            const pending =
+                _pendingTurnCatalogSelectionByConversationId.get(
+                    conversationId,
+                );
             const prepared =
                 get().preparedTurnCatalogByConversationId[conversationId];
             if (
                 (prepared &&
                     getPreparedTurnCatalogKey(prepared) === requestKey) ||
-                _pendingTurnCatalogKeyByConversationId.get(conversationId) ===
-                    requestKey
+                (pending && conversationSelectionsEqual(pending, selection))
             ) {
                 return;
             }
@@ -13449,9 +13537,15 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 return;
             }
 
-            _pendingTurnCatalogKeyByConversationId.set(
+            // Object identity also distinguishes A -> B -> A requests. An old
+            // A response must never publish over a newer request for A.
+            const pendingSelection = {
+                ...selection,
+                options: { ...selection.options },
+            };
+            _pendingTurnCatalogSelectionByConversationId.set(
                 conversationId,
-                requestKey,
+                pendingSelection,
             );
             let probeSessionId: string | null = null;
             try {
@@ -13480,14 +13574,15 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const configured = await configureConversationTurnSession(
                     probeSession,
                     discoveredSelection,
+                    inheritedConversationOptions(sourceSession, runtime),
                 );
                 const configuredSession = configured.session;
                 const resolvedSelection = configured.selection;
 
                 if (
-                    _pendingTurnCatalogKeyByConversationId.get(
+                    _pendingTurnCatalogSelectionByConversationId.get(
                         conversationId,
-                    ) !== requestKey
+                    ) !== pendingSelection
                 ) {
                     // A newer selection won the race; never publish stale
                     // options from the superseded probe.
@@ -13504,9 +13599,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     get().conversationsById[conversationId];
                 if (
                     !currentConversation ||
-                    getPreparedTurnCatalogKey(
+                    !conversationSelectionsEqual(
                         currentConversation.preferredSelection,
-                    ) !== requestKey
+                        selection,
+                    )
                 ) {
                     // Provider previews still warm the shared runtime catalog,
                     // but must not change this conversation's staged choice.
@@ -13514,10 +13610,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 }
 
                 if (
-                    !conversationSelectionsEqual(
-                        selection,
-                        resolvedSelection,
-                    )
+                    !conversationSelectionsEqual(selection, resolvedSelection)
                 ) {
                     get().setConversationTurnSelection(
                         conversationId,
@@ -13542,6 +13635,8 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         [conversationId]: {
                             runtimeId: resolvedSelection.runtimeId,
                             modelId: resolvedSelection.modelId,
+                            sourceSessionCatalogKey:
+                                getSessionCatalogKey(sourceSession),
                             models: configuredSession.models,
                             modes: configuredSession.modes,
                             configOptions: configuredSession.configOptions,
@@ -13594,11 +13689,11 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     _turnCatalogProbeSessionIds.delete(probeSessionId);
                 }
                 if (
-                    _pendingTurnCatalogKeyByConversationId.get(
+                    _pendingTurnCatalogSelectionByConversationId.get(
                         conversationId,
-                    ) === requestKey
+                    ) === pendingSelection
                 ) {
-                    _pendingTurnCatalogKeyByConversationId.delete(
+                    _pendingTurnCatalogSelectionByConversationId.delete(
                         conversationId,
                     );
                 }
@@ -16701,7 +16796,7 @@ export function resetChatStore() {
     _queueDrainLocks.clear();
     _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
-    _pendingTurnCatalogKeyByConversationId.clear();
+    _pendingTurnCatalogSelectionByConversationId.clear();
     _turnCatalogProbeSessionIds.clear();
     _pendingConversationTurnEventRouteBySessionId.clear();
     _pendingSessionPersistence.clear();
@@ -16777,7 +16872,7 @@ export function disposeChatStoreRuntime() {
     chatRuntimeInitialized = false;
     _composerPreflightOwnershipBySessionId.clear();
     _pendingStopBySessionId.clear();
-    _pendingTurnCatalogKeyByConversationId.clear();
+    _pendingTurnCatalogSelectionByConversationId.clear();
     _turnCatalogProbeSessionIds.clear();
     _pendingConversationTurnEventRouteBySessionId.clear();
     clearTrackedPersistedReconciliationTimers();
