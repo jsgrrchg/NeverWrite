@@ -40,6 +40,22 @@ Validate preparation with `npm run test:claude-preparation`. The runtime contrac
 accept `NEVERWRITE_CLAUDE_CONTRACT_RUNTIME` for comparing an explicit artifact and
 execute the actual parser from a temporary isolated copy, with a parent timeout.
 
+`npm run claude:smoke` runs the actual adapter and native Claude CLI against a
+local Anthropic mock. It checks `--version`, `--cli --version`, ACP initialization,
+session creation, an actual Read tool result, assistant output, and cancellation
+of a pending inference request. The smoke uses a temporary profile and workspace,
+synthetic credentials and an isolated runtime copy. `--runtime`, `--node` and
+`--target` select a packaged runtime unit explicitly. Processes are cleaned up
+on success or failure.
+
+The packaged-sidecar smoke invokes this same test using the bundled Node. The
+package workflow additionally runs native Claude jobs for Linux/Windows x64 and
+ARM64 and both macOS architectures. Its Intel job downloads the actual universal
+runtime packaged on the ARM runner and executes its other Node slice. Full Linux
+ARM64 application packaging remains a cross-build; the separate ARM64 runtime job
+provides native runtime execution coverage. These jobs must run remotely before
+claiming platform-wide release validation.
+
 Do not update the runtime version during the distribution migration. A future
 update must compare the full production graph and rerun contracts and packaged
 smokes. Remove the patch only after its tests pass on unmodified upstream output.

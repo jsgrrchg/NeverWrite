@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { smokeClaudeRuntime } from "./smoke-claude-runtime.mjs";
 
 import {
     isolateExecutableForSmoke,
@@ -735,6 +736,12 @@ const codeModeHostPath = await findCodeModeHostPath(sidecarPath);
 await smokeCodexAcpCodeMode(codexAcpPath, codeModeHostPath);
 await smokeMissingCodeModeHostFailsClosed(codexAcpPath, codeModeHostPath);
 await smokePing(sidecarPath);
+await smokeClaudeRuntime({
+    runtimeRoot: path.join(path.dirname(sidecarPath), "embedded", "claude-agent-acp"),
+    nodeBinary: path.join(path.dirname(sidecarPath), "embedded", "node", "bin",
+        process.platform === "win32" ? "node.exe" : "node"),
+    ...(distArch === "universal" ? { target: "universal-apple-darwin" } : {}),
+});
 
 console.log(`Packaged Codex ACP completed a code-mode turn: ${codexAcpPath}`);
 console.log(`Packaged Codex code-mode host executed JavaScript: ${codeModeHostPath}`);

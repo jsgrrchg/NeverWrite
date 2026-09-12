@@ -82,6 +82,10 @@ test("patch rejects a mismatched published input before running patch-package", 
     await fs.writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ version: "9.9.9" }));
     const { checksums } = await claudeInputs("x86_64-unknown-linux-gnu");
     await assert.rejects(applyClaudePatch(root, checksums), /exact, unmodified/);
+    await fs.writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ version: checksums.version }));
+    await fs.mkdir(path.join(packageRoot, "dist"));
+    await fs.writeFile(path.join(packageRoot, "dist/tools.js"), "unexpected published content");
+    await assert.rejects(applyClaudePatch(root, checksums), /exact, unmodified/);
 });
 
 test("an incomplete explicit override fails instead of selecting the cached runtime", async (t) => {

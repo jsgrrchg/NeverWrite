@@ -87,6 +87,14 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Prepare and verify Claude runtime
+        working-directory: apps/desktop
+        run: |
+          npm run claude:prepare
+          npm run test:claude-preparation
+          npm run test:claude-runtime
+          npm run claude:smoke
+
       - name: Run desktop lint
         working-directory: apps/desktop
         run: npm run lint

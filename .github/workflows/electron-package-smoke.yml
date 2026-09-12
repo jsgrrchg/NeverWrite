@@ -27,6 +27,51 @@ permissions:
     contents: read
 
 jobs:
+    claude-runtime:
+        name: Claude runtime (${{ matrix.target }}, ${{ matrix.runner }})
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 20
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - runner: ubuntu-22.04
+                      target: x86_64-unknown-linux-gnu
+                    - runner: ubuntu-24.04-arm
+                      target: aarch64-unknown-linux-gnu
+                    - runner: windows-latest
+                      target: x86_64-pc-windows-msvc
+                    - runner: windows-11-arm
+                      target: aarch64-pc-windows-msvc
+                    - runner: macos-latest
+                      target: universal-apple-darwin
+                    - runner: macos-15-intel
+                      target: universal-apple-darwin
+        steps:
+            - uses: actions/checkout@v6
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+                  cache: npm
+                  cache-dependency-path: |
+                      apps/desktop/package-lock.json
+                      apps/desktop/runtimes/claude/package-lock.json
+            - name: Install preparation tools
+              working-directory: apps/desktop
+              run: npm ci
+            - name: Prepare target runtime
+              working-directory: apps/desktop
+              run: npm run claude:prepare -- --target ${{ matrix.target }}
+            - name: Validate preparation and runtime contracts
+              working-directory: apps/desktop
+              shell: bash
+              run: |
+                  npm run test:claude-preparation
+                  NEVERWRITE_CLAUDE_CONTRACT_RUNTIME="$PWD/.cache/claude-runtime/${{ matrix.target }}" npm run test:claude-runtime
+            - name: Exercise the real runtime on the native architecture
+              working-directory: apps/desktop
+              run: npm run claude:smoke -- --runtime .cache/claude-runtime/${{ matrix.target }} --target ${{ matrix.target }}
+
     macos-universal:
         name: macOS Universal
         runs-on: macos-latest
@@ -139,6 +184,38 @@ jobs:
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-acp"
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-code-mode-host"
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/embedded/node/bin/node"
+                  tar -czf "$RUNNER_TEMP/claude-universal.tgz" -C "$APP_PATH/Contents/Resources/native-backend" embedded/node embedded/claude-agent-acp
+
+            - name: Preserve packaged universal Claude runtime for Intel smoke
+              uses: actions/upload-artifact@v7
+              with:
+                  name: claude-universal-runtime
+                  path: ${{ runner.temp }}/claude-universal.tgz
+                  retention-days: 3
+
+    claude-packaged-universal-intel:
+        name: Packaged universal Claude (Intel slice)
+        needs: macos-universal
+        runs-on: macos-15-intel
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@v6
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+            - uses: actions/download-artifact@v8
+              with:
+                  name: claude-universal-runtime
+                  path: ${{ runner.temp }}/claude-universal
+            - name: Install smoke tools
+              working-directory: apps/desktop
+              run: npm ci
+            - name: Exercise the same packaged universal Node and Claude runtime
+              shell: bash
+              working-directory: apps/desktop
+              run: |
+                  tar -xzf "$RUNNER_TEMP/claude-universal/claude-universal.tgz" -C "$RUNNER_TEMP/claude-universal"
+                  node scripts/smoke-claude-runtime.mjs --runtime "$RUNNER_TEMP/claude-universal/embedded/claude-agent-acp" --node "$RUNNER_TEMP/claude-universal/embedded/node/bin/node" --target universal-apple-darwin
 
     windows:
         name: Windows ${{ matrix.arch }}
