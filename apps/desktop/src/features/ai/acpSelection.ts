@@ -1,4 +1,8 @@
-import type { AIChatSession, AIConfigOption, ConversationSelection } from "./types";
+import type {
+    AIChatSession,
+    AIConfigOption,
+    ConversationSelection,
+} from "./types";
 
 /**
  * Restore preferences against the target model's authoritative ACP catalog.
@@ -15,25 +19,34 @@ export function reconcileInheritedAcpOptions(
     )?.value;
     if (
         selection.runtimeId !== session.runtimeId ||
-        (selection.modelId !== session.modelId && selection.modelId !== modelValue)
+        (selection.modelId !== session.modelId &&
+            selection.modelId !== modelValue)
     ) {
         return selection;
     }
 
     const options = { ...selection.options };
     for (const [id, value] of Object.entries(options)) {
-        const current = session.configOptions.find((option) => option.id === id);
+        const current = session.configOptions.find(
+            (option) => option.id === id,
+        );
         const previous = previousOptions.filter(
-            (option) => option.runtimeId === selection.runtimeId && option.id === id,
+            (option) =>
+                option.runtimeId === selection.runtimeId && option.id === id,
         );
         if (
-            id === "model" || id === "mode" ||
+            id === "model" ||
+            id === "mode" ||
             [current, ...previous].some(
-                (option) => option?.category === "model" || option?.category === "mode",
+                (option) =>
+                    option?.category === "model" || option?.category === "mode",
             ) ||
             !previous.some(
-                (option) => option.value === value ||
-                    option.options.some((candidate) => candidate.value === value),
+                (option) =>
+                    option.value === value ||
+                    option.options.some(
+                        (candidate) => candidate.value === value,
+                    ),
             )
         ) {
             continue;

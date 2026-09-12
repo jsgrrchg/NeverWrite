@@ -41,6 +41,15 @@ export interface PreparedConversationTurnCatalog
   extends ConversationTurnCatalog {
   runtimeId: string;
   modelId: string;
+  sourceSessionCatalogKey?: string;
+}
+
+export function getSessionCatalogKey(session: AIChatSession): string {
+  return JSON.stringify([
+    session.runtimeId,
+    session.modelId,
+    session.configOptions,
+  ]);
 }
 
 function isRuntimeReady(status?: AIRuntimeSetupStatus | null) {
@@ -229,10 +238,12 @@ export function getConversationTurnCatalog(input: {
   const selectionMatchesLiveSession =
     input.session.runtimeId === input.selection.runtimeId &&
     liveModelId === input.selection.modelId;
-  // Prepared catalogs are only a bridge for staged selections. Once the live
-  // session reaches that provider/model, its latest ACP catalog wins again.
+  // A probe can refresh the catalog even for the current model. Use it while
+  // the source catalog is unchanged; a subsequent live catalog takes priority.
   const preparedCatalog =
-    !selectionMatchesLiveSession &&
+    (!selectionMatchesLiveSession ||
+      input.preparedCatalog?.sourceSessionCatalogKey ===
+        getSessionCatalogKey(input.session)) &&
     input.preparedCatalog?.runtimeId === input.selection.runtimeId &&
     input.preparedCatalog.modelId === input.selection.modelId
       ? input.preparedCatalog
@@ -266,8 +277,10 @@ export function getConversationTurnCatalog(input: {
         ? binding.modes
         : runtime?.modes) ?? [];
   const configOptions =
-    (preparedCatalog?.configOptions.length
+    (preparedCatalog
       ? preparedCatalog.configOptions
+      : selectionMatchesLiveSession && input.session.runtimeState === "live"
+      ? input.session.configOptions
       : sessionMatches && input.session.configOptions.length > 0
       ? input.session.configOptions
       : binding?.configOptions.length

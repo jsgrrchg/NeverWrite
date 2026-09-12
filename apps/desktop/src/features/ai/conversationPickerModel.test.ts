@@ -3,6 +3,7 @@ import { createConversationBindingsFromLegacySession } from "./conversationModel
 import {
   buildConversationProviderOptions,
   getConversationTurnCatalog,
+  getSessionCatalogKey,
   updateConversationSelection,
 } from "./conversationPickerModel";
 import type {
@@ -371,4 +372,91 @@ describe("conversation provider picker model", () => {
     ]);
   });
 
+  it.each(["prepared", "live", "refreshed probe"])(
+    "does not resurrect effort from an old catalog when the %s catalog is empty",
+    (source) => {
+      const current = session();
+      const provider = runtime(current.runtimeId);
+      provider.configOptions = [
+        {
+          id: "effort",
+          runtimeId: current.runtimeId,
+          category: "reasoning",
+          label: "Effort",
+          type: "select",
+          value: "high",
+          options: [{ value: "high", label: "High" }],
+        },
+      ];
+      if (source !== "live") current.configOptions = provider.configOptions;
+      const bindings = createConversationBindingsFromLegacySession({
+        ...current,
+        configOptions: provider.configOptions,
+      });
+      const selection = {
+        runtimeId: current.runtimeId,
+        modelId: source === "prepared" ? "next-model" : current.modelId,
+        modeId: "default",
+        options: {},
+      };
+      const catalog = getConversationTurnCatalog({
+        session: current,
+        selection,
+        runtimes: [provider],
+        bindings: bindings.providerBindings,
+        preparedCatalog:
+          source === "live"
+            ? null
+            : {
+                runtimeId: selection.runtimeId,
+                modelId: selection.modelId,
+                models: [],
+                modes: [],
+                configOptions: [],
+                effortsByModel: {},
+                sourceSessionCatalogKey: getSessionCatalogKey(current),
+              },
+      });
+      expect(catalog.configOptions).toEqual([]);
+    },
+  );
+
+  it("shows reasoning again when a newer live catalog advertises it", () => {
+    const current = session();
+    const sourceSessionCatalogKey = getSessionCatalogKey(current);
+    current.configOptions = [
+      {
+        id: "effort",
+        runtimeId: current.runtimeId,
+        category: "reasoning",
+        label: "Effort",
+        type: "select",
+        value: "high",
+        options: [{ value: "high", label: "High" }],
+      },
+    ];
+    const catalog = getConversationTurnCatalog({
+      session: current,
+      selection: {
+        runtimeId: current.runtimeId,
+        modelId: current.modelId,
+        modeId: "default",
+        options: {},
+      },
+      runtimes: [],
+      bindings: [],
+      preparedCatalog: {
+        runtimeId: current.runtimeId,
+        modelId: current.modelId,
+        models: [],
+        modes: [],
+        configOptions: [],
+        effortsByModel: {},
+        sourceSessionCatalogKey,
+      },
+    });
+    expect(catalog.configOptions.map((option) => option.id)).toEqual([
+      "effort",
+    ]);
+  });
 });
