@@ -34,6 +34,28 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.0] - 2026-09-11
+
+### Added
+
+- Added a dedicated, resizable chat pane that can move to either side of the workspace, follow the Agents sidebar, or expand while preserving the editor panes.
+- Added reversible chat archiving with an archived section, an undo action, and automatic reactivation when composing in an archived conversation.
+- Added unread indicators for completed chat turns and keyboard navigation for cycling through sidebar conversations.
+
+### Changed
+
+- Reworked the Agents sidebar into a card-based conversation list with compact timestamps, clearer subagent hierarchy, and a dedicated archived section.
+- Moved conversations out of editor tabs into the dedicated chat pane while preserving navigation, focus, search, and shortcuts across chat and editor surfaces.
+- Simplified chat organization by removing sidebar chat folders and redundant chat header actions.
+
+### Fixed
+
+- Fixed chat ordering, pane splits, divider behavior, and header alignment across workspace surfaces and window restarts.
+
+### Security
+
+- Addressed dependency security alerts in the Desktop and Web Clipper build toolchains, including the Web Clipper browser-launch dependency path.
+
 ## [0.7.7] - 2026-09-06
 
 ### Added
