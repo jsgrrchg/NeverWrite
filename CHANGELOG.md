@@ -34,6 +34,13 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.1] - 2026-09-12
+
+### Fixed
+
+- Fixed chat headers on macOS so they can once again be used to drag the application window while keeping conversation titles interactive.
+- Fixed OpenCode chats failing to send after a model or runtime exposed different ACP options by reconciling stale saved effort and configuration choices with the current catalog.
+
 ## [0.8.0] - 2026-09-11
 
 ### Added
