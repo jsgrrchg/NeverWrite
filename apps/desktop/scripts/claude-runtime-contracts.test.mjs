@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -25,8 +26,11 @@ test("runtime JavaScript matches the patched 0.75.1 baseline", async () => {
     }
 });
 
-test("TaskList contracts execute the runtime parser with an external timeout", async () => {
-    const moduleUrl = pathToFileURL(path.join(runtimeRoot, "dist/tools.js")).href;
+test("TaskList contracts execute an isolated runtime with an external timeout", async (t) => {
+    const isolated = await fs.mkdtemp(path.join(os.tmpdir(), "claude contracts "));
+    t.after(() => fs.rm(isolated, { recursive: true, force: true }));
+    await fs.cp(runtimeRoot, isolated, { recursive: true, dereference: true });
+    const moduleUrl = pathToFileURL(path.join(isolated, "dist/tools.js")).href;
     // A parent-enforced timeout also terminates synchronous regex backtracking.
     const source = `
         import assert from 'node:assert/strict';
