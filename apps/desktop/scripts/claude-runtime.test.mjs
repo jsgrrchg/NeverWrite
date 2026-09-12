@@ -40,7 +40,7 @@ test("runtime validation rejects incomplete, stale and wrong-architecture artifa
     const source = "export const version = 1;\n";
     const inputs = {
         fingerprint: "expected",
-        baseline: { version: "0.75.1", runtimeFiles: { "dist/index.js": normalizedRuntimeHash(source) } },
+        baseline: { version: "0.76.0", runtimeFiles: { "dist/index.js": normalizedRuntimeHash(source) } },
         lock: { packages: { [`node_modules/${native}`]: { version: "0.3.257", optional: true },
             "node_modules/zod": { version: "4.5.4" } } },
     };
@@ -49,7 +49,7 @@ test("runtime validation rejects incomplete, stale and wrong-architecture artifa
         await fs.mkdir(path.dirname(file), { recursive: true });
         await fs.writeFile(file, value);
     };
-    await write("package.json", JSON.stringify({ name: claudePackage, version: "0.75.1" }));
+    await write("package.json", JSON.stringify({ name: claudePackage, version: "0.76.0" }));
     await write("dist/index.js", source);
     await write(`node_modules/${native}/package.json`, JSON.stringify({ version: "0.3.257" }));
     await write("node_modules/zod/package.json", JSON.stringify({ version: "4.5.4" }));
@@ -99,7 +99,7 @@ test("patch application normalizes Windows line endings before checking bytes", 
     await fs.writeFile(path.join(root, "package.json"),
         JSON.stringify({ name: "claude-patch-fixture", private: true }));
     await fs.writeFile(path.join(packageRoot, "package.json"),
-        JSON.stringify({ version: "0.75.1" }));
+        JSON.stringify({ version: "0.76.0" }));
     await fs.writeFile(path.join(packageRoot, "dist", "tools.js"), "before\n");
     const patch = [
         `diff --git a/node_modules/${claudePackage}/dist/tools.js b/node_modules/${claudePackage}/dist/tools.js`,
@@ -111,10 +111,10 @@ test("patch application normalizes Windows line endings before checking bytes", 
         "",
     ].join("\r\n");
     await fs.writeFile(path.join(patchSource,
-        "@agentclientprotocol+claude-agent-acp+0.75.1.patch"), patch);
+        "@agentclientprotocol+claude-agent-acp+0.76.0.patch"), patch);
     const hash = (value) => createHash("sha256").update(value).digest("hex");
     await applyClaudePatch(root, {
-        version: "0.75.1",
+        version: "0.76.0",
         original: hash("before\n"),
         patched: hash("after\n"),
     }, patchSource);

@@ -1,9 +1,9 @@
 # Claude runtime
 
 This private installation manifest pins the published Claude ACP adapter to
-`0.75.1`. Its production versions and integrities are inherited from the former
-snapshot; `baseline.json` records that comparison without retaining upstream
-source. The only additional runtime package is the adapter itself.
+`0.76.0`. `baseline.json` records the complete production graph and patched
+runtime hashes without retaining upstream source. The only additional runtime
+package is the adapter itself.
 
 Development and release staging use the same preparer. The native backend keeps
 its existing override precedence and serialized runtime source values; its local
@@ -58,9 +58,11 @@ ARM64 application packaging remains a cross-build; the separate ARM64 runtime jo
 provides native runtime execution coverage. These jobs must run remotely before
 claiming platform-wide release validation.
 
-Do not update the runtime version during the distribution migration. A future
-update must compare the full production graph and rerun contracts and packaged
-smokes. Remove the patch only after its tests pass on unmodified upstream output.
+Version updates must use an exact stable pin, regenerate the isolated lockfile and
+full baseline, rebase the versioned patch, and rerun contracts and packaged smokes.
+The `0.76.0` update keeps the same direct adapter dependencies, updates `fast-uri`
+to `3.1.7`, and adds upstream recommended configuration metadata. Remove the patch
+only after its tests pass on unmodified upstream output.
 
 ## Product compatibility
 
@@ -72,6 +74,8 @@ Claude native resume remains disabled; forks use NeverWrite's persisted history.
 
 The client consumes session titles while preserving explicit manual renames,
 generic model/effort/mode options, compaction tool activity and usage Markdown.
+NeverWrite does not advertise the AIR `recommendedValue` capability, so the
+`0.76.0` metadata addition does not alter the selected configuration.
 The push-only authStatus, goal, AIR session-failure and JetBrains file-audit
 extensions remain outside the current client integration. NeverWrite's own
 filesystem/diff tracking remains authoritative for inline review and accept/reject.

@@ -137,7 +137,7 @@ dictionary licenses.
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.75.1  | Apache-2.0                      |
+| @agentclientprotocol/claude-agent-acp   | 0.76.0  | Apache-2.0                      |
 | @agentclientprotocol/sdk                | 1.4.0   | Apache-2.0                      |
 | @anthropic-ai/claude-agent-sdk          | 0.3.257 | Anthropic SDK terms in LICENSE.md |
 | @anthropic-ai/claude-agent-sdk-*        | 0.3.257 | Anthropic SDK terms in LICENSE.md |
@@ -280,7 +280,7 @@ The bundled dictionary metadata lives in
 | -------------------------------- | ----------- | --------------------------------------- |
 | codex-acp 0.16.0                 | Apache-2.0  | github.com/zed-industries/codex-acp     |
 | OpenAI Codex runtime rust-v0.153.4 | Apache-2.0 | github.com/openai/codex                 |
-| @agentclientprotocol/claude-agent-acp 0.75.1 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
+| @agentclientprotocol/claude-agent-acp 0.76.0 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
 
@@ -309,8 +309,8 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 
 ### `@agentclientprotocol/claude-agent-acp` — Zed Industries (Apache-2.0)
 
-The published npm dependency is pinned to `0.75.1`, upstream commit
-`3e23c5b960b66a6d2c892e7524c952e731c076a7`. Its source and generated output are
+The published npm dependency is pinned to `0.76.0`, upstream commit
+`c2e4815029ef3962787ecaefe208b0b6f8b81302`. Its source and generated output are
 not committed to this repository. The runtime preparer preserves the published
 license and applies the following local modification before packaging:
 

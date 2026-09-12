@@ -182,6 +182,7 @@ class ClaudeSmokeClient {
 
 export async function smokeClaudeRuntime({ runtimeRoot, nodeBinary, target = claudeHostTarget() }) {
     await validateClaudeRuntime(runtimeRoot, target);
+    const runtimeVersion = JSON.parse(await fs.readFile(path.join(runtimeRoot, "package.json"), "utf8")).version;
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "neverwrite claude smoke "));
     let mock;
     let client;
@@ -197,7 +198,7 @@ export async function smokeClaudeRuntime({ runtimeRoot, nodeBinary, target = cla
         const env = smokeEnvironment(root, mock.baseUrl);
         const entry = path.join(isolatedRuntime, "dist", "index.js");
         const options = { cwd: workspace, env, timeout: 15000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 };
-        assert.equal((await execute(nodeBinary, [entry, "--version"], options)).stdout.trim(), "0.75.1");
+        assert.equal((await execute(nodeBinary, [entry, "--version"], options)).stdout.trim(), runtimeVersion);
         const cliVersion = (await execute(nodeBinary, [entry, "--cli", "--version"], options)).stdout.trim();
         assert.match(cliVersion, /\d+\.\d+\.\d+/);
         client = new ClaudeSmokeClient(nodeBinary, entry, workspace, env);
@@ -232,7 +233,7 @@ export async function smokeClaudeRuntime({ runtimeRoot, nodeBinary, target = cla
             if (outcome.error) throw outcome.error;
             assert.equal(outcome.value.stopReason, "cancelled");
         } finally { clearTimeout(waitTimer); }
-        console.log(`Claude ACP 0.75.1 completed a real Read turn and cancellation (${target}, CLI ${cliVersion}).`);
+        console.log(`Claude ACP ${runtimeVersion} completed a real Read turn and cancellation (${target}, CLI ${cliVersion}).`);
     } finally {
         try { if (client) await client.close(); }
         finally {

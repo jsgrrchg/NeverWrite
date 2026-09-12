@@ -1,14 +1,14 @@
 {
-  "version": "0.75.1",
-  "upstreamCommit": "3e23c5b960b66a6d2c892e7524c952e731c076a7",
+  "version": "0.76.0",
+  "upstreamCommit": "c2e4815029ef3962787ecaefe208b0b6f8b81302",
   "normalization": "Trim trailing whitespace on each line and terminate with one newline.",
   "runtimeFiles": {
-    "dist/acp-agent.js": "367898a9a9a9dffd072e665e23ac8159fa3c5905482cd53370d0dbf7d84c4e6f",
+    "dist/acp-agent.js": "33d07df33b17a4dbd11ec7bc5e2196983e38de6133b90f4f9b3e729a6946348e",
     "dist/acp-subagents.js": "aeb9fca26d4118bd20bb4661fb8311259b62ce332b131fa47e54f745cab09156",
-    "dist/air-extension.js": "04ff24c1a88704156ab2a480e9d5fbdfa1944196616e47ed5a427d579994f0d9",
+    "dist/air-extension.js": "26308c53c19e5906d410cab63274f9bdb471631799ae9f2c9be2b9c408f2fb05",
     "dist/async-tasks.js": "158fb734a99d460c301ac8235ddd0a81e45ec7592b61b7d2c4ee857e44bf8524",
     "dist/auth-status.js": "0cc5054336b3849cf5987f01e296dece1ecaeb023f236d6698780f6a42cbb24a",
-    "dist/clear-context-coordinator.js": "854e5fccdbb3343c57ddf158fb8a1dd5d34d7b13483032437c2fed6c898154a6",
+    "dist/clear-context-coordinator.js": "c388c199e2a04591bb54a6df7018861b52ef9fea222768cf07f6e6b7b11735e0",
     "dist/context-compaction-meta.js": "81188ee5b5cfa84a2c5c04ead44bae2dcfcbdc525c67e169e28379936629173b",
     "dist/context-compaction.js": "32da16e77d8190230bac17bffc7aced9f85b3cdddaad8159d4221baccca80c13",
     "dist/elicitation.js": "d40be7d05a0ca9f65621a54fd61aa1a903875d5afcd95051c1f86b561abdd095",
@@ -22,8 +22,10 @@
     "dist/native-subagents.js": "a0420718d135e8daf7921ce730d221c53d39fe178af4c522b959413f387c71e3",
     "dist/resumed-session.js": "0aafd8123d68e54ae2f7021eac082e8c3320bbc32f5e1f8a6c3daf4eb6ea26bc",
     "dist/session-config-ids.js": "24148e79435afabd7e3c6cf4f8bf5d3c16c7887b97f172cd507de60f19ec551d",
+    "dist/session-effort.js": "a89fb974c4fb454a27fcf7f11aee0c44dd07fda14a2932fd4f93e66ebea0b556",
     "dist/session-failure-extension.js": "e2831eb191e56adfaa6799d7517e45c33d999787c6a0bd714b05c884ffdf3178",
     "dist/session-mode.js": "0efc6f6fb78df0122145270f36d01aa7dc73d3f80b71065f830d9b41adcea0bc",
+    "dist/session-model.js": "1cc635299c34d3b8933ece92dcabed84b34f688ad98f5ae7f6fcdaf700f42c41",
     "dist/session-timing.js": "7bf1567850d05094c1313295efd404b5cceb90d4251c5357387b8841bca4819f",
     "dist/session-titles.js": "a78f6ed7e85193fbb0ebc97b37c0adde70d1000eac94e70e310e75dd580e079a",
     "dist/settings.js": "629348525ddd007ace9c06a16a19af6877af2a090b58255dd7f5974a6bdf2932",
@@ -222,8 +224,8 @@
       "integrity": "sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ=="
     },
     "node_modules/fast-uri": {
-      "version": "3.1.6",
-      "integrity": "sha512-7Ical1vFEMr0onbVzEDIreM22I4khW+fzyQPwvAFWBp1iwdshSZRsL4jjRvPG9JP1uiqMHRto+YU6R2/CzDz5Q=="
+      "version": "3.1.7",
+      "integrity": "sha512-dOvZVzjdZdz7phd9v6jCbwxrBW3fK6n8Rc0CtdmM4bumzMnxywBYhuph6J819RRw/ku+rLbelwfMunktuzVVHg=="
     },
     "node_modules/finalhandler": {
       "version": "2.1.1",

@@ -56,9 +56,13 @@ export function runRuntimeCommand(command, args, cwd) {
 
 export async function claudeInputs(target) {
     requiredClaudePlatformPackages(target);
-    const files = ["package.json", "package-lock.json", "baseline.json",
-        "patches/checksums.json", "patches/@agentclientprotocol+claude-agent-acp+0.75.1.patch"];
+    const files = ["package.json", "package-lock.json", "baseline.json", "patches/checksums.json"];
     const contents = await Promise.all(files.map((name) => fs.readFile(path.join(claudeDefinitionRoot, name))));
+    const definition = JSON.parse(contents[0]);
+    const version = definition.dependencies?.[claudePackage];
+    if (typeof version !== "string") throw new Error("Claude runtime dependency is missing");
+    contents.push(await fs.readFile(path.join(claudeDefinitionRoot, "patches",
+        `@agentclientprotocol+claude-agent-acp+${version}.patch`)));
     // Changes to the preparer or architecture validation also invalidate installs.
     contents.push(await fs.readFile(fileURLToPath(import.meta.url)));
     contents.push(await fs.readFile(new URL("./stage-electron-sidecar-helpers.mjs", import.meta.url)));
