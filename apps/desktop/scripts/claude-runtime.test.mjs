@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -86,6 +87,38 @@ test("patch rejects a mismatched published input before running patch-package", 
     await fs.mkdir(path.join(packageRoot, "dist"));
     await fs.writeFile(path.join(packageRoot, "dist/tools.js"), "unexpected published content");
     await assert.rejects(applyClaudePatch(root, checksums), /exact, unmodified/);
+});
+
+test("patch application normalizes Windows line endings before checking bytes", async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-patch-crlf-"));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const packageRoot = path.join(root, "node_modules", claudePackage);
+    const patchSource = path.join(root, "source-patches");
+    await fs.mkdir(path.join(packageRoot, "dist"), { recursive: true });
+    await fs.mkdir(patchSource);
+    await fs.writeFile(path.join(root, "package.json"),
+        JSON.stringify({ name: "claude-patch-fixture", private: true }));
+    await fs.writeFile(path.join(packageRoot, "package.json"),
+        JSON.stringify({ version: "0.75.1" }));
+    await fs.writeFile(path.join(packageRoot, "dist", "tools.js"), "before\n");
+    const patch = [
+        `diff --git a/node_modules/${claudePackage}/dist/tools.js b/node_modules/${claudePackage}/dist/tools.js`,
+        `--- a/node_modules/${claudePackage}/dist/tools.js`,
+        `+++ b/node_modules/${claudePackage}/dist/tools.js`,
+        "@@ -1 +1 @@",
+        "-before",
+        "+after",
+        "",
+    ].join("\r\n");
+    await fs.writeFile(path.join(patchSource,
+        "@agentclientprotocol+claude-agent-acp+0.75.1.patch"), patch);
+    const hash = (value) => createHash("sha256").update(value).digest("hex");
+    await applyClaudePatch(root, {
+        version: "0.75.1",
+        original: hash("before\n"),
+        patched: hash("after\n"),
+    }, patchSource);
+    assert.equal(await fs.readFile(path.join(packageRoot, "dist", "tools.js"), "utf8"), "after\n");
 });
 
 test("an incomplete explicit override fails instead of selecting the cached runtime", async (t) => {

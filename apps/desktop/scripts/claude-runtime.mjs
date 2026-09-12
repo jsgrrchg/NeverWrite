@@ -111,14 +111,20 @@ export async function validateClaudeRuntime(root, target, inputs, { requireStamp
     }
 }
 
-export async function applyClaudePatch(installRoot, checksums) {
+export async function applyClaudePatch(installRoot, checksums,
+    patchSource = path.join(claudeDefinitionRoot, "patches")) {
     const packageRoot = path.join(installRoot, "node_modules", claudePackage);
     const manifest = await readJson(path.join(packageRoot, "package.json"));
     const toolsFile = path.join(packageRoot, "dist", "tools.js");
     if (manifest.version !== checksums.version || sha256(await fs.readFile(toolsFile)) !== checksums.original) {
         throw new Error("Claude TaskList patch requires the exact, unmodified published runtime");
     }
-    await fs.cp(path.join(claudeDefinitionRoot, "patches"), path.join(installRoot, "patches"), { recursive: true });
+    const patchDirectory = path.join(installRoot, "patches");
+    await fs.cp(patchSource, patchDirectory, { recursive: true });
+    const patchFile = path.join(patchDirectory,
+        `@agentclientprotocol+claude-agent-acp+${checksums.version}.patch`);
+    const patchText = await fs.readFile(patchFile, "utf8");
+    await fs.writeFile(patchFile, patchText.replace(/\r\n?/g, "\n"));
     await runRuntimeCommand(process.execPath, [path.join(appRoot, "node_modules", "patch-package", "index.js"),
         "--patch-dir", "patches", "--error-on-fail"], installRoot);
     if (sha256(await fs.readFile(toolsFile)) !== checksums.patched) {

@@ -32,7 +32,9 @@ includes both native SDK packages.
 
 The patch in `patches/` preserves the bounded linear TaskList parser. It applies
 only to the published `dist/tools.js`; pre/post hashes reject incompatible input
-or incomplete patch application. Upstream tracking:
+or incomplete patch application. The preparer normalizes the staged patch to LF
+before applying it so Windows checkout settings cannot change the patched bytes.
+Upstream tracking:
 https://github.com/agentclientprotocol/claude-agent-acp/pull/1006.
 The previous trailer-parsing fix is already upstream and is not reapplied.
 
