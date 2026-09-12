@@ -73,6 +73,11 @@ describe("AIChatPane", () => {
             screen.queryByRole("button", { name: "History" }),
         ).toBeNull();
     });
+    it("keeps the standalone chat header draggable on macOS", () => {
+        useChatTabsStore.getState().showHistory();
+        const { container } = render(<AIChatPane />);
+        expect(container.querySelector("header")).toHaveClass("drag");
+    });
     it("toggles expansion and restores editors when the chat is hidden", () => {
         useEditorStore.getState().openNote("a", "A", "a");
         render(<AIChatPane />);
