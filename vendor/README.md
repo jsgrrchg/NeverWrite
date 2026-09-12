@@ -6,7 +6,6 @@ NeverWrite currently vendors upstream runtime projects that are needed for deskt
 integration and release packaging, especially:
 
 - `codex-acp`
-- `Claude-agent-acp-upstream`
 - `acp12`
 
 Why this lives in git:
@@ -19,25 +18,14 @@ What is currently required by the app/build pipeline:
 
 - `codex-acp/`
   - used as a Rust crate and sidecar build input during desktop release builds
-- `Claude-agent-acp-upstream/package.json`
-  - used by the desktop build to validate and stage the embedded Claude runtime
-- `Claude-agent-acp-upstream/dist/`
-  - compiled runtime files that are copied into the desktop bundle
-- `Claude-agent-acp-upstream/node_modules/`
-  - production dependencies are installed by the Electron sidecar staging step
-    and copied into the packaged embedded Claude runtime
 - `acp12/`
   - used as Rust compatibility crates by the native backend for Grok legacy ACP
     sessions
 
 What is vendored mainly for auditability and maintenance, not direct runtime use:
 
-- `Claude-agent-acp-upstream/src/`
-- `Claude-agent-acp-upstream/src/tests/`
-- `Claude-agent-acp-upstream/dist/tests/`
-- `Claude-agent-acp-upstream/docs/`
 - `acp12/agent-client-protocol*/`
-- assorted upstream config files (`tsconfig`, `vitest`, `eslint`, lockfiles)
+- upstream Rust manifests, lockfiles, and documentation
 
 That means the directory is intentionally reproducible, but not yet minimal.
 
@@ -62,12 +50,6 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty/`
-- `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.75.1`
-  - upstream tag: `v0.75.1`
-  - upstream commit: `3e23c5b960b66a6d2c892e7524c952e731c076a7`
-  - dependencies match the upstream `0.75.1` release (`@agentclientprotocol/sdk` `1.4.0`, `@anthropic-ai/claude-agent-sdk` `0.3.257`, `@anthropic-ai/sdk` `0.122.0`)
-  - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 - `acp12/`
   - local package names: `agent-client-protocol-legacy` and
     `agent-client-protocol-schema-legacy`
@@ -194,83 +176,26 @@ The rollback baseline is OpenAI Codex `rust-v0.153.2` at `657a993cbee87acf52d14b
 
 The desktop backend supports a mixed ACP world: current ACP integration for Claude, Codex, Kilo, and OpenCode, plus the vendored `agent-client-protocol-legacy` crates for Grok. The native backend tests cover the reconstructed diff, permission, status metadata, and legacy runtime compatibility paths that NeverWrite depends on.
 
-## Current Claude Delta
+## Claude Runtime Dependency
 
-The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.75.1` at commit `3e23c5b960b66a6d2c892e7524c952e731c076a7`, with a bounded NeverWrite-specific runtime source delta.
-
-The previous NeverWrite trailer-parsing hardening is fully absorbed by upstream. Version `0.75.1` retains that protection, so the old trailer patch does not need to be reapplied.
-
-NeverWrite additionally replaces the ambiguous textual `TaskList` fallback regex with linear string parsing. The local parser preserves task owners and dependency lists, treats malformed suffixes as subject text, and prevents adversarial tool output from causing excessive regex backtracking. The delta is limited to `src/tools.ts`, its regression coverage in `src/tests/tools.test.ts`, and the generated `dist/` output.
-
-This `TaskList` hardening is tracked upstream in [issue #1005](https://github.com/agentclientprotocol/claude-agent-acp/issues/1005) and [pull request #1006](https://github.com/agentclientprotocol/claude-agent-acp/pull/1006). Until an upstream release contains an equivalent fix and regression coverage, vendor refreshes must reapply this delta rather than replacing the source tree verbatim.
-
-The `0.75.1` baseline generates and persists session titles after a completed turn, then publishes them through ACP `session_info_update`. NeverWrite consumes those updates as runtime titles, persists them in local chat history, and keeps an explicit manual rename authoritative over later runtime title updates.
-
-The `0.75.1` baseline exposes canonical native subagent sessions and AIR asynchronous tasks in addition to the older opt-in `subagent-transcript` capability. NeverWrite advertises none of `subagents`, `nativeSubagentSessions`, `asyncTasks`, or `subagent-transcript`, so Claude does not emit those native child-session and task lifecycles. Rich Claude subagent integration remains intentionally out of scope.
-
-The Claude agent advertises its steering extension, but NeverWrite does not invoke `_session/steering`; queued messages continue to use NeverWrite's existing turn queue. Steering integration remains intentionally out of scope.
-
-The `0.75.1` baseline also aligns Claude permission modes and clear-context planning, reports per-model effort options, and supports message-specific ACP forks. NeverWrite keeps its existing generic mode and configuration-option mapping, ignores permission-kind and per-model quota metadata, and continues to fork its own persisted history rather than invoking the ACP fork extension.
-
-The `0.75.1` baseline surfaces context compaction as a standard ACP `think` tool lifecycle and renders Claude's structured `/usage` response as Markdown. NeverWrite consumes both through its existing generic tool-activity and assistant-message projections, so they remain outside the inline diff and accept/reject review contracts.
-
-The `0.75.1` baseline advertises the push-only `authStatus` extension and emits `_auth/status_update` notifications with the effective Claude credential identity. NeverWrite does not currently consume that extension; the ACP client safely ignores the unknown notification while the existing runtime setup and CLI authentication probes remain authoritative for product state.
-
-The `0.75.1` load and fork implementation reads persisted transcript metadata locally instead of issuing slow `getContextUsage` control requests, and restores fork points outside the active parent chain. NeverWrite still keeps Claude native resume disabled and forks its own persisted chat history, so enabling native Claude continuation remains a separate product integration.
-
-The `0.70.0` baseline also publishes the provider-neutral `_meta.goal` extension. NeverWrite does not yet consume goal snapshots or expose goal controls; that product integration is tracked separately in issue `#377` and is intentionally out of scope for this vendor update.
-
-The `0.70.0` baseline aligns the opt-in typed session-failure extension with the AIR transcript protocol and restores native provider routing after an ACP provider override is disabled. NeverWrite does not advertise the AIR session-failure capability.
-
-Upstream `0.69.0` adds an opt-in AIR `agentFileChangeReport` capability. NeverWrite does not advertise this JetBrains-specific capability or attach its per-prompt request metadata, so the hidden post-turn file audit remains inactive. NeverWrite's filesystem and diff-based change tracking remain authoritative for inline review and accept/reject flows.
-
-Upstream `0.70.0` makes `providers/set` and `providers/disable` apply to already loaded Claude sessions by waiting for submitted turns, closing their SDK queries, and resuming them under the selected route. It also applies an active ACP route in both the subprocess environment and programmatic settings tier, clears competing Anthropic, Bedrock, Vertex, OAuth, API-key, and `apiKeyHelper` routing, and restores native routing when the override is disabled. NeverWrite configures the provider before creating or loading its session, but the settings-tier enforcement is still required so user and project Claude settings cannot silently override the provider selected in NeverWrite.
-
-Upstream `0.70.0` also supports opt-in routing diagnostics through `CLAUDE_AGENT_LOGS`. NeverWrite does not set that environment variable by default.
-
-The `dist/` directory is rebuilt from the locally modified vendored source because the desktop packaging flow stages the compiled runtime files, while upstream does not track generated output in git.
-
-Electron release packaging treats the staged Claude runtime as incomplete unless
-the packaged resources include:
-
-- `native-backend/embedded/claude-agent-acp/dist/index.js`
-- `native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json`
-- `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
-- `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
-
-The expected local source delta is the `TaskList` parser and its regression tests. The expected non-source delta is generated `dist/`, which upstream does not commit. The vendor `.gitignore` matches upstream, so newly generated files must be force-added when the snapshot is refreshed.
-
-NeverWrite advertises ACP client capabilities through the native backend, not by
-patching the vendored Claude runtime. The active capability matrix for the
-Claude runtime compatibility work is:
-
-- `fs`: advertised
-- `elicitation.form`: advertised; the native backend bridges form requests into
-  NeverWrite's user-input UI
-- `elicitation.url`: advertised; the native backend bridges URL requests into a
-  compact timeline confirmation UI
-- `subagents`: not advertised
-- AIR `nativeSubagentSessions`: not advertised
-- AIR `asyncTasks`: not advertised
-- legacy `subagent-transcript`: not advertised
+Claude ACP is consumed as an exact npm dependency and is no longer vendored.
+Its isolated manifest, lockfile, TaskList patch, compatibility baseline, and
+maintenance instructions live in
+[`apps/desktop/runtimes/claude/`](../apps/desktop/runtimes/claude/README.md).
+Development and Electron releases use the same preparer, which generates the
+existing embedded runtime layout without committing upstream source or dist.
 
 ## Updating Vendored Runtimes
 
 When updating a vendored dependency:
 
 1. Refresh the upstream snapshot to the exact release or commit you intend to ship.
-2. Keep `dist/` aligned with the vendored Claude source snapshot.
-3. Re-apply only the bounded local product delta that NeverWrite still needs.
-4. Remove any local byproducts before committing.
-5. Re-run the relevant validation:
+2. Re-apply only the bounded local product delta that NeverWrite still needs.
+3. Remove any local byproducts before committing.
+4. Re-run the relevant validation:
    - the target-aware vendor check and test commands in the canonical compatibility checks above
    - `cargo test -p neverwrite-native-backend`
    - `cd apps/desktop && npm test -- src/features/ai/store/chatStore.test.ts src/features/ai/components/AIReviewView.test.tsx src/features/ai/components/EditedFilesBufferPanel.test.tsx src/features/ai/components/reviewMultiSessionIntegration.test.tsx src/features/ai/components/AIChatMessageList.test.tsx src/features/ai/components/AIChatMessageItem.test.tsx src/features/editor/mergeViewSync.test.ts src/features/editor/extensions/mergeViewDiff.test.ts`
-
-The repository keeps the Claude runtime snapshot broader than the minimum
-runtime surface on purpose. The desktop build depends directly on `dist/`, while
-the vendored source and test trees stay in-repo for auditability, upstream diff
-review, and easier runtime updates.
 
 What should not be committed here:
 

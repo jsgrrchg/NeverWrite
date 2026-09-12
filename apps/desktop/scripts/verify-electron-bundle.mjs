@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { rcedit } from "rcedit";
+import { claudeHostTarget, validateClaudeRuntime } from "./claude-runtime.mjs";
 
 export const REQUIRED_RESOURCE_PATHS = {
     darwin: [
@@ -219,5 +220,13 @@ export function verifyPackagedResources(packContext, resourcesDir) {
 
 export default async function verifyElectronBundle(packContext) {
     await stampWindowsExecutable(packContext);
-    verifyPackagedResources(packContext, resolveResourcesDir(packContext));
+    const resourcesDir = resolveResourcesDir(packContext);
+    verifyPackagedResources(packContext, resourcesDir);
+    // Electron Builder's Arch enum: ia32=0, x64=1, armv7l=2, arm64=3, universal=4.
+    const arch = typeof packContext.arch === "string" ? packContext.arch
+        : { 1: "x64", 3: "arm64", 4: "universal" }[packContext.arch];
+    if (!arch) throw new Error(`Unsupported packaged Claude architecture: ${packContext.arch}`);
+    const target = packContext.electronPlatformName === "darwin" && arch === "universal"
+        ? "universal-apple-darwin" : claudeHostTarget(packContext.electronPlatformName, arch);
+    await validateClaudeRuntime(path.join(resourcesDir, "native-backend", "embedded", "claude-agent-acp"), target);
 }

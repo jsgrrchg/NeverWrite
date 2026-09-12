@@ -35,7 +35,11 @@
         "electron:package:unsigned": "node scripts/build-electron-release.mjs --dir --unsigned",
         "electron:dist:mac": "node scripts/build-electron-release.mjs --platform mac",
         "electron:dist:win": "node scripts/build-electron-release.mjs --platform win",
-        "electron:release:local": "node scripts/build-electron-release.mjs"
+        "electron:release:local": "node scripts/build-electron-release.mjs",
+        "test:claude-runtime": "node --test scripts/claude-runtime-contracts.test.mjs",
+        "claude:prepare": "node scripts/prepare-claude-runtime.mjs",
+        "test:claude-preparation": "node --test scripts/claude-runtime.test.mjs scripts/claude-upstream-watch.test.mjs",
+        "claude:smoke": "node scripts/smoke-claude-runtime.mjs"
     },
     "dependencies": {
         "@codemirror/commands": "^6.10.3",
@@ -103,6 +107,7 @@
         "jsdom": "^26.1.0",
         "patch-package": "8.0.1",
         "rcedit": "^5.0.2",
+        "tar": "7.5.20",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.59.0",
         "vite": "^8.0.16",
