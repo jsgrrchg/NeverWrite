@@ -217,7 +217,7 @@ describe("AIChatSessionView", () => {
         expect(useEditorStore.getState().panes.every(pane => pane.tabs.length === 0)).toBe(true);
     });
 
-    it("makes the macOS chat header draggable without swallowing title renames", () => {
+    it("only makes the chat header draggable on macOS without swallowing title renames", () => {
         useChatStore.setState({
             sessionsById: {
                 explicit: createSession("explicit", "Draggable conversation"),
@@ -226,7 +226,11 @@ describe("AIChatSessionView", () => {
 
         renderComponent(<AIChatSessionView sessionId="explicit" focused />);
 
-        expect(screen.getByTestId("chat-session-header")).toHaveClass("drag");
+        expect(
+            screen
+                .getByTestId("chat-session-header")
+                .classList.contains("drag"),
+        ).toBe(getDesktopPlatform() === "macos");
         expect(screen.getByText("Draggable conversation")).toHaveClass(
             "no-drag",
         );
