@@ -1,9 +1,9 @@
-version: 0.7.7
+version: 0.8.0
 files:
-  - url: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.7.7/NeverWrite-0.7.7-x64.AppImage
-    sha512: 7X35s1XWu+s+frKCKpdzLin8jGYCm7n2p3DCZjI1kTQasUXKHxh8uuMjKvWBESdu+2XC4AoWPFiWQzwSow8nSw==
-    size: 595111624
-    blockMapSize: 610012
-path: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.7.7/NeverWrite-0.7.7-x64.AppImage
-sha512: 7X35s1XWu+s+frKCKpdzLin8jGYCm7n2p3DCZjI1kTQasUXKHxh8uuMjKvWBESdu+2XC4AoWPFiWQzwSow8nSw==
-releaseDate: '2026-09-07T16:40:25.971Z'
+  - url: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.0/NeverWrite-0.8.0-x64.AppImage
+    sha512: dyqCgAvTxGo/7qAkTgLPVxzI+Lbzc3YtaixRr8rk+vXriCwyLbSdlqqvJmLKRg6+oNakkBc4G+hA1VdKRFfztw==
+    size: 595123909
+    blockMapSize: 610009
+path: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.0/NeverWrite-0.8.0-x64.AppImage
+sha512: dyqCgAvTxGo/7qAkTgLPVxzI+Lbzc3YtaixRr8rk+vXriCwyLbSdlqqvJmLKRg6+oNakkBc4G+hA1VdKRFfztw==
+releaseDate: '2026-09-12T03:01:52.200Z'

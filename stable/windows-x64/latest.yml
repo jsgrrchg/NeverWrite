@@ -1,8 +1,8 @@
-version: 0.7.7
+version: 0.8.0
 files:
-  - url: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.7.7/NeverWrite_0.7.7_Windows_x64_Setup.exe
-    sha512: tMg4BzZB1iAga4pKwH77fTvDqwoCcRcWim9W7/UMD/bhB5+rkArf5kWD32RSYm7ma1Ftm9JpVY6o20pVbNSwiA==
-    size: 358004533
-path: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.7.7/NeverWrite_0.7.7_Windows_x64_Setup.exe
-sha512: tMg4BzZB1iAga4pKwH77fTvDqwoCcRcWim9W7/UMD/bhB5+rkArf5kWD32RSYm7ma1Ftm9JpVY6o20pVbNSwiA==
-releaseDate: '2026-09-07T17:02:42.476Z'
+  - url: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.0/NeverWrite_0.8.0_Windows_x64_Setup.exe
+    sha512: stsEPqleunjAMBq/sNEYWtqDWOAXFM04xB6IuSgDZYTVxrKj5fzZdp/wrXnJzxAKBFL/EE74DVpru4tHTVE7/w==
+    size: 358005785
+path: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.0/NeverWrite_0.8.0_Windows_x64_Setup.exe
+sha512: stsEPqleunjAMBq/sNEYWtqDWOAXFM04xB6IuSgDZYTVxrKj5fzZdp/wrXnJzxAKBFL/EE74DVpru4tHTVE7/w==
+releaseDate: '2026-09-12T03:18:32.201Z'
