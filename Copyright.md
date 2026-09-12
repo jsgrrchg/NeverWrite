@@ -36,7 +36,7 @@ governing our direct and transitive dependencies, grouped by license type.
 | SIL OFL-1.1              | Bundled Fliege Mono font                            |
 | CC0-1.0                  | notify                                              |
 | Unlicense OR MIT         | aho-corasick, memchr, walkdir, byteorder            |
-| Anthropic SDK terms      | @anthropic-ai/claude-agent-sdk vendored runtime SDK |
+| Anthropic SDK terms      | @anthropic-ai/claude-agent-sdk embedded runtime SDK |
 
 No GPL-only runtime code dependencies are used in this project. Spellcheck
 dictionaries are tracked separately because some packs use disjunctive
@@ -145,9 +145,9 @@ dictionary licenses.
 | @modelcontextprotocol/sdk               | 1.30.0  | MIT                             |
 | zod                                     | 4.5.4   | MIT                             |
 
-The packaged desktop app stages the Claude ACP adapter as vendored JavaScript
-under `native-backend/embedded/claude-agent-acp/` with production dependencies
-installed from the vendored lockfile. Platform-specific
+The packaged desktop app prepares the exact Claude ACP npm dependency and stages
+it under `native-backend/embedded/claude-agent-acp/` with production dependencies
+installed from its committed runtime lockfile. Platform-specific
 `@anthropic-ai/claude-agent-sdk-*` packages are included only for the target
 being packaged.
 
@@ -279,7 +279,7 @@ The bundled dictionary metadata lives in
 | Package                          | License     | Source                                  |
 | -------------------------------- | ----------- | --------------------------------------- |
 | codex-acp 0.16.0                 | Apache-2.0  | github.com/zed-industries/codex-acp     |
-| OpenAI Codex runtime rust-v0.150.0 | Apache-2.0 | github.com/openai/codex                 |
+| OpenAI Codex runtime rust-v0.153.4 | Apache-2.0 | github.com/openai/codex                 |
 | @agentclientprotocol/claude-agent-acp 0.75.1 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
@@ -297,7 +297,7 @@ Original source: https://github.com/zed-industries/codex-acp (version 0.16.0).
 
 Zed Industries has deprecated Codex ACP. NeverWrite maintains this vendored adapter internally to preserve its Codex integration and compatibility with the application's review and session workflows.
 
-The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.150.0`; its packages are declared as Git dependencies in `vendor/codex-acp/Cargo.toml`.
+The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.153.4`; its packages are declared as Git dependencies in `vendor/codex-acp/Cargo.toml`.
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
@@ -305,7 +305,7 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 | `src/codex_agent.rs`  | Adapted for Agent Client Protocol 0.14 compatibility and session configuration |
 | `src/prompt_args.rs`, `src/subagents.rs` | Added custom-prompt parsing and NeverWrite child-session lifecycle projection |
 | `src/lib.rs`, `src/main.rs` | Adjusted crate wiring and compile limits for the promoted runtime graph |
-| `vendor/codex-utils-pty/` | Maintains the standalone PTY snapshot on the upstream 0.150.0 source, including Unix process-group and Windows ConPTY lifecycle hardening |
+| `vendor/codex-utils-pty/` | Maintains the standalone PTY snapshot on the upstream 0.153.4 source, including Unix process-group and Windows ConPTY lifecycle hardening |
 
 ### `@agentclientprotocol/claude-agent-acp` — Zed Industries (Apache-2.0)
 
@@ -341,4 +341,4 @@ license and applies the following local modification before packaging:
 
 ---
 
-*This file is maintained from project dependency metadata. Last updated: 2026-09-06.*
+*This file is maintained from project dependency metadata. Last updated: 2026-09-12.*

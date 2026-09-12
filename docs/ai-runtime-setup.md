@@ -20,7 +20,7 @@ and terminal-auth routing helpers are in
 | Runtime id | Runtime command | Bundled in release | Auth methods exposed by NeverWrite |
 | --- | --- | --- | --- |
 | `codex-acp` | `codex-acp` | Yes. Staged as a sidecar binary. | ChatGPT account, OpenAI API key, Codex API key |
-| `claude-acp` | Claude ACP adapter | Yes. Staged as vendored JS plus embedded Node. | Claude subscription terminal login, Anthropic Console terminal login, Anthropic API key, custom Anthropic-compatible gateway |
+| `claude-acp` | Claude ACP adapter | Yes. Staged as a prepared npm runtime plus embedded Node. | Claude subscription terminal login, Anthropic Console terminal login, Anthropic API key, custom Anthropic-compatible gateway |
 | `grok-acp` | `grok --no-auto-update agent stdio` | No. Must be available from PATH or a configured binary override. | Grok terminal login, xAI API key |
 | `kilo-acp` | `kilo acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
 | `opencode-acp` | `opencode acp` | No. Must be available from PATH or a configured binary override. | OpenCode terminal login |
@@ -59,7 +59,7 @@ For every provider, the backend resolves the runtime command in this order:
 1. Provider-specific `NEVERWRITE_*_ACP_BIN` environment override.
 2. Custom binary path saved through the backend setup payload.
 3. Packaged release resources, when available.
-4. Development vendor fallback for Codex and Claude.
+4. Development vendor fallback for Codex or the prepared host-target cache for Claude.
 5. A command found on the app process `PATH`.
 6. macOS Homebrew fallback paths for Grok and OpenCode.
 
