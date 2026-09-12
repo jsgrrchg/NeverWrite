@@ -115,6 +115,7 @@ import {
 } from "../../editor/editorTargetResolver";
 import { getExternalReloadBaselineCandidate } from "../../editor/externalReloadBaselineCache";
 import { useUnreadChatsStore } from "./unreadChatsStore";
+import { reconcileInheritedAcpOptions } from "../acpSelection";
 import { usePinnedChatsStore } from "./pinnedChatsStore";
 import { useChatTabsStore } from "./chatTabsStore";
 import {
@@ -9002,14 +9003,26 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         return { session, queuedItem: nextQueuedItem };
     }
 
+    function inheritedConversationOptions(
+        sourceSession: AIChatSession,
+        runtime: AIRuntimeDescriptor,
+    ) {
+        return [
+            ...sourceSession.configOptions,
+            ...(sourceSession.conversationBindings?.providerBindings.flatMap(
+                (binding) => binding.configOptions,
+            ) ?? []),
+            ...runtime.configOptions,
+        ];
+    }
+
     async function configureConversationTurnSession(
         initialSession: AIChatSession,
         selection: ConversationSelection,
+        previousOptions: AIChatSession["configOptions"],
     ) {
         let session = initialSession;
-        const initiallyAvailableOptionIds = new Set(
-            initialSession.configOptions.map((option) => option.id),
-        );
+        const knownOptions = [...previousOptions, ...initialSession.configOptions];
         if (
             selection.modelId &&
             selection.modelId !==
@@ -9044,6 +9057,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             normalizedSelection.modeId !== session.modeId &&
             normalizedModeIsAvailable
         ) {
+            knownOptions.push(...session.configOptions);
             session = await aiSetMode(
                 session.sessionId,
                 normalizedSelection.modeId,
@@ -9051,34 +9065,23 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         }
         const modeOption = getModeConfigOption(session);
 
-        const effectiveSelection = {
-            ...normalizedSelection,
-            options: Object.fromEntries(
-                Object.entries({
+        let effectiveSelection = reconcileInheritedAcpOptions(
+            session,
+            {
+                ...normalizedSelection,
+                options: {
                     ...normalizedSelection.options,
                     ...(modeOption
                         ? { [modeOption.id]: normalizedSelection.modeId }
                         : {}),
-                }).filter(([optionId]) => {
-                    const isAvailable = session.configOptions.some(
-                        (option) => option.id === optionId,
-                    );
-                    // ACP option catalogs may change after selecting a model.
-                    // An option that was valid for the session's initial model
-                    // is no longer part of the requested selection when the
-                    // target model removes it. Truly unknown option ids remain
-                    // strict and are rejected by the validation below.
-                    return (
-                        isAvailable ||
-                        !initiallyAvailableOptionIds.has(optionId)
-                    );
-                }),
-            ),
-        };
+                },
+            },
+            knownOptions,
+        );
         const modelOptionId = getModelConfigOption(session)?.id ?? null;
-        for (const [optionId, value] of Object.entries(
-            effectiveSelection.options,
-        )) {
+        for (const optionId of Object.keys(effectiveSelection.options)) {
+            if (!(optionId in effectiveSelection.options)) continue;
+            const value = effectiveSelection.options[optionId];
             const option = session.configOptions.find(
                 (candidate) => candidate.id === optionId,
             );
@@ -9091,10 +9094,18 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             ) {
                 continue;
             }
+            knownOptions.push(...session.configOptions);
             session = await aiSetConfigOption(
                 session.sessionId,
                 option.id,
                 value,
+            );
+            // Each response replaces the full catalog, including dependencies
+            // of options applied earlier in this loop.
+            effectiveSelection = reconcileInheritedAcpOptions(
+                session,
+                effectiveSelection,
+                knownOptions,
             );
         }
 
@@ -9346,6 +9357,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             const configured = await configureConversationTurnSession(
                 runtimeSession,
                 resolvedSelection,
+                inheritedConversationOptions(input.sourceSession, runtime),
             );
             runtimeSession = configured.session;
             resolvedSelection = configured.selection;
@@ -13480,6 +13492,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 const configured = await configureConversationTurnSession(
                     probeSession,
                     discoveredSelection,
+                    inheritedConversationOptions(sourceSession, runtime),
                 );
                 const configuredSession = configured.session;
                 const resolvedSelection = configured.selection;

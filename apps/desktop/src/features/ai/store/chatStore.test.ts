@@ -15442,6 +15442,158 @@ describe("chatStore", () => {
         ).toHaveLength(1);
     });
 
+    it.each(["catalog", "turn"])(
+        "reconciles saved OpenCode effort absent from a fresh session during %s preparation",
+        async (path) => {
+            await useChatStore.getState().initialize();
+            const sourceSessionId = getActiveSessionId();
+            const conversationId = useChatStore.getState().activeConversationId!;
+            const runtimeId = "opencode-acp";
+            const liveSession = {
+                ...sessionPayload,
+                session_id: "opencode-no-effort",
+                runtime_id: runtimeId,
+                model_id: "plain-model",
+                mode_id: "",
+                models: [{ id: "plain-model", runtime_id: runtimeId, name: "Plain", description: "" }],
+                modes: [],
+                config_options: [],
+                efforts_by_model: {},
+            };
+            useChatStore.setState((state) => ({
+                runtimes: [...state.runtimes, {
+                    runtime: { id: runtimeId, name: "OpenCode", description: "", capabilities: ["create_session"] },
+                    models: [{ id: "plain-model", runtimeId, name: "Plain", description: "" }],
+                    modes: [],
+                    configOptions: [{
+                        id: "effort", runtimeId, category: "reasoning", label: "Effort", type: "select",
+                        value: "low",
+                        options: [{ value: "low", label: "Low" }, { value: "high", label: "High" }],
+                    }],
+                }],
+                setupStatusByRuntimeId: {
+                    ...state.setupStatusByRuntimeId,
+                    [runtimeId]: { ...readySetupStatusState, runtimeId },
+                },
+            }));
+            invokeMock.mockImplementation(async (command, args) => {
+                if (command === "ai_create_session") return liveSession;
+                if (command === "ai_start_conversation_turn") return null;
+                if (command === "ai_send_message") return { ...liveSession, status: "streaming" };
+                return defaultInvokeImplementation(command, args);
+            });
+            // Different from the runtime default: discovery must preserve this
+            // explicit model selection while reconciling its saved effort.
+            const selection = { runtimeId, modelId: "plain-model", modeId: "", options: { effort: "high" } };
+            useChatStore.getState().setConversationTurnSelection(conversationId, selection);
+            invokeMock.mockClear();
+            if (path === "catalog") {
+                await useChatStore.getState().prepareConversationTurnCatalog(conversationId, selection);
+                expect(useChatStore.getState().preparedTurnCatalogByConversationId[conversationId]).toMatchObject({
+                    runtimeId, modelId: "plain-model", configOptions: [],
+                });
+            } else {
+                useChatStore.getState().setComposerParts(createTextParts("Use OpenCode"), sourceSessionId);
+                await useChatStore.getState().sendMessage(sourceSessionId);
+                expect(invokeMock).toHaveBeenCalledWith("ai_start_conversation_turn", expect.objectContaining({
+                    input: expect.objectContaining({ selection: {
+                        runtime_id: runtimeId, model_id: "plain-model", mode_id: "", options: {},
+                    } }),
+                }));
+                expect(invokeMock.mock.calls.some(([command]) => command === "ai_send_message")).toBe(true);
+            }
+            expect(invokeMock.mock.calls.some(([command]) => command === "ai_set_config_option")).toBe(false);
+            expect(useChatStore.getState().conversationsById[conversationId]?.preferredSelection).toEqual({
+                runtimeId, modelId: "plain-model", modeId: "", options: {},
+            });
+        },
+    );
+
+    it.each(["removed", "expired", "rejected"])(
+        "uses the conversation catalog when a fresh ACP session has %s effort",
+        async (change) => {
+            await useChatStore.getState().initialize();
+            const sourceSessionId = getActiveSessionId();
+            const conversationId = useChatStore.getState().activeConversationId!;
+            const sourceSession = useChatStore.getState().sessionsById[sourceSessionId]!;
+            const selection = {
+                ...getConversationSelection(sourceSession),
+                options: { model: "test-model", reasoning_effort: "high" },
+            };
+            useChatStore.getState().setConversationTurnSelection(conversationId, selection);
+            // Remove runtime-wide metadata so only the conversation proves
+            // that the saved effort was previously advertised.
+            useChatStore.setState((state) => ({
+                runtimes: state.runtimes.map((runtime) => ({ ...runtime, configOptions: [] })),
+            }));
+            const liveSession = {
+                ...sessionPayload,
+                session_id: "probe-with-changed-effort",
+                config_options: change === "removed" ? [acpConfigOptions[0]] : [
+                    acpConfigOptions[0],
+                    {
+                        ...acpConfigOptions[1],
+                        value: "medium",
+                        options: change === "expired"
+                            ? [{ value: "medium", label: "Medium" }]
+                            : acpConfigOptions[1].options,
+                    },
+                ],
+            };
+            invokeMock.mockImplementation(async (command, args) => {
+                if (command === "ai_create_session" || command === "ai_set_config_option") return liveSession;
+                return defaultInvokeImplementation(command, args);
+            });
+            await useChatStore.getState().prepareConversationTurnCatalog(conversationId, selection);
+            const prepared = useChatStore.getState().preparedTurnCatalogByConversationId[conversationId];
+            if (change === "rejected") {
+                expect(prepared).toBeUndefined();
+                expect(useChatStore.getState().conversationsById[conversationId]?.preferredSelection).toEqual(selection);
+            } else {
+                expect(prepared?.configOptions).toHaveLength(change === "removed" ? 1 : 2);
+                expect(useChatStore.getState().conversationsById[conversationId]?.preferredSelection.options).toEqual(
+                    change === "removed" ? { model: "test-model" } : { model: "test-model", reasoning_effort: "medium" },
+                );
+            }
+        },
+    );
+
+    it("reconciles dependent options after each ACP configuration response", async () => {
+        await useChatStore.getState().initialize();
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const serviceTier = {
+            ...acpConfigOptions[1], id: "service_tier", category: "service_tier",
+            value: "standard", options: [{ value: "standard", label: "Standard" }, { value: "fast", label: "Fast" }],
+        };
+        const liveSession = {
+            ...sessionPayload, session_id: "dependent-options",
+            config_options: [...acpConfigOptions, serviceTier],
+        };
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") return liveSession;
+            if (command === "ai_set_config_option") {
+                const input = (args as { input: { option_id: string } }).input;
+                expect(input.option_id).toBe("service_tier");
+                // Fast service removes the reasoning control entirely.
+                return { ...liveSession, config_options: [acpConfigOptions[0], { ...serviceTier, value: "fast" }] };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        const selection = {
+            ...getConversationSelection(useChatStore.getState().sessionsById[sourceSessionId]!),
+            options: { model: "test-model", service_tier: "fast", reasoning_effort: "high" },
+        };
+        useChatStore.getState().setConversationTurnSelection(conversationId, selection);
+        await useChatStore.getState().prepareConversationTurnCatalog(conversationId, selection);
+        expect(useChatStore.getState().conversationsById[conversationId]?.preferredSelection.options).toEqual({
+            model: "test-model", service_tier: "fast",
+        });
+        expect(useChatStore.getState().preparedTurnCatalogByConversationId[conversationId]?.configOptions.map((option) => option.id)).toEqual([
+            "model", "service_tier",
+        ]);
+    });
+
     it("drops an ACP option removed after applying the selected model", async () => {
         await useChatStore.getState().initialize();
 
