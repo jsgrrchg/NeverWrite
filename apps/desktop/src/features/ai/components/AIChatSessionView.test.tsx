@@ -217,6 +217,25 @@ describe("AIChatSessionView", () => {
         expect(useEditorStore.getState().panes.every(pane => pane.tabs.length === 0)).toBe(true);
     });
 
+    it("only makes the chat header draggable on macOS without swallowing title renames", () => {
+        useChatStore.setState({
+            sessionsById: {
+                explicit: createSession("explicit", "Draggable conversation"),
+            },
+        });
+
+        renderComponent(<AIChatSessionView sessionId="explicit" focused />);
+
+        expect(
+            screen
+                .getByTestId("chat-session-header")
+                .classList.contains("drag"),
+        ).toBe(getDesktopPlatform() === "macos");
+        expect(screen.getByText("Draggable conversation")).toHaveClass(
+            "no-drag",
+        );
+    });
+
     it("keeps the composer available in an archived conversation without restoring on open", () => {
         setupWorkspaceSession();
         useArchivedChatsStore.getState().archive("session-a");

@@ -21,6 +21,7 @@ import {
 import { open as runtimeOpen } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
 import { useSettingsStore } from "../../../app/store/settingsStore";
+import { getDesktopPlatform } from "../../../app/utils/platform";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 import {
@@ -82,6 +83,7 @@ import { getConversationSelection } from "../conversationModel";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_CONVERSATION_BINDINGS: AcpConversationBinding[] = [];
+const IS_MACOS = getDesktopPlatform() === "macos";
 
 function runtimeNeedsModelDiscovery(runtime: AIRuntimeDescriptor) {
     const modelConfig = runtime.configOptions.find(
@@ -989,7 +991,7 @@ export function AIChatSessionView({
             {/* Compact local session header for the workspace chat tab */}
             <div
                 data-testid="chat-session-header"
-                className="flex items-center gap-2 px-3 py-1 text-xs shrink-0"
+                className={`flex items-center gap-2 px-3 py-1 text-xs shrink-0 ${IS_MACOS ? "drag" : ""}`}
                 style={{
                     height: 33,
                     minHeight: 33,
@@ -1023,18 +1025,20 @@ export function AIChatSessionView({
                         onBlur={commitTitleEdit}
                     />
                 ) : (
-                    <span
-                        className="min-w-0 flex-1 overflow-hidden whitespace-nowrap font-medium"
-                        onDoubleClick={startTitleEdit}
-                        title={
-                            isSubagent
-                                ? "Subagents are named by their parent run"
-                                : "Double-click to rename"
-                        }
-                        style={{ color: "var(--text-primary)" }}
-                    >
-                        {sessionTitle}
-                    </span>
+                    <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap">
+                        <span
+                            className="no-drag inline-block max-w-full overflow-hidden whitespace-nowrap align-middle font-medium"
+                            onDoubleClick={startTitleEdit}
+                            title={
+                                isSubagent
+                                    ? "Subagents are named by their parent run"
+                                    : "Double-click to rename"
+                            }
+                            style={{ color: "var(--text-primary)" }}
+                        >
+                            {sessionTitle}
+                        </span>
+                    </div>
                 )}
                 {isSubagent ? (
                     <span

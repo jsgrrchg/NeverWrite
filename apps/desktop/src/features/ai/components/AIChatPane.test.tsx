@@ -1,5 +1,6 @@
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useLayoutStore } from "../../../app/store/layoutStore";
+import { getDesktopPlatform } from "../../../app/utils/platform";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -72,6 +73,13 @@ describe("AIChatPane", () => {
         expect(
             screen.queryByRole("button", { name: "History" }),
         ).toBeNull();
+    });
+    it("only makes the standalone chat header draggable on macOS", () => {
+        useChatTabsStore.getState().showHistory();
+        const { container } = render(<AIChatPane />);
+        expect(
+            container.querySelector("header")?.classList.contains("drag"),
+        ).toBe(getDesktopPlatform() === "macos");
     });
     it("toggles expansion and restores editors when the chat is hidden", () => {
         useEditorStore.getState().openNote("a", "A", "a");

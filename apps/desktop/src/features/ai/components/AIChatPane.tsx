@@ -2,6 +2,7 @@ import { useEditorStore } from "../../../app/store/editorStore";
 import { useChatPaneShortcuts } from "../useChatPaneShortcuts";
 import { useState } from "react";
 import { useLayoutStore } from "../../../app/store/layoutStore";
+import { getDesktopPlatform } from "../../../app/utils/platform";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -12,6 +13,8 @@ import { useChatStore } from "../store/chatStore";
 import { AIChatSessionView } from "./AIChatSessionView";
 import { AIChatHistoryWorkspaceView } from "./AIChatHistoryWorkspaceView";
 import { getSessionTitle } from "../sessionPresentation";
+
+const IS_MACOS = getDesktopPlatform() === "macos";
 
 export function AIChatPane() {
     useChatPaneShortcuts();
@@ -109,7 +112,7 @@ export function AIChatPane() {
         >
             {showStandaloneHeader && (
                 <header
-                    className="flex shrink-0 items-center gap-2 border-b px-3 py-1 text-xs"
+                    className={`flex shrink-0 items-center gap-2 border-b px-3 py-1 text-xs ${IS_MACOS ? "drag" : ""}`}
                     style={{ height: 33, minHeight: 33, boxSizing: "border-box", borderColor: "var(--border)" }}
                 >
                     {view.mode === "history" && (
