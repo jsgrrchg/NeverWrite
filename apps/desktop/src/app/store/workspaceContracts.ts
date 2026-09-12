@@ -318,7 +318,7 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         reads: [],
         writes: [],
         summary:
-            "AgentsSidebarPanel acts as a Comando-style launcher for workspace-owned chat sessions from either sidebar, without rendering the primary composer surface itself.",
+            "AgentsSidebarPanel acts as a Comando-style launcher for conversations selected in the dedicated chat pane from either sidebar, without rendering the primary composer surface itself.",
         migrationIntent:
             "Keep this panel auxiliary and resist reintroducing a second primary chat surface here.",
     },
@@ -335,9 +335,9 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         reads: [],
         writes: [],
         summary:
-            "chatTabsStore now keeps lightweight chat session metadata for restore and launcher flows without deciding where sessions render.",
+            "chatTabsStore owns conversation selection, History navigation, and durable conversation references per vault.",
         migrationIntent:
-            "Phase 2c keeps this metadata role narrow and leaves rendering ownership to workspace chat tabs.",
+            "The dedicated chat pane owns rendering; editor tabs are decoded only for migration.",
     },
     {
         id: "chat-pane-movement-bridge",
@@ -347,9 +347,9 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         reads: ["focusedPaneId"],
         writes: [],
         summary:
-            "This module resolves chat actions against the focused workspace pane and keeps chat creation/opening workspace-first.",
+            "Chat actions select and reveal the dedicated pane while preserving editor focus and document layout.",
         migrationIntent:
-            "Keep workspace opening and sidebar reveal as distinct intentions so the chat UI does not split ownership again.",
+            "All launchers converge on one chat pane outside the editor split tree.",
     },
     {
         id: "review-targeting-picks-active-tab-per-pane",

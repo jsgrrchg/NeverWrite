@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "../ai/store/chatTabsStore";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { confirm } from "@neverwrite/runtime";
 import { describe, expect, it, beforeEach, vi } from "vitest";
@@ -250,30 +251,6 @@ describe("UnifiedBar tab strip drop", () => {
         expect(useEditorStore.getState().activeTabId).toBe("tab-b");
     });
 
-    it("shows an activity dot for working agent tabs", async () => {
-        setEditorTabs([
-            {
-                id: "tab-chat",
-                kind: "ai-chat",
-                sessionId: "session-busy",
-                title: "Chat",
-            },
-        ]);
-        useChatStore.setState({
-            sessionsById: {
-                "session-busy": createChatSession(
-                    "session-busy",
-                    "Busy agent",
-                    "streaming",
-                ),
-            },
-        });
-
-        const { UnifiedBar } = await import("./UnifiedBar");
-        renderComponent(<UnifiedBar windowMode="main" />);
-
-        expect(screen.getByTitle("Agent busy")).toBeInTheDocument();
-    });
 
     it("shows history navigation buttons when open behavior uses history", async () => {
         setEditorTabs([
@@ -563,12 +540,11 @@ describe("UnifiedBar tab strip drop", () => {
         ).toBe("Reference");
     });
 
-    it("closes a tab with an active agent", async () => {
+    it("closes a document while a background agent continues", async () => {
         setEditorTabs([
             {
                 id: "tab-chat",
-                kind: "ai-chat",
-                sessionId: "session-busy",
+                kind: "file", relativePath: "document.txt", path: "/vault/document.txt", mimeType: "text/plain", viewer: "text", content: "document",
                 title: "Chat",
             },
             {
@@ -618,8 +594,7 @@ describe("UnifiedBar tab strip drop", () => {
                 },
                 {
                     id: "tab-busy",
-                    kind: "ai-chat",
-                    sessionId: "session-busy",
+                    kind: "note", noteId: "session-busy", content: "document",
                     title: "Chat",
                 },
                 {
@@ -674,8 +649,7 @@ describe("UnifiedBar tab strip drop", () => {
                 },
                 {
                     id: "tab-busy",
-                    kind: "ai-chat",
-                    sessionId: "session-busy",
+                    kind: "note", noteId: "session-busy", content: "document",
                     title: "Chat",
                 },
                 {
@@ -921,28 +895,11 @@ describe("UnifiedBar tab strip drop", () => {
         });
         await user.click(newAgentButton);
 
-        await waitFor(() => {
-            expect(
-                useEditorStore
-                    .getState()
-                    .tabs.some((tab) => tab.kind === "ai-chat"),
-            ).toBe(true);
-        });
+        await waitFor(() => expect(useChatTabsStore.getState().view.mode).toBe("conversation"));
+        const view = useChatTabsStore.getState().view;
+        expect(view.mode === "conversation" && useChatStore.getState().sessionsById[view.sessionId]?.runtimeId).toBe("codex-acp");
+        expect(useEditorStore.getState().tabs.some(tab => tab.kind === "ai-chat")).toBe(false);
 
-        const chatSessionId = useEditorStore
-            .getState()
-            .tabs.find(
-                (tab) =>
-                    tab.kind === "ai-chat" &&
-                    tab.id === useEditorStore.getState().activeTabId,
-            );
-        expect(chatSessionId).not.toBeNull();
-        if (chatSessionId && chatSessionId.kind === "ai-chat") {
-            expect(
-                useChatStore.getState().sessionsById[chatSessionId.sessionId]
-                    ?.runtimeId,
-            ).toBe("codex-acp");
-        }
     });
 
     it("creates a workspace terminal from the plus-button context menu", async () => {

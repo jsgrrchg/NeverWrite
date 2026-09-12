@@ -1,10 +1,5 @@
-import {
-    isChatTab,
-    selectFocusedEditorTab,
-    useEditorStore,
-} from "../../app/store/editorStore";
-import { createChatTab } from "../../app/store/editorTabs";
-import type { WorkspaceDropTarget } from "../../app/store/workspaceContracts";
+import { useLayoutStore } from "../../app/store/layoutStore";
+import { isSessionArchived, useArchivedChatsStore } from "./store/archivedChatsStore";
 import {
     focusClaudeTerminalAgentSession,
     isClaudeTerminalAgentSession,
@@ -21,17 +16,9 @@ import type {
 } from "./types";
 
 interface OpenChatInWorkspaceOptions {
-    paneId?: string;
-    insertIndex?: number;
     background?: boolean;
     skipLoad?: boolean;
-    forceNewTab?: boolean;
 }
-
-type ChatWorkspaceDropTarget = Extract<
-    WorkspaceDropTarget,
-    { type: "strip" | "pane-center" | "split" }
->;
 
 function getConfigDefaultValue(
     runtime: AIRuntimeDescriptor,
@@ -152,11 +139,8 @@ function resolveWorkspaceNewChatRuntimeId(runtimeId?: string) {
 
     const chatState = useChatStore.getState();
     const defaultRuntimeId = chatState.getDefaultNewChatRuntimeId();
-    const focusedTab = selectFocusedEditorTab(useEditorStore.getState());
-    const focusedChatRuntimeId =
-        focusedTab && isChatTab(focusedTab)
-            ? getSessionRuntimeId(focusedTab.sessionId)
-            : null;
+    const view = useChatTabsStore.getState().view;
+    const focusedChatRuntimeId = view.mode === "conversation" ? getSessionRuntimeId(view.sessionId) : null;
     if (
         focusedChatRuntimeId &&
         !isClaudeTerminalRuntimeId(focusedChatRuntimeId)
@@ -245,28 +229,11 @@ function finalizeChatSessionWorkspaceOpen(
     }
 
     if (!options?.skipLoad) {
-        void useChatStore.getState().loadSession(sessionId);
+        const state = useChatStore.getState();
+        const session = state.sessionsById[sessionId];
+        if (session && isSessionArchived(session, state.sessionsById, useArchivedChatsStore.getState().entries)) void state.ensureSessionTranscriptLoaded(sessionId, "full");
+        else void state.loadSession(sessionId);
     }
-}
-
-function findWorkspaceChatTab(
-    sessionId: string,
-    historySessionId: string | null,
-) {
-    const workspace = useEditorStore.getState();
-    for (const pane of workspace.panes) {
-        for (const tab of pane.tabs) {
-            if (
-                isChatTab(tab) &&
-                (tab.sessionId === sessionId ||
-                    (historySessionId !== null &&
-                        tab.historySessionId === historySessionId))
-            ) {
-                return { paneId: pane.id, tab };
-            }
-        }
-    }
-    return null;
 }
 
 export function openChatSessionInWorkspace(
@@ -280,84 +247,18 @@ export function openChatSessionInWorkspace(
         focusClaudeTerminalAgentSession(session);
         return sessionId;
     }
-    const { title, historySessionId } = prepareChatSessionForWorkspace(sessionId);
-    useEditorStore.getState().openChat(sessionId, {
-        title,
-        paneId: options?.paneId,
-        insertIndex: options?.insertIndex,
-        background: options?.background,
-        historySessionId,
-        forceNewTab: options?.forceNewTab,
-    });
+    prepareChatSessionForWorkspace(sessionId);
+    if (!options?.background) {
+        useChatTabsStore.getState().showConversation(sessionId);
+        useLayoutStore.getState().setChatPaneVisible(true);
+    }
     finalizeChatSessionWorkspaceOpen(sessionId, options);
     return sessionId;
 }
 
 export function openChatHistoryInWorkspace() {
-    useEditorStore.getState().openChatHistory();
-}
-
-export function openOrMoveChatSessionAtDropTarget(
-    sessionId: string,
-    target: ChatWorkspaceDropTarget,
-) {
-    // Dragging a claude-code-terminal agent into the workspace focuses its
-    // terminal tab rather than opening a (nonexistent) ACP chat session.
-    const terminalAgentSession =
-        useChatStore.getState().sessionsById[sessionId];
-    if (
-        terminalAgentSession &&
-        isClaudeTerminalAgentSession(terminalAgentSession)
-    ) {
-        focusClaudeTerminalAgentSession(terminalAgentSession);
-        return sessionId;
-    }
-    const { title, historySessionId } = prepareChatSessionForWorkspace(sessionId);
-    const existing = findWorkspaceChatTab(sessionId, historySessionId);
-    const editor = useEditorStore.getState();
-
-    if (existing) {
-        if (target.type === "strip") {
-            if (existing.paneId === target.paneId) {
-                editor.switchTab(existing.tab.id);
-            } else {
-                editor.moveTabToPane(
-                    existing.tab.id,
-                    target.paneId,
-                    target.index,
-                );
-            }
-        } else if (target.type === "pane-center") {
-            if (existing.paneId === target.paneId) {
-                editor.switchTab(existing.tab.id);
-            } else {
-                editor.moveTabToPane(existing.tab.id, target.paneId);
-            }
-        } else {
-            editor.moveTabToPaneDropTarget(
-                existing.tab.id,
-                target.paneId,
-                target.direction,
-            );
-        }
-        finalizeChatSessionWorkspaceOpen(sessionId);
-        return existing.tab.id;
-    }
-
-    const chatTab = createChatTab(sessionId, title, historySessionId);
-    if (target.type === "strip") {
-        editor.insertExternalTabInPane(chatTab, target.paneId, target.index);
-    } else if (target.type === "pane-center") {
-        editor.insertExternalTabInPane(chatTab, target.paneId);
-    } else {
-        editor.insertExternalTabAtPaneDropTarget(
-            chatTab,
-            target.paneId,
-            target.direction,
-        );
-    }
-    finalizeChatSessionWorkspaceOpen(sessionId);
-    return chatTab.id;
+    useChatTabsStore.getState().showHistory();
+    useLayoutStore.getState().setChatPaneVisible(true);
 }
 
 export async function createNewChatInWorkspace(
@@ -411,7 +312,9 @@ export async function ensureWorkspaceChatSession(
     const visibleSessionId = getPreferredWorkspaceChatSessionIdForSession(
         useChatStore.getState().lastFocusedSessionId,
     );
-    if (visibleSessionId) {
+    const sessions = useChatStore.getState().sessionsById;
+    const archived = (id: string) => sessions[id] && isSessionArchived(sessions[id], sessions, useArchivedChatsStore.getState().entries);
+    if (visibleSessionId && !archived(visibleSessionId)) {
         if (isClaudeTerminalRuntimeId(getSessionRuntimeId(visibleSessionId))) {
             return null;
         }
@@ -419,7 +322,7 @@ export async function ensureWorkspaceChatSession(
     }
 
     const activeSessionId = useChatStore.getState().activeSessionId;
-    if (activeSessionId) {
+    if (activeSessionId && !archived(activeSessionId)) {
         if (isClaudeTerminalRuntimeId(getSessionRuntimeId(activeSessionId))) {
             return null;
         }

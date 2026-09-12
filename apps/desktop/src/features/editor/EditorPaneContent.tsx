@@ -22,7 +22,6 @@ import { FileTabView } from "./FileTabView";
 import { SearchView } from "../search/SearchView";
 import { isSearchTab } from "../search/searchTab";
 import { PdfTabView } from "../pdf/PdfTabView";
-import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorkspaceView";
 import { AIReviewView } from "../ai/components/AIReviewView";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 import { WorkspaceTerminalView } from "../terminal/WorkspaceTerminalView";
@@ -39,11 +38,7 @@ const LazyGraphTabView = React.lazy(() =>
     })),
 );
 
-const LazyAIChatSessionView = React.lazy(() =>
-    import("../ai/components/AIChatSessionView").then((m) => ({
-        default: m.AIChatSessionView,
-    })),
-);
+
 
 const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 
@@ -108,14 +103,6 @@ function renderEditorPanelView(
             return <FileTabView paneId={paneId} />;
         case "ai-review":
             return <AIReviewView paneId={paneId} />;
-        case "ai-chat":
-            return (
-                <React.Suspense fallback={null}>
-                    <LazyAIChatSessionView paneId={paneId} />
-                </React.Suspense>
-            );
-        case "ai-chat-history":
-            return <AIChatHistoryWorkspaceView />;
         case "map":
             if (!EXCALIDRAW_RUNTIME_SUPPORTED) {
                 return <UnsupportedMapView />;

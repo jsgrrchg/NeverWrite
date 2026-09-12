@@ -1,11 +1,11 @@
+import { useUnreadChatsStore } from "./store/unreadChatsStore";
+import { useChatTabsStore } from "./store/chatTabsStore";
 import {
     useCallback,
     useEffect,
     useMemo,
-    useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
-    type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { confirm } from "@neverwrite/runtime";
@@ -17,9 +17,7 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import {
-    isChatTab,
     isTerminalTab,
-    selectEditorWorkspaceTabs,
     selectFocusedEditorTab,
     useEditorStore,
 } from "../../app/store/editorStore";
@@ -39,13 +37,11 @@ import {
 } from "./newAgentCreation";
 import { emitAgentSidebarDrag } from "./agentSidebarDragEvents";
 import {
-    getSessionTitle,
     getSessionTitleText,
     getSessionUpdatedAt,
 } from "./sessionPresentation";
 import {
     buildAiSessionHierarchyGroups,
-    compareHierarchyGroupsByUpdatedAtDesc,
     countAiSessionChildren,
     type AiSessionHierarchyGroup,
 } from "./sessionHierarchy";
@@ -56,11 +52,9 @@ import {
     isClaudeTerminalAgentSession,
 } from "./claudeTerminalAgentSession";
 import { useChatStore } from "./store/chatStore";
+import { archiveChat, unarchiveChat } from "./chatArchiving";
+import { isSessionArchived, useArchivedChatsStore } from "./store/archivedChatsStore";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
-import {
-    useChatFoldersStore,
-    type ChatFolder,
-} from "./store/chatFoldersStore";
 import type { AIChatSession } from "./types";
 import {
     CLAUDE_TERMINAL_RUNTIME_ID,
@@ -74,11 +68,9 @@ import {
 import { AIProviderIcon } from "./components/AIProviderIcon";
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection";
 
-// Comando-style Agents panel living inside the left sidebar. Replaces the
-// previous right-panel AIChatPanel for the session list (the actual
-// conversations still open as center editor tabs). Groups sessions into
-// Pinned / Open / All, supports inline rename, pin toggle and a right-click
-// context menu for rename/pin/delete.
+// Card-based Agents panel for the session list. Conversations open in the
+// dedicated chat pane. The list groups them by status and supports inline
+// rename, pinning, archiving and deletion.
 
 const AGENTS_SIDEBAR_COLLAPSED_PARENTS_KEY =
     "neverwrite.ai.agentsSidebar.collapsedParents";
@@ -91,21 +83,6 @@ type AgentDragPreview = {
     title: string;
     runtimeId: string;
 };
-
-type EditingFolder = {
-    folderId: string;
-    name: string;
-};
-
-type FolderDropTarget = {
-    folderId: string;
-    position: "before" | "after";
-};
-
-type ChatSidebarDropTarget =
-    | { kind: "folder"; folderId: string }
-    | { kind: "unfiled" }
-    | null;
 
 function deriveActivityIndicator(
     session: ActivitySession,
@@ -122,14 +99,15 @@ function deriveActivityIndicator(
     }
 }
 
-function formatAgentTimestamp(timestamp: number): string {
+function formatAgentTimestamp(timestamp: number, compact = false): string {
     if (!timestamp) return "";
     const now = Date.now();
     const diffMs = now - timestamp;
     const diffMinutes = Math.floor(diffMs / 60000);
 
-    if (diffMinutes < 1) return "Just now";
+    if (diffMinutes < 1) return compact ? "Now" : "Just now";
     if (diffMinutes < 60) {
+        if (compact) return `${diffMinutes}m`;
         return diffMinutes === 1
             ? "1 minute ago"
             : `${diffMinutes} minutes ago`;
@@ -137,11 +115,13 @@ function formatAgentTimestamp(timestamp: number): string {
 
     const diffHours = Math.floor(diffMinutes / 60);
     if (diffHours < 24) {
+        if (compact) return `${diffHours}h`;
         return diffHours === 1 ? "1 hour ago" : `${diffHours} hours ago`;
     }
 
     const diffDays = Math.floor(diffHours / 24);
     if (diffDays < 7) {
+        if (compact) return `${diffDays}d`;
         return diffDays === 1 ? "Yesterday" : `${diffDays} days ago`;
     }
 
@@ -153,58 +133,6 @@ function formatAgentTimestamp(timestamp: number): string {
 
 function isSessionWorking(session: AIChatSession) {
     return deriveActivityIndicator(session)?.tone === "working";
-}
-
-function compareOpenHierarchyGroups(
-    a: AiSessionHierarchyGroup,
-    b: AiSessionHierarchyGroup,
-    workingOrder: ReadonlyMap<string, number>,
-) {
-    const aOrder = getGroupWorkingOrder(a, workingOrder);
-    const bOrder = getGroupWorkingOrder(b, workingOrder);
-    const aWorking = aOrder !== undefined;
-    const bWorking = bOrder !== undefined;
-
-    if (aWorking && bWorking) {
-        return aOrder - bOrder;
-    }
-    if (aWorking !== bWorking) {
-        return aWorking ? -1 : 1;
-    }
-    return compareHierarchyGroupsByUpdatedAtDesc(a, b);
-}
-
-function compareSidebarHierarchySiblings(
-    left: AIChatSession,
-    right: AIChatSession,
-    workingOrder: ReadonlyMap<string, number>,
-) {
-    const leftOrder = workingOrder.get(left.sessionId);
-    const rightOrder = workingOrder.get(right.sessionId);
-    const leftWorking = leftOrder !== undefined;
-    const rightWorking = rightOrder !== undefined;
-
-    if (leftWorking && rightWorking) {
-        return leftOrder - rightOrder;
-    }
-    if (leftWorking !== rightWorking) {
-        return leftWorking ? -1 : 1;
-    }
-
-    return 0;
-}
-
-function getGroupWorkingOrder(
-    group: AiSessionHierarchyGroup,
-    workingOrder: ReadonlyMap<string, number>,
-) {
-    let earliest: number | undefined;
-    for (const sessionId of group.sessionIds) {
-        const order = workingOrder.get(sessionId);
-        if (order === undefined) continue;
-        earliest = earliest === undefined ? order : Math.min(earliest, order);
-    }
-    return earliest;
 }
 
 function loadCollapsedParentSessionIds() {
@@ -237,26 +165,6 @@ function scaleMetric(base: number, scale: number, min: number) {
     return Math.max(min, Math.round(base * scale * 10) / 10);
 }
 
-function getChatSidebarDropTargetAtPoint(
-    clientX: number,
-    clientY: number,
-): ChatSidebarDropTarget {
-    if (
-        typeof document === "undefined" ||
-        typeof document.elementFromPoint !== "function"
-    ) {
-        return null;
-    }
-    const target = document.elementFromPoint(clientX, clientY);
-    if (!(target instanceof Element)) return null;
-    const folderId = target.closest<HTMLElement>("[data-chat-folder-id]")
-        ?.dataset.chatFolderId;
-    if (folderId) return { kind: "folder", folderId };
-    return target.closest("[data-chat-unfiled-drop-zone]")
-        ? { kind: "unfiled" }
-        : null;
-}
-
 function buildAgentsSidebarMetrics(scalePercent: number): {
     item: AgentsSidebarItemMetrics;
     header: {
@@ -277,9 +185,9 @@ function buildAgentsSidebarMetrics(scalePercent: number): {
         item: {
             rowPaddingX: scaleMetric(8, scale, 7),
             rowPaddingLeft: scaleMetric(12, scale, 10),
-            rowPaddingY: scaleMetric(4, scale, 3),
+            rowPaddingY: scaleMetric(8, scale, 6),
             inlineGap: scaleMetric(6, scale, 5),
-            titleFontSize: scaleMetric(11.5, scale, 10.5),
+            titleFontSize: scaleMetric(12, scale, 11),
             timestampFontSize: scaleMetric(10, scale, 9),
             providerIconSize: scaleMetric(12, scale, 10),
             pinButtonSize: scaleMetric(16, scale, 14),
@@ -308,7 +216,6 @@ export function AgentsSidebarPanel() {
     const claudeCodeEnabled = useSettingsStore(
         (state) => state.claudeCodeEnabled,
     );
-    const activeSessionId = useChatStore((state) => state.activeSessionId);
     const sessionsById = useChatStore((state) => state.sessionsById);
     const sessionOrder = useChatStore((state) => state.sessionOrder);
     const claudeCodeSetupStatus = useChatStore(
@@ -320,55 +227,15 @@ export function AgentsSidebarPanel() {
     const deleteSession = useChatStore((state) => state.deleteSession);
     const renameSession = useChatStore((state) => state.renameSession);
 
+    const unreadEntries = useUnreadChatsStore(state => state.entries);
+    const archivedEntries = useArchivedChatsStore(state => state.entries);
+    const [archivedExpanded, setArchivedExpanded] = useState(false);
     const pinnedEntries = usePinnedChatsStore((state) => state.entries);
     const togglePinnedChat = usePinnedChatsStore((state) => state.togglePin);
     const unpinChat = usePinnedChatsStore((state) => state.unpin);
     const reconcilePinned = usePinnedChatsStore((state) => state.reconcile);
-    const chatFolders = useChatFoldersStore((state) => state.folders);
-    const sessionFolderIds = useChatFoldersStore(
-        (state) => state.sessionFolderIds,
-    );
-    const collapsedFolderIds = useChatFoldersStore(
-        (state) => state.collapsedFolderIds,
-    );
-    const folderOrder = useChatFoldersStore((state) => state.folderOrder);
-    const createFolder = useChatFoldersStore((state) => state.createFolder);
-    const renameFolder = useChatFoldersStore((state) => state.renameFolder);
-    const deleteFolder = useChatFoldersStore((state) => state.deleteFolder);
-    const reorderFolder = useChatFoldersStore((state) => state.reorderFolder);
-    const moveSessionToFolder = useChatFoldersStore(
-        (state) => state.moveSession,
-    );
-    const toggleFolderCollapsed = useChatFoldersStore(
-        (state) => state.toggleFolderCollapsed,
-    );
-    const reconcileFolders = useChatFoldersStore((state) => state.reconcile);
-
-    // Sessions currently open as editor tabs across any pane. Drives the
-    // "Open" section — mirrors Comando's behaviour of bubbling live tabs to
-    // the top of the list.
-    const openSessionIds = useEditorStore(
-        useShallow((state) => {
-            const ids = new Set<string>();
-            for (const tab of selectEditorWorkspaceTabs(state)) {
-                if (isChatTab(tab)) {
-                    ids.add(tab.sessionId);
-                } else if (isTerminalTab(tab)) {
-                    // A Claude Code terminal tab being open means its agent
-                    // entry belongs in the "Open" section.
-                    ids.add(claudeTerminalAgentSessionId(tab.terminalId));
-                }
-            }
-            return ids;
-        }),
-    );
-
-    const focusedWorkspaceChatSessionId = useEditorStore(
-        useShallow((state) => {
-            const focused = selectFocusedEditorTab(state);
-            return focused && isChatTab(focused) ? focused.sessionId : null;
-        }),
-    );
+    // Terminal agents retain editor tabs; conversations use dedicated metadata.
+    const focusedWorkspaceChatSessionId = useChatTabsStore(state => state.view.mode === "conversation" ? state.view.sessionId : null);
 
     // When a Claude Code terminal tab is focused, mark its agent entry as
     // selected (the entry has no chat tab of its own).
@@ -381,7 +248,7 @@ export function AgentsSidebarPanel() {
         }),
     );
 
-    // Raw chronological list (persisted order already reflects updatedAt).
+    // The store preserves positions until a turn completes.
     const sessions = useMemo(
         () =>
             sessionOrder
@@ -394,167 +261,64 @@ export function AgentsSidebarPanel() {
     const normalizedFilter = filterText.trim().toLowerCase();
     const hasFilter = normalizedFilter.length > 0;
 
-    const workingOrderRef = useRef<Map<string, number>>(new Map());
-    const workingCounterRef = useRef(0);
-    const [workingOrderRevision, setWorkingOrderRevision] = useState(0);
-
-    useEffect(() => {
-        const map = workingOrderRef.current;
-        const liveSessionIds = new Set<string>();
-        let changed = false;
-
-        for (const session of sessions) {
-            liveSessionIds.add(session.sessionId);
-            const working = isSessionWorking(session);
-            const tracked = map.has(session.sessionId);
-            if (working && !tracked) {
-                workingCounterRef.current += 1;
-                map.set(session.sessionId, workingCounterRef.current);
-                changed = true;
-            } else if (!working && tracked) {
-                map.delete(session.sessionId);
-                changed = true;
-            }
-        }
-
-        for (const trackedId of Array.from(map.keys())) {
-            if (!liveSessionIds.has(trackedId)) {
-                map.delete(trackedId);
-                changed = true;
-            }
-        }
-
-        if (changed) {
-            setWorkingOrderRevision((value) => value + 1);
-        }
-    }, [sessions]);
-
     const pinnedRootIds = useMemo(
         () => new Set(Object.keys(pinnedEntries)),
         [pinnedEntries],
     );
     const hierarchy = useMemo(
-        () =>
-            buildAiSessionHierarchyGroups({
-                sessions,
-                normalizedFilter,
-                openSessionIds,
-                pinnedSessionIds: pinnedRootIds,
-                compareSiblings: (left, right) =>
-                    compareSidebarHierarchySiblings(
-                        left,
-                        right,
-                        workingOrderRef.current,
-                    ),
-            }),
-        // workingOrderRevision keeps this memo in sync with the ref-backed map.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [
-            normalizedFilter,
-            openSessionIds,
-            pinnedRootIds,
+        () => buildAiSessionHierarchyGroups({
             sessions,
-            workingOrderRevision,
-        ],
+            normalizedFilter,
+            pinnedSessionIds: pinnedRootIds,
+            // A zero comparison retains the input order for siblings.
+            compareSiblings: () => 0,
+        }),
+        [sessions, normalizedFilter, pinnedRootIds],
     );
 
     // Pins are root-owned: legacy child pins are pruned so subagents stay under
     // their parent instead of jumping into a separate Pinned bucket.
     useEffect(() => {
-        reconcilePinned(hierarchy.rootSessionIds);
-    }, [hierarchy.rootSessionIds, reconcilePinned]);
-    useEffect(() => {
         if (!sessionInventoryLoaded) return;
-        reconcileFolders(hierarchy.rootSessionIds);
-    }, [hierarchy.rootSessionIds, reconcileFolders, sessionInventoryLoaded]);
+        reconcilePinned(hierarchy.rootSessionIds);
+    }, [hierarchy.rootSessionIds, reconcilePinned, sessionInventoryLoaded]);
 
-    // Shortcut sections are mutually exclusive with each other. They are not
-    // a partition of folder navigation: a foldered chat may intentionally
-    // also appear in Pinned or Open for quick access.
-    const { pinnedGroups, openGroups, otherGroups } = useMemo(() => {
+    // Opening a chat must not move it into a different section. Pins and
+    // archives remain explicit groups; all other conversations share one list.
+    const { pinnedGroups, activeGroups, archivedGroups } = useMemo(() => {
+        const order = new Map(sessionOrder.map((id, index) => [id, index]));
+        const groupPosition = (group: AiSessionHierarchyGroup) =>
+            Math.min(...group.sessionIds.map(id => order.get(id) ?? Number.MAX_SAFE_INTEGER));
+        const compareGroups = (a: AiSessionHierarchyGroup, b: AiSessionHierarchyGroup) =>
+            groupPosition(a) - groupPosition(b);
+        const archived: AiSessionHierarchyGroup[] = [];
         const pinned: AiSessionHierarchyGroup[] = [];
-        const open: AiSessionHierarchyGroup[] = [];
-        const other: AiSessionHierarchyGroup[] = [];
+        const active: AiSessionHierarchyGroup[] = [];
         for (const group of hierarchy.groups) {
-            if (group.isPinnedRoot) {
+            if (isSessionArchived(group.root, sessionsById, archivedEntries)) {
+                archived.push(group);
+            } else if (group.isPinnedRoot) {
                 pinned.push(group);
-            } else if (group.hasOpenSession) {
-                open.push(group);
             } else {
-                other.push(group);
+                active.push(group);
             }
         }
         pinned.sort((a, b) => {
             const aPinned = pinnedEntries[a.root.sessionId]?.pinnedAt ?? 0;
             const bPinned = pinnedEntries[b.root.sessionId]?.pinnedAt ?? 0;
-            if (bPinned !== aPinned) return bPinned - aPinned;
-            return compareHierarchyGroupsByUpdatedAtDesc(a, b);
+            return bPinned - aPinned || compareGroups(a, b);
         });
-        open.sort((a, b) =>
-            compareOpenHierarchyGroups(a, b, workingOrderRef.current),
-        );
-        other.sort(compareHierarchyGroupsByUpdatedAtDesc);
         return {
+            archivedGroups: archived.sort(compareGroups),
             pinnedGroups: pinned,
-            openGroups: open,
-            otherGroups: other,
+            activeGroups: active.sort(compareGroups),
         };
-        // workingOrderRevision keeps this memo in sync with the ref-backed map.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hierarchy.groups, pinnedEntries, workingOrderRevision]);
-    const orderedFolders = useMemo(
-        () => {
-            const unordered = Object.values(chatFolders).sort(
-                (left, right) => left.createdAt - right.createdAt,
-            );
-            const byId = new Map(unordered.map((folder) => [folder.id, folder]));
-            const ordered = folderOrder.flatMap((id) => {
-                const folder = byId.get(id);
-                if (!folder) return [];
-                byId.delete(id);
-                return [folder];
-            });
-            // This also makes an interrupted migration harmless: folders that
-            // have not reached folderOrder remain visible and usable.
-            return [...ordered, ...unordered.filter((folder) => byId.has(folder.id))];
-        },
-        [chatFolders, folderOrder],
-    );
-    // Folders are the chat's organizational home. Keep every group eligible
-    // here (including pinned/open groups) so the folder projection remains
-    // visible alongside those status-based shortcuts. All is the only section
-    // limited to unfiled groups, avoiding a redundant third copy.
-    const folderGroups = useMemo(() => {
-        const groups = new Map<string, AiSessionHierarchyGroup[]>();
-        for (const folder of orderedFolders) groups.set(folder.id, []);
-        for (const group of hierarchy.groups) {
-            const folderId = sessionFolderIds[group.root.sessionId];
-            if (folderId && groups.has(folderId)) {
-                groups.get(folderId)?.push(group);
-            }
-        }
-        return groups;
-    }, [hierarchy.groups, orderedFolders, sessionFolderIds]);
-    const unfiledGroups = useMemo(
-        () =>
-            otherGroups.filter(
-                (group) => !sessionFolderIds[group.root.sessionId],
-            ),
-        [otherGroups, sessionFolderIds],
-    );
-
+    }, [hierarchy.groups, sessionOrder, pinnedEntries, archivedEntries, sessionsById]);
     const totalCount = sessions.length;
     const filteredCount = hierarchy.groups.reduce(
         (count, group) => count + 1 + group.visibleChildren.length,
         0,
     );
-    // Only decorate Open/All headers when there is more than one non-pinned
-    // section or when Pinned is already showing — otherwise a single "Open"
-    // header above a lonely list reads as noise.
-    const showOpenAllHeaders =
-        pinnedGroups.length > 0 ||
-        (openGroups.length > 0 && otherGroups.length > 0);
-
     const {
         editingKey,
         editValue,
@@ -597,8 +361,8 @@ export function AgentsSidebarPanel() {
             });
             if (!approved) return;
 
-            unpinChat(session.sessionId);
             await deleteSession(session.sessionId);
+            unpinChat(session.sessionId);
         },
         [deleteSession, sessions, unpinChat],
     );
@@ -626,161 +390,9 @@ export function AgentsSidebarPanel() {
     >(null);
     const [newChatMenu, setNewChatMenu] =
         useState<ContextMenuState<void> | null>(null);
-    const [folderMenu, setFolderMenu] = useState<
-        ContextMenuState<ChatFolder> | null
-    >(null);
-    const [editingFolder, setEditingFolder] = useState<EditingFolder | null>(
-        null,
-    );
     const [dragPreview, setDragPreview] = useState<AgentDragPreview | null>(
         null,
     );
-    const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(
-        null,
-    );
-    const [isDraggingOverUnfiled, setIsDraggingOverUnfiled] = useState(false);
-    const folderDragRef = useRef<{
-        pointerId: number;
-        folderId: string;
-        startX: number;
-        startY: number;
-        active: boolean;
-        folderIds: string[];
-    } | null>(null);
-    const folderDragCleanupRef = useRef<(() => void) | null>(null);
-    const suppressFolderClickRef = useRef(false);
-    const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
-    const [folderDropTarget, setFolderDropTarget] =
-        useState<FolderDropTarget | null>(null);
-
-    useEffect(
-        () => () => {
-            folderDragCleanupRef.current?.();
-            folderDragCleanupRef.current = null;
-        },
-        [],
-    );
-
-    const clearFolderDrag = useCallback(() => {
-        folderDragRef.current = null;
-        folderDragCleanupRef.current?.();
-        folderDragCleanupRef.current = null;
-        setDraggedFolderId(null);
-        setFolderDropTarget(null);
-    }, []);
-
-    const handleFolderPointerDown = useCallback(
-        (event: ReactPointerEvent<HTMLElement>, folderId: string) => {
-            if (event.button !== 0 || editingFolder?.folderId === folderId) return;
-
-            const target = event.target;
-            if (target instanceof Element && target.closest("input,button")) return;
-
-            folderDragCleanupRef.current?.();
-            const state = {
-                pointerId: event.pointerId,
-                folderId,
-                startX: event.clientX,
-                startY: event.clientY,
-                active: false,
-                folderIds: orderedFolders.map((folder) => folder.id),
-            };
-            folderDragRef.current = state;
-
-            const updateTarget = (moveEvent: PointerEvent) => {
-                const current = folderDragRef.current;
-                if (!current || current.pointerId !== moveEvent.pointerId) return;
-                if (!current.active) {
-                    if (
-                        Math.hypot(
-                            moveEvent.clientX - current.startX,
-                            moveEvent.clientY - current.startY,
-                        ) < 5
-                    ) {
-                        return;
-                    }
-                    current.active = true;
-                    setDraggedFolderId(current.folderId);
-                }
-                moveEvent.preventDefault();
-                const element = document.elementFromPoint(
-                    moveEvent.clientX,
-                    moveEvent.clientY,
-                );
-                const header = element?.closest<HTMLElement>(
-                    "[data-chat-folder-header]",
-                );
-                const targetFolderId = header?.dataset.chatFolderHeader;
-                if (!targetFolderId || targetFolderId === current.folderId) {
-                    setFolderDropTarget(null);
-                    return;
-                }
-                const rect = header.getBoundingClientRect();
-                setFolderDropTarget({
-                    folderId: targetFolderId,
-                    position:
-                        moveEvent.clientY < rect.top + rect.height / 2
-                            ? "before"
-                            : "after",
-                });
-            };
-            const finish = (upEvent: PointerEvent, cancelled = false) => {
-                const current = folderDragRef.current;
-                if (!current || current.pointerId !== upEvent.pointerId) return;
-                // Calculate from the final pointer position instead of React
-                // state, which can be stale inside this window listener.
-                const element = document.elementFromPoint(
-                    upEvent.clientX,
-                    upEvent.clientY,
-                );
-                const header = element?.closest<HTMLElement>(
-                    "[data-chat-folder-header]",
-                );
-                const targetFolderId = header?.dataset.chatFolderHeader;
-                const rect = header?.getBoundingClientRect();
-                const finalTarget =
-                    targetFolderId && targetFolderId !== current.folderId && rect
-                        ? {
-                              folderId: targetFolderId,
-                              position:
-                                  upEvent.clientY < rect.top + rect.height / 2
-                                      ? ("before" as const)
-                                      : ("after" as const),
-                          }
-                        : null;
-                const wasActive = current.active;
-                clearFolderDrag();
-                if (!wasActive || cancelled || !finalTarget) return;
-
-                const remainingIds = current.folderIds.filter(
-                    (id) => id !== current.folderId,
-                );
-                const targetIndex = remainingIds.indexOf(finalTarget.folderId);
-                if (targetIndex < 0) return;
-                reorderFolder(
-                    current.folderId,
-                    targetIndex + (finalTarget.position === "after" ? 1 : 0),
-                );
-                suppressFolderClickRef.current = true;
-                window.requestAnimationFrame(() => {
-                    suppressFolderClickRef.current = false;
-                });
-            };
-            const onMove = (moveEvent: PointerEvent) => updateTarget(moveEvent);
-            const onUp = (upEvent: PointerEvent) => finish(upEvent);
-            const onCancel = (cancelEvent: PointerEvent) => finish(cancelEvent, true);
-            window.addEventListener("pointermove", onMove);
-            window.addEventListener("pointerup", onUp);
-            window.addEventListener("pointercancel", onCancel);
-            folderDragCleanupRef.current = () => {
-                window.removeEventListener("pointermove", onMove);
-                window.removeEventListener("pointerup", onUp);
-                window.removeEventListener("pointercancel", onCancel);
-            };
-        },
-        [clearFolderDrag, editingFolder?.folderId, orderedFolders, reorderFolder],
-    );
-
     const newChatMenuEntries = useMemo<ContextMenuEntry[]>(() => {
         return [
             {
@@ -817,52 +429,12 @@ export function AgentsSidebarPanel() {
         [],
     );
 
-    const handleCreateFolder = useCallback(() => {
-        const folderId = createFolder("New Folder");
-        if (folderId) {
-            setEditingFolder({
-                folderId,
-                name: "New Folder",
-            });
-        }
-    }, [createFolder]);
-
-    const commitFolderRename = useCallback(() => {
-        if (!editingFolder) return;
-        const name = editingFolder.name.trim();
-        if (name) renameFolder(editingFolder.folderId, name);
-        setEditingFolder(null);
-    }, [editingFolder, renameFolder]);
-
-    const startFolderRename = useCallback((folder: ChatFolder) => {
-        setEditingFolder({
-            folderId: folder.id,
-            name: folder.name,
-        });
-    }, []);
-
-    const handleFolderContextMenu = useCallback(
-        (event: ReactMouseEvent<HTMLElement>, folder: ChatFolder) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setContextMenu(null);
-            setNewChatMenu(null);
-            setFolderMenu({
-                x: event.clientX,
-                y: event.clientY,
-                payload: folder,
-            });
-        },
-        [],
-    );
-
     const activeSidebarId =
         focusedWorkspaceChatSessionId ??
         (focusedTerminalAgentSessionId &&
         sessionsById[focusedTerminalAgentSessionId]
             ? focusedTerminalAgentSessionId
-            : null) ??
-        activeSessionId;
+            : null);
     const metrics = useMemo(
         () => buildAgentsSidebarMetrics(agentsSidebarScale),
         [agentsSidebarScale],
@@ -901,7 +473,7 @@ export function AgentsSidebarPanel() {
         const isPinned = Boolean(pinnedEntries[session.sessionId]);
         const indicator = deriveActivityIndicator(session);
         const updatedAt = getSessionUpdatedAt(session);
-        const timestampLabel = formatAgentTimestamp(updatedAt);
+        const timestampLabel = formatAgentTimestamp(updatedAt, isSubagent || isSessionArchived(session, sessionsById, archivedEntries));
         const dragTitle = getSessionTitleText(session);
         const updateDragPreview = (clientX: number, clientY: number) => {
             setDragPreview({
@@ -911,28 +483,22 @@ export function AgentsSidebarPanel() {
                 runtimeId: session.runtimeId,
             });
         };
-        const updateFolderDropTarget = (clientX: number, clientY: number) => {
-            const target = canPin
-                ? getChatSidebarDropTargetAtPoint(clientX, clientY)
-                : null;
-            setDragOverFolderId(
-                target?.kind === "folder" ? target.folderId : null,
-            );
-            setIsDraggingOverUnfiled(target?.kind === "unfiled");
-        };
-
         return (
             <AgentsSidebarItem
                 key={session.sessionId}
                 session={session}
-                title={getSessionTitle(session)}
+                title={getSessionTitleText(session)}
                 timestampLabel={timestampLabel}
                 isActive={activeSidebarId === session.sessionId}
                 isPinned={canPin && isPinned}
-                canPin={canPin}
+                compact={isSubagent}
+                isArchived={isSessionArchived(session, sessionsById, archivedEntries)}
+                onToggleArchive={!isSubagent && !isClaudeTerminalAgentSession(session) ? () => isSessionArchived(session, sessionsById, archivedEntries) ? unarchiveChat(session.sessionId) : archiveChat(session.sessionId) : undefined}
+                canPin={canPin && !isSessionArchived(session, sessionsById, archivedEntries)}
                 canRename={canRename}
-                depth={options?.depth ?? 0}
+                depth={options?.depth ?? (isSubagent ? 1 : 0)}
                 indicator={indicator}
+                isUnread={Boolean(unreadEntries[session.sessionId])}
                 childCount={options?.childCount ?? 0}
                 isCollapsed={options?.isCollapsed ?? false}
                 isRenaming={editingKey === session.sessionId}
@@ -958,7 +524,6 @@ export function AgentsSidebarPanel() {
                 onContextMenu={(event) => handleContextMenu(event, session)}
                 onDragStart={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
-                    updateFolderDropTarget(clientX, clientY);
                     emitAgentSidebarDrag({
                         phase: "start",
                         x: clientX,
@@ -969,7 +534,6 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragMove={({ clientX, clientY }) => {
                     updateDragPreview(clientX, clientY);
-                    updateFolderDropTarget(clientX, clientY);
                     emitAgentSidebarDrag({
                         phase: "move",
                         x: clientX,
@@ -980,21 +544,8 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragEnd={({ clientX, clientY }) => {
                     setDragPreview(null);
-                    const target = canPin
-                        ? getChatSidebarDropTargetAtPoint(clientX, clientY)
-                        : null;
-                    const movedWithinSidebar = target !== null;
-                    if (target?.kind === "folder") {
-                        moveSessionToFolder(session.sessionId, target.folderId);
-                    } else if (target?.kind === "unfiled") {
-                        moveSessionToFolder(session.sessionId, null);
-                    }
-                    setDragOverFolderId(null);
-                    setIsDraggingOverUnfiled(false);
                     emitAgentSidebarDrag({
-                        // Sidebar drops belong to the sidebar; prevent the
-                        // workspace pane drop handler from acting as well.
-                        phase: movedWithinSidebar ? "cancel" : "end",
+                        phase: "end",
                         x: clientX,
                         y: clientY,
                         sessionId: session.sessionId,
@@ -1003,8 +554,6 @@ export function AgentsSidebarPanel() {
                 }}
                 onDragCancel={() => {
                     setDragPreview(null);
-                    setDragOverFolderId(null);
-                    setIsDraggingOverUnfiled(false);
                     emitAgentSidebarDrag({
                         phase: "cancel",
                         x: 0,
@@ -1056,166 +605,6 @@ export function AgentsSidebarPanel() {
         );
     };
 
-    const renderFolder = (folder: ChatFolder) => {
-        const groups = folderGroups.get(folder.id) ?? [];
-        const collapsed = collapsedFolderIds.includes(folder.id);
-        const isRenaming = editingFolder?.folderId === folder.id;
-        return (
-            <section
-                key={folder.id}
-                data-chat-folder-id={folder.id}
-                className="mt-1 flex flex-col rounded"
-                style={{
-                    backgroundColor:
-                        dragOverFolderId === folder.id
-                            ? "color-mix(in srgb, var(--accent) 10%, transparent)"
-                            : "transparent",
-                    outline:
-                        dragOverFolderId === folder.id
-                            ? "1px solid color-mix(in srgb, var(--accent) 55%, transparent)"
-                            : "1px solid transparent",
-                    borderTop:
-                        folderDropTarget?.folderId === folder.id &&
-                        folderDropTarget.position === "before"
-                            ? "2px solid var(--accent)"
-                            : "2px solid transparent",
-                    borderBottom:
-                        folderDropTarget?.folderId === folder.id &&
-                        folderDropTarget.position === "after"
-                            ? "2px solid var(--accent)"
-                            : "2px solid transparent",
-                    opacity: draggedFolderId === folder.id ? 0.55 : 1,
-                }}
-            >
-                <div
-                    data-chat-folder-header={folder.id}
-                    role="button"
-                    tabIndex={0}
-                    className="flex items-center gap-1.5 px-2 text-left text-[10px] font-semibold uppercase tracking-[0.09em]"
-                    style={{
-                        color: "var(--text-secondary)",
-                        opacity: 0.8,
-                        fontSize: metrics.header.fontSize,
-                        padding: `${scaleMetric(4, agentsSidebarScale / 100, 3)}px ${metrics.header.paddingX}px ${scaleMetric(3, agentsSidebarScale / 100, 2)}px`,
-                    }}
-                    title={collapsed ? "Expand folder" : "Collapse folder"}
-                    onClick={() => {
-                        if (suppressFolderClickRef.current) return;
-                        toggleFolderCollapsed(folder.id);
-                    }}
-                    onPointerDown={(event) =>
-                        handleFolderPointerDown(event, folder.id)
-                    }
-                    onContextMenu={(event) =>
-                        handleFolderContextMenu(event, folder)
-                    }
-                    onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            toggleFolderCollapsed(folder.id);
-                        }
-                    }}
-                >
-                    <svg
-                        width="9"
-                        height="9"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{
-                            transform: collapsed
-                                ? "rotate(-90deg)"
-                                : "rotate(0)",
-                            transition: "transform 120ms ease",
-                        }}
-                    >
-                        <path d="m4 6 4 4 4-4" />
-                    </svg>
-                    <svg
-                        data-chat-folder-icon
-                        aria-hidden="true"
-                        width="12"
-                        height="12"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="shrink-0"
-                    >
-                        <path d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h3l1.4 1.75h5.1a1.5 1.5 0 0 1 1.5 1.5v5.25a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5Z" />
-                    </svg>
-                    {isRenaming ? (
-                        <input
-                            autoFocus
-                            aria-label="Folder name"
-                            className="min-w-0 flex-1 rounded px-1 py-0.5 text-[10px] font-semibold normal-case tracking-normal outline-none"
-                            style={{
-                                color: "var(--text-primary)",
-                                backgroundColor: "var(--bg-primary)",
-                                border: "1px solid var(--accent)",
-                            }}
-                            value={editingFolder.name}
-                            onClick={(event) => event.stopPropagation()}
-                            onChange={(event) =>
-                                setEditingFolder((current) =>
-                                    current
-                                        ? {
-                                              ...current,
-                                              name: event.target.value,
-                                          }
-                                        : current,
-                                )
-                            }
-                            onBlur={commitFolderRename}
-                            onKeyDown={(event) => {
-                                event.stopPropagation();
-                                if (event.key === "Enter") {
-                                    event.preventDefault();
-                                    commitFolderRename();
-                                } else if (event.key === "Escape") {
-                                    event.preventDefault();
-                                    setEditingFolder(null);
-                                }
-                            }}
-                        />
-                    ) : (
-                        <span className="truncate">{folder.name}</span>
-                    )}
-                    <span style={{ opacity: 0.7 }}>{groups.length}</span>
-                </div>
-                {!collapsed ? (
-                    <div
-                        data-chat-folder-contents={folder.id}
-                        className="flex min-w-0 flex-col gap-0.5"
-                        style={{
-                            marginLeft: scaleMetric(
-                                8,
-                                agentsSidebarScale / 100,
-                                7,
-                            ),
-                        }}
-                    >
-                        {groups.length > 0 ? (
-                            groups.map(renderGroup)
-                        ) : (
-                            <p
-                                className="px-3 py-1 text-[10.5px]"
-                                style={{ color: "var(--text-secondary)" }}
-                            >
-                                Drop chats here from their menu.
-                            </p>
-                        )}
-                    </div>
-                ) : null}
-            </section>
-        );
-    };
-
     return (
         <div className="flex h-full min-h-0 flex-col">
             <div className="shrink-0 px-2 pt-2 pb-2">
@@ -1228,49 +617,14 @@ export function AgentsSidebarPanel() {
             </div>
 
             <div
-                className="flex shrink-0 items-center justify-between px-3 pt-1.5 pb-1 text-[10.5px]"
+                className="flex shrink-0 items-center justify-end px-3 pt-1.5 pb-1 text-[10.5px]"
                 style={{
                     color: "var(--text-secondary)",
                     fontSize: metrics.summaryFontSize,
                     padding: `${metrics.summaryPaddingTop}px ${metrics.summaryPaddingX}px ${metrics.summaryPaddingBottom}px`,
                 }}
             >
-                <span>
-                    {hasFilter
-                        ? `${filteredCount} of ${totalCount}`
-                        : totalCount === 1
-                          ? "1 thread"
-                          : `${totalCount} threads`}
-                </span>
                 <div className="flex items-center gap-1">
-                    <button
-                        type="button"
-                        onClick={handleCreateFolder}
-                        title="New folder"
-                        aria-label="New folder"
-                        className="ub-chrome-btn flex h-5 w-5 cursor-pointer items-center justify-center rounded"
-                        style={{
-                            width: metrics.actionButtonSize,
-                            height: metrics.actionButtonSize,
-                            color: "var(--text-secondary)",
-                            background: "transparent",
-                            border: "1px solid transparent",
-                        }}
-                    >
-                        <svg
-                            width={metrics.actionIconSize}
-                            height={metrics.actionIconSize}
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="M2.5 4.5h4l1.2 1.5h5.8v6.5h-11Z" />
-                            <path d="M8 8v4M6 10h4" />
-                        </svg>
-                    </button>
                     <button
                         type="button"
                         onClick={(event) => {
@@ -1355,25 +709,29 @@ export function AgentsSidebarPanel() {
                             {pinnedGroups.map(renderGroup)}
                         </AgentsSidebarSection>
                         <AgentsSidebarSection
-                            title="Open"
-                            count={openGroups.length}
-                            showHeader={showOpenAllHeaders}
+                            title="Chats"
+                            count={activeGroups.length}
+                            showHeader={pinnedGroups.length > 0}
                             headerMetrics={metrics.header}
                         >
-                            {openGroups.map(renderGroup)}
+                            {activeGroups.map(renderGroup)}
                         </AgentsSidebarSection>
-                        {orderedFolders.map(renderFolder)}
-                        <AgentsSidebarSection
-                            title="All"
-                            count={unfiledGroups.length}
-                            showHeader={showOpenAllHeaders || orderedFolders.length > 0}
-                            showWhenEmpty={orderedFolders.length > 0}
-                            dropTarget="all"
-                            isDropTarget={isDraggingOverUnfiled}
-                            headerMetrics={metrics.header}
-                        >
-                            {unfiledGroups.map(renderGroup)}
-                        </AgentsSidebarSection>
+                        {archivedGroups.length > 0 && <section className="mt-3" aria-label="Archived chats">
+                            <button
+                                type="button"
+                                className="flex w-full items-center gap-2 px-2 py-2 text-left text-xs"
+                                style={{ color: "var(--text-secondary)" }}
+                                aria-expanded={hasFilter || archivedExpanded}
+                                onClick={() => setArchivedExpanded(value => !value)}
+                            >
+                                <span>Archived ({archivedGroups.length})</span>
+                                <span className="h-px min-w-0 flex-1" style={{ background: "var(--border)" }} aria-hidden="true" />
+                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true" style={{ transform: hasFilter || archivedExpanded ? undefined : "rotate(-90deg)" }}>
+                                    <path d="m4 6 4 4 4-4" />
+                                </svg>
+                            </button>
+                            {(hasFilter || archivedExpanded) && <div className="flex flex-col gap-0.5">{archivedGroups.map(renderGroup)}</div>}
+                        </section>}
                     </>
                 )}
             </div>
@@ -1383,11 +741,15 @@ export function AgentsSidebarPanel() {
                     menu={contextMenu}
                     onClose={() => setContextMenu(null)}
                     entries={[
+                        ...(!isSubagentSession(contextMenu.payload) && !isClaudeTerminalAgentSession(contextMenu.payload) ? [{
+                            label: isSessionArchived(contextMenu.payload, sessionsById, archivedEntries) ? "Unarchive" : "Archive",
+                            action: () => isSessionArchived(contextMenu.payload, sessionsById, archivedEntries) ? unarchiveChat(contextMenu.payload.sessionId) : archiveChat(contextMenu.payload.sessionId),
+                        }] : []),
                         {
                             label: pinnedEntries[contextMenu.payload.sessionId]
                                 ? "Unpin from Sidebar"
                                 : "Pin to Sidebar",
-                            disabled: isSubagentSession(contextMenu.payload),
+                            disabled: isSubagentSession(contextMenu.payload) || isSessionArchived(contextMenu.payload, sessionsById, archivedEntries),
                             action: () =>
                                 togglePinnedChat(contextMenu.payload.sessionId),
                         },
@@ -1397,64 +759,6 @@ export function AgentsSidebarPanel() {
                             action: () =>
                                 handleStartRename(contextMenu.payload),
                         },
-                        {
-                            label: "Move to Folder",
-                            disabled: isSubagentSession(contextMenu.payload),
-                            children: [
-                                {
-                                    label: "New Folder…",
-                                    action: () => {
-                                        const folderId = createFolder("New Folder");
-                                        if (!folderId) return;
-                                        moveSessionToFolder(
-                                            contextMenu.payload.sessionId,
-                                            folderId,
-                                        );
-                                        setEditingFolder({
-                                            folderId,
-                                            name: "New Folder",
-                                        });
-                                    },
-                                },
-                                { type: "separator" },
-                                {
-                                    label: "No Folder",
-                                    disabled: !sessionFolderIds[
-                                        contextMenu.payload.sessionId
-                                    ],
-                                    action: () =>
-                                        moveSessionToFolder(
-                                            contextMenu.payload.sessionId,
-                                            null,
-                                        ),
-                                },
-                                ...orderedFolders.map((folder) => ({
-                                    label: folder.name,
-                                    disabled:
-                                        sessionFolderIds[
-                                            contextMenu.payload.sessionId
-                                        ] === folder.id,
-                                    action: () =>
-                                        moveSessionToFolder(
-                                            contextMenu.payload.sessionId,
-                                            folder.id,
-                                        ),
-                                })),
-                            ],
-                        },
-                        ...(isClaudeTerminalAgentSession(contextMenu.payload)
-                            ? []
-                            : [
-                                  {
-                                      label: "Open in New Tab",
-                                      action: () => {
-                                          void openChatSessionInWorkspace(
-                                              contextMenu.payload.sessionId,
-                                              { forceNewTab: true },
-                                          );
-                                      },
-                                  },
-                              ]),
                         { type: "separator" },
                         isClaudeTerminalAgentSession(contextMenu.payload)
                             ? {
@@ -1484,25 +788,6 @@ export function AgentsSidebarPanel() {
                     minWidth={132}
                 />
             )}
-            {folderMenu && (
-                <ContextMenu
-                    menu={folderMenu}
-                    onClose={() => setFolderMenu(null)}
-                    entries={[
-                        {
-                            label: "Rename Folder",
-                            action: () => startFolderRename(folderMenu.payload),
-                        },
-                        { type: "separator" },
-                        {
-                            label: "Delete Folder",
-                            danger: true,
-                            action: () =>
-                                deleteFolder(folderMenu.payload.id),
-                        },
-                    ]}
-                />
-            )}
             {dragPreview && typeof document !== "undefined"
                 ? createPortal(
                       <AgentSidebarDragGhost preview={dragPreview} />,
@@ -1528,12 +813,12 @@ function AgentSidebarDragGhost({ preview }: { preview: AgentDragPreview }) {
                 alignItems: "center",
                 gap: 6,
                 maxWidth: 220,
-                borderRadius: 6,
+                borderRadius: 8,
                 border: "1px solid var(--border)",
                 background: "var(--bg-secondary)",
                 color: "var(--text-primary)",
                 boxShadow: "0 8px 18px rgba(0,0,0,0.18)",
-                padding: "5px 8px",
+                padding: "10px 12px",
                 transform: "translate3d(0, 0, 0)",
             }}
         >

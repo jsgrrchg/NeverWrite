@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "./store/chatTabsStore";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore, type VaultEntryDto } from "../../app/store/vaultStore";
 import {
@@ -145,6 +146,7 @@ export async function openAiEditedFileByAbsolutePath(
         }
 
         await openVaultFileEntry(entry, options);
+        useChatTabsStore.getState().setFocusedSurface("editor");
         return true;
     }
 
@@ -168,6 +170,7 @@ export async function openAiEditedFileByAbsolutePath(
     resolvedEntry.title ||= title.replace(/\.[^/.]+$/, "");
     resolvedEntry.file_name ||= title;
     await openVaultFileEntry(resolvedEntry, options);
+    useChatTabsStore.getState().setFocusedSurface("editor");
     return true;
 }
 
@@ -203,6 +206,7 @@ export function openChatPdfByReference(
     const entry = findPdfEntry(reference);
     if (!entry) return false;
 
+    useChatTabsStore.getState().setFocusedSurface("editor");
     if (options?.newTab) {
         useEditorStore.getState().insertExternalTab({
             id: crypto.randomUUID(),

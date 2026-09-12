@@ -1,3 +1,6 @@
+import { useUnreadChatsStore } from "./unreadChatsStore";
+import { useArchivedChatsStore } from "./archivedChatsStore";
+import { selectChatForTest } from "../../../test/test-utils";
 import { confirm, invoke, listen, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -38,7 +41,6 @@ import {
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
-import { useChatFoldersStore } from "./chatFoldersStore";
 import { usePinnedChatsStore } from "./pinnedChatsStore";
 import {
     disposeChatStoreRuntime,
@@ -590,11 +592,6 @@ describe("chatStore", () => {
         resetChatStore();
         resetChatTabsStore();
         usePinnedChatsStore.setState({ entries: {} });
-        useChatFoldersStore.setState({
-            folders: {},
-            sessionFolderIds: {},
-            collapsedFolderIds: [],
-        });
         resetExternalReloadBaselinesForTests();
         vi.clearAllMocks();
         delete (globalThis as Record<string, unknown>)
@@ -1985,16 +1982,9 @@ describe("chatStore", () => {
         );
     });
 
-    it("keeps sidebar pins and folders when a provisional session becomes live", async () => {
+    it("keeps sidebar pins when a provisional session becomes live", async () => {
         const provisionalSessionId = "pending-session";
         const liveSessionId = sessionPayload.session_id;
-        const folderId = useChatFoldersStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useChatFoldersStore
-            .getState()
-            .moveSession(provisionalSessionId, folderId);
         usePinnedChatsStore.getState().pin(provisionalSessionId);
         useChatStore.setState((state) => ({
             ...state,
@@ -2026,9 +2016,6 @@ describe("chatStore", () => {
             [liveSessionId]: expect.objectContaining({
                 pinnedAt: expect.any(Number),
             }),
-        });
-        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
-            [liveSessionId]: folderId,
         });
     });
 
@@ -2122,6 +2109,99 @@ describe("chatStore", () => {
             status: "error",
             message: "session discovery failed",
         });
+    });
+
+    it.each([false, true])("reactivates an archived chat on send (persisted: %s)", async (persisted) => {
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const original = { ...useChatStore.getState().sessionsById[sessionId]!, historySessionId: sessionId };
+        useChatStore.getState().upsertSession(original, true);
+        const historyId = original.historySessionId!;
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        useArchivedChatsStore.getState().archive(historyId);
+        useArchivedChatsStore.getState().archive("unrelated-archived-chat");
+        const resumedId = persisted ? "resumed-archived-chat" : sessionId;
+        const resumeSession = vi.spyOn(useChatStore.getState(), "resumeSession");
+        if (persisted) {
+            useChatStore.getState().upsertSession({ ...original, runtimeState: "persisted_only" }, true);
+            resumeSession.mockImplementation(async () => {
+                useChatStore.getState().upsertSession({
+                    ...original,
+                    sessionId: resumedId,
+                    runtimeSessionId: resumedId,
+                    runtimeState: "live",
+                }, true);
+                return resumedId;
+            });
+        }
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, session_id: resumedId, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        try {
+            useChatStore.getState().setComposerParts(createTextParts("Continue archived chat"), sessionId);
+            expect(useArchivedChatsStore.getState().isArchived(historyId)).toBe(true);
+            await useChatStore.getState().sendMessage(sessionId);
+            expect(useArchivedChatsStore.getState().isArchived(historyId)).toBe(false);
+            expect(useArchivedChatsStore.getState().isArchived("unrelated-archived-chat")).toBe(true);
+            expect(invokeMock).toHaveBeenCalledWith("ai_send_message", expect.objectContaining({ sessionId: resumedId }));
+            expect(useChatStore.getState().sessionsById[resumedId]?.messages.some(
+                message => message.role === "user" && message.content === "Continue archived chat",
+            )).toBe(true);
+            if (persisted) expect(resumeSession).toHaveBeenCalledWith(sessionId);
+        } finally {
+            resumeSession.mockRestore();
+            useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        }
+    });
+
+    it("keeps an archived chat archived when there is no message to send", async () => {
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const historyId = useChatStore.getState().sessionsById[sessionId]!.historySessionId ?? sessionId;
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        useArchivedChatsStore.getState().archive(historyId);
+        try {
+            useChatStore.getState().setComposerParts(createTextParts("   "), sessionId);
+            await useChatStore.getState().sendMessage(sessionId);
+            expect(useArchivedChatsStore.getState().isArchived(historyId)).toBe(true);
+            expect(invokeMock.mock.calls.some(([command]) => command === "ai_send_message")).toBe(false);
+        } finally {
+            useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        }
+    });
+
+    it("moves an existing session only after its turn completes", async () => {
+        useUnreadChatsStore.setState({ entries: {} });
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const other = createSessionWithTrackedFiles("other", []);
+        useChatStore.getState().upsertSession(other, true);
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        await useChatStore.getState().loadSession(sessionId);
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") return { ...sessionPayload, status: "streaming" };
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"), sessionId);
+        await useChatStore.getState().sendMessage(sessionId);
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "partial", turn_complete: false });
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        expect(useUnreadChatsStore.getState().entries[sessionId]).toBeUndefined();
+        useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "final" });
+        expect(useUnreadChatsStore.getState().entries[sessionId]).toBe(true);
+        useUnreadChatsStore.getState().markRead(sessionId);
+        expect(useChatStore.getState().sessionOrder).toEqual([sessionId, "other"]);
+        useChatStore.getState().upsertSession({ ...other, status: "streaming" });
+        useChatStore.getState().applyMessageCompleted({ session_id: "other", message_id: "other-result" });
+        // A repeated final event must not promote it or mark it unread again.
+        useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "final" });
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        expect(useUnreadChatsStore.getState().entries[sessionId]).toBeUndefined();
     });
 
     it("starts a new local work cycle when sending a message", async () => {
@@ -2520,6 +2600,27 @@ describe("chatStore", () => {
         await vi.waitFor(() => expect(lifecycle).toEqual(["promote", "delete"]));
     });
 
+    it("preserves organization after failed history deletion and clears it only on success", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        const session = createSessionWithTrackedFiles("delete-organized", []);
+        useChatStore.setState({ sessionsById: { [session.sessionId]: session }, sessionOrder: [session.sessionId] });
+        useArchivedChatsStore.getState().archive(session.historySessionId!);
+        usePinnedChatsStore.getState().pin(session.sessionId);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_delete_session_history") throw new Error("disk unavailable");
+            return defaultInvokeImplementation(command, args);
+        });
+        await expect(useChatStore.getState().deleteSession(session.sessionId)).rejects.toThrow("disk unavailable");
+        expect(useArchivedChatsStore.getState().isArchived(session.historySessionId!)).toBe(true);
+        expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeDefined();
+        expect(useChatStore.getState().sessionsById[session.sessionId]).toBeDefined();
+        invokeMock.mockImplementation(defaultInvokeImplementation);
+        await useChatStore.getState().deleteSession(session.sessionId);
+        expect(useArchivedChatsStore.getState().isArchived(session.historySessionId!)).toBe(false);
+        expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeUndefined();
+        expect(useChatStore.getState().sessionsById[session.sessionId]).toBeUndefined();
+    });
+
     it("releases session-owned drafts when deleting one or all sessions", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
@@ -2540,6 +2641,8 @@ describe("chatStore", () => {
             expect.objectContaining({ draftAttachmentId: firstDraftId }),
         );
 
+        expect(useChatStore.getState().activeSessionId).toBeNull();
+        await useChatStore.getState().newSession();
         const replacementSessionId = getActiveSessionId();
         const secondDraftId =
             "da_55555555555555555555555555555555" as DraftAttachmentId;
@@ -5846,7 +5949,7 @@ describe("chatStore", () => {
         ).toHaveLength(0);
     });
 
-    it("moves the updated session to the top of the history order", async () => {
+    it("keeps streaming updates in place until the turn completes", async () => {
         await useChatStore.getState().initialize();
 
         useChatStore.getState().upsertSession(
@@ -5882,6 +5985,14 @@ describe("chatStore", () => {
             message_id: "assistant-1",
         });
 
+        expect(useChatStore.getState().sessionOrder).toEqual([
+            "codex-session-2",
+            "codex-session-1",
+        ]);
+        useChatStore.getState().applyMessageCompleted({
+            session_id: "codex-session-1",
+            message_id: "assistant-1",
+        });
         expect(useChatStore.getState().sessionOrder).toEqual([
             "codex-session-1",
             "codex-session-2",
@@ -7166,7 +7277,7 @@ describe("chatStore", () => {
             ],
             activeTabId: "tab-detached",
         });
-        useEditorStore.getState().openChat(detachedSessionId, {
+        selectChatForTest(detachedSessionId, {
             title: "Detached chat",
         });
         useChatStore.setState((state) => ({
@@ -7322,14 +7433,7 @@ describe("chatStore", () => {
                 runtimeId: "codex-acp",
             },
         ]);
-        expect(
-            useEditorStore
-                .getState()
-                .tabs.some(
-                    (tab) =>
-                        isChatTab(tab) && tab.sessionId === resumedSessionId,
-                ),
-        ).toBe(true);
+        expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: resumedSessionId });
         expect(
             useEditorStore
                 .getState()
@@ -22324,17 +22428,19 @@ describe("chatStore", () => {
             ],
             "primary",
         );
-        useEditorStore.getState().openChat("session-fallback", {
+        selectChatForTest("session-fallback", {
             title: "Fallback",
             paneId: "secondary",
             background: true,
         });
-        useEditorStore.getState().openChat("session-last-focused", {
+        selectChatForTest("session-last-focused", {
             title: "Last focused",
             paneId: "tertiary",
             background: true,
         });
 
+        useChatTabsStore.getState().showConversation("session-last-focused");
+        useChatTabsStore.getState().setFocusedSurface("editor");
         useChatStore.getState().attachSelectionFromEditor();
 
         const targetParts =

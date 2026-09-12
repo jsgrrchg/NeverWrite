@@ -11,7 +11,6 @@ import { createPortal } from "react-dom";
 import {
     type Tab,
     type TerminalTab,
-    isChatTab,
     isFileTab,
     isNoteTab,
     isPdfTab,
@@ -22,7 +21,6 @@ import {
     selectPaneCount,
     useEditorStore,
 } from "../../app/store/editorStore";
-import { getSessionTitle } from "../ai/sessionPresentation";
 import { useChatStore } from "../ai/store/chatStore";
 import { useInlineRename } from "../ai/components/useInlineRename";
 import { isSearchTab, SEARCH_TAB_TITLE } from "../search/searchTab";
@@ -53,13 +51,7 @@ import {
 function getTabLabel(
     tab: Tab,
     fileTreeShowExtensions: boolean,
-    chatSessionsById: ReturnType<typeof useChatStore.getState>["sessionsById"],
 ) {
-    if (isChatTab(tab)) {
-        const session = chatSessionsById[tab.sessionId];
-        return session ? getSessionTitle(session) : tab.title;
-    }
-
     if (isSearchTab(tab)) {
         return SEARCH_TAB_TITLE;
     }
@@ -111,7 +103,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         selectEditorPaneState(state, paneId),
     );
     const chatSessionsById = useChatStore((state) => state.sessionsById);
-    const renameChatSession = useChatStore((state) => state.renameSession);
     const paneIds = useEditorStore(useShallow(selectLeafPaneIds));
     const paneCount = useEditorStore(selectPaneCount);
     const reorderPaneTabs = useEditorStore((state) => state.reorderPaneTabs);
@@ -167,20 +158,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const activePaneTab =
         pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? null;
     const showHistoryNavigationButtons = tabOpenBehavior === "history";
-    const chatCanGoBack =
-        activePaneTab &&
-        isChatTab(activePaneTab) &&
-        (activePaneTab.historyIndex ?? 0) > 0;
-    const chatCanGoForward =
-        activePaneTab &&
-        isChatTab(activePaneTab) &&
-        Boolean(activePaneTab.history) &&
-        (activePaneTab.historyIndex ?? 0) <
-            (activePaneTab.history?.length ?? 0) - 1;
     const canGoBack =
         tabOpenBehavior === "history"
-            ? chatCanGoBack ||
-              (activePaneTab &&
+            ? (activePaneTab &&
               (isNoteTab(activePaneTab) ||
                   isFileTab(activePaneTab) ||
                   isPdfTab(activePaneTab))
@@ -189,8 +169,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
             : pane.tabNavigationIndex > 0;
     const canGoForward =
         tabOpenBehavior === "history"
-            ? chatCanGoForward ||
-              (activePaneTab &&
+            ? (activePaneTab &&
               (isNoteTab(activePaneTab) ||
                   isFileTab(activePaneTab) ||
                   isPdfTab(activePaneTab))
@@ -335,16 +314,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         },
         [consumeSuppressedClick, editingKey, switchTab],
     );
-    const beginChatRename = useCallback(
-        (tab: Tab) => {
-            if (!isChatTab(tab)) return;
-            const session = chatSessionsById[tab.sessionId];
-            if (!session) return;
-            switchTab(tab.id);
-            startEditing(tab.id, getSessionTitle(session));
-        },
-        [chatSessionsById, startEditing, switchTab],
-    );
     const beginTerminalRename = useCallback(
         (tab: Tab) => {
             if (!isTerminalTab(tab)) return;
@@ -360,18 +329,13 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
             ).find((candidate) => candidate.id === tabId);
             if (!tab) return;
 
-            if (isChatTab(tab)) {
-                renameChatSession(tab.sessionId, value);
-                return;
-            }
-
             if (isTerminalTab(tab)) {
                 useEditorStore
                     .getState()
                     .updateTabTitle(tab.id, value?.trim() || "Terminal");
             }
         },
-        [renameChatSession],
+        [],
     );
     const requestCloseTab = useCallback(
         (tabId: string) => {
@@ -557,7 +521,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 const tabLabel = getTabLabel(
                                     tab,
                                     fileTreeShowExtensions,
-                                    chatSessionsById,
                                 );
                                 return (
                                     <Fragment key={tab.id}>
@@ -973,13 +936,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             },
                         ];
 
-                        if (!targetTabPinned && isChatTab(targetTab)) {
-                            entries.push({
-                                label: "Rename chat",
-                                action: () => beginChatRename(targetTab),
-                            });
-                        }
-
                         if (isTerminalTab(targetTab)) {
                             entries.push({
                                 label: "Restart Terminal",
@@ -1113,7 +1069,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                               {getTabLabel(
                                   draggedPreviewTab,
                                   fileTreeShowExtensions,
-                                  chatSessionsById,
                               )}
                           </span>
                       </div>,

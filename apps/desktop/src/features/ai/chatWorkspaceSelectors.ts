@@ -1,25 +1,20 @@
-import {
-    isChatTab,
-    selectEditorPaneActiveTab,
-    selectEditorWorkspaceTabs,
-    selectFocusedPaneId,
-    useEditorStore,
-} from "../../app/store/editorStore";
-
+import { useLayoutStore } from "../../app/store/layoutStore";
+import { useChatTabsStore } from "./store/chatTabsStore";
 export function getFocusedWorkspaceChatSessionId() {
-    const editor = useEditorStore.getState();
-    const focusedPaneId = selectFocusedPaneId(editor);
-    const activeTab = selectEditorPaneActiveTab(editor, focusedPaneId);
-    return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
+    const navigation = useChatTabsStore.getState();
+    return useLayoutStore.getState().chatPaneVisible &&
+        navigation.focusedSurface === "chat" &&
+        navigation.view.mode === "conversation"
+        ? navigation.view.sessionId
+        : null;
 }
 
 export function getVisibleWorkspaceChatSessionIds() {
-    const sessionIds = new Set<string>();
-    for (const tab of selectEditorWorkspaceTabs(useEditorStore.getState())) {
-        if (!isChatTab(tab)) continue;
-        sessionIds.add(tab.sessionId);
-    }
-    return [...sessionIds];
+    const view = useChatTabsStore.getState().view;
+    return useLayoutStore.getState().chatPaneVisible &&
+        view.mode === "conversation"
+        ? [view.sessionId]
+        : [];
 }
 
 export function getPreferredWorkspaceChatSessionId() {
@@ -35,4 +30,9 @@ export function getPreferredWorkspaceChatSessionIdForSession(
     }
 
     return getFocusedWorkspaceChatSessionId() ?? visibleSessionIds[0] ?? null;
+}
+
+export function getSelectedChatSessionId() {
+    const view = useChatTabsStore.getState().view;
+    return view.mode === "conversation" ? view.sessionId : null;
 }

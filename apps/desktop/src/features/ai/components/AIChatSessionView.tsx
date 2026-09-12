@@ -1,10 +1,10 @@
 /**
- * AIChatSessionView — renders a single chat session inside an editor workspace pane.
+ * AIChatSessionView renders the explicitly selected conversation.
  *
  * Unlike the window-level chat host, this component:
  * - Does NOT bind desktop runtime event listeners itself.
- * - Does NOT manage tabs or history — the workspace pane handles that.
- * - Derives its sessionId from the active ChatTab in the pane via editorStore.
+ * - Navigation and history belong to the dedicated chat pane.
+ * - Its session identity and focus are supplied by the chat pane.
  *
  * All session data is read reactively from chatStore, which is the single
  * source of truth regardless of where the UI renders.
@@ -20,14 +20,6 @@ import {
 } from "react";
 import { open as runtimeOpen } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
-import {
-    isChatTab,
-    selectEditorPaneActiveTab,
-    selectEditorWorkspaceTabs,
-    selectFocusedPaneId,
-    selectPaneTab,
-    useEditorStore,
-} from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
@@ -56,8 +48,6 @@ import { AIChatContextUsageBar } from "./AIChatContextUsageBar";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
-import { formatShortcutAction } from "../../../app/shortcuts/format";
-import { getDesktopPlatform } from "../../../app/utils/platform";
 import { AIDiscardedRootsBanner } from "./AIDiscardedRootsBanner";
 import { useInlineRename } from "./useInlineRename";
 import { getAiChatContentColumnStyle } from "./chatContentLayout";
@@ -206,11 +196,16 @@ function ChatContentColumn({
 }
 
 interface AIChatSessionViewProps {
-    paneId?: string;
-    tabId?: string;
+    sessionId: string;
+    focused?: boolean;
+    headerActions?: ReactNode;
 }
 
-export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
+export function AIChatSessionView({
+    sessionId,
+    focused = true,
+    headerActions,
+}: AIChatSessionViewProps) {
     const [composerExpanded, setComposerExpanded] = useState(false);
     const bottomDockRef = useRef<HTMLDivElement>(null);
     const [bottomDockMeasurement, setBottomDockMeasurement] = useState<{
@@ -223,14 +218,6 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     const [findOpen, setFindOpen] = useState(false);
     const rootRef = useRef<HTMLDivElement>(null);
 
-    // Resolve sessionId from this column's ChatTab (stacked) or the pane's
-    // active ChatTab (normal mode, when no explicit tabId is bound).
-    const sessionId = useEditorStore((state) => {
-        const tab = tabId
-            ? selectPaneTab(state, paneId, tabId)
-            : selectEditorPaneActiveTab(state, paneId);
-        return tab && isChatTab(tab) ? tab.sessionId : null;
-    });
     const bottomDockHeight =
         bottomDockMeasurement.sessionId === sessionId
             ? bottomDockMeasurement.height
@@ -895,22 +882,6 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         sessionId,
     ]);
 
-    // Title sync: keep the editor tab title in sync with session title
-    useEffect(() => {
-        if (!session || !sessionId) return;
-        const title = getSessionTitle(session);
-        const editorState = useEditorStore.getState();
-        const allTabs = selectEditorWorkspaceTabs(editorState);
-        const chatTabs = allTabs.filter(
-            (t) => isChatTab(t) && t.sessionId === sessionId,
-        );
-        for (const chatTab of chatTabs) {
-            if (chatTab.title !== title) {
-                editorState.updateTabTitle(chatTab.id, title);
-            }
-        }
-    }, [session, sessionId]);
-
     const sessionTitle = session ? getSessionTitleText(session) : "Chat";
     // Close the finder when switching to another session.
     useEffect(() => {
@@ -936,7 +907,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     useEffect(() => {
         if (!findOpen) return;
         const handleEscape = (event: KeyboardEvent) => {
-            if (event.defaultPrevented || event.key !== "Escape") return;
+            if (!focused || event.defaultPrevented || event.key !== "Escape") return;
             if (
                 event.metaKey ||
                 event.ctrlKey ||
@@ -945,8 +916,6 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             ) {
                 return;
             }
-            const focusedPaneId = selectFocusedPaneId(useEditorStore.getState());
-            if (paneId && focusedPaneId !== paneId) return;
 
             event.preventDefault();
             event.stopPropagation();
@@ -956,7 +925,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
 
         window.addEventListener("keydown", handleEscape, true);
         return () => window.removeEventListener("keydown", handleEscape, true);
-    }, [findOpen, paneId]);
+    }, [findOpen, focused]);
 
     useLayoutEffect(() => {
         if (composerExpanded) {
@@ -989,7 +958,6 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
 
     const isSubagent = Boolean(session?.parentSessionId?.trim());
     const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
-    const findDisabled = composerExpanded;
 
     const startTitleEdit = useCallback(() => {
         if (!session || !sessionId || isSubagent) return;
@@ -1020,9 +988,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         >
             {/* Compact local session header for the workspace chat tab */}
             <div
+                data-testid="chat-session-header"
                 className="flex items-center gap-2 px-3 py-1 text-xs shrink-0"
                 style={{
-                    height: 31,
+                    height: 33,
+                    minHeight: 33,
                     boxSizing: "border-box",
                     borderBottom: "1px solid var(--border)",
                     color: "var(--text-secondary)",
@@ -1113,47 +1083,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                         </svg>
                     </button>
                 ) : null}
-                <button
-                    type="button"
-                    onClick={() => {
-                        if (findDisabled) return;
-                        setFindOpen((value) => !value);
-                    }}
-                    disabled={findDisabled}
-                    aria-label="Find in chat"
-                    aria-pressed={findOpen}
-                    title={
-                        findDisabled
-                            ? "Find is unavailable while the composer is expanded"
-                            : `Find in chat (${formatShortcutAction(
-                                  "find_in_note",
-                                  getDesktopPlatform(),
-                              )})`
-                    }
-                    className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
-                    style={{
-                        color: findOpen
-                            ? "var(--accent)"
-                            : "var(--text-secondary)",
-                        border: "none",
-                        backgroundColor: "transparent",
-                        opacity: findDisabled ? 0.45 : 1,
-                    }}
-                >
-                    <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <circle cx="6" cy="6" r="4" />
-                        <path d="M9 9L12.5 12.5" />
-                    </svg>
-                </button>
+                {headerActions}
             </div>
 
             <AIChatRuntimeBanner

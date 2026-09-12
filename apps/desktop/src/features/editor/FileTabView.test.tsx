@@ -1,3 +1,4 @@
+import { selectChatForTest } from "../../test/test-utils";
 import { act, createEvent, fireEvent, screen } from "@testing-library/react";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorState } from "@codemirror/state";
@@ -796,7 +797,7 @@ describe("FileTabView", () => {
         });
     });
 
-    it("routes Cmd+L to the last focused visible chat session", async () => {
+    it("routes Cmd+L to the selected dedicated conversation", async () => {
         useChatStore.setState({
             sessionsById: {
                 "session-fallback": {
@@ -875,15 +876,15 @@ describe("FileTabView", () => {
             ],
             "primary",
         );
-        useEditorStore.getState().openChat("session-fallback", {
+        selectChatForTest("session-fallback", {
             title: "Fallback",
             paneId: "secondary",
             background: true,
         });
-        useEditorStore.getState().openChat("session-last-focused", {
+        selectChatForTest("session-last-focused", {
             title: "Last focused",
             paneId: "tertiary",
-            background: true,
+            background: false,
         });
 
         renderComponent(<FileTabView />);

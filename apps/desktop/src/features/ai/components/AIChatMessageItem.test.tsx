@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "../store/chatTabsStore";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { invoke, openPath, revealItemInDir } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -1994,15 +1995,7 @@ describe("AIChatMessageItem read tool targets", () => {
         fireEvent.click(screen.getByRole("button", { name: "Open Worker" }));
 
         await waitFor(() => {
-            expect(
-                useEditorStore
-                    .getState()
-                    .tabs.some(
-                        (tab) =>
-                            tab.kind === "ai-chat" &&
-                            tab.sessionId === "child-session",
-                    ),
-            ).toBe(true);
+            expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: "child-session" });
         });
     });
 
@@ -2172,15 +2165,7 @@ describe("AIChatMessageItem read tool targets", () => {
         fireEvent.click(screen.getByRole("button", { name: "Open Worker" }));
 
         await waitFor(() => {
-            expect(
-                useEditorStore
-                    .getState()
-                    .tabs.some(
-                        (tab) =>
-                            tab.kind === "ai-chat" &&
-                            tab.sessionId === "persisted:child-history",
-                    ),
-            ).toBe(true);
+            expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: "persisted:child-history" });
         });
     });
 
@@ -2261,15 +2246,7 @@ describe("AIChatMessageItem read tool targets", () => {
         fireEvent.click(screen.getByRole("button", { name: "Open Worker" }));
 
         await waitFor(() => {
-            expect(
-                useEditorStore
-                    .getState()
-                    .tabs.some(
-                        (tab) =>
-                            tab.kind === "ai-chat" &&
-                            tab.sessionId === "live-child",
-                    ),
-            ).toBe(true);
+            expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: "live-child" });
         });
     });
 

@@ -1,3 +1,8 @@
+import { useArchivedChatsStore } from "../store/archivedChatsStore";
+import { AIChatPane } from "./AIChatPane";
+import { getDesktopPlatform } from "../../../app/utils/platform";
+import { selectChatForTest } from "../../../test/test-utils";
+import { useChatTabsStore } from "../store/chatTabsStore";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@neverwrite/runtime";
 import type { ReactNode } from "react";
@@ -15,7 +20,7 @@ import {
     MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "../imageAttachments";
-import { AIChatSessionView } from "./AIChatSessionView";
+import { AIChatSessionView as SessionView } from "./AIChatSessionView";
 import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 
 const composerMockState = vi.hoisted(() => ({
@@ -45,9 +50,10 @@ vi.mock("./AIChatMessageList", () => ({
     AIChatMessageList: (props: {
         bottomInset?: number;
         sessionId?: string | null;
+        findOpen?: boolean;
     }) => {
         messageListMockState.props.push(props);
-        return <div data-testid="chat-message-list" />;
+        return <div data-testid="chat-message-list" data-find-open={String(Boolean(props.findOpen))} />;
     },
 }));
 
@@ -147,6 +153,12 @@ function createSession(sessionId: string, title: string): AIChatSession {
     };
 }
 
+function AIChatSessionView(props: { paneId?: string; tabId?: string; sessionId?: string; focused?: boolean; headerActions?: ReactNode }) {
+    const view = useChatTabsStore(state => state.view);
+    const sessionId = props.sessionId ?? (view.mode === "conversation" ? view.sessionId : "");
+    return <SessionView sessionId={sessionId} focused={props.focused} headerActions={props.headerActions} />;
+}
+
 function setupWorkspaceSession(sessionId = "session-a") {
     useChatStore.setState((state) => ({
         ...state,
@@ -155,7 +167,7 @@ function setupWorkspaceSession(sessionId = "session-a") {
         },
         activeSessionId: sessionId,
     }));
-    useEditorStore.getState().openChat(sessionId, {
+    selectChatForTest(sessionId, {
         title: "Workspace chat",
         paneId: "primary",
     });
@@ -178,6 +190,7 @@ function expectColumnAncestor(testId: string) {
 describe("AIChatSessionView", () => {
     beforeEach(() => {
         resetChatStore();
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
         useSettingsStore.getState().reset();
         composerMockState.onPasteImage = undefined;
         composerMockState.onSubmit = undefined;
@@ -192,6 +205,28 @@ describe("AIChatSessionView", () => {
             tabs: [],
             activeTabId: null,
         });
+    });
+
+    it("renders an explicit conversation with no editor chat tabs", () => {
+        useChatStore.setState({ sessionsById: { explicit: createSession("explicit", "Explicit conversation") } });
+        useEditorStore.getState().hydrateTabs([], null);
+        renderComponent(<AIChatSessionView sessionId="explicit" focused headerActions={<button type="button">New chat</button>} />);
+        const header = screen.getByTestId("chat-session-header");
+        expect(header).toHaveTextContent("Explicit conversation");
+        expect(header).toContainElement(screen.getByRole("button", { name: "New chat" }));
+        expect(useEditorStore.getState().panes.every(pane => pane.tabs.length === 0)).toBe(true);
+    });
+
+    it("keeps the composer available in an archived conversation without restoring on open", () => {
+        setupWorkspaceSession();
+        useArchivedChatsStore.getState().archive("session-a");
+        renderComponent(<AIChatPane />);
+        const composer = screen.getByTestId("chat-composer");
+        expect(composer).toHaveAttribute("data-disabled", "false");
+        expect(screen.getAllByText("Workspace chat")).toHaveLength(1);
+        expect(screen.queryByText("Unarchive and continue")).toBeNull();
+        composer.focus();
+        expect(useArchivedChatsStore.getState().isArchived("session-a")).toBe(true);
     });
 
     it("locks provider changes after the conversation starts", () => {
@@ -328,7 +363,7 @@ describe("AIChatSessionView", () => {
                 },
             },
         }));
-        useEditorStore.getState().openChat(sessionId, {
+        selectChatForTest(sessionId, {
             title: "Workspace chat",
             paneId: "primary",
         });
@@ -379,7 +414,7 @@ describe("AIChatSessionView", () => {
             },
             activeSessionId: sessionId,
         }));
-        useEditorStore.getState().openChat(sessionId, {
+        selectChatForTest(sessionId, {
             title: "Gemini history",
             paneId: "primary",
         });
@@ -676,7 +711,7 @@ describe("AIChatSessionView", () => {
         measuredHeight = 48;
 
         act(() => {
-            useEditorStore.getState().openChat("session-b", {
+            selectChatForTest("session-b", {
                 title: "Second chat",
                 paneId: "primary",
             });
@@ -751,25 +786,31 @@ describe("AIChatSessionView", () => {
 
         renderComponent(<AIChatSessionView paneId="primary" />);
 
-        const findButton = screen.getByRole("button", {
-            name: "Find in chat",
+        const composer = screen.getByTestId("chat-composer");
+        composer.focus();
+        fireEvent.keyDown(composer, {
+            key: "f",
+            ...(getDesktopPlatform() === "macos" ? { metaKey: true } : { ctrlKey: true }),
         });
-        fireEvent.click(findButton);
-        expect(findButton).toHaveAttribute("aria-pressed", "true");
+        const messages = screen.getByTestId("chat-message-list");
+        expect(messages).toHaveAttribute("data-find-open", "true");
+        expect(screen.queryByRole("button", { name: "Find in chat" })).toBeNull();
 
         fireEvent.click(screen.getByTestId("chat-composer"));
 
         await waitFor(() => {
-            expect(findButton).toBeDisabled();
-            expect(findButton).toHaveAttribute("aria-pressed", "false");
+            expect(messages).toHaveAttribute("data-find-open", "false");
         });
         expect(screen.getByTestId("chat-message-list")).toBeInTheDocument();
         expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(
             "inert",
         );
 
-        fireEvent.click(findButton);
-        expect(findButton).toHaveAttribute("aria-pressed", "false");
+        fireEvent.keyDown(composer, {
+            key: "f",
+            ...(getDesktopPlatform() === "macos" ? { metaKey: true } : { ctrlKey: true }),
+        });
+        expect(messages).toHaveAttribute("data-find-open", "false");
     });
 
     it("removes the legacy user prompt menu from the local header", () => {
@@ -786,11 +827,15 @@ describe("AIChatSessionView", () => {
 
         renderComponent(<AIChatSessionView paneId="primary" />);
 
-        const findButton = screen.getByRole("button", {
-            name: "Find in chat",
+        const composer = screen.getByTestId("chat-composer");
+        composer.focus();
+        fireEvent.keyDown(composer, {
+            key: "f",
+            ...(getDesktopPlatform() === "macos" ? { metaKey: true } : { ctrlKey: true }),
         });
-        fireEvent.click(findButton);
-        expect(findButton).toHaveAttribute("aria-pressed", "true");
+        const messages = screen.getByTestId("chat-message-list");
+        expect(messages).toHaveAttribute("data-find-open", "true");
+        expect(screen.queryByRole("button", { name: "Find in chat" })).toBeNull();
 
         const escapeEvent = new KeyboardEvent("keydown", {
             key: "Escape",
@@ -800,7 +845,7 @@ describe("AIChatSessionView", () => {
         window.dispatchEvent(escapeEvent);
 
         await waitFor(() => {
-            expect(findButton).toHaveAttribute("aria-pressed", "false");
+            expect(messages).toHaveAttribute("data-find-open", "false");
         });
         expect(escapeEvent.defaultPrevented).toBe(true);
     });

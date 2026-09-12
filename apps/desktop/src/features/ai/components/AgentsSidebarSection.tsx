@@ -57,7 +57,7 @@ export function AgentsSidebarSection({
                     <span style={{ opacity: 0.7 }}>{count}</span>
                 </div>
             ) : null}
-            <div className="flex flex-col gap-0.5">{children}</div>
+            <div className="flex flex-col gap-1.5">{children}</div>
         </section>
     );
 }

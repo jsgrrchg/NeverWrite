@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "./store/chatTabsStore";
 import { invoke } from "@neverwrite/runtime";
 import {
     useEditorStore,
@@ -106,6 +107,7 @@ async function openResolvedNote(
 ) {
     const content = await readNoteContent(noteId);
     const editor = useEditorStore.getState();
+    useChatTabsStore.getState().setFocusedSurface("editor");
 
     if (newTab) {
         editor.insertExternalTab({

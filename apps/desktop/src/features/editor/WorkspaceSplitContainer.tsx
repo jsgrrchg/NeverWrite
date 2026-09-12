@@ -9,14 +9,13 @@ import {
     type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { WorkspaceLayoutNode } from "../../app/store/workspaceLayoutTree";
-import { isChatTab, useEditorStore, type EditorPaneState } from "../../app/store/editorStore";
+import { useEditorStore, type EditorPaneState } from "../../app/store/editorStore";
 import { EditorPaneBar } from "./EditorPaneBar";
 import { EditorPaneContent } from "./EditorPaneContent";
 
 const RESIZER_HITBOX_SIZE = 10;
 const RESIZER_VISIBLE_SIZE = 1;
 const MIN_PANE_WIDTH = 180;
-const MIN_CHAT_PANE_WIDTH = 300;
 const MIN_PANE_HEIGHT = 140;
 
 interface ResizeSession {
@@ -43,18 +42,13 @@ interface WorkspaceSplitContainerProps {
     onResizeSplit: (splitId: string, sizes: readonly number[]) => void;
 }
 
-function getPaneMinimumWidth(paneId: string, panes: EditorPaneState[]) {
-    const pane = panes.find((candidate) => candidate.id === paneId);
-    return pane?.tabs.some(isChatTab) ? MIN_CHAT_PANE_WIDTH : MIN_PANE_WIDTH;
-}
-
 function getNodeConstraints(
     node: WorkspaceLayoutNode,
     panes: EditorPaneState[],
 ): NodeConstraints {
     if (node.type === "pane") {
         return {
-            minWidth: getPaneMinimumWidth(node.paneId, panes),
+            minWidth: MIN_PANE_WIDTH,
             minHeight: MIN_PANE_HEIGHT,
         };
     }
@@ -303,7 +297,7 @@ export function WorkspaceSplitContainer({
                 }
                 onPanePointerDown={onPanePointerDown}
                 onPaneFocus={onPaneFocus}
-                minimumWidth={getPaneMinimumWidth(node.paneId, panes)}
+                minimumWidth={MIN_PANE_WIDTH}
             />
         );
     }

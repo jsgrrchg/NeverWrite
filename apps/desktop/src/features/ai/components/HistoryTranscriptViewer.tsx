@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isSessionArchived, useArchivedChatsStore } from "../store/archivedChatsStore";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import { useChatStore } from "../store/chatStore";
 import {
@@ -17,24 +18,29 @@ interface HistoryTranscriptViewerProps {
     chatFontFamily?: EditorFontFamily;
     onExport?: () => void;
     onRestore?: () => void;
+    headerActions?: ReactNode;
+    compactHeader?: boolean;
 }
 
 function TranscriptHeader({
     session,
     onExport,
     onRestore,
-    findOpen,
-    onToggleFind,
+    headerActions,
+    compactHeader = false,
 }: {
     session: AIChatSession;
     onExport?: () => void;
     onRestore?: () => void;
-    findOpen: boolean;
-    onToggleFind: () => void;
+    headerActions?: ReactNode;
+    compactHeader?: boolean;
 }) {
     const runtimes = useChatStore((s) => s.runtimes);
     const forkSession = useChatStore((s) => s.forkSession);
     const sessionsById = useChatStore((s) => s.sessionsById);
+    const archiveEntries = useArchivedChatsStore(state => state.entries);
+    const openLabel = isSessionArchived(session, sessionsById, archiveEntries)
+        ? "Open archived chat" : "Continue chat";
     const runtimeOptions = useMemo(
         () => runtimes.map((d) => d.runtime),
         [runtimes],
@@ -55,7 +61,7 @@ function TranscriptHeader({
 
     return (
         <div
-            className="flex shrink-0 items-center gap-2 px-3 py-2"
+            className="flex h-[31px] shrink-0 items-center gap-2 px-3 py-1 text-xs"
             style={{
                 borderBottom: "1px solid var(--border)",
                 color: "var(--text-primary)",
@@ -94,7 +100,7 @@ function TranscriptHeader({
                         border: "1px solid var(--accent)",
                         color: "var(--text-primary)",
                     }}
-                    title="Restore this chat"
+                    title={openLabel}
                 >
                     <svg
                         width="12"
@@ -109,7 +115,7 @@ function TranscriptHeader({
                         <path d="M2.5 6h7" />
                         <path d="M6 2.5 9.5 6 6 9.5" />
                     </svg>
-                    Restore
+                    {openLabel}
                 </button>
             )}
             {onExport && (
@@ -139,79 +145,51 @@ function TranscriptHeader({
                     Export
                 </button>
             )}
-            <button
-                type="button"
-                onClick={onToggleFind}
-                aria-pressed={findOpen}
-                className="flex h-6 shrink-0 items-center gap-1 rounded px-2 text-[10px] font-medium"
-                style={{
-                    background: findOpen
-                        ? "color-mix(in srgb, var(--accent) 12%, transparent)"
-                        : "none",
-                    border: findOpen
-                        ? "1px solid color-mix(in srgb, var(--accent) 35%, var(--border))"
-                        : "1px solid var(--border)",
-                    color: findOpen
-                        ? "var(--text-primary)"
-                        : "var(--text-secondary)",
-                }}
-                title="Find in this chat"
-            >
-                <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 12 12"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                >
-                    <circle cx="5.25" cy="5.25" r="3.25" />
-                    <path d="M7.75 7.75 10 10" />
-                </svg>
-                Find
-            </button>
-            <button
-                type="button"
-                onClick={() => void forkSession(session.sessionId)}
-                className="flex h-6 shrink-0 items-center gap-1 rounded px-2 text-[10px] font-medium"
-                style={{
-                    background: "none",
-                    border: "1px solid var(--border)",
-                    color: "var(--text-secondary)",
-                }}
-                title="Fork this chat"
-            >
-                <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 12 12"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                >
-                    <path d="M3 2v3a3 3 0 0 0 3 3h0a3 3 0 0 0 3-3V2M3 2h0M9 2h0M6 8v2" />
-                </svg>
-                Fork
-            </button>
-            <span
-                className="shrink-0 text-[10px]"
-                style={{ color: "var(--text-secondary)", opacity: 0.7 }}
-            >
-                {runtimeLabel}
-                {modelLabel ? ` · ${modelLabel}` : ""}
-            </span>
-            {updatedAt > 0 && (
-                <span
-                    className="shrink-0 text-[10px]"
-                    style={{ color: "var(--text-secondary)", opacity: 0.7 }}
-                >
-                    {formatSessionTime(updatedAt)}
-                </span>
+            {!compactHeader && (
+                <>
+                    <button
+                        type="button"
+                        onClick={() => void forkSession(session.sessionId)}
+                        className="flex h-6 shrink-0 items-center gap-1 rounded px-2 text-[10px] font-medium"
+                        style={{
+                            background: "none",
+                            border: "1px solid var(--border)",
+                            color: "var(--text-secondary)",
+                        }}
+                        title="Fork this chat"
+                    >
+                        <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 12 12"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M3 2v3a3 3 0 0 0 3 3h0a3 3 0 0 0 3-3V2M3 2h0M9 2h0M6 8v2" />
+                        </svg>
+                        Fork
+                    </button>
+                    <span
+                        className="shrink-0 text-[10px]"
+                        style={{ color: "var(--text-secondary)", opacity: 0.7 }}
+                    >
+                        {runtimeLabel}
+                        {modelLabel ? ` · ${modelLabel}` : ""}
+                    </span>
+                    {updatedAt > 0 && (
+                        <span
+                            className="shrink-0 text-[10px]"
+                            style={{ color: "var(--text-secondary)", opacity: 0.7 }}
+                        >
+                            {formatSessionTime(updatedAt)}
+                        </span>
+                    )}
+                </>
             )}
+            {headerActions}
         </div>
     );
 }
@@ -222,6 +200,8 @@ export function HistoryTranscriptViewer({
     chatFontFamily,
     onExport,
     onRestore,
+    headerActions,
+    compactHeader,
 }: HistoryTranscriptViewerProps) {
     const sessionsById = useChatStore((s) => s.sessionsById);
     const ensureTranscriptLoaded = useChatStore(
@@ -276,10 +256,10 @@ export function HistoryTranscriptViewer({
         >
             <TranscriptHeader
                 session={session}
+                headerActions={headerActions}
+                compactHeader={compactHeader}
                 onExport={onExport}
                 onRestore={onRestore}
-                findOpen={findOpen}
-                onToggleFind={() => setFindOpen((open) => !open)}
             />
             <AIChatMessageList
                 sessionId={session.sessionId}

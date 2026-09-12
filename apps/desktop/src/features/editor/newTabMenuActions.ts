@@ -29,9 +29,9 @@ async function createNewNote(paneId?: string) {
     }
 }
 
-async function createNewAgent(paneId?: string) {
+async function createNewAgent() {
     try {
-        await createCanonicalAgent(paneId);
+        await createCanonicalAgent();
     } catch (error) {
         console.error("Failed to create a new chat from the tab menu:", error);
     }
@@ -95,7 +95,7 @@ export function buildNewTabContextMenuEntries(options?: {
         {
             label: "New Agent",
             action: () => {
-                void createNewAgent(paneId);
+                void createNewAgent();
             },
         },
         {
@@ -125,6 +125,6 @@ export async function openNewNoteInPane(paneId?: string) {
     await createNewNote(paneId);
 }
 
-export async function openNewAgentInPane(paneId?: string) {
-    await createNewAgent(paneId);
+export async function openNewAgentInPane() {
+    await createNewAgent();
 }

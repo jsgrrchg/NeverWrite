@@ -1,10 +1,8 @@
+import { selectChatForTest } from "../../test/test-utils";
 import { invoke } from "@neverwrite/runtime";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-    isChatTab,
-    selectFocusedEditorTab,
-    selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -12,10 +10,11 @@ import { createDeferred, setEditorTabs } from "../../test/test-utils";
 import {
     createNewChatInWorkspace,
     ensureWorkspaceChatSession,
-    openOrMoveChatSessionAtDropTarget,
+    openChatSessionInWorkspace,
+    openChatHistoryInWorkspace,
 } from "./chatPaneMovement";
 import { resetChatStore, useChatStore } from "./store/chatStore";
-import { resetChatTabsStore } from "./store/chatTabsStore";
+import { resetChatTabsStore, useChatTabsStore } from "./store/chatTabsStore";
 import type { AIChatSession, AIRuntimeSetupStatus } from "./types";
 import { CLAUDE_TERMINAL_RUNTIME_ID } from "./utils/runtimeMetadata";
 
@@ -283,12 +282,8 @@ describe("createNewChatInWorkspace", () => {
             useChatStore.getState().sessionsById[pendingSessionId!];
         expect(pendingSession?.isPendingSessionCreation).toBe(true);
 
-        const focusedPendingTab = selectFocusedEditorTab(useEditorStore.getState());
-        expect(focusedPendingTab && isChatTab(focusedPendingTab)).toBe(true);
-        if (!focusedPendingTab || !isChatTab(focusedPendingTab)) {
-            throw new Error("Expected the focused tab to be the pending chat tab");
-        }
-        expect(focusedPendingTab.sessionId).toBe(pendingSessionId);
+        expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: pendingSessionId });
+        expect(useEditorStore.getState().tabs).toEqual([]);
 
         deferredSession.resolve(createdSessionPayload);
 
@@ -302,12 +297,8 @@ describe("createNewChatInWorkspace", () => {
             useChatStore.getState().sessionsById[pendingSessionId!],
         ).toBeUndefined();
 
-        const focusedResolvedTab = selectFocusedEditorTab(useEditorStore.getState());
-        expect(focusedResolvedTab && isChatTab(focusedResolvedTab)).toBe(true);
-        if (!focusedResolvedTab || !isChatTab(focusedResolvedTab)) {
-            throw new Error("Expected the focused tab to remain a chat tab");
-        }
-        expect(focusedResolvedTab.sessionId).toBe("codex-session-1");
+        expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: "codex-session-1" });
+        expect(useEditorStore.getState().tabs).toEqual([]);
     });
 
     it("uses the first configured runtime when the selected runtime still needs onboarding", async () => {
@@ -382,7 +373,7 @@ describe("createNewChatInWorkspace", () => {
             "claude-acp",
         );
         seedChatSessions(claudeSession);
-        useEditorStore.getState().openChat(claudeSession.sessionId, {
+        selectChatForTest(claudeSession.sessionId, {
             title: "Claude chat",
             paneId: "primary",
         });
@@ -474,7 +465,7 @@ describe("createNewChatInWorkspace", () => {
             "claude-acp",
         );
         seedChatSessions(claudeSession);
-        useEditorStore.getState().openChat(claudeSession.sessionId, {
+        selectChatForTest(claudeSession.sessionId, {
             title: "Claude chat",
             paneId: "primary",
         });
@@ -523,7 +514,7 @@ describe("createNewChatInWorkspace", () => {
         }));
         const newSession = vi.spyOn(useChatStore.getState(), "newSession");
         const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
-        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+        const openChat = vi.spyOn(useChatTabsStore.getState(), "showConversation");
 
         const sessionId = await createNewChatInWorkspace();
 
@@ -553,7 +544,7 @@ describe("createNewChatInWorkspace", () => {
         }));
         const newSession = vi.spyOn(useChatStore.getState(), "newSession");
         const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
-        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+        const openChat = vi.spyOn(useChatTabsStore.getState(), "showConversation");
 
         const sessionId = await createNewChatInWorkspace();
 
@@ -580,7 +571,7 @@ describe("createNewChatInWorkspace", () => {
         }));
         const newSession = vi.spyOn(useChatStore.getState(), "newSession");
         const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
-        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+        const openChat = vi.spyOn(useChatTabsStore.getState(), "showConversation");
 
         const sessionId = await createNewChatInWorkspace();
 
@@ -609,7 +600,7 @@ describe("createNewChatInWorkspace", () => {
         }));
         const newSession = vi.spyOn(useChatStore.getState(), "newSession");
         const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
-        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+        const openChat = vi.spyOn(useChatTabsStore.getState(), "showConversation");
 
         await expect(createNewChatInWorkspace()).resolves.toBeNull();
 
@@ -632,7 +623,7 @@ describe("createNewChatInWorkspace", () => {
         }));
         const newSession = vi.spyOn(useChatStore.getState(), "newSession");
         const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
-        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+        const openChat = vi.spyOn(useChatTabsStore.getState(), "showConversation");
 
         const sessionId = await createNewChatInWorkspace();
 
@@ -645,7 +636,7 @@ describe("createNewChatInWorkspace", () => {
     it("does not create an ACP chat when ensure is explicitly asked for Claude Code terminal", async () => {
         const newSession = vi.spyOn(useChatStore.getState(), "newSession");
         const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
-        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+        const openChat = vi.spyOn(useChatTabsStore.getState(), "showConversation");
 
         await expect(
             ensureWorkspaceChatSession({
@@ -659,79 +650,15 @@ describe("createNewChatInWorkspace", () => {
     });
 });
 
-describe("openOrMoveChatSessionAtDropTarget", () => {
-    beforeEach(() => {
-        resetChatStore();
-        resetChatTabsStore();
-        setEditorTabs([], null);
-        useVaultStore.setState({ vaultPath: "/vault", notes: [], entries: [] });
-    });
-
-    afterEach(() => {
-        vi.restoreAllMocks();
-        resetChatStore();
-        resetChatTabsStore();
-        setEditorTabs([], null);
-        useVaultStore.setState({ vaultPath: null, notes: [], entries: [] });
-    });
-
-    it("opens a new chat at the requested pane strip index", () => {
-        const alpha = createStoredSession("session-alpha", "Alpha");
-        const beta = createStoredSession("session-beta", "Beta");
-        seedChatSessions(alpha, beta);
-
-        useEditorStore.getState().openChat(beta.sessionId, {
-            title: "Beta",
-            paneId: "primary",
-        });
-
-        openOrMoveChatSessionAtDropTarget(alpha.sessionId, {
-            type: "strip",
-            paneId: "primary",
-            index: 0,
-        });
-
-        const pane = useEditorStore
-            .getState()
-            .panes.find((candidate) => candidate.id === "primary");
-        expect(pane?.tabs.map((tab) => tab.title)).toEqual(["Alpha", "Beta"]);
-        expect(pane?.activeTabId).toBe(pane?.tabs[0]?.id);
-    });
-
-    it("moves an existing chat to a split target without duplicating it", () => {
-        const alpha = createStoredSession("session-alpha", "Alpha");
-        const beta = createStoredSession("session-beta", "Beta");
-        seedChatSessions(alpha, beta);
-
-        useEditorStore.getState().openChat(alpha.sessionId, {
-            title: "Alpha",
-            paneId: "primary",
-        });
-        useEditorStore.getState().openChat(beta.sessionId, {
-            title: "Beta",
-            paneId: "primary",
-            background: true,
-        });
-
-        openOrMoveChatSessionAtDropTarget(alpha.sessionId, {
-            type: "split",
-            paneId: "primary",
-            direction: "right",
-        });
-
-        const chatTabs = selectEditorWorkspaceTabs(
-            useEditorStore.getState(),
-        ).filter(
-            (tab) => isChatTab(tab) && tab.sessionId === alpha.sessionId,
-        );
-        expect(chatTabs).toHaveLength(1);
-        expect(useEditorStore.getState().panes).toHaveLength(2);
-
-        const focusedTab = selectFocusedEditorTab(useEditorStore.getState());
-        expect(focusedTab && isChatTab(focusedTab)).toBe(true);
-        if (!focusedTab || !isChatTab(focusedTab)) {
-            throw new Error("Expected the moved chat to be focused");
-        }
-        expect(focusedTab.sessionId).toBe(alpha.sessionId);
+describe("dedicated chat opening", () => {
+    beforeEach(() => { resetChatTabsStore(); useEditorStore.getState().hydrateTabs([], null); });
+    it("opens chats and history without changing document panes", () => {
+        useEditorStore.getState().openNote("note", "Note", "content");
+        const before = useEditorStore.getState().panes;
+        openChatSessionInWorkspace("session-a", { skipLoad: true });
+        expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: "session-a" });
+        openChatHistoryInWorkspace();
+        expect(useChatTabsStore.getState().view.mode).toBe("history");
+        expect(useEditorStore.getState().panes).toBe(before);
     });
 });

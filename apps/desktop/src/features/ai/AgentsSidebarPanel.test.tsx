@@ -1,3 +1,7 @@
+import { useUnreadChatsStore } from "./store/unreadChatsStore";
+import { selectChatForTest } from "../../test/test-utils";
+import { useArchivedChatsStore } from "./store/archivedChatsStore";
+import { archiveChat, useArchiveNoticeStore } from "./chatArchiving";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { confirm } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +17,6 @@ import {
 } from "../terminal/terminalRuntimeStore";
 import { EMPTY_TERMINAL_SNAPSHOT } from "../terminal/terminalTypes";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
-import { useChatFoldersStore } from "./store/chatFoldersStore";
 import { resetChatStore, useChatStore } from "./store/chatStore";
 import type { AIChatSession, AIChatSessionStatus } from "./types";
 import {
@@ -94,6 +97,7 @@ function firePointer(
 describe("AgentsSidebarPanel", () => {
     beforeEach(() => {
         resetChatStore();
+        useUnreadChatsStore.setState({ entries: {} });
         resetTerminalRuntimeStoreForTests();
         vi.clearAllMocks();
         useVaultStore.setState({
@@ -102,12 +106,7 @@ describe("AgentsSidebarPanel", () => {
             entries: [],
         });
         usePinnedChatsStore.setState({ entries: {} });
-        useChatFoldersStore.setState({
-            folders: {},
-            folderOrder: [],
-            sessionFolderIds: {},
-            collapsedFolderIds: [],
-        });
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
         useEditorStore.getState().hydrateTabs([], null);
         useSettingsStore.setState({ claudeCodeEnabled: false });
         vi.mocked(confirm).mockResolvedValue(true);
@@ -141,26 +140,50 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
-    it("does not prune persisted folder assignments while cold-start inventory is loading", () => {
-        useChatFoldersStore.setState({
-            folders: {
-                research: { id: "research", name: "Research", createdAt: 1 },
-            },
-            folderOrder: ["research"],
-            sessionFolderIds: { "saved-session": "research" },
-            collapsedFolderIds: [],
-        });
-        useChatStore.setState({
-            sessionsById: {},
-            sessionOrder: [],
-            sessionInventoryLoaded: false,
-        });
-
+    it.each([false, true])("shows a themed unread indicator (archived: %s)", (archived) => {
+        const session = createSession("unread", "Unread response");
+        useChatStore.setState({ sessionsById: { unread: session }, sessionOrder: ["unread"] });
+        useUnreadChatsStore.setState({ entries: { unread: true } });
+        if (archived) useArchivedChatsStore.getState().archive("unread");
         renderComponent(<AgentsSidebarPanel />);
+        if (archived) fireEvent.click(screen.getByRole("button", { name: "Archived (1)" }));
+        expect(screen.getByRole("img", { name: "Turn completed, unread" }).style.backgroundColor).toBe("var(--accent)");
+        act(() => useUnreadChatsStore.getState().markRead("unread"));
+        expect(screen.queryByRole("img", { name: "Turn completed, unread" })).toBeNull();
+    });
 
-        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
-            "saved-session": "research",
-        });
+    it("archives a working root with its child and supports Undo", () => {
+        const root = createSession("root", "Root task", "streaming");
+        const child = createSession("child", "Child task", "idle", 10, { parentSessionId: "root" });
+        useChatStore.setState({ sessionsById: { root, child }, sessionOrder: ["root", "child"] });
+        usePinnedChatsStore.getState().pin("root");
+        renderComponent(<AgentsSidebarPanel />);
+        fireEvent.click(screen.getAllByRole("button", { name: "Archive chat" })[0]);
+        expect(usePinnedChatsStore.getState().entries.root).toBeUndefined();
+        expect(useChatStore.getState().sessionsById.root.status).toBe("streaming");
+        expect(screen.queryByText("Root task")).toBeNull();
+        const archived = screen.getByRole("button", { name: "Archived (1)" });
+        expect(archived.getAttribute("aria-expanded")).toBe("false");
+        fireEvent.change(screen.getByRole("textbox", { name: "Filter threads" }), { target: { value: "Root task" } });
+        expect(screen.getByText("Root task")).toBeTruthy();
+        fireEvent.change(screen.getByRole("textbox", { name: "Filter threads" }), { target: { value: "" } });
+        expect(archived.getAttribute("aria-expanded")).toBe("false");
+        act(() => useArchiveNoticeStore.getState().notice?.undo());
+        expect(useArchivedChatsStore.getState().entries).toEqual({});
+        expect(screen.getAllByText("Root task").length).toBeGreaterThan(0);
+    });
+
+    it("undoes archiving after a pending conversation receives its durable identity", () => {
+        const pending = createSession("pending:chat", "Draft", "streaming");
+        useChatStore.setState({ sessionsById: { [pending.sessionId]: pending }, sessionOrder: [pending.sessionId] });
+        selectChatForTest(pending.sessionId);
+        archiveChat(pending.sessionId);
+        const rebound = { ...pending, sessionId: "runtime:chat", historySessionId: "saved-chat" };
+        useChatStore.setState({ sessionsById: { [rebound.sessionId]: rebound }, sessionOrder: [rebound.sessionId] });
+        useArchivedChatsStore.getState().replaceSessionId(pending.sessionId, rebound.historySessionId);
+        useArchiveNoticeStore.getState().notice?.undo();
+        expect(useArchivedChatsStore.getState().entries).toEqual({});
+        expect(chatPaneMovementMock.openChatSessionInWorkspace).toHaveBeenCalledWith(rebound.sessionId);
     });
 
     it("creates a canonical agent directly when Claude Code is disabled", async () => {
@@ -179,151 +202,23 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.queryByRole("button", { name: "Claude" })).toBeNull();
     });
 
-    it("keeps existing chats unfiled until the user explicitly moves one", async () => {
-        const session = createSession("session-alpha", "Alpha task", "idle", 100);
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [session.sessionId]: session },
-            sessionOrder: [session.sessionId],
-        }));
-        renderComponent(<AgentsSidebarPanel />);
-
-        expect(screen.getByText("Alpha task")).toBeInTheDocument();
-        fireEvent.click(screen.getByRole("button", { name: "New folder" }));
-        fireEvent.change(screen.getByRole("textbox", { name: "Folder name" }), {
-            target: { value: "Research" },
-        });
-        fireEvent.blur(screen.getByRole("textbox", { name: "Folder name" }));
-        expect(screen.getByText("Research")).toBeInTheDocument();
-        expect(
-            useChatFoldersStore.getState().sessionFolderIds,
-        ).toEqual({});
-
-        fireEvent.contextMenu(screen.getByTestId("agent-sidebar-item"), {
-            clientX: 20,
-            clientY: 20,
-        });
-        const moveToFolder = await screen.findByRole("button", {
-            name: "Move to Folder",
-        });
-        fireEvent.mouseEnter(moveToFolder);
-        fireEvent.click(await screen.findByRole("button", { name: "Research" }));
-
-        await waitFor(() => {
-            expect(
-                useChatFoldersStore.getState().sessionFolderIds,
-            ).toEqual({ "session-alpha": expect.any(String) });
-        });
-        expect(screen.getAllByText("Alpha task").length).toBeGreaterThan(0);
-    });
-
-    it("renames, collapses, and deletes a folder without losing its chat", async () => {
+    it("does not expose chat folder controls", async () => {
         const session = createSession("session-alpha", "Alpha task");
-        const folderId = useChatFoldersStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useChatFoldersStore.getState().moveSession(session.sessionId, folderId);
-        useChatStore.setState((state) => ({
-            ...state,
+        useChatStore.setState({
             sessionsById: { [session.sessionId]: session },
             sessionOrder: [session.sessionId],
-        }));
+        });
 
         renderComponent(<AgentsSidebarPanel />);
 
+        expect(screen.queryByRole("button", { name: "New folder" })).toBeNull();
+        fireEvent.contextMenu(screen.getByTestId("agent-sidebar-item"));
         expect(
-            document.querySelector('[data-chat-folder-icon]'),
+            await screen.findByRole("button", { name: "Rename" }),
         ).toBeInTheDocument();
         expect(
-            document.querySelector<HTMLElement>(
-                `[data-chat-folder-contents="${folderId}"]`,
-            ),
-        ).toHaveStyle({ marginLeft: "8px" });
-
-        fireEvent.click(screen.getByTitle("Collapse folder"));
-        expect(screen.queryByTestId("agent-sidebar-item")).toBeNull();
-
-        fireEvent.contextMenu(screen.getByTitle("Expand folder"));
-        fireEvent.click(
-            await screen.findByRole("button", { name: "Rename Folder" }),
-        );
-        const folderNameInput = await screen.findByRole("textbox", {
-            name: "Folder name",
-        });
-        fireEvent.change(folderNameInput, {
-            target: { value: "Archive" },
-        });
-        fireEvent.keyDown(folderNameInput, {
-            key: "Enter",
-        });
-        expect(screen.getByText("Archive")).toBeInTheDocument();
-
-        fireEvent.contextMenu(screen.getByTitle("Expand folder"));
-        fireEvent.click(
-            await screen.findByRole("button", { name: "Delete Folder" }),
-        );
-
-        await waitFor(() => {
-            expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({});
-        });
-        expect(screen.queryByText("Archive")).not.toBeInTheDocument();
-        expect(screen.getByTestId("agent-sidebar-item")).toHaveTextContent(
-            "Alpha task",
-        );
-    });
-
-    it("reorders folders by dragging their headers", () => {
-        const first = useChatFoldersStore.getState().createFolder("First");
-        const second = useChatFoldersStore.getState().createFolder("Second");
-        expect(first).toBeTruthy();
-        expect(second).toBeTruthy();
-        const session = createSession("session-alpha", "Alpha task");
-        useChatFoldersStore.getState().moveSession(session.sessionId, first);
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [session.sessionId]: session },
-            sessionOrder: [session.sessionId],
-        }));
-        renderComponent(<AgentsSidebarPanel />);
-
-        const firstHeader = document.querySelector<HTMLElement>(
-            `[data-chat-folder-header="${first}"]`,
-        );
-        const secondHeader = document.querySelector<HTMLElement>(
-            `[data-chat-folder-header="${second}"]`,
-        );
-        expect(firstHeader).not.toBeNull();
-        expect(secondHeader).not.toBeNull();
-        Object.defineProperty(document, "elementFromPoint", {
-            configurable: true,
-            value: vi.fn(() => secondHeader),
-        });
-        vi.spyOn(secondHeader!, "getBoundingClientRect").mockReturnValue({
-            top: 100,
-            height: 20,
-        } as DOMRect);
-
-        firePointer(firstHeader!, "pointerdown", {
-            clientX: 10,
-            clientY: 10,
-            pointerId: 7,
-        });
-        firePointer(window, "pointermove", {
-            clientX: 10,
-            clientY: 115,
-            pointerId: 7,
-        });
-        firePointer(window, "pointerup", {
-            clientX: 10,
-            clientY: 115,
-            pointerId: 7,
-        });
-
-        expect(useChatFoldersStore.getState().folderOrder).toEqual([
-            second,
-            first,
-        ]);
+            screen.queryByRole("button", { name: "Move to Folder" }),
+        ).toBeNull();
     });
 
     it("opens Claude Code from the plus menu as a terminal runtime", async () => {
@@ -387,7 +282,7 @@ describe("AgentsSidebarPanel", () => {
         expect(useChatStore.getState().selectedRuntimeId).toBe("codex-acp");
     });
 
-    it("keeps open working agents in the order they became busy", async () => {
+    it("keeps chat order stable when opening and starting turns", async () => {
         const alpha = createSession(
             "session-alpha",
             "Alpha task",
@@ -404,11 +299,11 @@ describe("AgentsSidebarPanel", () => {
             },
             sessionOrder: [beta.sessionId, alpha.sessionId],
         }));
-        useEditorStore.getState().openChat(alpha.sessionId, {
+        selectChatForTest(alpha.sessionId, {
             title: "Alpha task",
             paneId: "primary",
         });
-        useEditorStore.getState().openChat(beta.sessionId, {
+        selectChatForTest(beta.sessionId, {
             background: true,
             title: "Beta task",
             paneId: "primary",
@@ -435,8 +330,8 @@ describe("AgentsSidebarPanel", () => {
             const labels = screen
                 .getAllByTestId("agent-sidebar-item")
                 .map((item) => item.textContent ?? "");
-            expect(labels[0]).toContain("Alpha task");
-            expect(labels[1]).toContain("Beta task");
+            expect(labels[0]).toContain("Beta task");
+            expect(labels[1]).toContain("Alpha task");
         });
     });
 
@@ -498,6 +393,23 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
+    it("keeps card pin and rename actions separate from opening", async () => {
+        const session = createSession("card-session", "Card title");
+        useChatStore.setState({ sessionsById: { [session.sessionId]: session }, sessionOrder: [session.sessionId] });
+        renderComponent(<AgentsSidebarPanel />);
+        expect(screen.getByRole("button", { name: "Card title" })).toBeTruthy();
+        expect(screen.getByText("Codex")).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: "Pin to sidebar" }));
+        expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeTruthy();
+        expect(chatPaneMovementMock.openChatSessionInWorkspace).not.toHaveBeenCalled();
+        fireEvent.doubleClick(screen.getByRole("button", { name: "Card title" }));
+        const input = screen.getByDisplayValue("Card title");
+        fireEvent.change(input, { target: { value: "Renamed card" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(screen.getByRole("button", { name: "Renamed card" })).toBeTruthy());
+        expect(chatPaneMovementMock.openChatSessionInWorkspace).not.toHaveBeenCalled();
+    });
+
     it("does not open a thread from a nested row control", () => {
         const session = createSession("session-alpha", "Alpha task");
         useChatStore.setState((state) => ({
@@ -518,114 +430,7 @@ describe("AgentsSidebarPanel", () => {
         ).not.toHaveBeenCalled();
     });
 
-    it("moves a root chat into a folder when it is dropped on that folder", () => {
-        const alpha = createSession("session-alpha", "Alpha task");
-        const folderId = useChatFoldersStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [alpha.sessionId]: alpha },
-            sessionOrder: [alpha.sessionId],
-        }));
-        const dragEvents: AgentSidebarDragDetail[] = [];
-        const handleDrag = (event: Event) =>
-            dragEvents.push(
-                (event as CustomEvent<AgentSidebarDragDetail>).detail,
-            );
-        window.addEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
-
-        try {
-            renderComponent(<AgentsSidebarPanel />);
-            const folderLabel = screen.getByText("Research");
-            Object.defineProperty(document, "elementFromPoint", {
-                configurable: true,
-                value: vi.fn(() => folderLabel),
-            });
-            const row = screen.getByTestId("agent-sidebar-item");
-            firePointer(row, "pointerdown", {
-                button: 0,
-                buttons: 1,
-                pointerId: 9,
-                clientX: 10,
-                clientY: 10,
-            });
-            firePointer(window, "pointermove", {
-                pointerId: 9,
-                buttons: 1,
-                clientX: 20,
-                clientY: 10,
-            });
-            firePointer(window, "pointerup", {
-                pointerId: 9,
-                clientX: 20,
-                clientY: 10,
-            });
-
-            expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
-                [alpha.sessionId]: folderId,
-            });
-            expect(dragEvents.at(-1)?.phase).toBe("cancel");
-        } finally {
-            delete (document as Partial<Document>).elementFromPoint;
-            window.removeEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
-        }
-    });
-
-    it("removes a root chat from its folder when it is dropped on All", () => {
-        const alpha = createSession("session-alpha", "Alpha task");
-        const folderId = useChatFoldersStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useChatFoldersStore
-            .getState()
-            .moveSession(alpha.sessionId, folderId);
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [alpha.sessionId]: alpha },
-            sessionOrder: [alpha.sessionId],
-        }));
-
-        renderComponent(<AgentsSidebarPanel />);
-        const allDropZone = document.querySelector(
-            "[data-chat-unfiled-drop-zone]",
-        );
-        expect(allDropZone).not.toBeNull();
-        Object.defineProperty(document, "elementFromPoint", {
-            configurable: true,
-            value: vi.fn(() => allDropZone),
-        });
-
-        try {
-            const row = screen.getByTestId("agent-sidebar-item");
-            firePointer(row, "pointerdown", {
-                button: 0,
-                buttons: 1,
-                pointerId: 10,
-                clientX: 10,
-                clientY: 10,
-            });
-            firePointer(window, "pointermove", {
-                pointerId: 10,
-                buttons: 1,
-                clientX: 20,
-                clientY: 10,
-            });
-            firePointer(window, "pointerup", {
-                pointerId: 10,
-                clientX: 20,
-                clientY: 10,
-            });
-
-            expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({});
-        } finally {
-            delete (document as Partial<Document>).elementFromPoint;
-        }
-    });
-
-    it("completes an agent row drag when pointerup is received on window", () => {
+     it("completes an agent row drag when pointerup is received on window", () => {
         const alpha = createSession("session-alpha", "Alpha task");
         useChatStore.setState((state) => ({
             ...state,
@@ -862,43 +667,30 @@ describe("AgentsSidebarPanel", () => {
         }
     });
 
-    it("keeps working subagents in activation order under their parent", async () => {
-        const parent = createSession("session-parent", "Parent task", "streaming");
-        const heisenberg = createSession(
-            "session-heisenberg",
-            "Heisenberg",
-            "streaming",
-            100,
-            { parentSessionId: parent.sessionId },
-        );
-        const mill = createSession("session-mill", "Mill", "streaming", 300, {
-            parentSessionId: parent.sessionId,
+    it("promotes a completed subagent and its parent group only when the turn ends", () => {
+        const parent = createSession("parent", "Parent", "streaming");
+        const other = createSession("other", "Other", "idle");
+        const first = createSession("first", "First child", "streaming", 100, { parentSessionId: "parent" });
+        const second = createSession("second", "Second child", "streaming", 300, { parentSessionId: "parent" });
+        useChatStore.setState({
+            sessionsById: { parent, other, first, second },
+            sessionOrder: ["other", "parent", "first", "second"],
         });
-
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                [parent.sessionId]: parent,
-                [heisenberg.sessionId]: heisenberg,
-                [mill.sessionId]: mill,
-            },
-            sessionOrder: [
-                parent.sessionId,
-                heisenberg.sessionId,
-                mill.sessionId,
-            ],
-        }));
-
         renderComponent(<AgentsSidebarPanel />);
-
-        await waitFor(() => {
-            const labels = screen
-                .getAllByTestId("agent-sidebar-item")
-                .map((item) => item.textContent ?? "");
-            expect(labels[0]).toContain("Parent task");
-            expect(labels[1]).toContain("Heisenberg");
-            expect(labels[2]).toContain("Mill");
+        const labels = () => screen.getAllByTestId("agent-sidebar-item").map(item => item.getAttribute("aria-label"));
+        expect(labels()).toEqual(["Other", "Parent", "First child", "Second child"]);
+        act(() => {
+            selectChatForTest(second.sessionId);
+            useChatStore.getState().upsertSession({ ...second, persistedUpdatedAt: 1000 }, true);
         });
+        expect(labels()).toEqual(["Other", "Parent", "First child", "Second child"]);
+        act(() => useChatStore.getState().applyMessageCompleted({ session_id: "second", message_id: "second-result" }));
+        expect(labels()).toEqual(["Parent", "Second child", "First child", "Other"]);
+        act(() => useChatStore.getState().upsertSession({ ...first, persistedUpdatedAt: 2000 }, true));
+        expect(labels()).toEqual(["Parent", "Second child", "First child", "Other"]);
+        // Some runtimes report completion through a session snapshot.
+        act(() => useChatStore.getState().upsertSession({ ...first, status: "idle" }));
+        expect(labels()).toEqual(["Parent", "First child", "Second child", "Other"]);
     });
 
     it("keeps parent context visible when filtering by child content", () => {
@@ -1019,26 +811,14 @@ describe("AgentsSidebarPanel", () => {
         expect(deleteSession).not.toHaveBeenCalled();
     });
 
-    it("opens a thread in a new tab from the context menu", async () => {
+    it("offers Archive and Delete as separate actions without editor tab creation", () => {
         const session = createSession("session-alpha", "Alpha task");
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: { [session.sessionId]: session },
-            sessionOrder: [session.sessionId],
-        }));
-
+        useChatStore.setState({ sessionsById: { [session.sessionId]: session }, sessionOrder: [session.sessionId] });
         renderComponent(<AgentsSidebarPanel />);
-
         fireEvent.contextMenu(screen.getByTestId("agent-sidebar-item"));
-        fireEvent.click(
-            await screen.findByRole("button", { name: "Open in New Tab" }),
-        );
-
-        await waitFor(() => {
-            expect(
-                chatPaneMovementMock.openChatSessionInWorkspace,
-            ).toHaveBeenCalledWith(session.sessionId, { forceNewTab: true });
-        });
+        expect(screen.queryByRole("button", { name: "Open in New Tab" })).toBeNull();
+        expect(screen.getByRole("button", { name: "Archive" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
     });
 
     it("closes a Claude Code terminal agent instead of deleting it", async () => {

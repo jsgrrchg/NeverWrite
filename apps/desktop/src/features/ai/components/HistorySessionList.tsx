@@ -1,8 +1,11 @@
+import { isSessionArchived, useArchivedChatsStore } from "../store/archivedChatsStore";
+import { useChatStore } from "../store/chatStore";
 import {
     useCallback,
     useEffect,
     useMemo,
     useState,
+    useRef,
     type MouseEvent,
 } from "react";
 import { aiSearchSessionContent, type SessionSearchResult } from "../api";
@@ -29,6 +32,7 @@ interface HistorySessionListProps {
     runtimes: AIRuntimeOption[];
     selectedSessionId: string | null;
     onSelectSession: (sessionId: string) => void;
+    onReconcileSelection?: (sessionId: string | null) => void;
     onRestoreSession: (sessionId: string) => void;
     onDeleteSession: (sessionId: string) => void;
     onDeleteSessions: (sessionIds: string[]) => void;
@@ -61,6 +65,7 @@ export function HistorySessionList({
     runtimes,
     selectedSessionId,
     onSelectSession,
+    onReconcileSelection,
     onRestoreSession,
     onDeleteSession,
     onDeleteSessions,
@@ -69,6 +74,7 @@ export function HistorySessionList({
     onRenameSession,
 }: HistorySessionListProps) {
     const [search, setSearch] = useState("");
+    const contentSearchVersion = useRef(0);
     const [isSearchingContent, setIsSearchingContent] = useState(false);
     const [contentResults, setContentResults] = useState<
         SessionSearchResult[] | null
@@ -90,16 +96,28 @@ export function HistorySessionList({
             groups: [...result.groups].sort(compareHierarchyGroupsByUpdatedAtDesc),
         };
     }, [sessions, search]);
+    const matchingContentResults = useMemo(() => {
+        const ids = new Set(sessions.map(getHistorySelectionId));
+        return contentResults?.filter(result => ids.has(result.session_id)) ?? null;
+    }, [contentResults, sessions]);
     const visibleHistoryIds = useMemo(
-        () =>
+        () => matchingContentResults ? matchingContentResults.map(result => result.session_id) :
             hierarchy.groups.flatMap((group) => [
                 getHistorySelectionId(group.root),
                 ...group.visibleChildren.map((session) =>
                     getHistorySelectionId(session),
                 ),
             ]),
-        [hierarchy.groups],
+        [hierarchy.groups, matchingContentResults],
     );
+    const previousVisibleIds = useRef<string[]>([]);
+    useEffect(() => {
+        if (onReconcileSelection && !visibleHistoryIds.includes(selectedSessionId ?? "")) {
+            const previousIndex = previousVisibleIds.current.indexOf(selectedSessionId ?? "");
+            onReconcileSelection(visibleHistoryIds[Math.min(Math.max(previousIndex, 0), visibleHistoryIds.length - 1)] ?? null);
+        }
+        previousVisibleIds.current = visibleHistoryIds;
+    }, [visibleHistoryIds, selectedSessionId, onReconcileSelection]);
     const visibleHistoryIdSet = useMemo(
         () => new Set(visibleHistoryIds),
         [visibleHistoryIds],
@@ -116,24 +134,27 @@ export function HistorySessionList({
     const runContentSearch = useCallback(
         async (query: string) => {
             if (!vaultPath || !query.trim()) return;
+            const version = ++contentSearchVersion.current;
             setIsSearchingContent(true);
             try {
                 const results = await aiSearchSessionContent(
                     vaultPath,
                     query.trim(),
                 );
-                setContentResults(results);
+                if (version === contentSearchVersion.current) setContentResults(results);
             } catch (err) {
                 console.error("Content search failed:", err);
-                setContentResults([]);
+                if (version === contentSearchVersion.current) setContentResults([]);
             } finally {
-                setIsSearchingContent(false);
+                if (version === contentSearchVersion.current) setIsSearchingContent(false);
             }
         },
         [vaultPath],
     );
 
     const clearSearch = useCallback(() => {
+        contentSearchVersion.current += 1;
+        setIsSearchingContent(false);
         setSearch("");
         setContentResults(null);
     }, []);
@@ -303,6 +324,9 @@ export function HistorySessionList({
                         placeholder="Search chats…"
                         value={search}
                         onChange={(e) => {
+                            contentSearchVersion.current += 1;
+                            setIsSearchingContent(false);
+                            setContentResults(null);
                             setSearch(e.target.value);
                             if (!e.target.value.trim()) {
                                 setContentResults(null);
@@ -405,7 +429,7 @@ export function HistorySessionList({
 
                 {!isSearchingContent && showContentResults && (
                     <ContentSearchResults
-                        results={contentResults}
+                        results={matchingContentResults ?? []}
                         selectedHistoryId={selectedHistoryId}
                         onSelectSession={onSelectSession}
                     />
@@ -583,6 +607,7 @@ function ContentSearchResults({
     results: SessionSearchResult[];
     selectedHistoryId: string | null | undefined;
     onSelectSession: (sessionId: string) => void;
+    onReconcileSelection?: (sessionId: string | null) => void;
 }) {
     if (results.length === 0) {
         return (
@@ -628,6 +653,10 @@ function SearchResultCard({
     isSelected: boolean;
     onSelect: () => void;
 }) {
+    const entries = useArchivedChatsStore(state => state.entries);
+    const sessions = useChatStore(state => state.sessionsById);
+    const session = findSessionForHistorySelection(sessions, result.session_id);
+    const archived = session && isSessionArchived(session, sessions, entries);
     const [hovered, setHovered] = useState(false);
     const title =
         result.custom_title?.trim() || result.title?.trim() || "New chat";
@@ -659,6 +688,7 @@ function SearchResultCard({
                     style={{ color: "var(--text-primary)" }}
                 >
                     {title}
+                    {archived && <span className="ml-2 text-[10px]">Archived</span>}
                 </span>
                 {result.updated_at > 0 && (
                     <span
