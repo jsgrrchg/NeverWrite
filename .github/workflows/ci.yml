@@ -75,7 +75,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: |
+              apps/desktop/package-lock.json
+              apps/desktop/runtimes/claude/package-lock.json
 
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-rust
@@ -86,6 +88,14 @@ jobs:
       - name: Install desktop dependencies
         working-directory: apps/desktop
         run: npm ci
+
+      - name: Prepare and verify Claude runtime
+        working-directory: apps/desktop
+        run: |
+          npm run claude:prepare
+          npm run test:claude-preparation
+          npm run test:claude-runtime
+          npm run claude:smoke
 
       - name: Run desktop lint
         working-directory: apps/desktop

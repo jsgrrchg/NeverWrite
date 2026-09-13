@@ -135,6 +135,10 @@ jobs:
               uses: actions/setup-node@v6
               with:
                   node-version: 22
+                  cache: npm
+                  cache-dependency-path: |
+                      apps/desktop/package-lock.json
+                      apps/desktop/runtimes/claude/package-lock.json
 
             - name: Setup Rust toolchain
               uses: ./.github/actions/setup-rust
@@ -180,6 +184,10 @@ jobs:
             - name: Install desktop dependencies
               working-directory: apps/desktop
               run: npm ci
+
+            - name: Prepare target-specific Claude runtime
+              working-directory: apps/desktop
+              run: npm run claude:prepare -- --target ${{ matrix.target }}
 
             - name: Build target-specific Codex sidecar
               shell: bash

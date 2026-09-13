@@ -147,8 +147,8 @@ NEVERWRITE_OPENCODE_ACP_BIN
 Important packaging expectations:
 
 - Codex is intended to be bundled as a sidecar runtime in release builds.
-- Claude is intended to be bundled through embedded Node plus vendored runtime
-  files.
+- Claude is intended to be bundled through embedded Node plus the prepared npm
+  runtime.
 - Grok, Kilo, and OpenCode are integrated but not bundled by default, so
   they need an external CLI or explicit binary override.
 

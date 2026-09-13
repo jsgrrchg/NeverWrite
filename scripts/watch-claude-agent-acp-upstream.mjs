@@ -9,13 +9,13 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 const UPSTREAM_OWNER = "agentclientprotocol";
 const UPSTREAM_REPO = "claude-agent-acp";
 const UPSTREAM_NAME = `${UPSTREAM_OWNER}/${UPSTREAM_REPO}`;
-const VENDORED_PACKAGE_JSON_PATH = path.join(
+const RUNTIME_PACKAGE_JSON_PATH = path.join(
     REPO_ROOT,
-    "vendor/Claude-agent-acp-upstream/package.json",
+    "apps/desktop/runtimes/claude/package.json",
 );
 const ISSUE_LABEL = "upstream-update";
 const ISSUE_LABEL_COLOR = "0e8a16";
-const ISSUE_LABEL_DESCRIPTION = "Tracks vendored upstream dependency updates.";
+const ISSUE_LABEL_DESCRIPTION = "Tracks upstream runtime dependency updates.";
 
 function parseArgs(argv) {
     const args = { dryRun: false };
@@ -36,7 +36,7 @@ function readJsonFile(filePath) {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
-function parseSemver(value) {
+export function parseSemver(value) {
     const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(value);
     if (!match) {
         return null;
@@ -50,7 +50,7 @@ function parseSemver(value) {
     };
 }
 
-function compareSemver(left, right) {
+export function compareSemver(left, right) {
     for (const key of ["major", "minor", "patch"]) {
         if (left[key] !== right[key]) {
             return left[key] - right[key];
@@ -174,17 +174,17 @@ async function ensureIssueLabel(owner, repo, token) {
     });
 }
 
-async function createIssue(owner, repo, token, latestTag, vendoredVersion) {
+async function createIssue(owner, repo, token, latestTag, pinnedVersion) {
     const title = `Upstream claude-agent-acp released ${latestTag.name}`;
     const body = [
         "A new upstream tag is available.",
         "",
         `- Upstream: ${UPSTREAM_NAME}`,
         `- Latest tag: ${latestTag.name}`,
-        `- Vendored version: ${vendoredVersion}`,
-        `- Vendored package: \`vendor/Claude-agent-acp-upstream/package.json\``,
+        `- Pinned version: ${pinnedVersion}`,
+        `- Runtime manifest: \`apps/desktop/runtimes/claude/package.json\``,
         "",
-        "Review and update the vendored upstream package when convenient.",
+        "Review the pinned npm dependency and its local TaskList patch before updating.",
     ].join("\n");
 
     await ensureIssueLabel(owner, repo, token);
@@ -205,27 +205,22 @@ async function createIssue(owner, repo, token, latestTag, vendoredVersion) {
 
 async function main() {
     const { dryRun } = parseArgs(process.argv.slice(2));
-    const vendoredPackageJson = readJsonFile(VENDORED_PACKAGE_JSON_PATH);
-    const vendoredSemver = parseSemver(vendoredPackageJson.version);
-
-    if (!vendoredSemver) {
-        throw new Error(
-            `Vendored package version "${vendoredPackageJson.version}" is not strict semver.`,
-        );
-    }
+    const runtimePackageJson = readJsonFile(RUNTIME_PACKAGE_JSON_PATH);
+    const pinnedVersion = readPinnedClaudeVersion(runtimePackageJson);
+    const pinnedSemver = parseSemver(pinnedVersion);
 
     const latestTag = await getLatestStableUpstreamTag();
 
-    if (compareSemver(latestTag.semver, vendoredSemver) <= 0) {
+    if (compareSemver(latestTag.semver, pinnedSemver) <= 0) {
         console.log(
-            `Vendored ${UPSTREAM_REPO} is current: ${vendoredPackageJson.version}. Latest upstream tag is ${latestTag.name}.`,
+            `Pinned ${UPSTREAM_REPO} is current: ${pinnedVersion}. Latest upstream tag is ${latestTag.name}.`,
         );
         return;
     }
 
     if (dryRun) {
         console.log(
-            `Dry run: upstream ${latestTag.name} is newer than vendored ${vendoredPackageJson.version}.`,
+            `Dry run: upstream ${latestTag.name} is newer than pinned ${pinnedVersion}.`,
         );
         return;
     }
@@ -245,10 +240,20 @@ async function main() {
         repo,
         token,
         latestTag,
-        vendoredPackageJson.version,
+        pinnedVersion,
     );
 
     console.log(`Created issue: ${issue.html_url}`);
 }
 
-await main();
+export function readPinnedClaudeVersion(manifest) {
+    const version = manifest.dependencies?.["@agentclientprotocol/claude-agent-acp"];
+    if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+        throw new Error("Claude runtime dependency must be pinned to an exact stable npm version.");
+    }
+    return version;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+    await main();
+}

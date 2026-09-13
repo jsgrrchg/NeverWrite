@@ -16,6 +16,7 @@ import {
     validateCodexRuntimeSourceAlignment,
 } from "./stage-electron-sidecar-helpers.mjs";
 import { resolveCodexV8CargoEnvironment } from "./codex-v8-artifacts.mjs";
+import { resolveClaudeRuntimeSource } from "./claude-runtime.mjs";
 
 const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const workspaceRoot = path.resolve(appRoot, "..", "..");
@@ -24,17 +25,6 @@ const binariesDir = path.join(stagedDir, "binaries");
 const embeddedDir = path.join(stagedDir, "embedded");
 const embeddedAssetsDir = path.join(appRoot, "embedded");
 const embeddedNodeCacheDir = path.join(appRoot, ".cache", "embedded-node");
-const vendorClaudeEmbeddedDir = path.join(
-    workspaceRoot,
-    "vendor",
-    "Claude-agent-acp-upstream",
-);
-const CLAUDE_RUNTIME_DEPENDENCIES = [
-    "@agentclientprotocol/sdk",
-    "@anthropic-ai/claude-agent-sdk",
-    "zod",
-];
-
 function parseArgs(argv) {
     const args = {
         target: process.env.NEVERWRITE_ELECTRON_RELEASE_TARGET?.trim() || null,
@@ -88,10 +78,6 @@ function run(command, args, cwd, env = {}) {
     });
 }
 
-function packageDirectory(root, packageName) {
-    return path.join(root, "node_modules", ...packageName.split("/"));
-}
-
 async function pathExists(filePath) {
     try {
         await fs.access(filePath);
@@ -109,141 +95,6 @@ async function readExecutableHeader(filePath) {
         return buffer.subarray(0, bytesRead);
     } finally {
         await file.close();
-    }
-}
-
-function requiredClaudePlatformPackages(targetTriple) {
-    if (targetTriple === MAC_UNIVERSAL_TARGET) {
-        return [
-            "@anthropic-ai/claude-agent-sdk-darwin-arm64",
-            "@anthropic-ai/claude-agent-sdk-darwin-x64",
-        ];
-    }
-    if (targetTriple === "aarch64-apple-darwin") {
-        return ["@anthropic-ai/claude-agent-sdk-darwin-arm64"];
-    }
-    if (targetTriple === "x86_64-apple-darwin") {
-        return ["@anthropic-ai/claude-agent-sdk-darwin-x64"];
-    }
-    if (targetTriple === "aarch64-pc-windows-msvc") {
-        return ["@anthropic-ai/claude-agent-sdk-win32-arm64"];
-    }
-    if (targetTriple === "x86_64-pc-windows-msvc") {
-        return ["@anthropic-ai/claude-agent-sdk-win32-x64"];
-    }
-    if (targetTriple === "aarch64-unknown-linux-gnu") {
-        return ["@anthropic-ai/claude-agent-sdk-linux-arm64"];
-    }
-    if (targetTriple === "x86_64-unknown-linux-gnu") {
-        return ["@anthropic-ai/claude-agent-sdk-linux-x64"];
-    }
-
-    return [];
-}
-
-async function readJson(filePath) {
-    return JSON.parse(await fs.readFile(filePath, "utf8"));
-}
-
-async function missingClaudeRuntimePackages(
-    sourceDir,
-    targetTriple,
-    packageLock,
-) {
-    const requiredPackages = [
-        ...CLAUDE_RUNTIME_DEPENDENCIES,
-        ...requiredClaudePlatformPackages(targetTriple),
-    ];
-    const missing = [];
-
-    for (const packageName of requiredPackages) {
-        const packageJsonPath = path.join(
-            packageDirectory(sourceDir, packageName),
-            "package.json",
-        );
-        if (!(await pathExists(packageJsonPath))) {
-            missing.push(packageName);
-            continue;
-        }
-
-        const lockedVersion =
-            packageLock.packages?.[`node_modules/${packageName}`]?.version;
-        const installedVersion = (await readJson(packageJsonPath)).version;
-        if (lockedVersion && installedVersion !== lockedVersion) {
-            missing.push(packageName);
-        }
-    }
-
-    return missing;
-}
-
-async function installClaudeRuntimeDependencies(sourceDir, targetTriple) {
-    const packageJsonPath = path.join(sourceDir, "package.json");
-    const packageLockPath = path.join(sourceDir, "package-lock.json");
-    const entrypointPath = path.join(sourceDir, "dist", "index.js");
-
-    for (const requiredPath of [
-        packageJsonPath,
-        packageLockPath,
-        entrypointPath,
-    ]) {
-        if (!(await pathExists(requiredPath))) {
-            throw new Error(
-                `Claude embedded runtime is missing required file: ${requiredPath}`,
-            );
-        }
-    }
-
-    const packageLock = await readJson(packageLockPath);
-    console.log("Installing Claude embedded runtime production dependencies.");
-    await run("npm", ["ci", "--omit=dev", "--include=optional"], sourceDir);
-
-    let missing = await missingClaudeRuntimePackages(
-        sourceDir,
-        targetTriple,
-        packageLock,
-    );
-    const platformPackages = requiredClaudePlatformPackages(targetTriple);
-    const missingPlatformPackages = missing.filter((packageName) =>
-        platformPackages.includes(packageName),
-    );
-    if (missingPlatformPackages.length > 0) {
-        const packagesToInstall = missingPlatformPackages.map((packageName) => {
-            const version =
-                packageLock.packages?.[`node_modules/${packageName}`]?.version;
-            if (!version) {
-                throw new Error(
-                    `Could not resolve locked version for ${packageName} in ${packageLockPath}`,
-                );
-            }
-            return `${packageName}@${version}`;
-        });
-        console.log(
-            `Installing target-specific Claude runtime packages: ${packagesToInstall.join(", ")}`,
-        );
-        await run(
-            "npm",
-            [
-                "install",
-                "--omit=dev",
-                "--include=optional",
-                "--no-save",
-                "--force",
-                ...packagesToInstall,
-            ],
-            sourceDir,
-        );
-    }
-
-    missing = await missingClaudeRuntimePackages(
-        sourceDir,
-        targetTriple,
-        packageLock,
-    );
-    if (missing.length > 0) {
-        throw new Error(
-            `Claude embedded runtime is missing or has stale production dependencies after install: ${missing.join(", ")}`,
-        );
     }
 }
 
@@ -453,35 +304,6 @@ async function resolveEmbeddedNodeSource(targetTriple) {
     }
 
     return nodeSourceFromBinary(configuredNodeBinary);
-}
-
-async function resolveClaudeEmbeddedSource() {
-    const configuredSource = process.env.NEVERWRITE_CLAUDE_EMBEDDED_DIR?.trim();
-    if (configuredSource) {
-        if (!(await pathExists(configuredSource))) {
-            throw new Error(
-                `Configured Claude embedded runtime directory does not exist: ${configuredSource}`,
-            );
-        }
-        return configuredSource;
-    }
-
-    const sourceCandidates = [
-        path.join(embeddedAssetsDir, "claude-agent-acp"),
-        vendorClaudeEmbeddedDir,
-    ];
-
-    for (const sourceCandidate of sourceCandidates) {
-        if (await pathExists(sourceCandidate)) {
-            return sourceCandidate;
-        }
-    }
-
-    throw new Error(
-        `Claude embedded runtime was not found. Checked:\n${sourceCandidates
-            .map((candidate) => `- ${candidate}`)
-            .join("\n")}`,
-    );
 }
 
 async function stageEmbeddedNodeRuntime(nodeSource) {
@@ -802,8 +624,10 @@ const stagingCodexRuntime = await Promise.all(
 );
 
 const nodeSource = await resolveEmbeddedNodeSource(targetTriple);
-const claudeEmbeddedSource = await resolveClaudeEmbeddedSource();
-await installClaudeRuntimeDependencies(claudeEmbeddedSource, targetTriple);
+const claudeEmbeddedSource = await resolveClaudeRuntimeSource(targetTriple, {
+    configuredSource: process.env.NEVERWRITE_CLAUDE_EMBEDDED_DIR?.trim(),
+    embeddedSource: path.join(embeddedAssetsDir, "claude-agent-acp"),
+});
 
 // Electron release jobs must stage binaries for the requested target explicitly.
 // Reusing host binaries here would silently create a mismatched bundle.

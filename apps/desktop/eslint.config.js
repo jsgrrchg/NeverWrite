@@ -12,6 +12,7 @@ export default defineConfig([
         "dist-electron-testing/**",
         "out/**",
         "embedded/**",
+        ".cache/**",
         "src/features/ai/store/wasm/*.d.ts",
     ]),
     {
