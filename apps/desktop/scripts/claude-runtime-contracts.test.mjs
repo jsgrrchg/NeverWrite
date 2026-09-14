@@ -16,7 +16,7 @@ const baseline = JSON.parse(await fs.readFile(
 ));
 const execute = promisify(execFile);
 
-test("runtime JavaScript matches the patched dependency baseline", async () => {
+test("runtime JavaScript matches the published dependency baseline", async () => {
     const manifest = JSON.parse(await fs.readFile(path.join(runtimeRoot, "package.json"), "utf8"));
     assert.equal(manifest.version, baseline.version);
     for (const [relative, expected] of Object.entries(baseline.runtimeFiles)) {

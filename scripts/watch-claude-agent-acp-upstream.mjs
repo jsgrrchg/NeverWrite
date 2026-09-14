@@ -184,7 +184,7 @@ async function createIssue(owner, repo, token, latestTag, pinnedVersion) {
         `- Pinned version: ${pinnedVersion}`,
         `- Runtime manifest: \`apps/desktop/runtimes/claude/package.json\``,
         "",
-        "Review the pinned npm dependency and its local TaskList patch before updating.",
+        "Review the pinned npm dependency, lockfile, and compatibility baseline before updating.",
     ].join("\n");
 
     await ensureIssueLabel(owner, repo, token);

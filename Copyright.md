@@ -137,13 +137,16 @@ dictionary licenses.
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.76.0  | Apache-2.0                      |
+| @agentclientprotocol/claude-agent-acp   | 0.77.0  | Apache-2.0                      |
 | @agentclientprotocol/sdk                | 1.4.0   | Apache-2.0                      |
-| @anthropic-ai/claude-agent-sdk          | 0.3.257 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/claude-agent-sdk-*        | 0.3.257 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/sdk                       | 0.122.0 | MIT                             |
+| @anthropic-ai/claude-agent-sdk          | 0.3.270 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/claude-agent-sdk-*        | 0.3.270 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/sdk                       | 0.125.0 | MIT                             |
 | @modelcontextprotocol/sdk               | 1.30.0  | MIT                             |
-| zod                                     | 4.5.4   | MIT                             |
+| zod                                     | 4.6.5   | MIT                             |
+
+Zod provides runtime schema validation and parsing for the structured data
+exchanged by the Claude ACP adapter and its protocol SDKs.
 
 The packaged desktop app prepares the exact Claude ACP npm dependency and stages
 it under `native-backend/embedded/claude-agent-acp/` with production dependencies
@@ -280,7 +283,7 @@ The bundled dictionary metadata lives in
 | -------------------------------- | ----------- | --------------------------------------- |
 | codex-acp 0.16.0                 | Apache-2.0  | github.com/zed-industries/codex-acp     |
 | OpenAI Codex runtime rust-v0.153.4 | Apache-2.0 | github.com/openai/codex                 |
-| @agentclientprotocol/claude-agent-acp 0.76.0 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
+| @agentclientprotocol/claude-agent-acp 0.77.0 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
 
@@ -307,23 +310,6 @@ The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.
 | `src/lib.rs`, `src/main.rs` | Adjusted crate wiring and compile limits for the promoted runtime graph |
 | `vendor/codex-utils-pty/` | Maintains the standalone PTY snapshot on the upstream 0.153.4 source, including Unix process-group and Windows ConPTY lifecycle hardening |
 
-### `@agentclientprotocol/claude-agent-acp` — Zed Industries (Apache-2.0)
-
-The published npm dependency is pinned to `0.76.0`, upstream commit
-`c2e4815029ef3962787ecaefe208b0b6f8b81302`. Its source and generated output are
-not committed to this repository. The runtime preparer preserves the published
-license and applies the following local modification before packaging:
-
-| File | Nature of changes |
-| ---- | ----------------- |
-| `dist/tools.js` | Replaces the ambiguous textual `TaskList` fallback regex with linear string parsing, preserving owners, dependencies, and malformed suffixes as subject text. |
-| `apps/desktop/runtimes/claude/patches/` | Stores the bounded patch and expected before/after checksums. |
-| `apps/desktop/scripts/claude-runtime-contracts.test.mjs` | Tests the actual installed parser, including adversarial input under an external timeout. |
-
-> All original copyright notices and license headers have been preserved.
-> The full text of the Apache-2.0 license is available at
-> https://www.apache.org/licenses/LICENSE-2.0
-
 ---
 
 ## License Compliance Notes
@@ -341,4 +327,4 @@ license and applies the following local modification before packaging:
 
 ---
 
-*This file is maintained from project dependency metadata. Last updated: 2026-09-12.*
+*This file is maintained from project dependency metadata. Last updated: 2026-09-14.*

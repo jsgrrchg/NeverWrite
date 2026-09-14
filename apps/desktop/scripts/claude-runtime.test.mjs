@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
-    applyClaudePatch, claudeInputs, claudePackage, normalizedRuntimeHash,
+    claudeInputs, claudePackage, normalizedRuntimeHash,
     requiredClaudePlatformPackages, resolveClaudeRuntimeSource, validateClaudeRuntime,
 } from "./claude-runtime.mjs";
 
@@ -40,19 +39,19 @@ test("runtime validation rejects incomplete, stale and wrong-architecture artifa
     const source = "export const version = 1;\n";
     const inputs = {
         fingerprint: "expected",
-        baseline: { version: "0.76.0", runtimeFiles: { "dist/index.js": normalizedRuntimeHash(source) } },
-        lock: { packages: { [`node_modules/${native}`]: { version: "0.3.257", optional: true },
-            "node_modules/zod": { version: "4.5.4" } } },
+        baseline: { version: "0.77.0", runtimeFiles: { "dist/index.js": normalizedRuntimeHash(source) } },
+        lock: { packages: { [`node_modules/${native}`]: { version: "0.3.270", optional: true },
+            "node_modules/zod": { version: "4.6.5" } } },
     };
     const write = async (relative, value) => {
         const file = path.join(root, relative);
         await fs.mkdir(path.dirname(file), { recursive: true });
         await fs.writeFile(file, value);
     };
-    await write("package.json", JSON.stringify({ name: claudePackage, version: "0.76.0" }));
+    await write("package.json", JSON.stringify({ name: claudePackage, version: "0.77.0" }));
     await write("dist/index.js", source);
-    await write(`node_modules/${native}/package.json`, JSON.stringify({ version: "0.3.257" }));
-    await write("node_modules/zod/package.json", JSON.stringify({ version: "4.5.4" }));
+    await write(`node_modules/${native}/package.json`, JSON.stringify({ version: "0.3.270" }));
+    await write("node_modules/zod/package.json", JSON.stringify({ version: "4.6.5" }));
     const binaryPath = `node_modules/${native}/claude`;
     const header = Buffer.alloc(64);
     header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]);
@@ -65,7 +64,7 @@ test("runtime validation rejects incomplete, stale and wrong-architecture artifa
     await assert.rejects(validateClaudeRuntime(root, target, inputs, { requireStamp: true }), /wrong-target/);
     await write(".neverwrite-runtime.json", JSON.stringify({ target, fingerprint: "old" }));
     await assert.rejects(validateClaudeRuntime(root, target, inputs, { requireStamp: true }), /Stale/);
-    await write("dist/index.js", "unpatched or corrupted");
+    await write("dist/index.js", "modified or corrupted");
     await assert.rejects(validateClaudeRuntime(root, target, inputs), /baseline/);
     await write("dist/index.js", source);
     header.writeUInt16LE(183, 18);
@@ -73,52 +72,6 @@ test("runtime validation rejects incomplete, stale and wrong-architecture artifa
     await assert.rejects(validateClaudeRuntime(root, target, inputs), /architecture/);
     await fs.rm(path.join(root, "node_modules/zod/package.json"));
     await assert.rejects(validateClaudeRuntime(root, target, inputs), /ENOENT/);
-});
-
-test("patch rejects a mismatched published input before running patch-package", async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-patch-"));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const packageRoot = path.join(root, "node_modules", claudePackage);
-    await fs.mkdir(packageRoot, { recursive: true });
-    await fs.writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ version: "9.9.9" }));
-    const { checksums } = await claudeInputs("x86_64-unknown-linux-gnu");
-    await assert.rejects(applyClaudePatch(root, checksums), /exact, unmodified/);
-    await fs.writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ version: checksums.version }));
-    await fs.mkdir(path.join(packageRoot, "dist"));
-    await fs.writeFile(path.join(packageRoot, "dist/tools.js"), "unexpected published content");
-    await assert.rejects(applyClaudePatch(root, checksums), /exact, unmodified/);
-});
-
-test("patch application normalizes Windows line endings before checking bytes", async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-patch-crlf-"));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const packageRoot = path.join(root, "node_modules", claudePackage);
-    const patchSource = path.join(root, "source-patches");
-    await fs.mkdir(path.join(packageRoot, "dist"), { recursive: true });
-    await fs.mkdir(patchSource);
-    await fs.writeFile(path.join(root, "package.json"),
-        JSON.stringify({ name: "claude-patch-fixture", private: true }));
-    await fs.writeFile(path.join(packageRoot, "package.json"),
-        JSON.stringify({ version: "0.76.0" }));
-    await fs.writeFile(path.join(packageRoot, "dist", "tools.js"), "before\n");
-    const patch = [
-        `diff --git a/node_modules/${claudePackage}/dist/tools.js b/node_modules/${claudePackage}/dist/tools.js`,
-        `--- a/node_modules/${claudePackage}/dist/tools.js`,
-        `+++ b/node_modules/${claudePackage}/dist/tools.js`,
-        "@@ -1 +1 @@",
-        "-before",
-        "+after",
-        "",
-    ].join("\r\n");
-    await fs.writeFile(path.join(patchSource,
-        "@agentclientprotocol+claude-agent-acp+0.76.0.patch"), patch);
-    const hash = (value) => createHash("sha256").update(value).digest("hex");
-    await applyClaudePatch(root, {
-        version: "0.76.0",
-        original: hash("before\n"),
-        patched: hash("after\n"),
-    }, patchSource);
-    assert.equal(await fs.readFile(path.join(packageRoot, "dist", "tools.js"), "utf8"), "after\n");
 });
 
 test("an incomplete explicit override fails instead of selecting the cached runtime", async (t) => {

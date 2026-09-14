@@ -56,19 +56,16 @@ export function runRuntimeCommand(command, args, cwd) {
 
 export async function claudeInputs(target) {
     requiredClaudePlatformPackages(target);
-    const files = ["package.json", "package-lock.json", "baseline.json", "patches/checksums.json"];
+    const files = ["package.json", "package-lock.json", "baseline.json"];
     const contents = await Promise.all(files.map((name) => fs.readFile(path.join(claudeDefinitionRoot, name))));
     const definition = JSON.parse(contents[0]);
     const version = definition.dependencies?.[claudePackage];
     if (typeof version !== "string") throw new Error("Claude runtime dependency is missing");
-    contents.push(await fs.readFile(path.join(claudeDefinitionRoot, "patches",
-        `@agentclientprotocol+claude-agent-acp+${version}.patch`)));
     // Changes to the preparer or architecture validation also invalidate installs.
     contents.push(await fs.readFile(fileURLToPath(import.meta.url)));
     contents.push(await fs.readFile(new URL("./stage-electron-sidecar-helpers.mjs", import.meta.url)));
     const fingerprint = sha256(Buffer.concat([Buffer.from(target), ...contents]));
-    return { fingerprint, lock: JSON.parse(contents[1]), baseline: JSON.parse(contents[2]),
-        checksums: JSON.parse(contents[3]) };
+    return { fingerprint, lock: JSON.parse(contents[1]), baseline: JSON.parse(contents[2]) };
 }
 
 export async function validateClaudeRuntime(root, target, inputs, { requireStamp = false } = {}) {
@@ -86,7 +83,7 @@ export async function validateClaudeRuntime(root, target, inputs, { requireStamp
     }
     for (const [relative, expected] of Object.entries(baseline.runtimeFiles)) {
         if (normalizedRuntimeHash(await fs.readFile(path.join(root, relative), "utf8")) !== expected) {
-            throw new Error(`Claude runtime does not match its patched baseline: ${relative}`);
+            throw new Error(`Claude runtime does not match its published baseline: ${relative}`);
         }
     }
     const platformPackages = requiredClaudePlatformPackages(target);
@@ -112,27 +109,6 @@ export async function validateClaudeRuntime(root, target, inputs, { requireStamp
             && ((await fs.stat(binary)).mode & 0o111) === 0) {
             throw new Error(`Claude CLI is not executable: ${binary}`);
         }
-    }
-}
-
-export async function applyClaudePatch(installRoot, checksums,
-    patchSource = path.join(claudeDefinitionRoot, "patches")) {
-    const packageRoot = path.join(installRoot, "node_modules", claudePackage);
-    const manifest = await readJson(path.join(packageRoot, "package.json"));
-    const toolsFile = path.join(packageRoot, "dist", "tools.js");
-    if (manifest.version !== checksums.version || sha256(await fs.readFile(toolsFile)) !== checksums.original) {
-        throw new Error("Claude TaskList patch requires the exact, unmodified published runtime");
-    }
-    const patchDirectory = path.join(installRoot, "patches");
-    await fs.cp(patchSource, patchDirectory, { recursive: true });
-    const patchFile = path.join(patchDirectory,
-        `@agentclientprotocol+claude-agent-acp+${checksums.version}.patch`);
-    const patchText = await fs.readFile(patchFile, "utf8");
-    await fs.writeFile(patchFile, patchText.replace(/\r\n?/g, "\n"));
-    await runRuntimeCommand(process.execPath, [path.join(appRoot, "node_modules", "patch-package", "index.js"),
-        "--patch-dir", "patches", "--error-on-fail"], installRoot);
-    if (sha256(await fs.readFile(toolsFile)) !== checksums.patched) {
-        throw new Error("Claude TaskList patch did not produce the expected runtime");
     }
 }
 
@@ -183,7 +159,6 @@ export async function prepareClaudeRuntime(target = claudeHostTarget(), { force 
                 await installForeignPlatformPackage(work, name, inputs.lock.packages[`node_modules/${name}`]);
             }
         }
-        await applyClaudePatch(work, inputs.checksums);
         const output = path.join(work, "runtime");
         await fs.cp(path.join(work, "node_modules", claudePackage), output, { recursive: true, dereference: true });
         // Move the complete installed dependency tree, retaining nested dependencies.
