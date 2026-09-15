@@ -179,7 +179,7 @@ The desktop backend supports a mixed ACP world: current ACP integration for Clau
 ## Claude Runtime Dependency
 
 Claude ACP is consumed as an exact npm dependency and is no longer vendored.
-Its isolated manifest, lockfile, TaskList patch, compatibility baseline, and
+Its isolated manifest, lockfile, compatibility baseline, and
 maintenance instructions live in
 [`apps/desktop/runtimes/claude/`](../apps/desktop/runtimes/claude/README.md).
 Development and Electron releases use the same preparer, which generates the

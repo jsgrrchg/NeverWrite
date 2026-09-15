@@ -316,7 +316,7 @@ Runtime staging is handled by
 - Inspects Mach-O, PE, or ELF headers before staging so host-architecture artifacts cannot be reused accidentally for a cross-compiled target. macOS slices are checked before `lipo`, and the produced universal binaries are checked again afterward.
 - Downloads or uses an overridden embedded Node runtime.
 - Prepares the pinned Claude npm dependency from `apps/desktop/runtimes/claude/`,
-  preserving its TaskList patch and locked production dependencies. Explicit
+  preserving its published baseline and locked production dependencies. Explicit
   `NEVERWRITE_CLAUDE_EMBEDDED_DIR` or `apps/desktop/embedded/claude-agent-acp`
   overrides must already be complete prepared runtimes; staging validates them
   without installing into the override directory.
@@ -335,7 +335,7 @@ release-critical resources:
 - `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
 - `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
 
-The hook also checks the patched JavaScript baseline, production package versions,
+The hook also checks the published JavaScript baseline, production package versions,
 and native Claude CLI architectures. The packaged-sidecar smoke exercises Claude
 with the embedded Node, a local Anthropic mock, an actual file Read, a final ACP
 assistant response and cancellation. See the

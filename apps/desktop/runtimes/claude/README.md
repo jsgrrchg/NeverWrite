@@ -1,7 +1,7 @@
 # Claude runtime
 
 This private installation manifest pins the published Claude ACP adapter to
-`0.76.0`. `baseline.json` records the complete production graph and patched
+`0.77.0`. `baseline.json` records the complete production graph and published
 runtime hashes without retaining upstream source. The only additional runtime
 package is the adapter itself.
 
@@ -20,9 +20,9 @@ staging input. Runtime executable overrides in settings and
 
 From `apps/desktop`, run `npm ci` then `npm run claude:prepare`. Preparation uses
 an isolated lockfile install, includes native optional packages for the requested
-target, applies the TaskList patch explicitly, and generates
-`.cache/claude-runtime/<rust-target>/`. Use `-- --target <target>` for cross builds
-or `-- --force` for a clean rebuild. Generated installations are not committed.
+target, and generates `.cache/claude-runtime/<rust-target>/` from the unmodified
+published package. Use `-- --target <target>` for cross builds or `-- --force`
+for a clean rebuild. Generated installations are not committed.
 
 Foreign native packages are downloaded from their lockfile URLs, checked against
 their SHA-512 integrity, and extracted into the temporary installation. This
@@ -30,13 +30,10 @@ does not resolve new versions or rewrite the committed lockfile. Unneeded host
 native packages are removed before validation/publication. Universal macOS
 includes both native SDK packages.
 
-The patch in `patches/` preserves the bounded linear TaskList parser. It applies
-only to the published `dist/tools.js`; pre/post hashes reject incompatible input
-or incomplete patch application. The preparer normalizes the staged patch to LF
-before applying it so Windows checkout settings cannot change the patched bytes.
-Upstream tracking:
-https://github.com/agentclientprotocol/claude-agent-acp/pull/1006.
-The previous trailer-parsing fix is already upstream and is not reapplied.
+Claude ACP `0.77.0` includes the bounded linear TaskList parser from
+https://github.com/agentclientprotocol/claude-agent-acp/pull/1006, so the runtime
+no longer carries a local patch. The TaskList contracts remain as regression
+coverage for the published implementation.
 
 Validate preparation with `npm run test:claude-preparation`. The runtime contracts
 accept `NEVERWRITE_CLAUDE_CONTRACT_RUNTIME` for comparing an explicit artifact and
@@ -59,10 +56,9 @@ provides native runtime execution coverage. These jobs must run remotely before
 claiming platform-wide release validation.
 
 Version updates must use an exact stable pin, regenerate the isolated lockfile and
-full baseline, rebase the versioned patch, and rerun contracts and packaged smokes.
-The `0.76.0` update keeps the same direct adapter dependencies, updates `fast-uri`
-to `3.1.7`, and adds upstream recommended configuration metadata. Remove the patch
-only after its tests pass on unmodified upstream output.
+full baseline, and rerun contracts and packaged smokes. The `0.77.0` update bumps
+`@anthropic-ai/claude-agent-sdk` to `0.3.270`, pins `zod` to `4.6.5`, and consumes
+the TaskList fix directly from upstream.
 
 ## Product compatibility
 
@@ -75,7 +71,9 @@ Claude native resume remains disabled; forks use NeverWrite's persisted history.
 The client consumes session titles while preserving explicit manual renames,
 generic model/effort/mode options, compaction tool activity and usage Markdown.
 NeverWrite does not advertise the AIR `recommendedValue` capability, so the
-`0.76.0` metadata addition does not alter the selected configuration.
+upstream metadata addition does not alter the selected configuration. NeverWrite
+does not pass the removed `claudeCode.options.agent` value, so that `0.77.0`
+breaking change does not affect its session creation flow.
 The push-only authStatus, goal, AIR session-failure and JetBrains file-audit
 extensions remain outside the current client integration. NeverWrite's own
 filesystem/diff tracking remains authoritative for inline review and accept/reject.
@@ -90,6 +88,6 @@ is separate from the deterministic, credential-free packaged smoke.
 ## Rollback
 
 Revert the distribution migration as one unit: dependency manifest/lockfile,
-patch, preparer, resolver, packaging, CI and snapshot deletion. Rebuild the app
-from that revision. Never mix an adapter with another revision's SDK/native
+baseline, preparer, resolver, packaging, CI and snapshot deletion. Rebuild the
+app from that revision. Never mix an adapter with another revision's SDK/native
 packages. This migration introduces no persisted-data schema changes.
