@@ -2312,22 +2312,20 @@ fn load_history_from_session_dir(
     session_dir: &Path,
     include_messages: bool,
 ) -> Result<PersistedSessionHistory, String> {
-    let metadata = load_session_metadata_from_dir(session_dir)?;
-    let index = load_session_index_from_dir(session_dir)?;
-    validate_lazy_session_files(&metadata, &index)?;
-    if !fs::symlink_metadata(session_transcript_path(session_dir))
-        .map_err(|error| error.to_string())?
-        .file_type()
-        .is_file()
-    {
-        return Err("Transcript is not a regular file.".into());
-    }
+    let snapshot = load_session_snapshot(session_dir)?;
     let messages = if include_messages {
-        load_all_lazy_messages_from_dir(session_dir)?
+        read_lazy_history_page_from_files(
+            &snapshot.transcript_path,
+            &snapshot.metadata,
+            &snapshot.index,
+            0,
+            snapshot.metadata.message_count,
+        )?
+        .messages
     } else {
         vec![]
     };
-    Ok(history_from_metadata(metadata, messages))
+    Ok(history_from_metadata(snapshot.metadata, messages))
 }
 
 enum ConversationBindingsFileState {
@@ -2584,8 +2582,9 @@ fn reconcile_conversation_bindings(
 fn load_conversation_bindings_from_dir(
     session_dir: &Path,
 ) -> Result<PersistedConversationBindings, String> {
-    let metadata = load_session_metadata_from_dir(session_dir)?;
-    let index = load_session_index_from_dir(session_dir)?;
+    let snapshot = load_session_snapshot(session_dir)?;
+    let metadata = snapshot.metadata;
+    let index = snapshot.index;
     let mut bindings = match read_conversation_bindings_file(session_dir) {
         ConversationBindingsFileState::Supported(bindings) => {
             reconcile_conversation_bindings(*bindings, &metadata, &index)
@@ -2800,7 +2799,12 @@ fn find_legacy_session_artifacts(
                 Err(_) => continue,
             };
             if metadata.session_id == session_id {
-                artifacts.dir_path = Some(path);
+                if artifacts.dir_path.replace(path).is_some() {
+                    return Err(
+                        "Duplicate session copies require recovery; all copies were preserved."
+                            .into(),
+                    );
+                }
             }
             continue;
         }
@@ -2814,11 +2818,26 @@ fn find_legacy_session_artifacts(
             Err(_) => continue,
         };
         if history.session_id == session_id {
-            artifacts.file_path = Some(path);
+            if artifacts.file_path.replace(path).is_some() {
+                return Err(
+                    "Duplicate session copies require recovery; all copies were preserved.".into(),
+                );
+            }
         }
     }
 
     Ok(artifacts)
+}
+
+fn ensure_session_has_no_duplicates(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    let artifacts = find_legacy_session_artifacts(storage_root, session_id)?;
+    let count = usize::from(storage_session_dir(storage_root, session_id).exists())
+        + usize::from(artifacts.dir_path.is_some())
+        + usize::from(artifacts.file_path.is_some());
+    if count > 1 {
+        return Err("Duplicate session copies require recovery; all copies were preserved.".into());
+    }
+    Ok(())
 }
 
 fn load_legacy_history(
@@ -2837,11 +2856,24 @@ fn load_legacy_history(
 
 fn remove_legacy_history_artifacts(storage_root: &Path, session_id: &str) -> Result<(), String> {
     let artifacts = find_legacy_session_artifacts(storage_root, session_id)?;
-    if let Some(file_path) = artifacts.file_path {
-        fs::remove_file(file_path).map_err(|e| e.to_string())?;
-    }
-    if let Some(dir_path) = artifacts.dir_path {
-        fs::remove_dir_all(dir_path).map_err(|e| e.to_string())?;
+    for path in artifacts.file_path.into_iter().chain(artifacts.dir_path) {
+        let canonical =
+            load_history_from_session_dir(&storage_session_dir(storage_root, session_id), true)?;
+        let candidate = if path.is_dir() {
+            load_history_from_session_dir(&path, true)?
+        } else {
+            normalize_legacy_history(load_legacy_history_file(&path)?)
+        };
+        if serde_json::to_value(&canonical).map_err(|e| e.to_string())?
+            != serde_json::to_value(&candidate).map_err(|e| e.to_string())?
+        {
+            return Err("Divergent session copy preserved; recovery is required.".into());
+        }
+        if path.is_dir() {
+            fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+        } else {
+            fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -2911,6 +2943,7 @@ fn ensure_lazy_session_from_legacy(storage_root: &Path, session_id: &str) -> Res
         return Ok(());
     }
 
+    ensure_session_has_no_duplicates(storage_root, session_id)?;
     let Some(history) = load_legacy_history(storage_root, session_id)? else {
         return Ok(());
     };
@@ -2933,12 +2966,18 @@ fn load_lazy_history_page_from_dir(
     start_index: usize,
     limit: usize,
 ) -> Result<PersistedSessionHistoryPage, String> {
-    let (metadata, index) = load_repaired_lazy_session_files(session_dir)?;
-    read_lazy_history_page_from_files(session_dir, &metadata, &index, start_index, limit)
+    let snapshot = load_session_snapshot(session_dir)?;
+    read_lazy_history_page_from_files(
+        &snapshot.transcript_path,
+        &snapshot.metadata,
+        &snapshot.index,
+        start_index,
+        limit,
+    )
 }
 
 fn read_lazy_history_page_from_files(
-    session_dir: &Path,
+    transcript_path: &Path,
     metadata: &PersistedSessionMetadata,
     index: &PersistedTranscriptIndex,
     start_index: usize,
@@ -2948,8 +2987,7 @@ fn read_lazy_history_page_from_files(
     let start = start_index.min(total_messages);
     let end = start.saturating_add(limit).min(total_messages);
 
-    let mut transcript =
-        File::open(session_transcript_path(session_dir)).map_err(|e| e.to_string())?;
+    let mut transcript = File::open(transcript_path).map_err(|e| e.to_string())?;
     let mut messages = Vec::with_capacity(end.saturating_sub(start));
 
     for idx in start..end {
@@ -3055,52 +3093,40 @@ fn should_compact_transcript(
     physical_bytes >= indexed_bytes.saturating_mul(policy.max_physical_to_indexed_ratio.max(1))
 }
 
-fn compact_transcript_if_needed(
-    session_dir: &Path,
-    metadata: &PersistedSessionMetadata,
-    index: &PersistedTranscriptIndex,
-    policy: TranscriptCompactionPolicy,
-) -> Result<PersistedTranscriptIndex, String> {
-    validate_lazy_session_files(metadata, index)?;
-
-    let transcript_path = session_transcript_path(session_dir);
-    let physical_bytes = fs::metadata(&transcript_path)
-        .map_err(|error| error.to_string())?
-        .len();
-    let indexed_bytes = indexed_transcript_bytes(index);
-
-    if should_compact_transcript(physical_bytes, indexed_bytes, policy) {
-        persist_compacted_lazy_history(session_dir, metadata, index)
-    } else {
-        Ok(index.clone())
-    }
+// Capture the header and transcript generation once. Reads never compact or
+// republish a checkpoint: synchronization may publish another version meanwhile.
+struct SessionReadSnapshot {
+    metadata: PersistedSessionMetadata,
+    index: PersistedTranscriptIndex,
+    transcript_path: PathBuf,
 }
 
-fn load_repaired_lazy_session_files(
-    session_dir: &Path,
-) -> Result<(PersistedSessionMetadata, PersistedTranscriptIndex), String> {
-    if let Some(checkpoint) = read_checkpoint(session_dir)? {
-        let index = compact_transcript_if_needed(
-            session_dir,
-            &checkpoint.metadata,
-            &checkpoint.index,
-            DEFAULT_TRANSCRIPT_COMPACTION_POLICY,
-        )?;
-        return Ok((checkpoint.metadata, index));
+fn load_session_snapshot(session_dir: &Path) -> Result<SessionReadSnapshot, String> {
+    let snapshot = if let Some(checkpoint) = read_checkpoint(session_dir)? {
+        SessionReadSnapshot {
+            metadata: normalize_fork_runtime_identity(checkpoint.metadata),
+            index: checkpoint.index,
+            transcript_path: session_dir.join(checkpoint.transcript_file),
+        }
+    } else {
+        recover_incomplete_compaction(session_dir)?;
+        SessionReadSnapshot {
+            metadata: normalize_fork_runtime_identity(read_json_file(&session_meta_path(
+                session_dir,
+            ))?),
+            index: read_json_file(&session_index_path(session_dir))?,
+            transcript_path: session_dir.join(SESSION_TRANSCRIPT_FILE),
+        }
+    };
+    validate_lazy_session_files(&snapshot.metadata, &snapshot.index)?;
+    if !fs::symlink_metadata(&snapshot.transcript_path)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_file()
+    {
+        return Err("Transcript is not a regular file.".into());
     }
-    recover_incomplete_compaction(session_dir)?;
-
-    let metadata = read_json_file(&session_meta_path(session_dir))?;
-    let index = read_json_file(&session_index_path(session_dir))?;
-    let index = compact_transcript_if_needed(
-        session_dir,
-        &metadata,
-        &index,
-        DEFAULT_TRANSCRIPT_COMPACTION_POLICY,
-    )?;
-    validate_lazy_session_files(&metadata, &index)?;
-
-    Ok((metadata, index))
+    Ok(snapshot)
 }
 
 fn unique_session_sidecar_path(path: &Path, label: &str, suffix: u128) -> Result<PathBuf, String> {
@@ -3345,22 +3371,6 @@ fn persist_compacted_lazy_history(
     Ok(compacted_index)
 }
 
-fn load_all_lazy_messages_from_dir(session_dir: &Path) -> Result<Vec<PersistedMessage>, String> {
-    let (metadata, index) = load_repaired_lazy_session_files(session_dir)?;
-    if metadata.message_count == 0 {
-        return Ok(vec![]);
-    }
-
-    Ok(read_lazy_history_page_from_files(
-        session_dir,
-        &metadata,
-        &index,
-        0,
-        metadata.message_count,
-    )?
-    .messages)
-}
-
 pub fn save_session_history(
     storage_root: &Path,
     history: &PersistedSessionHistory,
@@ -3377,6 +3387,7 @@ fn save_session_history_with_compaction_policy(
     history: &PersistedSessionHistory,
     compaction_policy: TranscriptCompactionPolicy,
 ) -> Result<(), String> {
+    ensure_session_has_no_duplicates(storage_root, &history.session_id)?;
     recover_incomplete_compaction(&storage_session_dir(storage_root, &history.session_id))?;
     ensure_lazy_session_from_legacy(storage_root, &history.session_id)?;
     let (start_index, total_count) = history_window_bounds(history)?;
@@ -3395,8 +3406,9 @@ fn save_session_history_with_compaction_policy(
         return write_full_lazy_history(storage_root, history);
     }
 
-    let existing_metadata = load_session_metadata(storage_root, &history.session_id)?;
-    let existing_index = load_session_index(storage_root, &history.session_id)?;
+    let snapshot = load_session_snapshot(&storage_session_dir(storage_root, &history.session_id))?;
+    let existing_metadata = snapshot.metadata;
+    let existing_index = snapshot.index;
     validate_lazy_session_files(&existing_metadata, &existing_index)?;
     let session_dir = storage_session_dir(storage_root, &history.session_id);
     if read_checkpoint(&session_dir)?.is_none() {
@@ -3404,7 +3416,7 @@ fn save_session_history_with_compaction_policy(
             &session_dir,
             &existing_metadata,
             &existing_index,
-            &session_transcript_path(&session_dir),
+            &snapshot.transcript_path,
         )?;
     }
 
@@ -3438,7 +3450,7 @@ fn save_session_history_with_compaction_policy(
         .extend_from_slice(&existing_index.message_hashes[start_index..start_index + common]);
 
     if common < history.messages.len() {
-        let transcript_path = storage_session_transcript_file(storage_root, &history.session_id);
+        let transcript_path = snapshot.transcript_path.clone();
         let mut transcript = OpenOptions::new()
             .create(true)
             .append(true)
@@ -3479,7 +3491,7 @@ fn save_session_history_with_compaction_policy(
     };
 
     let session_dir = storage_session_dir(storage_root, &history.session_id);
-    let transcript_path = session_transcript_path(&session_dir);
+    let transcript_path = snapshot.transcript_path;
     let physical_bytes = fs::metadata(&transcript_path)
         .map_err(|error| error.to_string())?
         .len();
@@ -3534,11 +3546,18 @@ pub fn load_session_history_page(
 }
 
 pub fn delete_session_history(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    ensure_session_has_no_duplicates(storage_root, session_id)?;
     let dir = storage_session_dir(storage_root, session_id);
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
-    remove_legacy_history_artifacts(storage_root, session_id)?;
+    let artifacts = find_legacy_session_artifacts(storage_root, session_id)?;
+    if let Some(path) = artifacts.file_path {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    if let Some(path) = artifacts.dir_path {
+        fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
@@ -3667,6 +3686,7 @@ pub fn load_session_history_inventory(
     }
 
     let mut issues = Vec::new();
+    let mut seen_session_ids = std::collections::HashSet::new();
     let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
     let mut histories_by_session_id: HashMap<String, (u8, PersistedSessionHistory)> =
         HashMap::new();
@@ -3703,6 +3723,14 @@ pub fn load_session_history_inventory(
                     continue;
                 }
             };
+            if !seen_session_ids.insert(history.session_id.clone()) {
+                issues.push(SessionLoadIssue {
+                    relative_path: relative_storage_path(storage_root, &path),
+                    message:
+                        "Duplicate session copies require recovery; all copies were preserved."
+                            .into(),
+                });
+            }
             let priority = legacy_session_priority(storage_root, &path, &history.session_id);
             upsert_history(
                 &mut histories_by_session_id,
@@ -3727,6 +3755,14 @@ pub fn load_session_history_inventory(
                 continue;
             }
         };
+
+        if !seen_session_ids.insert(history.session_id.clone()) {
+            issues.push(SessionLoadIssue {
+                relative_path: relative_storage_path(storage_root, &path),
+                message: "Duplicate session copies require recovery; all copies were preserved."
+                    .into(),
+            });
+        }
 
         if include_messages {
             upsert_history(
@@ -3967,7 +4003,8 @@ pub fn fork_session_history(
         return Err(format!("Source session not found: {source_session_id}"));
     }
 
-    let source_meta = load_session_metadata_from_dir(&source_dir)?;
+    let source_snapshot = load_session_snapshot(&source_dir)?;
+    let source_meta = source_snapshot.metadata;
     let source_bindings = load_conversation_bindings_from_dir(&source_dir)?;
 
     let new_session_id = uuid::Uuid::new_v4().to_string();
@@ -3981,8 +4018,8 @@ pub fn fork_session_history(
     fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
 
     // Copy transcript and index as-is
-    let src_transcript = session_transcript_path(&source_dir);
-    let source_index = load_session_index_from_dir(&source_dir)?;
+    let src_transcript = source_snapshot.transcript_path;
+    let source_index = source_snapshot.index;
     if src_transcript.exists() {
         fs::copy(&src_transcript, session_transcript_path(&dest_dir)).map_err(|e| e.to_string())?;
     }
@@ -5403,6 +5440,93 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_session_copies_are_reported_and_preserved_on_save_and_delete() {
+        for directory_copy in [false, true] {
+            let root = make_temp_dir();
+            let other = make_temp_dir();
+            let history = sample_history();
+            save_session_history(&root, &history).unwrap();
+            let dir = storage_session_dir(&root, &history.session_id);
+            let checkpoint = fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap();
+            let mut divergent = history.clone();
+            divergent.messages[0].content = "Only in the conflict copy".into();
+            let conflict = if directory_copy {
+                save_session_history(&other, &divergent).unwrap();
+                let conflict = sessions_dir(&root).join("conflict-copy");
+                fs::rename(storage_session_dir(&other, &history.session_id), &conflict).unwrap();
+                conflict
+            } else {
+                let conflict = sessions_dir(&root).join("conflict.json");
+                write_json_atomic(&conflict, &divergent).unwrap();
+                conflict
+            };
+            let inventory = load_session_history_inventory(&root, false).unwrap();
+            assert_eq!(inventory.histories.len(), 1);
+            assert!(inventory
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("Duplicate")));
+            assert!(save_session_history(&root, &history)
+                .unwrap_err()
+                .contains("Duplicate"));
+            assert!(delete_session_history(&root, &history.session_id).is_err());
+            assert!(conflict.exists());
+            assert_eq!(
+                fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap(),
+                checkpoint
+            );
+            let preserved = if directory_copy {
+                load_history_from_session_dir(&conflict, true).unwrap()
+            } else {
+                load_legacy_history_file(&conflict).unwrap()
+            };
+            assert_eq!(preserved.messages[0].content, divergent.messages[0].content);
+            let mut unrelated = history.clone();
+            unrelated.session_id = "healthy-session".into();
+            save_session_history(&root, &unrelated).unwrap();
+            assert_eq!(
+                load_session_history_page(&root, &unrelated.session_id, 0, 10)
+                    .unwrap()
+                    .messages
+                    .len(),
+                2
+            );
+            fs::remove_dir_all(root).unwrap();
+            fs::remove_dir_all(other).unwrap();
+        }
+    }
+
+    #[test]
+    fn snapshot_reads_the_original_generation_after_checkpoint_replacement() {
+        let root = make_temp_dir();
+        let mut history = sample_history();
+        save_session_history(&root, &history).unwrap();
+        let dir = storage_session_dir(&root, &history.session_id);
+        let snapshot = load_session_snapshot(&dir).unwrap();
+        history.messages[0].content = "New synchronized content with a different length".into();
+        history.messages.truncate(1);
+        history.message_count = Some(1);
+        save_session_history(&root, &history).unwrap();
+        let current = read_checkpoint(&dir).unwrap().unwrap();
+        persist_compacted_lazy_history(&dir, &current.metadata, &current.index).unwrap();
+        assert_ne!(snapshot.transcript_path, session_transcript_path(&dir));
+        let old_page = read_lazy_history_page_from_files(
+            &snapshot.transcript_path,
+            &snapshot.metadata,
+            &snapshot.index,
+            0,
+            10,
+        )
+        .unwrap();
+        assert_eq!(old_page.messages.len(), 2);
+        assert_eq!(old_page.messages[0].content, "Hello");
+        let new_page = load_session_history_page(&root, &history.session_id, 0, 10).unwrap();
+        assert_eq!(new_page.messages.len(), 1);
+        assert_eq!(new_page.messages[0].content, history.messages[0].content);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn checkpoint_survives_interrupted_or_reordered_header_publication() {
         let root = make_temp_dir();
         let history = sample_history();
@@ -5784,9 +5908,9 @@ mod tests {
     }
 
     #[test]
-    fn compacts_inflated_transcript_when_loading_history_page() {
+    fn preserves_inflated_transcript_when_loading_history_page() {
         let dir = make_temp_dir();
-        let (_inflated_lines, inflated_bytes, final_content) =
+        let (inflated_lines, inflated_bytes, final_content) =
             persist_default_compaction_candidate(&dir);
 
         let page =
@@ -5797,19 +5921,19 @@ mod tests {
             .expect("compacted transcript metadata should load")
             .len();
 
-        assert_eq!(compacted_lines, page.total_messages);
+        assert_eq!(compacted_lines, inflated_lines);
         assert_eq!(page.total_messages, 2);
         assert_eq!(page.messages[0].id, "user:1");
         assert_eq!(page.messages[1].content, final_content);
-        assert!(compacted_bytes < inflated_bytes);
+        assert_eq!(compacted_bytes, inflated_bytes);
 
         fs::remove_dir_all(dir).ok();
     }
 
     #[test]
-    fn compacts_inflated_transcript_when_loading_all_messages() {
+    fn preserves_inflated_transcript_when_loading_all_messages() {
         let dir = make_temp_dir();
-        let (_inflated_lines, inflated_bytes, final_content) =
+        let (inflated_lines, inflated_bytes, final_content) =
             persist_default_compaction_candidate(&dir);
 
         let histories = load_all_session_histories(&dir, true).expect("full history should load");
@@ -5823,8 +5947,8 @@ mod tests {
         assert_eq!(histories[0].messages.len(), 2);
         assert_eq!(histories[0].messages[0].id, "user:1");
         assert_eq!(histories[0].messages[1].content, final_content);
-        assert_eq!(compacted_lines, histories[0].message_count.unwrap());
-        assert!(compacted_bytes < inflated_bytes);
+        assert_eq!(compacted_lines, inflated_lines);
+        assert_eq!(compacted_bytes, inflated_bytes);
 
         fs::remove_dir_all(dir).ok();
     }
