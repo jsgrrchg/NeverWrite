@@ -835,6 +835,13 @@ fn hash_message(message: &PersistedMessage) -> Result<String, String> {
 }
 
 fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
+    if !fs::symlink_metadata(path)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_file()
+    {
+        return Err("History artifact is not a regular file.".into());
+    }
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
     serde_json::from_str(&raw).map_err(|e| e.to_string())
 }
@@ -2164,6 +2171,15 @@ fn load_history_from_session_dir(
     include_messages: bool,
 ) -> Result<PersistedSessionHistory, String> {
     let metadata = load_session_metadata_from_dir(session_dir)?;
+    let index = load_session_index_from_dir(session_dir)?;
+    validate_lazy_session_files(&metadata, &index)?;
+    if !fs::symlink_metadata(session_transcript_path(session_dir))
+        .map_err(|error| error.to_string())?
+        .file_type()
+        .is_file()
+    {
+        return Err("Transcript is not a regular file.".into());
+    }
     let messages = if include_messages {
         load_all_lazy_messages_from_dir(session_dir)?
     } else {
@@ -3141,6 +3157,7 @@ fn save_session_history_with_compaction_policy(
     history: &PersistedSessionHistory,
     compaction_policy: TranscriptCompactionPolicy,
 ) -> Result<(), String> {
+    recover_incomplete_compaction(&storage_session_dir(storage_root, &history.session_id))?;
     ensure_lazy_session_from_legacy(storage_root, &history.session_id)?;
     let (start_index, total_count) = history_window_bounds(history)?;
 
@@ -3158,7 +3175,7 @@ fn save_session_history_with_compaction_policy(
 
     let existing_metadata = load_session_metadata(storage_root, &history.session_id)?;
     let existing_index = load_session_index(storage_root, &history.session_id)?;
-    validate_index(&existing_index)?;
+    validate_lazy_session_files(&existing_metadata, &existing_index)?;
 
     if start_index > existing_metadata.message_count {
         return Err("Transcript patch starts beyond the stored history.".to_string());
@@ -3386,15 +3403,38 @@ pub fn prune_expired_session_histories(
     Ok(deleted)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionLoadIssue {
+    pub relative_path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionHistoryInventory {
+    pub histories: Vec<PersistedSessionHistory>,
+    pub issues: Vec<SessionLoadIssue>,
+}
+
 pub fn load_all_session_histories(
     storage_root: &Path,
     include_messages: bool,
 ) -> Result<Vec<PersistedSessionHistory>, String> {
+    Ok(load_session_history_inventory(storage_root, include_messages)?.histories)
+}
+
+pub fn load_session_history_inventory(
+    storage_root: &Path,
+    include_messages: bool,
+) -> Result<SessionHistoryInventory, String> {
     let dir = sessions_dir(storage_root);
     if !dir.exists() {
-        return Ok(vec![]);
+        return Ok(SessionHistoryInventory {
+            histories: vec![],
+            issues: vec![],
+        });
     }
 
+    let mut issues = Vec::new();
     let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
     let mut histories_by_session_id: HashMap<String, (u8, PersistedSessionHistory)> =
         HashMap::new();
@@ -3402,14 +3442,34 @@ pub fn load_all_session_histories(
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(error) => {
+                issues.push(SessionLoadIssue {
+                    relative_path: "sessions".into(),
+                    message: error.to_string(),
+                });
+                continue;
+            }
         };
 
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            issues.push(SessionLoadIssue {
+                relative_path: relative_storage_path(storage_root, &path),
+                message: "Session is a symbolic link.".into(),
+            });
+            continue;
+        }
+        if file_type.is_dir() {
             let history = match load_history_from_session_dir(&path, include_messages) {
                 Ok(history) => history,
-                Err(_) => continue,
+                Err(error) => {
+                    issues.push(SessionLoadIssue {
+                        relative_path: relative_storage_path(storage_root, &path),
+                        message: error,
+                    });
+                    continue;
+                }
             };
             let priority = legacy_session_priority(storage_root, &path, &history.session_id);
             upsert_history(
@@ -3427,7 +3487,13 @@ pub fn load_all_session_histories(
 
         let history = match load_legacy_history_file(&path) {
             Ok(history) => history,
-            Err(_) => continue,
+            Err(error) => {
+                issues.push(SessionLoadIssue {
+                    relative_path: relative_storage_path(storage_root, &path),
+                    message: error,
+                });
+                continue;
+            }
         };
 
         if include_messages {
@@ -3507,7 +3573,7 @@ pub fn load_all_session_histories(
         .map(|(_, history)| history)
         .collect::<Vec<_>>();
     histories.sort_by_key(|history| std::cmp::Reverse(history.updated_at));
-    Ok(histories)
+    Ok(SessionHistoryInventory { histories, issues })
 }
 
 fn upsert_history(
