@@ -1102,6 +1102,27 @@ export async function aiSaveSessionHistory(
     await invoke("ai_save_session_history", { vaultPath, history });
 }
 
+export interface AIHistoryLoadIssue {
+    relative_path: string;
+    message: string;
+}
+
+export interface AIHistoryInventory {
+    histories: PersistedSessionHistory[];
+    issues: AIHistoryLoadIssue[];
+}
+
+export async function aiLoadSessionInventory(vaultPath: string): Promise<AIHistoryInventory> {
+    const result = await invoke<AIHistoryInventory | PersistedSessionHistory[]>("ai_load_session_histories", {
+        vaultPath,
+        includeMessages: false,
+        includeDiagnostics: true,
+    });
+    // Allows renderer/backend upgrades without interpreting a legacy array as
+    // an empty or damaged inventory.
+    return Array.isArray(result) ? { histories: result, issues: [] } : result;
+}
+
 export async function aiLoadSessionHistories(
     vaultPath: string,
     options?: {

@@ -10,6 +10,11 @@ describe("AIHistoryStorageControl", () => {
         vi.mocked(confirm).mockResolvedValue(true);
         useChatStore.setState({
             historyStorageVaultPath: "/vault",
+            historyStorageError: null,
+            historyLoadError: null,
+            historyLoadIssues: [],
+            isHistoryInventoryLoading: false,
+            retryAiHistoryLoad: vi.fn(async () => undefined),
             historyStorageStatus: {
                 vaultKey: "vault-key",
                 generation: 1,
@@ -21,6 +26,29 @@ describe("AIHistoryStorageControl", () => {
             changeAiHistoryStorage: vi.fn(async () => true),
             adoptAiHistoryStorageIdentity: vi.fn(async () => true),
         });
+    });
+
+    it("shows a pending check without claiming recovery is needed", () => {
+        useChatStore.setState({ historyStorageStatus: null });
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
+        expect(screen.getByText("Checking storage…")).toBeInTheDocument();
+        expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
+    });
+
+    it("shows affected sessions and retries an incomplete inventory", async () => {
+        useChatStore.setState({ historyLoadIssues: [{ relative_path: "sessions/chat-1", message: "Waiting for transcript" }] });
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
+        expect(screen.getByText(/Available chats remain accessible/)).toBeInTheDocument();
+        expect(screen.getByText(/sessions\/chat-1: Waiting for transcript/)).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Retry loading chats" }));
+        await waitFor(() => expect(useChatStore.getState().retryAiHistoryLoad).toHaveBeenCalledWith("/vault"));
+    });
+
+    it("surfaces transport errors instead of staying in a loading state", () => {
+        useChatStore.setState({ historyStorageStatus: null, historyStorageError: "Backend unavailable" });
+        renderComponent(<AIHistoryStorageControl vaultPath="/vault" />);
+        expect(screen.getByText("Storage unavailable")).toBeInTheDocument();
+        expect(screen.getByText("Backend unavailable")).toBeInTheDocument();
     });
 
     it("confirms the full move before requesting a scope change", async () => {

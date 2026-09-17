@@ -1392,6 +1392,12 @@ impl AiHistoryStorageService {
                 let include_messages = bool_arg(&args, "includeMessages")
                     .or_else(|| bool_arg(&args, "include_messages"))
                     .unwrap_or(true);
+                if bool_arg(&args, "includeDiagnostics").unwrap_or(false) {
+                    return Ok(json!(persistence::load_session_inventory_with_bindings(
+                        &storage_root,
+                        include_messages
+                    )?));
+                }
                 Ok(json!(
                     persistence::load_all_session_histories_with_bindings(
                         &storage_root,
@@ -1947,6 +1953,15 @@ mod tests {
         let inventory =
             persistence::load_session_history_inventory(&layout.device.histories, false).unwrap();
         assert_eq!(inventory.issues.len(), 1);
+        let diagnostic = restarted
+            .invoke(
+                "ai_load_session_histories",
+                vault.path(),
+                json!({"includeMessages": false, "includeDiagnostics": true}),
+            )
+            .unwrap();
+        assert_eq!(diagnostic["histories"].as_array().unwrap().len(), 1);
+        assert_eq!(diagnostic["issues"].as_array().unwrap().len(), 1);
         assert!(migration::inspect_layout(&layout.device.transaction_layout()).is_err());
     }
 

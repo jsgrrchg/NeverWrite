@@ -2693,34 +2693,54 @@ pub fn save_session_history_with_bindings(
     )
 }
 
+#[derive(Debug, Serialize)]
+pub struct SessionEnvelopeInventory {
+    pub histories: Vec<PersistedSessionHistoryEnvelope>,
+    pub issues: Vec<SessionLoadIssue>,
+}
+
 pub fn load_all_session_histories_with_bindings(
     storage_root: &Path,
     include_messages: bool,
 ) -> Result<Vec<PersistedSessionHistoryEnvelope>, String> {
-    load_all_session_histories(storage_root, include_messages)?
-        .into_iter()
-        .map(|mut history| {
+    Ok(load_session_inventory_with_bindings(storage_root, include_messages)?.histories)
+}
+
+pub fn load_session_inventory_with_bindings(
+    storage_root: &Path,
+    include_messages: bool,
+) -> Result<SessionEnvelopeInventory, String> {
+    let inventory = load_session_history_inventory(storage_root, include_messages)?;
+    let mut issues = inventory.issues;
+    let mut histories = Vec::new();
+    for mut history in inventory.histories {
+        let relative_path = relative_storage_path(
+            storage_root,
+            &storage_session_dir(storage_root, &history.session_id),
+        );
+        let result: Result<PersistedSessionHistoryEnvelope, String> = (|| {
             let session_dir = storage_session_dir(storage_root, &history.session_id);
-            let conversation_bindings =
-                if storage_session_is_complete(storage_root, &history.session_id) {
-                    load_conversation_bindings_from_dir(&session_dir)?
-                } else {
-                    let metadata = metadata_from_history(
-                        &history,
-                        history.message_count.unwrap_or(history.messages.len()),
-                    );
-                    let index = PersistedTranscriptIndex {
-                        version: FORMAT_VERSION,
-                        message_offsets: vec![],
-                        message_lengths: vec![],
-                        message_hashes: history
-                            .messages
-                            .iter()
-                            .map(hash_message)
-                            .collect::<Result<Vec<_>, _>>()?,
-                    };
-                    synthesize_conversation_bindings(&metadata, &index)
+            let conversation_bindings = if read_checkpoint(&session_dir)?.is_some()
+                || storage_session_is_complete(storage_root, &history.session_id)
+            {
+                load_conversation_bindings_from_dir(&session_dir)?
+            } else {
+                let metadata = metadata_from_history(
+                    &history,
+                    history.message_count.unwrap_or(history.messages.len()),
+                );
+                let index = PersistedTranscriptIndex {
+                    version: FORMAT_VERSION,
+                    message_offsets: vec![],
+                    message_lengths: vec![],
+                    message_hashes: history
+                        .messages
+                        .iter()
+                        .map(hash_message)
+                        .collect::<Result<Vec<_>, _>>()?,
                 };
+                synthesize_conversation_bindings(&metadata, &index)
+            };
             if bindings_identify_fork(&conversation_bindings) {
                 history.runtime_session_id = None;
                 history.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
@@ -2729,8 +2749,16 @@ pub fn load_all_session_histories_with_bindings(
                 history,
                 conversation_bindings,
             })
-        })
-        .collect()
+        })();
+        match result {
+            Ok(history) => histories.push(history),
+            Err(message) => issues.push(SessionLoadIssue {
+                relative_path,
+                message,
+            }),
+        }
+    }
+    Ok(SessionEnvelopeInventory { histories, issues })
 }
 
 fn legacy_session_priority(storage_root: &Path, path: &Path, session_id: &str) -> u8 {
