@@ -4544,7 +4544,7 @@ describe("chatStore", () => {
         });
         const initialization = useChatStore.getState().initialize({ createDefaultSession: false });
         await vi.waitFor(() => {
-            expect(useChatStore.getState().sessionInventoryLoaded).toBe(true);
+            expect(useChatStore.getState().sessionInventoryLoaded).toBe(false);
             expect(Object.values(useChatStore.getState().sessionsById).some(
                 (session) => session.historySessionId === "early-history",
             )).toBe(true);
@@ -4552,6 +4552,7 @@ describe("chatStore", () => {
         expect(useChatStore.getState().isInitializing).toBe(true);
         release(readySetupStatus);
         await initialization;
+        expect(useChatStore.getState().sessionInventoryLoaded).toBe(true);
     });
 
     it("hydrates existing backend sessions before creating a new one", async () => {

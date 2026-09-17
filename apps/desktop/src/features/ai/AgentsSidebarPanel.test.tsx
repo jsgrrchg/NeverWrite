@@ -140,6 +140,27 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
+    it.each([
+        { sessionInventoryLoaded: false },
+        { isInitializing: true },
+        { isHistoryInventoryLoading: true },
+        { historyLoadError: "Offline" },
+        { historyStorageError: "Unavailable" },
+        { historyLoadIssues: [{ relative_path: "sessions/conflict", message: "Duplicate" }] },
+    ])("preserves absent pins while inventory is incomplete: %j", (partial) => {
+        useChatStore.setState({ sessionsById: {}, sessionOrder: [], ...partial });
+        usePinnedChatsStore.getState().pin("pending-live-session");
+        renderComponent(<AgentsSidebarPanel />);
+        expect(usePinnedChatsStore.getState().entries["pending-live-session"]).toBeDefined();
+        act(() => useChatStore.setState({
+            sessionsById: { "pending-live-session": createSession("pending-live-session", "Restored chat") },
+            sessionOrder: ["pending-live-session"],
+            sessionInventoryLoaded: true, isInitializing: false, isHistoryInventoryLoading: false,
+            historyLoadError: null, historyStorageError: null, historyLoadIssues: [],
+        }));
+        expect(usePinnedChatsStore.getState().entries["pending-live-session"]).toBeDefined();
+    });
+
     it.each([false, true])("shows a themed unread indicator (archived: %s)", (archived) => {
         const session = createSession("unread", "Unread response");
         useChatStore.setState({ sessionsById: { unread: session }, sessionOrder: ["unread"] });

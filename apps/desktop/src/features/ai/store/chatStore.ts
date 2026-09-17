@@ -731,7 +731,6 @@ function applyPersistedHistoryInventory(
         return {
             sessionsById: nextSessionsById,
             sessionOrder: reconcileSessionOrder(state.sessionOrder, nextSessionsById),
-            sessionInventoryLoaded: true,
         };
     });
 }
