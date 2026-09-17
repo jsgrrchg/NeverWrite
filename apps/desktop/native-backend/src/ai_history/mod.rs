@@ -1600,6 +1600,10 @@ fn scope_has_entries(scope: &storage::ScopeLayout) -> Result<bool, String> {
             let entry = entry.map_err(|error| error.to_string())?;
             let metadata =
                 std::fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+            // The sessions directory is a container, not a history entry.
+            if root == &scope.histories && entry.file_name() == "sessions" && metadata.is_dir() {
+                continue;
+            }
             if !persistence::is_incidental_filesystem_metadata(&entry.path(), &metadata) {
                 return Ok(true);
             }
@@ -1807,6 +1811,26 @@ fn bool_arg(args: &Value, name: &str) -> Option<bool> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn empty_session_containers_do_not_count_as_history() {
+        let app_data = tempfile::tempdir().unwrap();
+        let vault = tempfile::tempdir().unwrap();
+        let layout = storage::resolve_layout(app_data.path(), vault.path()).unwrap();
+        for scope in [&layout.device, &layout.vault] {
+            fs::create_dir_all(scope.histories.join("sessions")).unwrap();
+            fs::create_dir_all(&scope.managed).unwrap();
+            assert!(inspect_available_scope(scope).unwrap().empty);
+            fs::write(scope.histories.join("sessions/chat.json"), b"{}").unwrap();
+            assert!(!inspect_available_scope(scope).unwrap().empty);
+            fs::remove_file(scope.histories.join("sessions/chat.json")).unwrap();
+            fs::write(scope.histories.join("unknown"), b"keep").unwrap();
+            assert!(!inspect_available_scope(scope).unwrap().empty);
+            fs::remove_file(scope.histories.join("unknown")).unwrap();
+            fs::write(scope.managed.join("attachment"), b"keep").unwrap();
+            assert!(!inspect_available_scope(scope).unwrap().empty);
+        }
+    }
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nmanaged-image";
 
