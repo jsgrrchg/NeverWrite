@@ -4499,6 +4499,31 @@ describe("chatStore", () => {
         });
     });
 
+    it("publishes saved chat inventory before a slow runtime probe completes", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        let release!: (value: unknown) => void;
+        const probe = new Promise((resolve) => { release = resolve; });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_setup_status") return probe;
+            if (command === "ai_load_session_histories") return [{
+                version: 1, session_id: "early-history", runtime_id: "codex-acp",
+                model_id: "test", mode_id: "default", created_at: 1, updated_at: 2,
+                message_count: 1, messages: [], title: "Saved chat",
+            }];
+            return defaultInvokeImplementation(command, args);
+        });
+        const initialization = useChatStore.getState().initialize({ createDefaultSession: false });
+        await vi.waitFor(() => {
+            expect(useChatStore.getState().sessionInventoryLoaded).toBe(true);
+            expect(Object.values(useChatStore.getState().sessionsById).some(
+                (session) => session.historySessionId === "early-history",
+            )).toBe(true);
+        });
+        expect(useChatStore.getState().isInitializing).toBe(true);
+        release(readySetupStatus);
+        await initialization;
+    });
+
     it("hydrates existing backend sessions before creating a new one", async () => {
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_list_runtimes") {

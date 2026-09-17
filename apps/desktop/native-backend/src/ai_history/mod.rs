@@ -326,11 +326,7 @@ impl AiHistoryStorageService {
             CanonicalResolution::Ready(scope) => {
                 // A normal Ready snapshot may inspect the canonical root, but it
                 // must never make UI availability depend on the inactive root.
-                let orphaned_device_histories = if migration::inspect_layout(
-                    &layout.scope(scope).transaction_layout(),
-                )?
-                .empty
-                {
+                let orphaned_device_histories = if !scope_has_entries(layout.scope(scope))? {
                     self.available_orphaned_device_histories(layout)?
                 } else {
                     Vec::new()
@@ -1357,7 +1353,16 @@ impl AiHistoryStorageService {
         let storage_root = scope_layout.histories.clone();
         let attachment_owner = &scope_layout.attachment_owner;
         let draft_root = layout.draft_root.clone();
-        self.run_startup_housekeeping(attachment_owner, &storage_root);
+        // Reads must not scan every transcript for attachment garbage collection.
+        // Defer housekeeping until an operation already needs a GC inventory.
+        if matches!(
+            command,
+            "ai_delete_session_history"
+                | "ai_delete_all_session_histories"
+                | "ai_prune_session_histories"
+        ) {
+            self.run_startup_housekeeping(attachment_owner, &storage_root);
+        }
         match command {
             "ai_save_session_history" => {
                 let history_value = args
@@ -1548,6 +1553,27 @@ impl AiHistoryStorageService {
         }
         eprintln!("ai_history phase=housekeeping outcome=completed");
     }
+}
+
+// A status request only needs to know whether data exists. Never open blobs
+// or transcripts here; strict inspection belongs to migration and explicit GC.
+fn scope_has_entries(scope: &storage::ScopeLayout) -> Result<bool, String> {
+    for root in [&scope.histories.join("sessions"), &scope.managed] {
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let metadata =
+                std::fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+            if !persistence::is_incidental_filesystem_metadata(&entry.path(), &metadata) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Emits only opaque identifiers. Do not include paths, transcript content,
