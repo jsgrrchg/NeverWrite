@@ -137,11 +137,21 @@ describe("AgentsSidebarPanel", () => {
             ],
             selectedRuntimeId: "codex-acp",
             sessionInventoryLoaded: true,
+            historyStorageVaultPath: "/vault",
+            historyStorageStatus: { status: "ready", vaultKey: "vault-key", generation: 1, scope: "vault", orphanedDeviceHistories: [] },
         });
     });
 
-    it.each([
+    it.each<Partial<ReturnType<typeof useChatStore.getState>>>([
         { sessionInventoryLoaded: false },
+        { historyStorageStatus: null },
+        { historyStorageVaultPath: "/previous-vault" },
+        { historyStorageStatus: { status: "error", vaultKey: "vault-key", generation: 1, message: "Unavailable" } },
+        { historyStorageStatus: { status: "moving", vaultKey: "vault-key", generation: 1, from: "vault", to: "device", operationId: "move" } },
+        { historyStorageStatus: { status: "recovery_required", vaultKey: "vault-key", generation: 1, details: {
+            reason: "filesystem_identity_changed", message: "Recovery required", canReconcile: false,
+            canAdoptIdentity: true, conflictingSessionIds: [], conflictingAttachmentIds: [], renamedDeviceHistory: false,
+        } } },
         { isInitializing: true },
         { isHistoryInventoryLoading: true },
         { historyLoadError: "Offline" },
@@ -157,6 +167,8 @@ describe("AgentsSidebarPanel", () => {
             sessionOrder: ["pending-live-session"],
             sessionInventoryLoaded: true, isInitializing: false, isHistoryInventoryLoading: false,
             historyLoadError: null, historyStorageError: null, historyLoadIssues: [],
+            historyStorageVaultPath: "/vault",
+            historyStorageStatus: { status: "ready", vaultKey: "vault-key", generation: 1, scope: "vault", orphanedDeviceHistories: [] },
         }));
         expect(usePinnedChatsStore.getState().entries["pending-live-session"]).toBeDefined();
     });

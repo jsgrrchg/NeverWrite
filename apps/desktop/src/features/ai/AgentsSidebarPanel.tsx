@@ -224,7 +224,8 @@ export function AgentsSidebarPanel() {
     const canReconcilePins = useChatStore((state) =>
         !state.isInitializing && !state.isHistoryInventoryLoading &&
         !state.historyLoadError && !state.historyStorageError &&
-        state.historyLoadIssues.length === 0,
+        state.historyLoadIssues.length === 0 && state.historyStorageStatus?.status === "ready" &&
+        Boolean(vaultPath) && state.historyStorageVaultPath === vaultPath,
     );
     const sessionInventoryLoaded = useChatStore(
         (state) => state.sessionInventoryLoaded,
