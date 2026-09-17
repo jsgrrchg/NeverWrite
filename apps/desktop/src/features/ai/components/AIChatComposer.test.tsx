@@ -57,6 +57,8 @@ function renderComposer({
     onFolderAttach = vi.fn(),
     onToggleExpanded = vi.fn(),
     onImageAttachmentValidationFailure = vi.fn(),
+    onPasteImage,
+    onClipboardError,
     onSubmit = () => {},
     onStop = () => {},
 }: {
@@ -80,6 +82,8 @@ function renderComposer({
     onFolderAttach?: (folderPath: string, name: string) => void;
     onToggleExpanded?: () => void;
     onImageAttachmentValidationFailure?: (reason: string) => void;
+    onPasteImage?: (file: File) => void | Promise<void>;
+    onClipboardError?: (message: string) => void;
     onSubmit?: () => void;
     onStop?: () => void;
 } = {}) {
@@ -114,6 +118,8 @@ function renderComposer({
             onImageAttachmentValidationFailure={
                 onImageAttachmentValidationFailure
             }
+            onPasteImage={onPasteImage}
+            onClipboardError={onClipboardError}
             onSubmit={onSubmit}
             onStop={onStop}
         />,
@@ -1270,6 +1276,36 @@ describe("AIChatComposer mention picker", () => {
         expect(
             screen.getByRole("button", { name: "Waiting for stop" }),
         ).toBeDisabled();
+    });
+
+    it("pastes clipboard images from the context menu through the attachment handler", async () => {
+        const onPasteImage = vi.fn();
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+            read: vi.fn().mockResolvedValue([{
+                types: ["image/png"],
+                getType: vi.fn().mockResolvedValue(new Blob(["image"], { type: "image/png" })),
+            }]),
+            readText: vi.fn().mockResolvedValue(""),
+        } });
+        const { composer } = renderComposer({ onPasteImage });
+        Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => composer) });
+        fireEvent.contextMenu(composer);
+        fireEvent.click(screen.getByText("Paste"));
+        await waitFor(() => expect(onPasteImage).toHaveBeenCalledTimes(1));
+        expect(onPasteImage.mock.calls[0][0]).toMatchObject({ type: "image/png", size: 5 });
+        expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+    });
+
+    it("reports clipboard read failures instead of dropping the paste", async () => {
+        const onClipboardError = vi.fn();
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+            read: vi.fn().mockRejectedValue(new Error("Permission denied")),
+        } });
+        const { composer } = renderComposer({ onPasteImage: vi.fn(), onClipboardError });
+        Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => composer) });
+        fireEvent.contextMenu(composer);
+        fireEvent.click(screen.getByText("Paste"));
+        await waitFor(() => expect(onClipboardError).toHaveBeenCalledWith(expect.stringContaining("Ctrl+V")));
     });
 
     it("opens a mention pill in a new tab from the context menu", async () => {
