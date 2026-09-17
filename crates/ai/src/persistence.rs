@@ -14,6 +14,8 @@ const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
 const CONVERSATION_BINDINGS_FILE: &str = "conversation-bindings.json";
 const SESSION_COMPACTION_MARKER_FILE: &str = "compact-state.json";
+const SESSION_CHECKPOINT_FILE: &str = "session-checkpoint.json";
+const PREVIOUS_CHECKPOINT_FILE: &str = "previous-checkpoint.json";
 const FORMAT_VERSION: u32 = 1;
 const MB: u64 = 1024 * 1024;
 const DEFAULT_TRANSCRIPT_COMPACTION_POLICY: TranscriptCompactionPolicy =
@@ -747,7 +749,99 @@ fn session_index_path(session_dir: &Path) -> PathBuf {
 }
 
 fn session_transcript_path(session_dir: &Path) -> PathBuf {
-    session_dir.join(SESSION_TRANSCRIPT_FILE)
+    match read_checkpoint(session_dir) {
+        Ok(Some(checkpoint)) => session_dir.join(checkpoint.transcript_file),
+        Ok(None) => session_dir.join(SESSION_TRANSCRIPT_FILE),
+        // Callers first load the checkpoint/header and surface its error. Never
+        // silently write into a legacy transcript when the commit is unreadable.
+        Err(_) => session_dir.join("unavailable-transcript"),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionCheckpoint {
+    version: u32,
+    metadata: PersistedSessionMetadata,
+    index: PersistedTranscriptIndex,
+    transcript_file: String,
+}
+
+fn checkpoint_transcript_name(name: &str) -> bool {
+    name == SESSION_TRANSCRIPT_FILE
+        || name
+            .strip_prefix("transcript-")
+            .and_then(|name| name.strip_suffix(".jsonl"))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+}
+
+fn read_checkpoint(session_dir: &Path) -> Result<Option<SessionCheckpoint>, String> {
+    // Session-level validation replaces the old all-or-nothing root scan.
+    // Check the directory itself before following any artifact paths.
+    match fs::symlink_metadata(session_dir) {
+        Ok(metadata) if !metadata.file_type().is_dir() => {
+            return Err("Session storage is not a regular directory.".into());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    let path = session_dir.join(SESSION_CHECKPOINT_FILE);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    let checkpoint: SessionCheckpoint = read_json_file(&path)?;
+    if checkpoint.version != FORMAT_VERSION
+        || !checkpoint_transcript_name(&checkpoint.transcript_file)
+    {
+        return Err("Unsupported or invalid session checkpoint.".into());
+    }
+    validate_lazy_session_files(&checkpoint.metadata, &checkpoint.index)?;
+    let transcript = fs::symlink_metadata(session_dir.join(&checkpoint.transcript_file))
+        .map_err(|error| format!("Session checkpoint is waiting for its transcript: {error}"))?;
+    if !transcript.file_type().is_file() {
+        return Err("Checkpoint transcript is not a regular file.".into());
+    }
+    for (&offset, &length) in checkpoint
+        .index
+        .message_offsets
+        .iter()
+        .zip(&checkpoint.index.message_lengths)
+    {
+        if offset
+            .checked_add(length)
+            .is_none_or(|end| end > transcript.len())
+        {
+            return Err("Session checkpoint is waiting for complete transcript data. Retry after synchronization finishes.".into());
+        }
+    }
+    Ok(Some(checkpoint))
+}
+
+fn publish_checkpoint(
+    session_dir: &Path,
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+    transcript_path: &Path,
+) -> Result<(), String> {
+    validate_lazy_session_files(metadata, index)?;
+    // Retain the prior commit and its transcript for explicit recovery. Readers
+    // never silently fall back to older data that a subsequent save could erase.
+    if let Some(previous) = read_checkpoint(session_dir)? {
+        write_json_atomic(&session_dir.join(PREVIOUS_CHECKPOINT_FILE), &previous)?;
+    }
+    // Compatibility projections are not the commit point. A reader uses the
+    // previous checkpoint until the complete new header is atomically published.
+    write_json_atomic(&session_meta_path(session_dir), metadata)?;
+    write_json_atomic(&session_index_path(session_dir), index)?;
+    let checkpoint = SessionCheckpoint {
+        version: FORMAT_VERSION,
+        metadata: metadata.clone(),
+        index: index.clone(),
+        transcript_file: session_sidecar_file_name(transcript_path)?,
+    };
+    write_json_atomic(&session_dir.join(SESSION_CHECKPOINT_FILE), &checkpoint)
 }
 
 fn conversation_bindings_path(session_dir: &Path) -> PathBuf {
@@ -856,10 +950,27 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    let temp_path = path.with_extension(format!("{suffix}.tmp"));
+    let temp_path = path.with_extension(format!("{suffix}-{}.tmp", uuid::Uuid::new_v4()));
     let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
-    fs::write(&temp_path, bytes).map_err(|error| error.to_string())?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|error| error.to_string())?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| error.to_string())?;
     fs::rename(&temp_path, path).map_err(|error| error.to_string())?;
+    sync_history_directory(parent)
+}
+
+fn sync_history_directory(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -872,23 +983,28 @@ fn load_session_metadata(
     storage_root: &Path,
     session_id: &str,
 ) -> Result<PersistedSessionMetadata, String> {
-    read_json_file(&storage_session_meta_file(storage_root, session_id))
-        .map(normalize_fork_runtime_identity)
+    load_session_metadata_from_dir(&storage_session_dir(storage_root, session_id))
 }
 
 fn load_session_index(
     storage_root: &Path,
     session_id: &str,
 ) -> Result<PersistedTranscriptIndex, String> {
-    read_json_file(&storage_session_index_file(storage_root, session_id))
+    load_session_index_from_dir(&storage_session_dir(storage_root, session_id))
 }
 
 fn load_session_metadata_from_dir(session_dir: &Path) -> Result<PersistedSessionMetadata, String> {
+    if let Some(checkpoint) = read_checkpoint(session_dir)? {
+        return Ok(normalize_fork_runtime_identity(checkpoint.metadata));
+    }
     recover_incomplete_compaction(session_dir)?;
     read_json_file(&session_meta_path(session_dir)).map(normalize_fork_runtime_identity)
 }
 
 fn load_session_index_from_dir(session_dir: &Path) -> Result<PersistedTranscriptIndex, String> {
+    if let Some(checkpoint) = read_checkpoint(session_dir)? {
+        return Ok(checkpoint.index);
+    }
     recover_incomplete_compaction(session_dir)?;
     read_json_file(&session_index_path(session_dir))
 }
@@ -1342,6 +1458,10 @@ fn inspect_session_directory(
     fingerprint: &mut InventoryFingerprintBuilder,
 ) {
     let relative_dir = relative_storage_path(storage_root, session_dir);
+    if let Err(error) = read_checkpoint(session_dir) {
+        push_corrupt_artifact(inventory, fingerprint, relative_dir.clone(), error);
+        return;
+    }
     fingerprint.add("directory", &relative_dir, &[]);
     let compaction_entries =
         inspect_compaction_state(storage_root, session_dir, inventory, fingerprint);
@@ -1372,6 +1492,15 @@ fn inspect_session_directory(
                 }
 
                 let path = entry.path();
+                if name == SESSION_CHECKPOINT_FILE
+                    || name == PREVIOUS_CHECKPOINT_FILE
+                    || name.to_str().is_some_and(|name| {
+                        name != SESSION_TRANSCRIPT_FILE && checkpoint_transcript_name(name)
+                    })
+                {
+                    read_expected_artifact(storage_root, &path, inventory, fingerprint);
+                    continue;
+                }
                 if fs::symlink_metadata(&path)
                     .is_ok_and(|metadata| is_incidental_filesystem_metadata(&path, &metadata))
                 {
@@ -1624,6 +1753,19 @@ fn inspect_session_directory(
     else {
         return;
     };
+    if let Ok(Some(checkpoint)) = read_checkpoint(session_dir) {
+        if serde_json::to_value(&checkpoint.metadata).ok() != serde_json::to_value(&metadata).ok()
+            || serde_json::to_value(&checkpoint.index).ok() != serde_json::to_value(&index).ok()
+        {
+            push_read_error(
+                inventory,
+                fingerprint,
+                relative_dir,
+                "Session compatibility files are not synchronized with the checkpoint.",
+            );
+            return;
+        }
+    }
     let effective_bindings = parsed_bindings
         .map(|bindings| reconcile_conversation_bindings(bindings, &metadata, &index))
         .unwrap_or_else(|| synthesize_conversation_bindings(&metadata, &index));
@@ -2688,10 +2830,15 @@ fn write_full_lazy_history(
     ensure_sessions_root(storage_root)?;
     let session_dir = storage_session_dir(storage_root, &history.session_id);
     fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
+    sync_history_directory(&sessions_dir(storage_root))?;
 
     let transcript_path = session_transcript_path(&session_dir);
-    let transcript_tmp = transcript_path.with_extension("jsonl.tmp");
-    let mut transcript_file = File::create(&transcript_tmp).map_err(|e| e.to_string())?;
+    let transcript_tmp = transcript_path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let mut transcript_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&transcript_tmp)
+        .map_err(|e| e.to_string())?;
 
     let mut offsets = Vec::with_capacity(history.messages.len());
     let mut lengths = Vec::with_capacity(history.messages.len());
@@ -2710,7 +2857,7 @@ fn write_full_lazy_history(
         cursor += bytes.len() as u64;
     }
 
-    transcript_file.flush().map_err(|e| e.to_string())?;
+    transcript_file.sync_all().map_err(|e| e.to_string())?;
     fs::rename(&transcript_tmp, &transcript_path).map_err(|e| e.to_string())?;
 
     let metadata = metadata_from_history(history, total_count);
@@ -2721,14 +2868,16 @@ fn write_full_lazy_history(
         message_hashes: hashes,
     };
 
-    write_json_atomic(&session_meta_path(&session_dir), &metadata)?;
-    write_json_atomic(&session_index_path(&session_dir), &index)?;
+    publish_checkpoint(&session_dir, &metadata, &index, &transcript_path)?;
     remove_legacy_history_artifacts(storage_root, &history.session_id)?;
 
     Ok(())
 }
 
 fn ensure_lazy_session_from_legacy(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    if read_checkpoint(&storage_session_dir(storage_root, session_id))?.is_some() {
+        return Ok(());
+    }
     recover_incomplete_compaction(&storage_session_dir(storage_root, session_id))?;
     if storage_session_is_complete(storage_root, session_id) {
         return Ok(());
@@ -2781,6 +2930,9 @@ fn read_lazy_history_page_from_files(
             index.message_offsets[idx],
             index.message_lengths[idx] as usize,
         )?;
+        if hash_message(&message)? != index.message_hashes[idx] {
+            return Err(format!("Transcript entry {idx} does not match its checkpoint. Retry after synchronization finishes."));
+        }
         messages.push(message);
     }
 
@@ -2798,7 +2950,21 @@ fn read_indexed_transcript_message(
     offset: u64,
     length: usize,
 ) -> Result<PersistedMessage, String> {
-    let mut bytes = vec![0_u8; length];
+    let file_length = transcript
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .len();
+    if offset
+        .checked_add(length as u64)
+        .is_none_or(|end| end > file_length)
+    {
+        return Err("Indexed transcript range is unavailable.".into());
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|error| error.to_string())?;
+    bytes.resize(length, 0);
     transcript
         .seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
@@ -2885,6 +3051,15 @@ fn compact_transcript_if_needed(
 fn load_repaired_lazy_session_files(
     session_dir: &Path,
 ) -> Result<(PersistedSessionMetadata, PersistedTranscriptIndex), String> {
+    if let Some(checkpoint) = read_checkpoint(session_dir)? {
+        let index = compact_transcript_if_needed(
+            session_dir,
+            &checkpoint.metadata,
+            &checkpoint.index,
+            DEFAULT_TRANSCRIPT_COMPACTION_POLICY,
+        )?;
+        return Ok((checkpoint.metadata, index));
+    }
     recover_incomplete_compaction(session_dir)?;
 
     let metadata = read_json_file(&session_meta_path(session_dir))?;
@@ -2948,6 +3123,11 @@ fn write_compacted_transcript_tmp(
         )?;
         let bytes = serialize_message_bytes(&message)?;
         let hash = hash_message(&message)?;
+        if hash != source_index.message_hashes[idx] {
+            return Err(
+                "Transcript changed before compaction; the committed version was preserved.".into(),
+            );
+        }
 
         target
             .write_all(&bytes)
@@ -3034,6 +3214,18 @@ fn persist_compacted_lazy_history(
     metadata: &PersistedSessionMetadata,
     source_index: &PersistedTranscriptIndex,
 ) -> Result<PersistedTranscriptIndex, String> {
+    if read_checkpoint(session_dir)?.is_some() {
+        let transcript_path =
+            session_dir.join(format!("transcript-{}.jsonl", uuid::Uuid::new_v4()));
+        let compacted_index =
+            write_compacted_transcript_tmp(session_dir, source_index, &transcript_path)?;
+        File::open(&transcript_path)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        sync_history_directory(session_dir)?;
+        publish_checkpoint(session_dir, metadata, &compacted_index, &transcript_path)?;
+        return Ok(compacted_index);
+    }
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -3163,7 +3355,9 @@ fn save_session_history_with_compaction_policy(
 
     let metadata_path = storage_session_meta_file(storage_root, &history.session_id);
     let index_path = storage_session_index_file(storage_root, &history.session_id);
-    if !metadata_path.exists() || !index_path.exists() {
+    if read_checkpoint(&storage_session_dir(storage_root, &history.session_id))?.is_none()
+        && (!metadata_path.exists() || !index_path.exists())
+    {
         if start_index != 0 || total_count != history.messages.len() {
             return Err(
                 "Cannot persist a partial transcript window before the base transcript exists."
@@ -3176,6 +3370,15 @@ fn save_session_history_with_compaction_policy(
     let existing_metadata = load_session_metadata(storage_root, &history.session_id)?;
     let existing_index = load_session_index(storage_root, &history.session_id)?;
     validate_lazy_session_files(&existing_metadata, &existing_index)?;
+    let session_dir = storage_session_dir(storage_root, &history.session_id);
+    if read_checkpoint(&session_dir)?.is_none() {
+        publish_checkpoint(
+            &session_dir,
+            &existing_metadata,
+            &existing_index,
+            &session_transcript_path(&session_dir),
+        )?;
+    }
 
     if start_index > existing_metadata.message_count {
         return Err("Transcript patch starts beyond the stored history.".to_string());
@@ -3229,7 +3432,7 @@ fn save_session_history_with_compaction_policy(
             cursor += bytes.len() as u64;
         }
 
-        transcript.flush().map_err(|e| e.to_string())?;
+        transcript.sync_all().map_err(|e| e.to_string())?;
     }
 
     if next_offsets.len() != total_count
@@ -3257,8 +3460,7 @@ fn save_session_history_with_compaction_policy(
     if should_compact_transcript(physical_bytes, indexed_bytes, compaction_policy) {
         persist_compacted_lazy_history(&session_dir, &next_metadata, &next_index)?;
     } else {
-        write_json_atomic(&metadata_path, &next_metadata)?;
-        write_json_atomic(&index_path, &next_index)?;
+        publish_checkpoint(&session_dir, &next_metadata, &next_index, &transcript_path)?;
     }
 
     remove_legacy_history_artifacts(storage_root, &history.session_id)?;
@@ -3274,7 +3476,9 @@ pub fn load_session_history_page(
 ) -> Result<PersistedSessionHistoryPage, String> {
     ensure_lazy_session_from_legacy(storage_root, session_id)?;
 
-    if storage_session_is_complete(storage_root, session_id) {
+    if read_checkpoint(&storage_session_dir(storage_root, session_id))?.is_some()
+        || storage_session_is_complete(storage_root, session_id)
+    {
         return load_lazy_history_page(storage_root, session_id, start_index, limit);
     }
 
@@ -3750,13 +3954,11 @@ pub fn fork_session_history(
 
     // Copy transcript and index as-is
     let src_transcript = session_transcript_path(&source_dir);
-    let src_index = session_index_path(&source_dir);
+    let source_index = load_session_index_from_dir(&source_dir)?;
     if src_transcript.exists() {
         fs::copy(&src_transcript, session_transcript_path(&dest_dir)).map_err(|e| e.to_string())?;
     }
-    if src_index.exists() {
-        fs::copy(&src_index, session_index_path(&dest_dir)).map_err(|e| e.to_string())?;
-    }
+    write_json_atomic(&session_index_path(&dest_dir), &source_index)?;
 
     // Write new metadata with fresh ID and timestamps
     let forked_title = source_meta
@@ -4116,6 +4318,10 @@ mod tests {
 
         let corrupt_meta = sample_history_with_session_id("corrupt-meta");
         save_session_history(&storage_root, &corrupt_meta).expect("history should persist");
+        fs::remove_file(
+            storage_session_dir(&storage_root, "corrupt-meta").join(SESSION_CHECKPOINT_FILE),
+        )
+        .unwrap();
         fs::write(
             storage_session_meta_file(&storage_root, "corrupt-meta"),
             b"{broken",
@@ -4132,6 +4338,10 @@ mod tests {
 
         let corrupt_transcript = sample_history_with_session_id("corrupt-transcript");
         save_session_history(&storage_root, &corrupt_transcript).expect("history should persist");
+        fs::remove_file(
+            storage_session_dir(&storage_root, "corrupt-transcript").join(SESSION_CHECKPOINT_FILE),
+        )
+        .unwrap();
         fs::write(
             storage_session_transcript_file(&storage_root, "corrupt-transcript"),
             b"{broken\n",
@@ -5140,6 +5350,87 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn checkpoint_access_rejects_symlinked_session_directories() {
+        use std::os::unix::fs::symlink;
+        let root = make_temp_dir();
+        let outside = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&outside, &history).unwrap();
+        fs::create_dir_all(sessions_dir(&root)).unwrap();
+        symlink(
+            storage_session_dir(&outside, &history.session_id),
+            storage_session_dir(&root, &history.session_id),
+        )
+        .unwrap();
+        assert!(save_session_history(&root, &history).is_err());
+        assert!(load_session_history_page(&root, &history.session_id, 0, 10).is_err());
+        assert_eq!(
+            load_all_session_histories(&outside, true).unwrap()[0].messages[0].content,
+            history.messages[0].content
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_survives_interrupted_or_reordered_header_publication() {
+        let root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&root, &history).unwrap();
+        let dir = storage_session_dir(&root, &history.session_id);
+        // Simulate a crash/sync between publishing compatibility files and commit.
+        fs::write(session_meta_path(&dir), b"{partial").unwrap();
+        fs::write(session_index_path(&dir), b"{partial").unwrap();
+        let loaded = load_all_session_histories(&root, true).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].messages[0].content, history.messages[0].content);
+        save_session_history(&root, &history).unwrap();
+        assert!(dir.join(PREVIOUS_CHECKPOINT_FILE).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_waits_for_synced_transcript_without_overwriting_anything() {
+        let root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&root, &history).unwrap();
+        let dir = storage_session_dir(&root, &history.session_id);
+        let transcript = session_transcript_path(&dir);
+        let bytes = fs::read(&transcript).unwrap();
+        let commit = fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap();
+        fs::write(&transcript, b"").unwrap();
+        let inventory = load_session_history_inventory(&root, false).unwrap();
+        assert!(inventory.histories.is_empty());
+        assert_eq!(inventory.issues.len(), 1);
+        assert!(save_session_history(&root, &history).is_err());
+        assert_eq!(fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap(), commit);
+        fs::write(&transcript, bytes).unwrap();
+        assert_eq!(load_all_session_histories(&root, true).unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_compaction_preserves_the_previous_transcript_generation() {
+        let root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&root, &history).unwrap();
+        let dir = storage_session_dir(&root, &history.session_id);
+        let previous_path = session_transcript_path(&dir);
+        let previous_bytes = fs::read(&previous_path).unwrap();
+        let checkpoint = read_checkpoint(&dir).unwrap().unwrap();
+        persist_compacted_lazy_history(&dir, &checkpoint.metadata, &checkpoint.index).unwrap();
+        assert_ne!(session_transcript_path(&dir), previous_path);
+        assert_eq!(fs::read(&previous_path).unwrap(), previous_bytes);
+        assert_eq!(load_all_session_histories(&root, true).unwrap().len(), 1);
+        assert!(inspect_history_storage(&root)
+            .histories
+            .unknown_entries
+            .is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn recovers_interrupted_transcript_compaction_before_loading_history() {
         let dir = make_temp_dir();
@@ -5147,6 +5438,7 @@ mod tests {
         save_session_history(&dir, &history).expect("history should persist");
 
         let session_dir = storage_session_dir(&dir, "session-1");
+        fs::remove_file(session_dir.join(SESSION_CHECKPOINT_FILE)).unwrap();
         let metadata_path = session_meta_path(&session_dir);
         let index_path = session_index_path(&session_dir);
         let transcript_path = session_transcript_path(&session_dir);

@@ -1925,7 +1925,7 @@ mod tests {
                 serde_json::from_slice(&fs::read(entry.path().join("session-meta.json")).unwrap())
                     .unwrap();
             if meta["session_id"] == "broken" {
-                fs::write(entry.path().join("index.json"), b"{broken").unwrap();
+                fs::write(entry.path().join("session-checkpoint.json"), b"{broken").unwrap();
             }
             // Leftover temporaries must not stop access, but migrations remain strict.
             fs::write(entry.path().join("abandoned.tmp"), b"unfinished").unwrap();
