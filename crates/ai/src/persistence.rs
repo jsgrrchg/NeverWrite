@@ -3606,47 +3606,42 @@ pub fn prune_expired_session_histories(
 
     let max_age_ms = u64::from(max_age_days) * 24 * 60 * 60 * 1000;
     let cutoff_ms = now_ms()?.saturating_sub(max_age_ms);
+    // Inventory every candidate before deleting any: pruning one copy must not
+    // make another copy of the same logical session appear unambiguous.
     let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    let mut deleted = 0;
-
+    let mut candidates = Vec::new();
+    let mut copies_by_id: HashMap<String, usize> = HashMap::new();
     for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
+        let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if path.is_dir() {
-            let metadata = match load_session_metadata_from_dir(&path) {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-
-            if metadata.updated_at < cutoff_ms && fs::remove_dir_all(&path).is_ok() {
-                deleted += 1;
-            }
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        let header = if file_type.is_dir() {
+            load_session_metadata_from_dir(&path)
+                .map(|metadata| (metadata.session_id, metadata.updated_at))
+        } else if file_type.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("json")
+        {
+            load_legacy_history_file(&path).map(|history| (history.session_id, history.updated_at))
+        } else {
             continue;
-        }
-
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-
-        let raw = match fs::read_to_string(&path) {
-            Ok(r) => r,
-            Err(_) => continue,
         };
-
-        let history = match serde_json::from_str::<PersistedSessionHistory>(&raw) {
-            Ok(history) => history,
-            Err(_) => continue,
+        let Ok((session_id, updated_at)) = header else {
+            continue;
         };
-
-        if history.updated_at >= cutoff_ms {
+        *copies_by_id.entry(session_id.clone()).or_default() += 1;
+        candidates.push((path, file_type.is_dir(), session_id, updated_at));
+    }
+    let mut deleted = 0;
+    for (path, is_dir, session_id, updated_at) in candidates {
+        if updated_at >= cutoff_ms || copies_by_id[&session_id] > 1 {
             continue;
         }
-
-        if fs::remove_file(&path).is_ok() {
+        let result = if is_dir {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        };
+        if result.is_ok() {
             deleted += 1;
         }
     }
@@ -5491,6 +5486,18 @@ mod tests {
                     .len(),
                 2
             );
+            assert_eq!(prune_expired_session_histories(&root, 1).unwrap(), 1);
+            assert!(!storage_session_dir(&root, &unrelated.session_id).exists());
+            assert!(conflict.exists());
+            assert_eq!(
+                fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap(),
+                checkpoint
+            );
+            assert!(load_session_history_inventory(&root, false)
+                .unwrap()
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("Duplicate")));
             fs::remove_dir_all(root).unwrap();
             fs::remove_dir_all(other).unwrap();
         }
