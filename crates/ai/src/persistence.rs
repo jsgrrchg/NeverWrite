@@ -2798,13 +2798,10 @@ fn find_legacy_session_artifacts(
                 Ok(value) => value,
                 Err(_) => continue,
             };
-            if metadata.session_id == session_id {
-                if artifacts.dir_path.replace(path).is_some() {
-                    return Err(
-                        "Duplicate session copies require recovery; all copies were preserved."
-                            .into(),
-                    );
-                }
+            if metadata.session_id == session_id && artifacts.dir_path.replace(path).is_some() {
+                return Err(
+                    "Duplicate session copies require recovery; all copies were preserved.".into(),
+                );
             }
             continue;
         }
@@ -2817,12 +2814,10 @@ fn find_legacy_session_artifacts(
             Ok(value) => value,
             Err(_) => continue,
         };
-        if history.session_id == session_id {
-            if artifacts.file_path.replace(path).is_some() {
-                return Err(
-                    "Duplicate session copies require recovery; all copies were preserved.".into(),
-                );
-            }
+        if history.session_id == session_id && artifacts.file_path.replace(path).is_some() {
+            return Err(
+                "Duplicate session copies require recovery; all copies were preserved.".into(),
+            );
         }
     }
 
