@@ -217,6 +217,16 @@ export function AIChatSessionView({
     const [imageAttachmentNotice, setImageAttachmentNotice] = useState<
         string | null
     >(null);
+    const attachmentVaultPath = useVaultStore((state) => state.vaultPath);
+    const pasteContextRef = useRef(Symbol());
+    const [pendingImageAttachments, setPendingImageAttachments] = useState(0);
+    const [failedPaste, setFailedPaste] = useState<File | null>(null);
+    useEffect(() => {
+        pasteContextRef.current = Symbol();
+        setImageAttachmentNotice(null);
+        setFailedPaste(null);
+        setPendingImageAttachments(0);
+    }, [sessionId, attachmentVaultPath]);
     const [findOpen, setFindOpen] = useState(false);
     const rootRef = useRef<HTMLDivElement>(null);
 
@@ -693,6 +703,7 @@ export function AIChatSessionView({
         async (file: File) => {
             if (!sessionId) return;
             const vaultPathAtStart = useVaultStore.getState().vaultPath;
+            const pasteContextAtStart = pasteContextRef.current;
             const sessionAtStart =
                 useChatStore.getState().sessionsById[sessionId];
             if (!vaultPathAtStart || !sessionAtStart) return;
@@ -711,6 +722,9 @@ export function AIChatSessionView({
                 );
                 return;
             }
+            setFailedPaste(null);
+            setImageAttachmentNotice(null);
+            setPendingImageAttachments((count) => count + 1);
             try {
                 const buffer = await file.arrayBuffer();
                 const bytes = Array.from(new Uint8Array(buffer));
@@ -745,6 +759,7 @@ export function AIChatSessionView({
                 // attach a draft created for the previous ownership context to
                 // whichever session now happens to have this ID.
                 const stillOwnsDraft =
+                    pasteContextRef.current === pasteContextAtStart &&
                     useVaultStore.getState().vaultPath === vaultPathAtStart &&
                     currentSession?.runtimeId === sessionAtStart.runtimeId &&
                     currentSession?.historySessionId ===
@@ -804,19 +819,23 @@ export function AIChatSessionView({
                 setImageAttachmentNotice(null);
             } catch (error) {
                 console.error("[chat] Failed to save pasted image:", error);
-                setImageAttachmentNotice("Image could not be attached");
+                if (pasteContextRef.current === pasteContextAtStart &&
+                    useVaultStore.getState().vaultPath === vaultPathAtStart &&
+                    useChatStore.getState().sessionsById[sessionId]?.historySessionId === sessionAtStart.historySessionId) {
+                    const detail = error instanceof Error ? error.message : String(error);
+                    setImageAttachmentNotice(`Image could not be attached: ${detail}`);
+                    setFailedPaste(file);
+                }
+            } finally {
+                if (pasteContextRef.current === pasteContextAtStart) {
+                    setPendingImageAttachments((count) => Math.max(0, count - 1));
+                }
             }
         },
         [chatActions, session?.runtimeId, sessionId],
     );
 
-    useEffect(() => {
-        if (!imageAttachmentNotice) return;
-        const timer = window.setTimeout(() => {
-            setImageAttachmentNotice(null);
-        }, 3500);
-        return () => window.clearTimeout(timer);
-    }, [imageAttachmentNotice]);
+
 
     useEffect(() => {
         if (!sessionId || screenshotRetentionSeconds <= 0) return;
@@ -1304,6 +1323,9 @@ export function AIChatSessionView({
                             }
                             footer={
                                 <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                                    {pendingImageAttachments > 0 ? (
+                                        <span role="status" className="text-xs">Attaching image…</span>
+                                    ) : null}
                                     {imageAttachmentNotice ? (
                                         <div
                                             role="status"
@@ -1317,6 +1339,15 @@ export function AIChatSessionView({
                                             }}
                                         >
                                             {imageAttachmentNotice}
+                                            {failedPaste ? (
+                                                <button type="button" disabled={pendingImageAttachments > 0}
+                                                    className="ml-2 underline"
+                                                    onClick={() => void handlePasteImage(failedPaste)}>Retry attachment</button>
+                                            ) : null}
+                                            <button type="button" className="ml-2 underline" onClick={() => {
+                                                setImageAttachmentNotice(null);
+                                                setFailedPaste(null);
+                                            }}>Dismiss</button>
                                         </div>
                                     ) : null}
                                     {!isPendingSessionCreation && (
@@ -1402,6 +1433,7 @@ export function AIChatSessionView({
                             }}
                             onAttachFile={handleAttachFile}
                             onPasteImage={handlePasteImage}
+                            onClipboardError={setImageAttachmentNotice}
                             onImageAttachmentValidationFailure={(reason) => {
                                 const runtimeId = turnSelection?.runtimeId ?? null;
                                 setImageAttachmentNotice(

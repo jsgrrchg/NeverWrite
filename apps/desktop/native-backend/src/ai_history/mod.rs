@@ -326,11 +326,7 @@ impl AiHistoryStorageService {
             CanonicalResolution::Ready(scope) => {
                 // A normal Ready snapshot may inspect the canonical root, but it
                 // must never make UI availability depend on the inactive root.
-                let orphaned_device_histories = if migration::inspect_layout(
-                    &layout.scope(scope).transaction_layout(),
-                )?
-                .empty
-                {
+                let orphaned_device_histories = if !scope_has_entries(layout.scope(scope))? {
                     self.available_orphaned_device_histories(layout)?
                 } else {
                     Vec::new()
@@ -551,8 +547,8 @@ impl AiHistoryStorageService {
         layout: &storage::VaultStorageLayout,
     ) -> Result<CanonicalResolution, String> {
         let renamed = storage::find_renamed_device_namespace(&self.app_data_root, layout)?;
-        let device = migration::inspect_layout(&layout.device.transaction_layout());
-        let vault = migration::inspect_layout(&layout.vault.transaction_layout());
+        let device = inspect_available_scope(&layout.device);
+        let vault = inspect_available_scope(&layout.vault);
         let (device, vault) = match (device, vault) {
             (Ok(device), Ok(vault)) => (device, vault),
             (device, vault) => {
@@ -783,7 +779,7 @@ impl AiHistoryStorageService {
         if validated.get(&layout.vault_key) == Some(&scope) {
             return Ok(());
         }
-        migration::inspect_layout(&layout.scope(scope).transaction_layout()).map_err(|error| {
+        inspect_available_scope(layout.scope(scope)).map_err(|error| {
             format!("The canonical AI history storage is not readable: {error}")
         })?;
         validated.insert(layout.vault_key.clone(), scope);
@@ -1357,7 +1353,16 @@ impl AiHistoryStorageService {
         let storage_root = scope_layout.histories.clone();
         let attachment_owner = &scope_layout.attachment_owner;
         let draft_root = layout.draft_root.clone();
-        self.run_startup_housekeeping(attachment_owner, &storage_root);
+        // Reads must not scan every transcript for attachment garbage collection.
+        // Defer housekeeping until an operation already needs a GC inventory.
+        if matches!(
+            command,
+            "ai_delete_session_history"
+                | "ai_delete_all_session_histories"
+                | "ai_prune_session_histories"
+        ) {
+            self.run_startup_housekeeping(attachment_owner, &storage_root);
+        }
         match command {
             "ai_save_session_history" => {
                 let history_value = args
@@ -1387,6 +1392,12 @@ impl AiHistoryStorageService {
                 let include_messages = bool_arg(&args, "includeMessages")
                     .or_else(|| bool_arg(&args, "include_messages"))
                     .unwrap_or(true);
+                if bool_arg(&args, "includeDiagnostics").unwrap_or(false) {
+                    return Ok(json!(persistence::load_session_inventory_with_bindings(
+                        &storage_root,
+                        include_messages
+                    )?));
+                }
                 Ok(json!(
                     persistence::load_all_session_histories_with_bindings(
                         &storage_root,
@@ -1548,6 +1559,57 @@ impl AiHistoryStorageService {
         }
         eprintln!("ai_history phase=housekeeping outcome=completed");
     }
+}
+
+// Ordinary access checks ownership and directory shape, not whether every
+// other conversation is safe to migrate. Readers validate individual sessions.
+fn inspect_available_scope(
+    scope: &storage::ScopeLayout,
+) -> Result<migration::LayoutInspection, String> {
+    for root in [
+        &scope.histories,
+        &scope.histories.join("sessions"),
+        &scope.managed,
+    ] {
+        match std::fs::symlink_metadata(root) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => return Err("AI history storage is not a regular directory.".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(migration::LayoutInspection {
+        empty: !scope_has_entries(scope)?,
+    })
+}
+
+// A status request only needs to know whether data exists. Never open blobs
+// or transcripts here; strict inspection belongs to migration and explicit GC.
+fn scope_has_entries(scope: &storage::ScopeLayout) -> Result<bool, String> {
+    for root in [
+        &scope.histories,
+        &scope.histories.join("sessions"),
+        &scope.managed,
+    ] {
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let metadata =
+                std::fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+            // The sessions directory is a container, not a history entry.
+            if root == &scope.histories && entry.file_name() == "sessions" && metadata.is_dir() {
+                continue;
+            }
+            if !persistence::is_incidental_filesystem_metadata(&entry.path(), &metadata) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Emits only opaque identifiers. Do not include paths, transcript content,
@@ -1750,6 +1812,26 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[test]
+    fn empty_session_containers_do_not_count_as_history() {
+        let app_data = tempfile::tempdir().unwrap();
+        let vault = tempfile::tempdir().unwrap();
+        let layout = storage::resolve_layout(app_data.path(), vault.path()).unwrap();
+        for scope in [&layout.device, &layout.vault] {
+            fs::create_dir_all(scope.histories.join("sessions")).unwrap();
+            fs::create_dir_all(&scope.managed).unwrap();
+            assert!(inspect_available_scope(scope).unwrap().empty);
+            fs::write(scope.histories.join("sessions/chat.json"), b"{}").unwrap();
+            assert!(!inspect_available_scope(scope).unwrap().empty);
+            fs::remove_file(scope.histories.join("sessions/chat.json")).unwrap();
+            fs::write(scope.histories.join("unknown"), b"keep").unwrap();
+            assert!(!inspect_available_scope(scope).unwrap().empty);
+            fs::remove_file(scope.histories.join("unknown")).unwrap();
+            fs::write(scope.managed.join("attachment"), b"keep").unwrap();
+            assert!(!inspect_available_scope(scope).unwrap().empty);
+        }
+    }
+
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nmanaged-image";
 
     fn create_attachment(service: &AiHistoryStorageService, vault: &Path) -> String {
@@ -1848,6 +1930,63 @@ mod tests {
                 }),
             )
             .unwrap();
+    }
+
+    #[test]
+    fn broken_session_does_not_block_healthy_chats_after_restart() {
+        let app_data = tempfile::tempdir().unwrap();
+        let vault = tempfile::tempdir().unwrap();
+        let service = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        for id in ["healthy", "broken"] {
+            service
+                .invoke(
+                    "ai_save_session_history",
+                    vault.path(),
+                    json!({"history": text_history(id, id)}),
+                )
+                .unwrap();
+        }
+        let layout = storage::resolve_layout(app_data.path(), vault.path()).unwrap();
+        for entry in fs::read_dir(layout.device.histories.join("sessions"))
+            .unwrap()
+            .flatten()
+        {
+            let meta: Value =
+                serde_json::from_slice(&fs::read(entry.path().join("session-meta.json")).unwrap())
+                    .unwrap();
+            if meta["session_id"] == "broken" {
+                fs::write(entry.path().join("session-checkpoint.json"), b"{broken").unwrap();
+            }
+            // Leftover temporaries must not stop access, but migrations remain strict.
+            fs::write(entry.path().join("abandoned.tmp"), b"unfinished").unwrap();
+        }
+        let restarted = AiHistoryStorageService::new(app_data.path().to_path_buf());
+        let status = restarted
+            .invoke("ai_get_history_storage_status", vault.path(), json!({}))
+            .unwrap();
+        assert_eq!(status["status"], "ready");
+        let loaded = restarted
+            .invoke(
+                "ai_load_session_histories",
+                vault.path(),
+                json!({"includeMessages": false}),
+            )
+            .unwrap();
+        assert_eq!(loaded.as_array().unwrap().len(), 1);
+        assert_eq!(loaded[0]["session_id"], "healthy");
+        let inventory =
+            persistence::load_session_history_inventory(&layout.device.histories, false).unwrap();
+        assert_eq!(inventory.issues.len(), 1);
+        let diagnostic = restarted
+            .invoke(
+                "ai_load_session_histories",
+                vault.path(),
+                json!({"includeMessages": false, "includeDiagnostics": true}),
+            )
+            .unwrap();
+        assert_eq!(diagnostic["histories"].as_array().unwrap().len(), 1);
+        assert_eq!(diagnostic["issues"].as_array().unwrap().len(), 1);
+        assert!(migration::inspect_layout(&layout.device.transaction_layout()).is_err());
     }
 
     #[test]

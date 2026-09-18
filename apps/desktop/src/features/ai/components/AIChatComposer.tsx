@@ -103,7 +103,8 @@ interface AIChatComposerProps {
     onFolderAttach: (folderPath: string, name: string) => void;
     onToggleExpanded?: () => void;
     onAttachFile?: () => void;
-    onPasteImage?: (file: File) => void;
+    onPasteImage?: (file: File) => void | Promise<void>;
+    onClipboardError?: (message: string) => void;
     onImageAttachmentValidationFailure?: (
         reason: ImageAttachmentValidationFailure,
     ) => void;
@@ -979,6 +980,7 @@ export function AIChatComposer({
     onFolderAttach,
     onToggleExpanded,
     onPasteImage,
+    onClipboardError,
     onImageAttachmentValidationFailure,
     onFocus,
     onSubmit,
@@ -1401,14 +1403,30 @@ export function AIChatComposer({
 
     const pasteFromClipboard = async () => {
         const composer = composerRef.current;
-        if (!composer) return;
-
-        const text = await navigator.clipboard.readText();
-        if (!text) return;
-
-        composer.focus();
-        insertPlainTextAtSelection(composer, text);
-        syncFromDom();
+        if (!composer || disabled) return;
+        try {
+            // Both menu paste and keyboard paste send images through the same
+            // attachment validation and local-draft path.
+            if (onPasteImage && navigator.clipboard.read) {
+                const items = await navigator.clipboard.read();
+                for (const item of items) {
+                    const mimeType = item.types.find((type) => type.startsWith("image/"));
+                    if (!mimeType) continue;
+                    const blob = await item.getType(mimeType);
+                    await onPasteImage(new File([blob], "clipboard-image", { type: mimeType }));
+                    return;
+                }
+            }
+            const text = await navigator.clipboard.readText();
+            if (!text || composerRef.current !== composer) return;
+            composer.focus();
+            insertPlainTextAtSelection(composer, text);
+            syncFromDom();
+            updateInlinePickers();
+        } catch (error) {
+            console.error("[chat] Clipboard paste failed:", error);
+            onClipboardError?.("Clipboard could not be read. Try pasting with Ctrl+V or Cmd+V.");
+        }
     };
 
     useEffect(() => {
@@ -1887,6 +1905,7 @@ export function AIChatComposer({
                     }}
                     onPaste={(event) => {
                         event.preventDefault();
+                        if (disabled) return;
                         // Check for pasted images first
                         if (onPasteImage) {
                             const items = event.clipboardData.items;
@@ -1898,7 +1917,9 @@ export function AIChatComposer({
                                 ) {
                                     const file = item.getAsFile();
                                     if (file) {
-                                        onPasteImage(file);
+                                        void Promise.resolve(onPasteImage(file)).catch(() => {
+                                            onClipboardError?.("Image could not be attached. Try pasting again.");
+                                        });
                                         return;
                                     }
                                 }

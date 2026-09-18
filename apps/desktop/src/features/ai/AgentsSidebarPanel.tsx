@@ -221,6 +221,12 @@ export function AgentsSidebarPanel() {
     const claudeCodeSetupStatus = useChatStore(
         (state) => state.setupStatusByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID],
     );
+    const canReconcilePins = useChatStore((state) =>
+        !state.isInitializing && !state.isHistoryInventoryLoading &&
+        !state.historyLoadError && !state.historyStorageError &&
+        state.historyLoadIssues.length === 0 && state.historyStorageStatus?.status === "ready" &&
+        Boolean(vaultPath) && state.historyStorageVaultPath === vaultPath,
+    );
     const sessionInventoryLoaded = useChatStore(
         (state) => state.sessionInventoryLoaded,
     );
@@ -279,9 +285,9 @@ export function AgentsSidebarPanel() {
     // Pins are root-owned: legacy child pins are pruned so subagents stay under
     // their parent instead of jumping into a separate Pinned bucket.
     useEffect(() => {
-        if (!sessionInventoryLoaded) return;
+        if (!sessionInventoryLoaded || !canReconcilePins) return;
         reconcilePinned(hierarchy.rootSessionIds);
-    }, [hierarchy.rootSessionIds, reconcilePinned, sessionInventoryLoaded]);
+    }, [hierarchy.rootSessionIds, reconcilePinned, sessionInventoryLoaded, canReconcilePins]);
 
     // Opening a chat must not move it into a different section. Pins and
     // archives remain explicit groups; all other conversations share one list.

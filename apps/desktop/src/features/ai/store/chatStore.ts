@@ -25,7 +25,9 @@ import {
     aiLoadRuntimeSession,
     aiLoadSession,
     aiLoadSessionHistoryPage,
-    aiLoadSessionHistories,
+    aiLoadSessionInventory,
+    type AIHistoryLoadIssue,
+    type AIHistoryInventory,
     aiPruneSessionHistories,
     aiRespondPermission,
     aiRespondUrlElicitation,
@@ -547,13 +549,14 @@ function setPersistedHistoryCache(
     vaultPath: string | null,
     histories: PersistedSessionHistory[],
 ) {
+    const state = useChatStore.getState();
+    const retainKnown = vaultPath != null && _persistedHistoryCacheVaultPath === vaultPath &&
+        state.historyStorageVaultPath === vaultPath &&
+        (state.historyLoadError != null || state.historyLoadIssues.length > 0);
     _persistedHistoryCacheVaultPath = vaultPath ?? null;
-    _persistedHistoryCacheBySessionId = new Map(
-        histories.map((history) => [
-            history.session_id,
-            summarizePersistedHistory(history),
-        ]),
-    );
+    const next = retainKnown ? new Map(_persistedHistoryCacheBySessionId) : new Map<string, PersistedSessionHistorySummary>();
+    for (const history of histories) next.set(history.session_id, summarizePersistedHistory(history));
+    _persistedHistoryCacheBySessionId = next;
 }
 
 function upsertPersistedHistoryCache(
@@ -623,6 +626,8 @@ function applyAiHistoryStorageSnapshot(
     return applied;
 }
 
+const historyStorageRequests = new Map<string, Promise<AIHistoryStorageStatus>>();
+
 function activateAiHistoryStorageContext(vaultPath: string) {
     const activeVaultPath = useVaultStore.getState().vaultPath;
     useChatStore.setState((state) => {
@@ -650,14 +655,46 @@ function canAccessAiHistoryStorageForVault(vaultPath: string) {
     );
 }
 
+const historyInventoryRequests = new Map<string, Promise<AIHistoryInventory>>();
+
+async function loadAiHistoryInventory(vaultPath: string) {
+    const isCurrent = () => useVaultStore.getState().vaultPath === vaultPath;
+    if (isCurrent()) useChatStore.setState({ isHistoryInventoryLoading: true });
+    try {
+        let request = historyInventoryRequests.get(vaultPath);
+        if (!request) {
+            request = aiLoadSessionInventory(vaultPath).finally(() => {
+                if (historyInventoryRequests.get(vaultPath) === request) historyInventoryRequests.delete(vaultPath);
+            });
+            historyInventoryRequests.set(vaultPath, request);
+        }
+        const inventory = await request;
+        if (isCurrent()) useChatStore.setState({
+            historyLoadIssues: inventory.issues,
+            historyLoadError: null,
+        });
+        return inventory.histories.filter(hasPersistedHistoryContent);
+    } catch (error) {
+        if (isCurrent()) useChatStore.setState({
+            historyLoadError: getAiErrorMessage(error, "Saved chats could not be loaded."),
+        });
+        throw error;
+    } finally {
+        if (isCurrent()) useChatStore.setState({ isHistoryInventoryLoading: false });
+    }
+}
+
 async function refreshPersistedHistoryInventory(vaultPath: string) {
     if (!canAccessAiHistoryStorageForVault(vaultPath)) return;
-    const histories = (
-        await aiLoadSessionHistories(vaultPath, { includeMessages: false })
-    ).filter(hasPersistedHistoryContent);
-    if (useVaultStore.getState().vaultPath !== vaultPath) {
-        return;
-    }
+    const histories = await loadAiHistoryInventory(vaultPath);
+    applyPersistedHistoryInventory(vaultPath, histories);
+}
+
+function applyPersistedHistoryInventory(
+    vaultPath: string,
+    histories: PersistedSessionHistory[],
+) {
+    if (useVaultStore.getState().vaultPath !== vaultPath) return;
     setPersistedHistoryCache(vaultPath, histories);
     useChatStore.setState((state) => {
         const persistedIds = new Set(histories.map((history) => history.session_id));
@@ -665,6 +702,7 @@ async function refreshPersistedHistoryInventory(vaultPath: string) {
             Object.entries(state.sessionsById).filter(([, session]) => {
                 if (getSessionVaultPath(session) !== vaultPath) return true;
                 if (session.runtimeState !== "persisted_only") return true;
+                if (state.historyLoadIssues.length > 0 || state.historyLoadError) return true;
                 return persistedIds.has(session.historySessionId);
             }),
         );
@@ -693,7 +731,6 @@ async function refreshPersistedHistoryInventory(vaultPath: string) {
         return {
             sessionsById: nextSessionsById,
             sessionOrder: reconcileSessionOrder(state.sessionOrder, nextSessionsById),
-            sessionInventoryLoaded: true,
         };
     });
 }
@@ -1635,6 +1672,10 @@ interface ChatStore {
     sessionInventoryLoaded: boolean;
     historyStorageVaultPath: string | null;
     historyStorageStatus: AIHistoryStorageStatus | null;
+    historyStorageError: string | null;
+    historyLoadError: string | null;
+    historyLoadIssues: AIHistoryLoadIssue[];
+    isHistoryInventoryLoading: boolean;
     notePickerOpen: boolean;
     autoContextEnabled: boolean;
     requireCmdEnterToSend: boolean;
@@ -1671,6 +1712,7 @@ interface ChatStore {
         createDefaultSession?: boolean;
     }) => Promise<ChatInitializationResult>;
     refreshAiHistoryStorageStatus: (vaultPath: string) => Promise<void>;
+    retryAiHistoryLoad: (vaultPath: string) => Promise<void>;
     changeAiHistoryStorage: (
         vaultPath: string,
         targetScope: AIStorageScope,
@@ -10258,6 +10300,10 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         sessionInventoryLoaded: false,
         historyStorageVaultPath: null,
         historyStorageStatus: null,
+        historyStorageError: null,
+        historyLoadError: null,
+        historyLoadIssues: [],
+        isHistoryInventoryLoading: false,
         notePickerOpen: false,
         autoContextEnabled: false,
         requireCmdEnterToSend: DEFAULT_AI_PREFERENCES.requireCmdEnterToSend,
@@ -10298,15 +10344,37 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
         refreshAiHistoryStorageStatus: async (vaultPath) => {
             activateAiHistoryStorageContext(vaultPath);
             try {
-                const snapshot = await getAiHistoryStorageStatus(vaultPath);
+                let request = historyStorageRequests.get(vaultPath);
+                if (!request) {
+                    request = getAiHistoryStorageStatus(vaultPath).finally(() => {
+                        if (historyStorageRequests.get(vaultPath) === request) {
+                            historyStorageRequests.delete(vaultPath);
+                        }
+                    });
+                    historyStorageRequests.set(vaultPath, request);
+                }
+                const snapshot = await request;
                 applyAiHistoryStorageSnapshot(snapshot, vaultPath);
+                if (get().historyStorageVaultPath === vaultPath) set({ historyStorageError: null });
             } catch (error) {
                 if (get().historyStorageVaultPath !== vaultPath) return;
+                set({ historyStorageError: getAiErrorMessage(error, "Chat storage could not be checked.") });
                 logWarn(
                     "chat-store",
                     "Failed to refresh AI history storage status",
                     error,
                 );
+            }
+        },
+
+        retryAiHistoryLoad: async (vaultPath) => {
+            await get().refreshAiHistoryStorageStatus(vaultPath);
+            if (get().historyStorageVaultPath !== vaultPath || get().historyStorageError ||
+                get().historyStorageStatus?.status !== "ready") return;
+            try {
+                await refreshPersistedHistoryInventory(vaultPath);
+            } catch (error) {
+                logWarn("chat-store", "Saved chats remain unavailable", error);
             }
         },
 
@@ -10500,6 +10568,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 return { sessionInventoryLoaded: false };
             }
 
+            const sessionOrderAtStart = get().sessionOrder;
             const shouldCreateDefaultSession =
                 options?.createDefaultSession ?? true;
             const defaultRuntimePreferenceVersionAtStart =
@@ -10508,6 +10577,50 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
             set({ isInitializing: true, sessionInventoryLoaded: false });
 
             try {
+                const vaultPath = useVaultStore.getState().vaultPath;
+                if (vaultPath) {
+                    await get().refreshAiHistoryStorageStatus(vaultPath);
+                } else if (!get().historyStorageVaultPath) {
+                    set({ historyStorageStatus: null });
+                }
+                let histories: PersistedSessionHistory[] = [];
+                let persistedBySessionId = new Map<
+                    string,
+                    PersistedSessionHistory
+                >();
+                if (vaultPath && canAccessAiHistoryStorageForVault(vaultPath)) {
+                    try {
+                        const retentionDays = get().historyRetentionDays;
+                        if (retentionDays > 0) {
+                            await aiPruneSessionHistories(
+                                vaultPath,
+                                retentionDays,
+                            );
+                        }
+                        histories = await loadAiHistoryInventory(vaultPath);
+                        persistedBySessionId = new Map(
+                            histories.map((h) => [h.session_id, h]),
+                        );
+                        setPersistedHistoryCache(vaultPath, histories);
+                    } catch (error) {
+                        // Keep known chats visible while disk access is unavailable.
+                        set({ historyLoadError: getAiErrorMessage(error, "Saved chats could not be loaded.") });
+                        histories = _persistedHistoryCacheVaultPath === vaultPath
+                            ? [..._persistedHistoryCacheBySessionId.values()].map((history) => ({ ...history, messages: [] }))
+                            : [];
+                    }
+                } else if (!vaultPath) {
+                    setPersistedHistoryCache(null, []);
+                }
+
+                // Publish disk inventory before provider probes can occupy the
+                // serial native backend. Reading saved chats needs no agent.
+                if (vaultPath && canAccessAiHistoryStorageForVault(vaultPath)) {
+                    applyPersistedHistoryInventory(vaultPath, histories);
+                }
+                if (useVaultStore.getState().vaultPath !== vaultPath) {
+                    return { sessionInventoryLoaded: false };
+                }
                 const backendRuntimes = hydrateRuntimesFromCache(
                     await aiListRuntimes(),
                 );
@@ -10540,6 +10653,9 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     };
                 });
                 const claudeFound = await checkClaudeCodeInstalled();
+                if (useVaultStore.getState().vaultPath !== vaultPath) {
+                    return { sessionInventoryLoaded: false };
+                }
                 const runtimes = [
                     ...backendRuntimes,
                     CLAUDE_TERMINAL_DESCRIPTOR,
@@ -10605,12 +10721,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     runtimeConnectionByRuntimeId,
                 });
 
-                const vaultPath = useVaultStore.getState().vaultPath;
-                if (vaultPath) {
-                    await get().refreshAiHistoryStorageStatus(vaultPath);
-                } else if (!get().historyStorageVaultPath) {
-                    set({ historyStorageStatus: null });
-                }
                 // Initialization can overlap a probe during HMR. Filter it at
                 // inventory ingestion as well as at event ingestion below.
                 const sessions = (await aiListSessions(vaultPath)).filter(
@@ -10621,37 +10731,6 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     runtimes,
                     sessions,
                 );
-
-                let histories: PersistedSessionHistory[] = [];
-                let persistedBySessionId = new Map<
-                    string,
-                    PersistedSessionHistory
-                >();
-                if (vaultPath && canAccessAiHistoryStorageForVault(vaultPath)) {
-                    try {
-                        const retentionDays = get().historyRetentionDays;
-                        if (retentionDays > 0) {
-                            await aiPruneSessionHistories(
-                                vaultPath,
-                                retentionDays,
-                            );
-                        }
-                        histories = (
-                            await aiLoadSessionHistories(vaultPath, {
-                                includeMessages: false,
-                            })
-                        ).filter(hasPersistedHistoryContent);
-                        persistedBySessionId = new Map(
-                            histories.map((h) => [h.session_id, h]),
-                        );
-                        setPersistedHistoryCache(vaultPath, histories);
-                    } catch {
-                        // Disk histories unavailable, continue without them
-                        setPersistedHistoryCache(vaultPath, []);
-                    }
-                } else {
-                    setPersistedHistoryCache(null, []);
-                }
 
                 if (sessions.length || histories.length) {
                     set((state) => {
@@ -10715,6 +10794,14 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                             return accumulator;
                         }, {});
 
+                        if (state.historyLoadError || state.historyStorageError || state.historyLoadIssues.length > 0 ||
+                            (vaultPath && !canAccessAiHistoryStorageForVault(vaultPath))) {
+                            for (const [id, session] of Object.entries(state.sessionsById)) {
+                                if (getSessionVaultPath(session) === vaultPath && !nextSessionsById[id]) {
+                                    nextSessionsById[id] = session;
+                                }
+                            }
+                        }
                         const liveHistoryIds = new Set(
                             Object.values(nextSessionsById).map(
                                 (session) => session.historySessionId,
@@ -10742,7 +10829,12 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                         }
 
                         const nextSessionOrder =
-                            reconcileSessionOrder(state.sessionOrder, nextSessionsById);
+                            reconcileSessionOrder(
+                                state.sessionOrder.filter((id) =>
+                                    sessionOrderAtStart.includes(id) ||
+                                    !id.startsWith("persisted:"),
+                                ), nextSessionsById,
+                            );
                         const nextActiveSessionId =
                             state.activeSessionId &&
                             nextSessionsById[state.activeSessionId]
@@ -10808,7 +10900,9 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     return { sessionInventoryLoaded: true };
                 }
 
-                if (!get().activeSessionId && shouldCreateDefaultSession) {
+                if (!get().activeSessionId && shouldCreateDefaultSession &&
+                    !get().historyLoadError && !get().historyStorageError &&
+                    (!vaultPath || canAccessAiHistoryStorageForVault(vaultPath))) {
                     const runtimeId = initialSelectedRuntimeId;
                     const setupStatus = getSetupStatusForRuntime(
                         setupStatusByRuntimeId,
@@ -16650,7 +16744,12 @@ function refreshActiveAiHistoryStorageStatus() {
         useChatStore.getState().historyStorageVaultPath ??
         useVaultStore.getState().vaultPath;
     if (!vaultPath) return;
-    void useChatStore.getState().refreshAiHistoryStorageStatus(vaultPath);
+    const state = useChatStore.getState();
+    if (!state.isHistoryInventoryLoading && (state.historyLoadError || state.historyLoadIssues.length > 0)) {
+        void state.retryAiHistoryLoad(vaultPath);
+    } else {
+        void state.refreshAiHistoryStorageStatus(vaultPath);
+    }
 }
 
 export function hydrateChatStorePreferences() {
@@ -16772,6 +16871,10 @@ export function initializeChatStoreRuntime() {
         useChatStore.setState({
             historyStorageVaultPath: state.vaultPath,
             historyStorageStatus: null,
+        historyStorageError: null,
+        historyLoadError: null,
+        historyLoadIssues: [],
+        isHistoryInventoryLoading: false,
         });
         if (state.vaultPath) {
             void useChatStore
@@ -16828,6 +16931,10 @@ export function resetChatStore() {
         sessionInventoryLoaded: false,
         historyStorageVaultPath: null,
         historyStorageStatus: null,
+        historyStorageError: null,
+        historyLoadError: null,
+        historyLoadIssues: [],
+        isHistoryInventoryLoading: false,
         notePickerOpen: false,
         autoContextEnabled: loadAutoContextPreference(
             useVaultStore.getState().vaultPath,

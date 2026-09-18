@@ -24,6 +24,16 @@ export function AIHistoryStorageControl({
             ? state.historyStorageStatus
             : null,
     );
+    const diagnosticVaultPath = useChatStore((state) => state.historyStorageVaultPath);
+    const storageError = useChatStore((state) => state.historyStorageError);
+    const loadError = useChatStore((state) => state.historyLoadError);
+    const loadIssues = useChatStore((state) => state.historyLoadIssues);
+    const inventoryLoading = useChatStore((state) => state.isHistoryInventoryLoading);
+    const retryLoad = useChatStore((state) => state.retryAiHistoryLoad);
+    const [retryingLoad, setRetryingLoad] = useState(false);
+    const ownsDiagnostics = diagnosticVaultPath === vaultPath;
+    const visibleError = ownsDiagnostics ? (storageError ?? loadError) : null;
+    const hasLoadIssues = ownsDiagnostics && loadIssues.length > 0;
     const refreshStatus = useChatStore(
         (state) => state.refreshAiHistoryStorageStatus,
     );
@@ -269,7 +279,9 @@ export function AIHistoryStorageControl({
                         className="shrink-0 text-[10px]"
                         style={{ color: "var(--text-secondary)" }}
                     >
-                        {isMoving ? "Moving chats…" : "Needs attention"}
+                        {isMoving ? "Moving chats…" : visibleError || status?.status === "error"
+                            ? "Storage unavailable" : status?.status === "recovery_required"
+                              ? "Needs attention" : "Checking storage…"}
                     </span>
                 )}
             </div>
@@ -461,9 +473,31 @@ export function AIHistoryStorageControl({
                 </div>
             ) : null}
 
-            {status?.status === "error" ? (
-                <div className="mt-2 text-[11px] text-red-500">
-                    {status.message}
+            {ownsDiagnostics && inventoryLoading ? (
+                <div role="status" className="mt-2 text-[11px]">Loading saved chats…</div>
+            ) : null}
+            {visibleError || hasLoadIssues || status?.status === "error" ? (
+                <div role="status" className="mt-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                    <p>{visibleError ?? (status?.status === "error" ? status.message :
+                        "Some saved chats could not be loaded. Available chats remain accessible.")}</p>
+                    {hasLoadIssues ? (
+                        <details className="mt-1">
+                            <summary>Show affected chats ({loadIssues.length})</summary>
+                            <ul>{loadIssues.map((issue, index) => (
+                                <li key={`${issue.relative_path}:${index}`} className="mt-1 break-all">
+                                    {issue.relative_path}: {issue.message}
+                                </li>
+                            ))}</ul>
+                        </details>
+                    ) : null}
+                    <button type="button" className="mt-1 underline"
+                        disabled={retryingLoad || inventoryLoading || isMoving}
+                        onClick={() => {
+                            setRetryingLoad(true);
+                            void retryLoad(vaultPath).finally(() => setRetryingLoad(false));
+                        }}>
+                        {retryingLoad ? "Retrying…" : "Retry loading chats"}
+                    </button>
                 </div>
             ) : null}
         </div>

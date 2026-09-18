@@ -954,6 +954,27 @@ describe("AIChatSessionView", () => {
         );
     });
 
+    it("keeps draft write errors visible and retries the same image", async () => {
+        setupWorkspaceSession();
+        let attempts = 0;
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_create_draft_attachment") {
+                if (++attempts === 1) throw new Error("Permission denied");
+                return { draft_attachment_id: "da_0123456789abcdef0123456789abcdef", file_name: "image.png", mime_type: "image/png" };
+            }
+            return undefined;
+        });
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+        const file = { size: 128, type: "image/png", arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)) } as unknown as File;
+        await act(async () => { await composerMockState.onPasteImage?.(file); });
+        expect(screen.getByRole("status")).toHaveTextContent("Permission denied");
+        fireEvent.click(screen.getByRole("button", { name: "Retry attachment" }));
+        await waitFor(() => expect(attempts).toBe(2));
+        await waitFor(() => expect(screen.queryByText(/Permission denied/)).not.toBeInTheDocument());
+        expect(useChatStore.getState().composerPartsBySessionId["session-a"].filter((part) => part.type === "screenshot")).toHaveLength(1);
+    });
+
     it("stores pasted images as local drafts without physical paths", async () => {
         setupWorkspaceSession();
         invokeMock.mockImplementation(async (command) => {

@@ -1132,7 +1132,7 @@ describe("chatStore", () => {
         });
         expect(invokeMock).toHaveBeenCalledWith(
             "ai_load_session_histories",
-            { vaultPath: "/vault", includeMessages: false },
+            { vaultPath: "/vault", includeMessages: false, includeDiagnostics: true },
         );
     });
 
@@ -4497,6 +4497,62 @@ describe("chatStore", () => {
             authReady: true,
             onboardingRequired: false,
         });
+    });
+
+    it("retains known chats on partial inventories and clears diagnostics after retry", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        let mode: "ready" | "partial" | "error" = "ready";
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_histories") {
+                if (mode === "error") throw new Error("Disk temporarily unavailable");
+                if (mode === "partial") return { histories: [], issues: [{ relative_path: "sessions/known", message: "Waiting for transcript" }] };
+                return { histories: [{ version: 1, session_id: "known", runtime_id: "codex-acp",
+                    model_id: "test", mode_id: "default", created_at: 1, updated_at: 2,
+                    message_count: 1, messages: [], title: "Known chat" }], issues: [] };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        await useChatStore.getState().retryAiHistoryLoad("/vault");
+        expect(useChatStore.getState().sessionsById["persisted:known"]).toBeDefined();
+        mode = "partial";
+        await useChatStore.getState().retryAiHistoryLoad("/vault");
+        expect(useChatStore.getState().sessionsById["persisted:known"]).toBeDefined();
+        expect(useChatStore.getState().historyLoadIssues).toHaveLength(1);
+        mode = "error";
+        await useChatStore.getState().retryAiHistoryLoad("/vault");
+        expect(useChatStore.getState().sessionsById["persisted:known"]).toBeDefined();
+        expect(useChatStore.getState().historyLoadError).toBe("Disk temporarily unavailable");
+        mode = "ready";
+        await useChatStore.getState().retryAiHistoryLoad("/vault");
+        expect(useChatStore.getState().historyLoadIssues).toEqual([]);
+        expect(useChatStore.getState().historyLoadError).toBeNull();
+        expect(invokeMock.mock.calls.some(([command]) => command === "ai_get_setup_status")).toBe(false);
+    });
+
+    it("publishes saved chat inventory before a slow runtime probe completes", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        let release!: (value: unknown) => void;
+        const probe = new Promise((resolve) => { release = resolve; });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_setup_status") return probe;
+            if (command === "ai_load_session_histories") return [{
+                version: 1, session_id: "early-history", runtime_id: "codex-acp",
+                model_id: "test", mode_id: "default", created_at: 1, updated_at: 2,
+                message_count: 1, messages: [], title: "Saved chat",
+            }];
+            return defaultInvokeImplementation(command, args);
+        });
+        const initialization = useChatStore.getState().initialize({ createDefaultSession: false });
+        await vi.waitFor(() => {
+            expect(useChatStore.getState().sessionInventoryLoaded).toBe(false);
+            expect(Object.values(useChatStore.getState().sessionsById).some(
+                (session) => session.historySessionId === "early-history",
+            )).toBe(true);
+        });
+        expect(useChatStore.getState().isInitializing).toBe(true);
+        release(readySetupStatus);
+        await initialization;
+        expect(useChatStore.getState().sessionInventoryLoaded).toBe(true);
     });
 
     it("hydrates existing backend sessions before creating a new one", async () => {
