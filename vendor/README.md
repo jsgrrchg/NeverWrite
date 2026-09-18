@@ -6,7 +6,6 @@ NeverWrite currently vendors upstream runtime projects that are needed for deskt
 integration and release packaging, especially:
 
 - `codex-acp`
-- `acp12`
 
 Why this lives in git:
 
@@ -18,13 +17,9 @@ What is currently required by the app/build pipeline:
 
 - `codex-acp/`
   - used as a Rust crate and sidecar build input during desktop release builds
-- `acp12/`
-  - used as Rust compatibility crates by the native backend for Grok legacy ACP
-    sessions
 
 What is vendored mainly for auditability and maintenance, not direct runtime use:
 
-- `acp12/agent-client-protocol*/`
 - upstream Rust manifests, lockfiles, and documentation
 
 That means the directory is intentionally reproducible, but not yet minimal.
@@ -50,12 +45,6 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty/`
-- `acp12/`
-  - local package names: `agent-client-protocol-legacy` and
-    `agent-client-protocol-schema-legacy`
-  - used by the native backend for Grok legacy ACP compatibility
-  - kept separate from the current ACP path so Claude, Codex, Kilo, and OpenCode
-    can continue to use the current protocol integration
 
 ## Current Codex Delta
 

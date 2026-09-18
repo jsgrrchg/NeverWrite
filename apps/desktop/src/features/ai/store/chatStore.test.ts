@@ -21498,7 +21498,79 @@ describe("chatStore", () => {
         ).toEqual(["low", "medium", "high", "xhigh"]);
     });
 
-    it("preserves legacy ACP model config value when modelId is empty", () => {
+    it.each(["new", "saved"] as const)("does not force old Grok models into a %s chat without config options", async (kind) => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const runtime = useChatStore.getState().runtimes[0]!;
+        useChatStore.setState((state) => ({
+            runtimes: [...state.runtimes, {
+                ...runtime,
+                runtime: { ...runtime.runtime, id: "grok-acp", name: "Grok" },
+                models: [],
+                configOptions: [],
+            }],
+        }));
+        localStorage.setItem(AI_PREFS_KEY, JSON.stringify({
+            modelId: "grok-build",
+            configOptions: { model: "grok-build" },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_setup_status") {
+                return { ...readySetupStatus, runtime_id: "grok-acp" };
+            }
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: "grok-cli-default",
+                    runtime_id: "grok-acp",
+                    model_id: "",
+                    models: [],
+                    modes: [],
+                    config_options: [],
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        invokeMock.mockClear();
+
+        if (kind === "saved") {
+            const savedSession: AIChatSession = {
+                ...createSessionWithTrackedFiles("persisted:grok-history", []),
+                historySessionId: "grok-history",
+                runtimeId: "grok-acp",
+                modelId: "grok-build",
+                modeId: "",
+                runtimeState: "persisted_only",
+                isPersistedSession: true,
+                persistedMessageCount: 1,
+                loadedPersistedMessageStart: 0,
+                messages: [{ id: "old-user", role: "user", kind: "text",
+                    content: "Keep this Grok transcript", timestamp: 1 }],
+                configOptions: [{
+                    id: "model", runtimeId: "grok-acp", category: "model",
+                    label: "Model", type: "select", value: "grok-build",
+                    options: [{ value: "grok-build", label: "Grok Build" }],
+                }],
+            };
+            useChatStore.setState({
+                sessionsById: { [savedSession.sessionId]: savedSession },
+                sessionOrder: [savedSession.sessionId],
+                activeSessionId: savedSession.sessionId,
+            });
+            expect(await useChatStore.getState().resumeSession(savedSession.sessionId)).toBe("grok-cli-default");
+            expect(useChatStore.getState().sessionsById["grok-cli-default"]?.messages).toEqual(
+                expect.arrayContaining([expect.objectContaining({ content: "Keep this Grok transcript" })]),
+            );
+        } else {
+            expect(await useChatStore.getState().newSession("grok-acp")).toBe("grok-cli-default");
+        }
+        expect(invokeMock.mock.calls.filter(([command]) =>
+            command === "ai_set_model" || command === "ai_set_config_option" || command === "ai_resume_runtime_session",
+        )).toHaveLength(0);
+        expect(useChatStore.getState().sessionsById["grok-cli-default"]?.modelId).toBe("");
+    });
+
+    it("preserves ACP model config value when modelId is empty", () => {
         const session = createSessionWithTrackedFiles("grok-session-1", [], "wc-grok");
 
         useChatStore.getState().upsertSession(
