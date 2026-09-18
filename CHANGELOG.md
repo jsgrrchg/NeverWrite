@@ -34,6 +34,19 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.2] - 2026-09-18
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.78.0` and switched its packaging to a pinned, reproducible npm dependency.
+
+### Fixed
+
+- Fixed slow AI chat startup by making saved conversations available before runtime checks finish and reducing unnecessary history scans.
+- Fixed saved-chat recovery so unreadable or conflicting histories no longer hide healthy conversations, partial loads preserve existing chats and pins, and retryable storage errors can be retried from Settings.
+- Fixed pasted images from application menus being ignored in the AI composer and added clearer feedback when an attachment can be retried.
+- Fixed Markdown Live Preview sometimes appearing blank after switching tabs, while preserving the restored reading position and refreshing delayed preview decorations.
+
 ## [0.8.1] - 2026-09-12
 
 ### Fixed
