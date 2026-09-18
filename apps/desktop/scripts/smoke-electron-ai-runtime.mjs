@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { rejects } from "node:assert/strict";
 import { createInterface } from "node:readline";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -35,6 +36,8 @@ class SidecarClient {
           process.env.NEVERWRITE_AI_SECRET_STORE?.trim() || "memory",
         NEVERWRITE_CUSTOM_ACP_TEST_SECRET: "must-not-reach-custom-runtime",
         CUSTOM_ACP_INHERITED_ONLY: "must-not-be-inherited",
+        // Grok smoke scenarios use only the fixture key or simulated CLI login.
+        XAI_API_KEY: "",
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -495,15 +498,37 @@ async function writeFakeGrokAcpRuntime(runtimeDir) {
       ? `@echo off\r\nnode "%~dp0\\fake-grok-acp.mjs"\r\n`
       : `#!/usr/bin/env node\nimport "./fake-grok-acp.mjs";\n`;
   const modulePath = path.join(runtimeDir, "fake-grok-acp.mjs");
+  const requestLogPath = path.join(runtimeDir, "fake-grok-requests.jsonl");
+  const configPath = path.join(runtimeDir, "fake-grok-config.json");
+  await fs.writeFile(requestLogPath, "");
+  await fs.writeFile(configPath, "{}");
   await fs.writeFile(runtimePath, script);
   await fs.writeFile(
     modulePath,
     `
 import { createInterface } from "node:readline";
+import { appendFileSync, readFileSync } from "node:fs";
 
-const sessionId = "fake-grok-acp-session";
+const requestLogPath = ${JSON.stringify(requestLogPath)};
+const config = JSON.parse(readFileSync(${JSON.stringify(configPath)}, "utf8"));
+const sessionId = config.sessionId ?? "fake-grok-acp-session";
 let authenticated = false;
 let authenticatedMethod = null;
+let model = "grok-build";
+let pendingPrompt = null;
+function configOptions() {
+  return [{
+    id: "model", name: "Model", category: "model", type: "select",
+    currentValue: model,
+    options: [
+      { value: "grok-build", name: "Grok Build" },
+      { value: "grok-fast", name: "Grok Fast" }
+    ]
+  }];
+}
+function log(method, params) {
+  appendFileSync(requestLogPath, JSON.stringify({ method, params }) + "\\n");
+}
 
 function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
@@ -517,12 +542,31 @@ function fail(id, message) {
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
+  log(message.method ?? "client/response", message.method === "authenticate"
+    ? { methodId: message.params.methodId, headless: message.params._meta?.headless,
+        hasApiKey: Boolean(process.env.XAI_API_KEY) }
+    : message.params ?? message.result);
+  if (message.id === "grok-permission" && !message.method) {
+    if (message.result?.outcome?.optionId !== "allow") {
+      fail(pendingPrompt, "permission was not granted");
+    } else {
+      result(pendingPrompt, { stopReason: "end_turn" });
+    }
+    pendingPrompt = null;
+    return;
+  }
   if (message.method === "initialize") {
+    if (message.params.protocolVersion !== 1) {
+      fail(message.id, "Grok requires ACP wire protocol v1");
+      return;
+    }
     result(message.id, {
       protocolVersion: 1,
       agentCapabilities: {},
       agentInfo: { name: "fake-grok-acp", title: "Fake Grok ACP", version: "0.0.0" },
-      authMethods: [
+      _meta: { modelState: { currentModelId: "obsolete-initialize-model",
+        availableModels: [{ modelId: "obsolete-initialize-model", name: "Obsolete" }] } },
+      authMethods: config.missingAuthMethod ? [] : [
         { id: "cached_token", name: "Cached token" },
         { id: "xai.api_key", name: "xAI API key" }
       ]
@@ -531,6 +575,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (message.method === "authenticate") {
     const methodId = message.params?.methodId;
+    if (config.authFailure) {
+      fail(message.id, "Invalid API key");
+      return;
+    }
     if (methodId !== "cached_token" && methodId !== "xai.api_key") {
       fail(message.id, "unsupported auth method");
       return;
@@ -547,8 +595,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     result(message.id, {
       sessionId,
+      ...(config.modern ? { configOptions: configOptions() } : {}),
       models: {
-        currentModelId: "grok-build",
+        currentModelId: "obsolete-session-model",
         availableModels: [
           { modelId: "grok-composer-2.5-fast", name: "Composer 2.5" },
           { modelId: "grok-build", name: "Grok Build" }
@@ -558,12 +607,46 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (message.method === "session/set_model") {
-    result(message.id, {});
+    fail(message.id, "legacy model RPC must never be called");
+    return;
+  }
+  if (message.method === "session/set_config_option") {
+    if (!config.modern || message.params.configId !== "model") {
+      fail(message.id, "config option was not advertised");
+      return;
+    }
+    const value = message.params.value;
+    if (value !== "grok-build" && value !== "grok-fast") {
+      fail(message.id, "unsupported model");
+      return;
+    }
+    model = value;
+    result(message.id, { configOptions: configOptions() });
     return;
   }
   if (message.method === "session/prompt") {
     if (!authenticated) {
       fail(message.id, "authentication required before session/prompt");
+      return;
+    }
+    const text = message.params.prompt.map((block) => block.text ?? "").join(" ");
+    if (text.includes("WAIT_FOR_CANCEL")) {
+      pendingPrompt = message.id;
+      send({ method: "session/update", params: { sessionId, update: {
+        sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Waiting for cancel" }
+      } } });
+      return;
+    }
+    if (text.includes("ASK_PERMISSION")) {
+      pendingPrompt = message.id;
+      send({ id: "grok-permission", method: "session/request_permission", params: {
+        sessionId,
+        toolCall: { toolCallId: "grok-permission-tool", title: "Allow Grok edit",
+          kind: "edit", status: "pending",
+          rawInput: { file_path: "Notes/A.md", content: "# Grok permitted edit\\n" },
+          locations: [{ path: "Notes/A.md" }] },
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }]
+      } });
       return;
     }
     send({
@@ -601,7 +684,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     result(message.id, { stopReason: "end_turn" });
     return;
   }
-  if (message.method === "session/cancel") return;
+  if (message.method === "session/cancel") {
+    if (pendingPrompt !== null) result(pendingPrompt, { stopReason: "cancelled" });
+    pendingPrompt = null;
+    return;
+  }
   send({
     id: message.id,
     error: { code: -32601, message: "Method not found" }
@@ -610,7 +697,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 `.trimStart(),
   );
   await fs.chmod(runtimePath, 0o755).catch(() => {});
-  return runtimePath;
+  return { runtimePath, requestLogPath, configPath };
 }
 
 async function main() {
@@ -633,7 +720,11 @@ async function main() {
     requestLogPath: fakeAcpRequestLogPath,
     providerFailurePath: fakeAcpProviderFailurePath,
   } = await writeFakeAcpRuntime(runtimeDir);
-  const fakeGrokAcpPath = await writeFakeGrokAcpRuntime(runtimeDir);
+  const {
+    runtimePath: fakeGrokAcpPath,
+    requestLogPath: fakeGrokRequestLogPath,
+    configPath: fakeGrokConfigPath,
+  } = await writeFakeGrokAcpRuntime(runtimeDir);
   await writeFixtureVault(vaultPath);
   const client = new SidecarClient(sidecarPath, appDataDir);
 
@@ -1525,6 +1616,121 @@ async function main() {
       isAiEvent("ai://message-completed"),
       "Grok ACP stream completion",
     );
+
+    const grokStartupRequests = await readRequestLog(fakeGrokRequestLogPath);
+    assert(
+      grokStartupRequests.slice(0, 3).map((request) => request.method).join(",") ===
+        "initialize,authenticate,session/new",
+      "Grok must authenticate through the shared ACP v1 actor before creating a session",
+    );
+    assert(
+      grokStartupRequests[0].params.protocolVersion === 1 &&
+        !grokStartupRequests[0].params.clientCapabilities.elicitation &&
+        grokStartupRequests[1].params.methodId === "xai.api_key" &&
+        grokStartupRequests[1].params.headless === true &&
+        grokStartupRequests[1].params.hasApiKey === true,
+      "Grok migration must preserve wire version, capabilities and headless API-key auth",
+    );
+    await rejects(client.invoke("ai_set_model", {
+      sessionId: grokSession.session_id, modelId: "previously-saved-model",
+    }), /managed by Grok CLI/);
+    await rejects(client.invoke("ai_resume_runtime_session", {
+      input: { runtime_id: "grok-acp", session_id: grokSession.session_id }, vaultPath,
+    }), /does not support native session resume/);
+
+    cursor = client.eventCursor();
+    await client.invoke("ai_send_message", {
+      sessionId: grokSession.session_id, content: "ASK_PERMISSION", attachments: [],
+    });
+    const grokPermission = await client.waitEventAfter(cursor, (event) =>
+      event.eventName === "ai://permission-request" &&
+      event.payload?.session_id === grokSession.session_id, "Grok permission request");
+    assert(grokPermission.payload.diffs?.[0]?.reversible === true,
+      "Grok permissions should preserve reversible diffs");
+    await client.invoke("ai_respond_permission", { input: {
+      session_id: grokSession.session_id,
+      request_id: grokPermission.payload.request_id,
+      option_id: "allow",
+    } });
+    await client.waitEventAfter(cursor, isAiEvent("ai://message-completed"),
+      "Grok prompt completed after granting permission");
+
+    cursor = client.eventCursor();
+    await client.invoke("ai_send_message", {
+      sessionId: grokSession.session_id, content: "WAIT_FOR_CANCEL", attachments: [],
+    });
+    await client.waitEventAfter(cursor, (event) =>
+      event.eventName === "ai://message-delta" && event.payload?.delta === "Waiting for cancel",
+      "Grok cancellable prompt started");
+    const cancelledGrokSession = await client.invoke("ai_cancel_turn", {
+      sessionId: grokSession.session_id,
+    });
+    assert(cancelledGrokSession.status === "idle", "Cancelled Grok session should return to idle");
+    await client.waitEventAfter(cursor, isAiEvent("ai://message-completed"),
+      "Grok prompt completed after cancellation");
+
+    await fs.writeFile(fakeGrokConfigPath, JSON.stringify({ modern: true, sessionId: "grok-modern" }));
+    const modernGrokSession = await client.invoke("ai_create_session", {
+      input: { runtime_id: "grok-acp" }, vaultPath,
+    });
+    assert(modernGrokSession.model_id === "grok-build" && modernGrokSession.models.length === 2,
+      "Modern Grok configOptions must take precedence over obsolete model descriptors");
+    const changedGrokModel = await client.invoke("ai_set_model", {
+      sessionId: modernGrokSession.session_id, modelId: "grok-fast",
+    });
+    assert(changedGrokModel.model_id === "grok-fast", "Grok model selection should use config options");
+    const changedGrokConfig = await client.invoke("ai_set_config_option", { input: {
+      session_id: modernGrokSession.session_id, option_id: "model", value: "grok-build",
+    } });
+    assert(changedGrokConfig.model_id === "grok-build", "Grok config changes should synchronize the model");
+    await rejects(client.invoke("ai_set_model", {
+      sessionId: modernGrokSession.session_id, modelId: "invalid-model",
+    }), /unsupported model/);
+    const unchangedGrokSession = await client.invoke("ai_load_session", {
+      sessionId: modernGrokSession.session_id,
+    });
+    assert(unchangedGrokSession.model_id === "grok-build", "Failed model changes must not mutate the session");
+    const grokRequests = await readRequestLog(fakeGrokRequestLogPath);
+    assert(!grokRequests.some((request) => request.method === "session/set_model"),
+      "Grok must never call the removed legacy model RPC");
+    assert(grokRequests.filter((request) => request.method === "session/set_config_option").length === 3,
+      "Only advertised Grok model options should send config-option RPCs");
+    assert(grokRequests.some((request) => request.method === "session/cancel") &&
+      grokRequests.some((request) => request.method === "client/response" &&
+        request.params?.outcome?.optionId === "allow"),
+      "Grok cancellation and permission responses must reach the runtime process");
+
+    await fs.writeFile(fakeGrokConfigPath, JSON.stringify({ missingAuthMethod: true }));
+    await fs.writeFile(fakeGrokRequestLogPath, "");
+    await rejects(client.invoke("ai_create_session", {
+      input: { runtime_id: "grok-acp" }, vaultPath,
+    }), /auth method/i);
+    const missingAuthRequests = await readRequestLog(fakeGrokRequestLogPath);
+    assert(missingAuthRequests.length === 1 && missingAuthRequests[0].method === "initialize",
+      "Missing Grok auth methods must stop startup before authenticate or session/new");
+
+    await fs.writeFile(fakeGrokConfigPath, JSON.stringify({ authFailure: true }));
+    await fs.writeFile(fakeGrokRequestLogPath, "");
+    await rejects(client.invoke("ai_create_session", {
+      input: { runtime_id: "grok-acp" }, vaultPath,
+    }), /invalid api key/i);
+    const failedAuthRequests = await readRequestLog(fakeGrokRequestLogPath);
+    assert(failedAuthRequests.map((request) => request.method).join(",") === "initialize,authenticate",
+      "Rejected Grok authentication must not create a session");
+
+    await client.invoke("ai_start_auth", {
+      input: { runtime_id: "grok-acp", method_id: "grok-login" }, vaultPath,
+    });
+    await fs.writeFile(fakeGrokConfigPath, JSON.stringify({ sessionId: "grok-cached-token" }));
+    await fs.writeFile(fakeGrokRequestLogPath, "");
+    const cachedGrokSession = await client.invoke("ai_create_session", {
+      input: { runtime_id: "grok-acp" }, vaultPath,
+    });
+    assert(cachedGrokSession.status === "idle", "Simulated Grok CLI login should create a session");
+    const cachedAuthRequests = await readRequestLog(fakeGrokRequestLogPath);
+    assert(cachedAuthRequests[1]?.params.methodId === "cached_token" &&
+      cachedAuthRequests[1]?.params.headless === true,
+      "Grok CLI login must use the shared actor's headless cached_token handshake");
 
     const history = minimalHistory(session.session_id);
     await client.invoke("ai_save_session_history", { vaultPath, history });
