@@ -65,7 +65,7 @@ use crate::{
     acp_providers,
     custom_acp::{revalidate_custom_acp_launch, CustomAcpLaunchSnapshot, CustomAcpRuntimeManager},
     runtime_catalog::{
-        AcpProtocolFlavor, ProcessEnvironmentPolicy, RuntimeDefinition, RuntimeProductProfile,
+        ProcessEnvironmentPolicy, RuntimeDefinition, RuntimeProductProfile,
         RUNTIME_CATALOG,
     },
     RpcOutput,
@@ -967,7 +967,6 @@ struct AcpProcessSpec {
     cwd: PathBuf,
     env: HashMap<String, String>,
     runtime_id: String,
-    acp_protocol: AcpProtocolFlavor,
     environment_policy: ProcessEnvironmentPolicy,
     product_profile: RuntimeProductProfile,
     custom_launch: Option<CustomAcpLaunchSnapshot>,
@@ -4167,28 +4166,6 @@ impl NativeAcpClient {
         Ok(())
     }
 
-    async fn request_permission_acp12(
-        &self,
-        args: acp12::schema::RequestPermissionRequest,
-    ) -> acp12::Result<acp12::schema::RequestPermissionResponse> {
-        let args = acp12_to_current(args).map_err(acp12_internal_error)?;
-        let response = self
-            .request_permission(args)
-            .await
-            .map_err(current_error_to_acp12)?;
-        current_to_acp12(response).map_err(acp12_internal_error)
-    }
-
-    async fn session_notification_acp12(
-        &self,
-        notification: acp12::schema::SessionNotification,
-    ) -> acp12::Result<()> {
-        let notification = acp12_to_current(notification).map_err(acp12_internal_error)?;
-        self.session_notification(notification)
-            .await
-            .map_err(current_error_to_acp12)
-    }
-
     async fn session_notification(
         &self,
         args: SessionNotification,
@@ -4388,34 +4365,6 @@ impl NativeAcpClient {
     }
 }
 
-fn acp12_to_current<T, U>(value: T) -> Result<U, String>
-where
-    T: serde::Serialize,
-    U: serde::de::DeserializeOwned,
-{
-    serde_json::to_value(value)
-        .and_then(serde_json::from_value)
-        .map_err(|error| format!("Failed to convert ACP 0.12 payload: {error}"))
-}
-
-fn current_to_acp12<T, U>(value: T) -> Result<U, String>
-where
-    T: serde::Serialize,
-    U: serde::de::DeserializeOwned,
-{
-    serde_json::to_value(value)
-        .and_then(serde_json::from_value)
-        .map_err(|error| format!("Failed to convert ACP 0.14 payload: {error}"))
-}
-
-fn acp12_internal_error(message: String) -> acp12::Error {
-    acp12::Error::internal_error().data(message)
-}
-
-fn current_error_to_acp12(error: agent_client_protocol::Error) -> acp12::Error {
-    acp12_internal_error(error.to_string())
-}
-
 fn prompt_capabilities_from_initialize_response(
     initialize_response: &InitializeResponse,
 ) -> AcpPromptCapabilities {
@@ -4440,12 +4389,6 @@ fn remember_prompt_capabilities(
     }
 }
 
-fn neverwrite_acp12_client_capabilities(_runtime_id: &str) -> acp12::schema::ClientCapabilities {
-    // ACP 0.12 does not expose the newer elicitation capability flags through the
-    // umbrella `unstable` feature. Grok stays on the legacy surface.
-    acp12::schema::ClientCapabilities::new().fs(acp12::schema::FileSystemCapabilities::new())
-}
-
 fn start_acp_session(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
@@ -4454,7 +4397,6 @@ fn start_acp_session(
     validate_acp_process_spec(&spec).map_err(AcpSessionStartError::Other)?;
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
-    let flavor = spec.acp_protocol;
     let handle = AcpSessionHandle {
         process_id: ACP_PROCESS_COUNTER.fetch_add(1, Ordering::Relaxed),
         command_tx: command_tx.clone(),
@@ -4471,14 +4413,7 @@ fn start_acp_session(
             }
         };
         runtime.block_on(async move {
-            match flavor {
-                AcpProtocolFlavor::Current => {
-                    run_acp_actor(spec, start_mode, context, command_rx, created_tx).await;
-                }
-                AcpProtocolFlavor::Legacy12 => {
-                    run_acp12_actor(spec, start_mode, context, command_rx, created_tx).await;
-                }
-            }
+            run_acp_actor(spec, start_mode, context, command_rx, created_tx).await;
         });
     });
     let session = created_rx
@@ -4511,7 +4446,6 @@ fn validate_acp_process_spec(spec: &AcpProcessSpec) -> Result<(), String> {
         || spec.program != launch.program
         || spec.args != launch.args
         || !env_matches
-        || spec.acp_protocol != AcpProtocolFlavor::Current
         || spec.environment_policy != ProcessEnvironmentPolicy::Isolated
         || spec.product_profile != RuntimeProductProfile::Conservative
         || spec.auth_method.is_some()
@@ -4545,7 +4479,6 @@ enum AcpAuthCommand {
 
 fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> Result<(), String> {
     let (result_tx, result_rx) = mpsc::channel();
-    let flavor = spec.acp_protocol;
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
@@ -4554,12 +4487,7 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
                 return;
             }
         };
-        let result = match flavor {
-            AcpProtocolFlavor::Current => runtime.block_on(run_acp_auth_inner(spec, auth_command)),
-            AcpProtocolFlavor::Legacy12 => {
-                runtime.block_on(run_acp12_auth_inner(spec, auth_command))
-            }
-        };
+        let result = runtime.block_on(run_acp_auth_inner(spec, auth_command));
         let _ = result_tx.send(result);
     });
 
@@ -4593,37 +4521,6 @@ async fn run_acp_auth_handshake(
     };
 
     send_acp_authenticate_request(connection, request.method_id, request.meta).await
-}
-
-async fn send_acp12_authenticate_request(
-    connection: &acp12::ConnectionTo<acp12::Agent>,
-    method_id: impl Into<String>,
-    meta: Option<Meta>,
-) -> Result<(), acp12::Error> {
-    let mut request = acp12::schema::AuthenticateRequest::new(method_id.into());
-    if let Some(meta) = meta {
-        let legacy_meta: acp12::schema::Meta =
-            current_to_acp12(meta).map_err(acp12_internal_error)?;
-        request = request.meta(legacy_meta);
-    }
-    connection.send_request(request).block_task().await?;
-    Ok(())
-}
-
-async fn run_acp12_auth_handshake(
-    connection: &acp12::ConnectionTo<acp12::Agent>,
-    spec: &AcpProcessSpec,
-    initialize_response: &acp12::schema::InitializeResponse,
-) -> Result<(), acp12::Error> {
-    let initialize_response =
-        acp12_to_current(initialize_response.clone()).map_err(acp12_internal_error)?;
-    let Some(request) = validate_acp_auth_handshake_request(spec, &initialize_response)
-        .map_err(acp12_internal_error)?
-    else {
-        return Ok(());
-    };
-
-    send_acp12_authenticate_request(connection, request.method_id, request.meta).await
 }
 
 fn validate_acp_auth_handshake_request(
@@ -4779,90 +4676,6 @@ async fn run_acp_auth_inner(
     result.map_err(|error| error.to_string())
 }
 
-async fn run_acp12_auth_inner(
-    spec: AcpProcessSpec,
-    auth_command: AcpAuthCommand,
-) -> Result<(), String> {
-    let mut command = Command::new(&spec.program);
-    command.args(&spec.args);
-    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
-    command.stdin(std::process::Stdio::piped());
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::null());
-    command.kill_on_drop(true);
-    apply_acp_process_environment(&mut command, &spec);
-    #[cfg(unix)]
-    {
-        command.process_group(0);
-    }
-
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Failed to acquire ACP stdin".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
-    let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
-
-    let result = acp12::Client
-        .builder()
-        .name("neverwrite")
-        .connect_with(transport, async move |connection: acp12::ConnectionTo<acp12::Agent>| {
-            let auth_result = tokio::select! {
-                response = async {
-                    connection
-                        .send_request(
-                            acp12::schema::InitializeRequest::new(
-                                acp12::schema::ProtocolVersion::LATEST,
-                            )
-                                .client_capabilities(neverwrite_acp12_client_capabilities(
-                                    &spec.runtime_id,
-                                ))
-                                .client_info(
-                                    acp12::schema::Implementation::new(
-                                        "neverwrite",
-                                        env!("CARGO_PKG_VERSION"),
-                                    )
-                                        .title("NeverWrite"),
-                                ),
-                        )
-                        .block_task()
-                        .await?;
-                    match auth_command {
-                        AcpAuthCommand::Authenticate(method_id) => {
-                            send_acp12_authenticate_request(&connection, method_id, None).await?;
-                        }
-                        AcpAuthCommand::Logout => {
-                            connection
-                                .send_request(acp12::schema::LogoutRequest::new())
-                                .block_task()
-                                .await?;
-                        }
-                    }
-                    Ok::<(), acp12::Error>(())
-                } => response,
-                wait_result = child.wait() => {
-                    let message = wait_result
-                        .map(acp_child_exit_message)
-                        .unwrap_or_else(|error| {
-                            format!("Failed to wait for AI runtime process: {error}")
-                        });
-                    return Err(acp12::Error::internal_error().data(message));
-                }
-            };
-
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            auth_result
-        })
-        .await;
-
-    result.map_err(|error| error.to_string())
-}
-
 async fn run_acp_actor(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
@@ -4871,26 +4684,6 @@ async fn run_acp_actor(
     created_tx: mpsc::Sender<Result<AiSession, AcpSessionStartError>>,
 ) {
     let result = run_acp_actor_inner(
-        spec,
-        start_mode,
-        context,
-        &mut command_rx,
-        created_tx.clone(),
-    )
-    .await;
-    if let Err(error) = result {
-        let _ = created_tx.send(Err(AcpSessionStartError::Other(error)));
-    }
-}
-
-async fn run_acp12_actor(
-    spec: AcpProcessSpec,
-    start_mode: AcpSessionStartMode,
-    context: AcpActorContext,
-    mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
-    created_tx: mpsc::Sender<Result<AiSession, AcpSessionStartError>>,
-) {
-    let result = run_acp12_actor_inner(
         spec,
         start_mode,
         context,
@@ -5019,243 +4812,6 @@ async fn acp_startup_exit_message(
         Err(_) => return None,
     };
     Some(acp_child_wait_message(wait_result, stderr_task, config_invalid).await)
-}
-
-async fn run_acp12_actor_inner(
-    spec: AcpProcessSpec,
-    start_mode: AcpSessionStartMode,
-    context: AcpActorContext,
-    command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
-    created_tx: mpsc::Sender<Result<AiSession, AcpSessionStartError>>,
-) -> Result<(), String> {
-    let mut command = Command::new(&spec.program);
-    command.args(&spec.args);
-    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
-    command.stdin(std::process::Stdio::piped());
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    command.kill_on_drop(true);
-    apply_acp_process_environment(&mut command, &spec);
-    #[cfg(unix)]
-    {
-        command.process_group(0);
-    }
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "Failed to acquire ACP stderr".to_string())?;
-    let config_invalid = Arc::new(AtomicBool::new(false));
-    let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(
-        stderr,
-        Arc::clone(&config_invalid),
-    )));
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Failed to acquire ACP stdin".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
-    let event_tx = context.shared.event_tx.clone();
-    let client = NativeAcpClient {
-        event_tx: event_tx.clone(),
-        session_state: Arc::clone(&context.shared.session_state),
-        message_ids: Arc::new(Mutex::new(HashMap::new())),
-        thinking_ids: Arc::new(Mutex::new(HashMap::new())),
-        permission_waiters: Arc::new(Mutex::new(HashMap::new())),
-        user_input_waiters: Arc::clone(&context.elicitations.user_input_waiters),
-        url_elicitation_waiters: Arc::clone(&context.elicitations.url_elicitation_waiters),
-        completed_url_elicitations: Arc::clone(&context.elicitations.completed_url_elicitations),
-        suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
-        tool_diffs: context.shared.tool_diffs.clone(),
-        agent_writes: context.shared.agent_writes.clone(),
-        terminal_output: Arc::new(Mutex::new(HashMap::new())),
-        terminal_exit: Arc::new(Mutex::new(HashMap::new())),
-        suppress_replayed_session_events: Arc::new(AtomicBool::new(false)),
-        product_profile: spec.product_profile,
-    };
-    let permission_waiters = client.permission_waiters.clone();
-    let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
-    let session_created = Arc::new(AtomicBool::new(false));
-    let session_created_for_connection = Arc::clone(&session_created);
-    let connected_session_id = Arc::new(Mutex::new(None::<String>));
-    let connected_session_id_for_connection = Arc::clone(&connected_session_id);
-    let disconnect_runtime_id = spec.runtime_id.clone();
-    let event_tx_for_connection = event_tx.clone();
-    let prompt_capabilities = Arc::clone(&context.prompt_capabilities);
-    let client_for_shutdown = client.clone();
-
-    let result = acp12::Client
-        .builder()
-        .name("neverwrite")
-        .on_receive_request(
-            {
-                let client = client.clone();
-                async move |request: acp12::schema::RequestPermissionRequest,
-                            responder,
-                            cx: acp12::ConnectionTo<acp12::Agent>| {
-                    let client = client.clone();
-                    cx.spawn(async move {
-                        let result = client.request_permission_acp12(request).await;
-                        responder.respond_with_result(result)?;
-                        Ok(())
-                    })?;
-                    Ok(())
-                }
-            },
-            acp12::on_receive_request!(),
-        )
-        .on_receive_notification(
-            {
-                let client = client.clone();
-                async move |notification: acp12::schema::SessionNotification,
-                            _cx: acp12::ConnectionTo<acp12::Agent>| {
-                    client.session_notification_acp12(notification).await
-                }
-            },
-            acp12::on_receive_notification!(),
-        )
-        .connect_with(transport, async move |connection: acp12::ConnectionTo<acp12::Agent>| {
-            let response = tokio::select! {
-                response = async {
-                    let initialize_response = connection
-                        .send_request(
-                            acp12::schema::InitializeRequest::new(
-                                acp12::schema::ProtocolVersion::LATEST,
-                            )
-                                .client_capabilities(neverwrite_acp12_client_capabilities(
-                                    &spec.runtime_id,
-                                ))
-                                .client_info(
-                                    acp12::schema::Implementation::new(
-                                        "neverwrite",
-                                        env!("CARGO_PKG_VERSION"),
-                                    )
-                                        .title("NeverWrite"),
-                                ),
-                        )
-                        .block_task()
-                        .await?;
-                    let current_initialize_response: InitializeResponse =
-                        acp12_to_current(initialize_response.clone()).map_err(acp12_internal_error)?;
-                    remember_prompt_capabilities(
-                        &prompt_capabilities,
-                        prompt_capabilities_from_initialize_response(
-                            &current_initialize_response,
-                        ),
-                    );
-                    run_acp12_auth_handshake(&connection, &spec, &initialize_response).await?;
-                    emit_event(
-                        &event_tx_for_connection,
-                        AI_RUNTIME_CONNECTION_EVENT,
-                        json!(AiRuntimeConnectionPayload {
-                            runtime_id: spec.runtime_id.clone(),
-                            session_id: None,
-                            status: "ready".to_string(),
-                            message: None,
-                        }),
-                    );
-                    start_acp12_runtime_session(
-                        &connection,
-                        &spec,
-                        &start_mode,
-                    )
-                    .await
-                } => match response {
-                    Ok(response) => response,
-                    Err(error) => {
-                        if let Some(message) = acp_startup_exit_message(
-                            &mut child,
-                            &mut stderr_task,
-                            &config_invalid,
-                        )
-                        .await
-                        {
-                            return Err(acp12::Error::internal_error().data(message));
-                        }
-                        return Err(error);
-                    }
-                },
-                wait_result = child.wait() => {
-                    let message = acp_child_wait_message(
-                        wait_result,
-                        &mut stderr_task,
-                        &config_invalid,
-                    )
-                    .await;
-                    return Err(acp12::Error::internal_error().data(message));
-                }
-            };
-            let mut session = session_from_acp_response(
-                &spec.runtime_id,
-                response.session_id,
-                response.modes,
-                response.config_options,
-            );
-            session.additional_roots =
-                additional_roots_to_strings(start_mode.additional_directories());
-            client
-                .tool_diffs
-                .register_session_cwd(&session.session_id, spec.cwd.clone());
-            if let Ok(mut session_id) = connected_session_id_for_connection.lock() {
-                *session_id = Some(session.session_id.clone());
-            }
-            session_created_for_connection.store(true, Ordering::Relaxed);
-            let _ = created_tx.send(Ok(session));
-            loop {
-                tokio::select! {
-                    maybe_command = command_rx.recv() => {
-                        let Some(command) = maybe_command else {
-                            let _ = shutdown_acp_child(&mut child).await;
-                            return Ok(());
-                        };
-                        if let AcpCommand::Shutdown { response_tx } = command {
-                            let result = shutdown_acp_child(&mut child).await;
-                            let _ = response_tx.send(result);
-                            return Ok(());
-                        }
-                        handle_acp12_command(command, &connection, &client, &permission_waiters).await;
-                    }
-                    wait_result = child.wait() => {
-                        let message = acp_child_wait_message(
-                            wait_result,
-                            &mut stderr_task,
-                            &config_invalid,
-                        )
-                        .await;
-                        return Err(acp12::Error::internal_error().data(message));
-                    }
-                }
-            }
-        })
-        .await;
-
-    client_for_shutdown.cancel_all_user_input_waiters();
-
-    match result {
-        Ok(()) => Ok(()),
-        Err(error) if session_created.load(Ordering::Relaxed) => {
-            emit_event(
-                &event_tx,
-                AI_RUNTIME_CONNECTION_EVENT,
-                json!(AiRuntimeConnectionPayload {
-                    runtime_id: disconnect_runtime_id,
-                    session_id: connected_session_id
-                        .lock()
-                        .ok()
-                        .and_then(|session_id| session_id.clone()),
-                    status: "error".to_string(),
-                    message: Some(format!(
-                        "The AI runtime process disconnected unexpectedly: {error}"
-                    )),
-                }),
-            );
-            Ok(())
-        }
-        Err(error) => Err(error.to_string()),
-    }
 }
 
 async fn run_acp_actor_inner(
@@ -5810,61 +5366,6 @@ fn continuation_strategy_name(strategy: AcpContinuationStrategy) -> &'static str
     }
 }
 
-async fn start_acp12_runtime_session(
-    connection: &acp12::ConnectionTo<acp12::Agent>,
-    spec: &AcpProcessSpec,
-    start_mode: &AcpSessionStartMode,
-) -> Result<AcpSessionStartResponse, acp12::Error> {
-    let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
-    match start_mode {
-        AcpSessionStartMode::New {
-            additional_directories,
-        } => {
-            let response = connection
-                .send_request(
-                    acp12::schema::NewSessionRequest::new(cwd).additional_directories(
-                        additional_wire_paths(&spec.runtime_id, additional_directories),
-                    ),
-                )
-                .block_task()
-                .await?;
-            Ok(AcpSessionStartResponse {
-                session_id: response.session_id.0.to_string(),
-                modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
-                config_options: acp12_to_current(response.config_options).map_err(acp12_internal_error)?,
-                continuation_strategy: None,
-            })
-        }
-        AcpSessionStartMode::Resume { .. } => Err(acp12_internal_error(
-            "ACP 0.12 runtimes do not support session/resume in NeverWrite.".to_string(),
-        )),
-        AcpSessionStartMode::Load {
-            session_id,
-            additional_directories,
-        } => {
-            let response = connection
-                .send_request(
-                    acp12::schema::LoadSessionRequest::new(
-                        acp12::schema::SessionId::new(session_id.clone()),
-                        cwd,
-                    )
-                    .additional_directories(additional_wire_paths(
-                        &spec.runtime_id,
-                        additional_directories,
-                    )),
-                )
-                .block_task()
-                .await?;
-            Ok(AcpSessionStartResponse {
-                session_id: session_id.clone(),
-                modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
-                config_options: acp12_to_current(response.config_options).map_err(acp12_internal_error)?,
-                continuation_strategy: None,
-            })
-        }
-    }
-}
-
 
 fn config_select_option_agent_type(meta: Option<&Meta>) -> Option<String> {
     meta.and_then(|meta| meta.get("agentType"))
@@ -6020,112 +5521,6 @@ async fn handle_acp_command(
         } => {
             let result = connection
                 .send_notification(CancelNotification::new(SessionId::new(session_id)))
-                .map_err(|error| error.to_string());
-            let _ = response_tx.send(result);
-        }
-        AcpCommand::RespondPermission {
-            request_id,
-            option_id,
-            response_tx,
-        } => {
-            let result = resolve_permission_waiter(permission_waiters, &request_id, option_id);
-            let _ = response_tx.send(result);
-        }
-        AcpCommand::Shutdown { response_tx } => {
-            let _ = response_tx.send(Err(
-                "ACP shutdown must be handled by the runtime actor.".to_string()
-            ));
-        }
-    }
-}
-
-async fn handle_acp12_command(
-    command: AcpCommand,
-    connection: &acp12::ConnectionTo<acp12::Agent>,
-    client: &NativeAcpClient,
-    permission_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
-) {
-    match command {
-        AcpCommand::Prompt {
-            session_id,
-            prompt,
-            response_tx,
-        } => {
-            let connection = connection.clone();
-            let client = client.clone();
-            tokio::spawn(async move {
-                let message_id = client.begin_message(&session_id);
-                let legacy_prompt: Result<Vec<acp12::schema::ContentBlock>, String> =
-                    current_to_acp12(prompt);
-                let result = match legacy_prompt {
-                    Ok(legacy_prompt) => connection
-                        .send_request(acp12::schema::PromptRequest::new(
-                            acp12::schema::SessionId::new(session_id.clone()),
-                            legacy_prompt,
-                        ))
-                        .block_task()
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| error.to_string()),
-                    Err(error) => Err(error),
-                };
-                client.end_thinking(&session_id);
-                client.end_user_message(&session_id);
-                client.complete_assistant_turn(&session_id, &message_id);
-                if let Err(error) = &result {
-                    client.emit(
-                        AI_SESSION_ERROR_EVENT,
-                        AiSessionErrorPayload {
-                            session_id: Some(session_id),
-                            message: error.clone(),
-                        },
-                    );
-                }
-            });
-            let _ = response_tx.send(Ok(()));
-        }
-        AcpCommand::SetMode {
-            session_id,
-            mode_id,
-            response_tx,
-        } => {
-            let result = connection
-                .send_request(acp12::schema::SetSessionModeRequest::new(
-                    acp12::schema::SessionId::new(session_id),
-                    mode_id,
-                ))
-                .block_task()
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string());
-            let _ = response_tx.send(result);
-        }
-        AcpCommand::SetConfigOption {
-            session_id,
-            option_id,
-            value,
-            response_tx,
-        } => {
-            let result = connection
-                .send_request(acp12::schema::SetSessionConfigOptionRequest::new(
-                    acp12::schema::SessionId::new(session_id),
-                    option_id,
-                    value.as_str(),
-                ))
-                .block_task()
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|response| acp12_to_current(response.config_options));
-            let _ = response_tx.send(result);
-        }
-        AcpCommand::Cancel {
-            session_id,
-            response_tx,
-        } => {
-            let result = connection
-                .send_notification(acp12::schema::CancelNotification::new(
-                    acp12::schema::SessionId::new(session_id),
-                ))
                 .map_err(|error| error.to_string());
             let _ = response_tx.send(result);
         }
@@ -8037,7 +7432,6 @@ fn custom_acp_process_spec(launch: CustomAcpLaunchSnapshot, cwd: PathBuf) -> Acp
         cwd,
         env: launch.env.clone().into_iter().collect(),
         runtime_id: launch.runtime_id.clone(),
-        acp_protocol: AcpProtocolFlavor::Current,
         environment_policy: ProcessEnvironmentPolicy::Isolated,
         product_profile: RuntimeProductProfile::Conservative,
         custom_launch: Some(launch),
@@ -8103,7 +7497,6 @@ fn acp_process_spec(
         cwd,
         env,
         runtime_id: runtime_id.to_string(),
-        acp_protocol: definition.acp_protocol(),
         environment_policy: definition.process_environment_policy(),
         product_profile: definition.product_profile(),
         custom_launch: None,
@@ -12497,7 +11890,6 @@ mod tests {
         validate_acp_process_spec(&spec).unwrap();
         assert_eq!(spec.program, std::fs::canonicalize(executable).unwrap());
         assert_eq!(spec.args, ["--stdio", "; touch never"]);
-        assert_eq!(spec.acp_protocol, AcpProtocolFlavor::Current);
         assert_eq!(spec.environment_policy, ProcessEnvironmentPolicy::Isolated);
         assert_eq!(spec.product_profile, RuntimeProductProfile::Conservative);
         assert!(spec.auth_method.is_none());
@@ -12691,7 +12083,6 @@ mod tests {
             Some(grok_bin_display.as_str())
         );
         assert_eq!(spec.program, grok_bin);
-        assert_eq!(spec.acp_protocol, AcpProtocolFlavor::Current);
         assert_eq!(spec.environment_policy, ProcessEnvironmentPolicy::Inherited);
         assert_eq!(
             spec.args,
@@ -15607,36 +14998,10 @@ mod tests {
 
     #[test]
     fn grok_uses_shared_acp_v1_with_existing_capabilities() {
-        assert_eq!(
-            RUNTIME_CATALOG
-                .definition(GROK_RUNTIME_ID)
-                .unwrap()
-                .acp_protocol(),
-            AcpProtocolFlavor::Current
-        );
         assert_eq!(ProtocolVersion::LATEST, ProtocolVersion::V1);
         let capabilities = serde_json::to_value(neverwrite_acp_client_capabilities(GROK_RUNTIME_ID))
             .expect("client capabilities should serialize");
         assert!(capabilities.get("elicitation").is_none());
-    }
-
-    #[test]
-    fn current_runtimes_keep_current_acp_protocol() {
-        for runtime_id in [
-            CLAUDE_RUNTIME_ID,
-            CODEX_RUNTIME_ID,
-            GROK_RUNTIME_ID,
-            KILO_RUNTIME_ID,
-            OPENCODE_RUNTIME_ID,
-        ] {
-            assert_eq!(
-                RUNTIME_CATALOG
-                    .definition(runtime_id)
-                    .unwrap()
-                    .acp_protocol(),
-                AcpProtocolFlavor::Current
-            );
-        }
     }
 
     #[test]
