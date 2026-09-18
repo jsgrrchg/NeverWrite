@@ -1490,6 +1490,11 @@ export function Editor({
                 if (viewRef.current !== view) return;
 
                 restoreScrollAnchor(view, position, mode);
+                // This can run after the new view's first measure but before
+                // its scroll/intersection observers are ready. Explicitly
+                // update the viewport or only a virtual gap may remain visible
+                // until the user clicks inside the editor (#35).
+                view.requestMeasure();
                 restoreScrollFrameRef.current = null;
             });
         },
