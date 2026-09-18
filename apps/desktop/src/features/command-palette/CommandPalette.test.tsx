@@ -104,4 +104,35 @@ describe("CommandPalette", () => {
         ).not.toBeInTheDocument();
         expect(screen.getByText("Open note")).toBeInTheDocument();
     });
+
+    it("updates visible shortcut hints when a command is re-registered", () => {
+        setCommands(
+            [
+                {
+                    id: "toggle",
+                    label: "Toggle sidebar",
+                    category: "View",
+                    shortcut: "Ctrl+S",
+                    execute: vi.fn(),
+                },
+            ],
+            "command-palette",
+        );
+
+        renderComponent(<CommandPalette />);
+        expect(screen.getByText("Ctrl+S")).toBeInTheDocument();
+
+        act(() => {
+            useCommandStore.getState().register({
+                id: "toggle",
+                label: "Toggle sidebar",
+                category: "View",
+                shortcut: "Ctrl+Alt+B",
+                execute: vi.fn(),
+            });
+        });
+
+        expect(screen.queryByText("Ctrl+S")).not.toBeInTheDocument();
+        expect(screen.getByText("Ctrl+Alt+B")).toBeInTheDocument();
+    });
 });

@@ -29,6 +29,10 @@ import { getSystemUsername } from "./systemUser";
 import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
 import { installDeepLinkRuntime } from "./deepLink";
+import {
+    setNativeMenuShortcutCaptureActive,
+    syncNativeMenuShortcutAccelerators,
+} from "./menu";
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object"
@@ -210,13 +214,15 @@ interface IpcRegistrationOptions {
     runtimeSecretServiceName: string;
 }
 
-function registerInvokeHandler(options: IpcRegistrationOptions) {
-    const emitRuntimeEvent = (eventName: string, payload: unknown) => {
-        for (const window of BrowserWindow.getAllWindows()) {
-            if (window.isDestroyed()) continue;
-            window.webContents.send(ELECTRON_IPC.event, { eventName, payload });
-        }
-    };
+export function broadcastRuntimeEvent(eventName: string, payload: unknown) {
+    for (const window of BrowserWindow.getAllWindows()) {
+        if (window.isDestroyed()) continue;
+        window.webContents.send(ELECTRON_IPC.event, { eventName, payload });
+    }
+}
+
+function createBackend(options: IpcRegistrationOptions) {
+    const emitRuntimeEvent = broadcastRuntimeEvent;
     const nativeBackend = createNativeBackendSidecar(emitRuntimeEvent, {
         runtimeSecretServiceName: options.runtimeSecretServiceName,
     });
@@ -231,8 +237,11 @@ function registerInvokeHandler(options: IpcRegistrationOptions) {
         installWebClipperServer: () =>
             installWebClipperRuntime(backend, emitRuntimeEvent),
     });
+    return backend;
+}
 
-    ipcMain.handle(ELECTRON_IPC.invoke, async (_event, rawEnvelope) => {
+function registerInvokeHandler(backend: ElectronVaultBackend) {
+    ipcMain.handle(ELECTRON_IPC.invoke, async (event, rawEnvelope) => {
         const envelope = asRecord(rawEnvelope) as Partial<IpcInvokeEnvelope>;
         if (typeof envelope.command !== "string" || !envelope.command) {
             throw new Error("Invalid invoke envelope.");
@@ -242,6 +251,20 @@ function registerInvokeHandler(options: IpcRegistrationOptions) {
         // pure TS backend.
         if (envelope.command === "get_system_username") {
             return getSystemUsername();
+        }
+        if (envelope.command === "sync_native_menu_shortcuts") {
+            return syncNativeMenuShortcutAccelerators(
+                asRecord(envelope.args).accelerators,
+            );
+        }
+        if (envelope.command === "set_native_menu_shortcut_capture") {
+            return setNativeMenuShortcutCaptureActive(
+                getSenderWindow(event),
+                asRecord(envelope.args).active,
+            );
+        }
+        if (envelope.command === "ai_resolve_managed_attachment_path") {
+            throw new Error("Private backend command.");
         }
         return backend.invoke(envelope.command, asRecord(envelope.args));
     });
@@ -336,16 +359,41 @@ export async function resolveCodexGeneratedImagePreviewPath(
     return null;
 }
 
-export function registerPreviewProtocolHandler() {
+export function registerPreviewProtocolHandler(
+    backend: Pick<ElectronVaultBackend, "invoke">,
+) {
     return async (request: Request) => {
         try {
             const url = new URL(request.url);
             const segments = url.pathname.split("/");
             const [, scope, encodedVaultPath, encodedRelativePath] = segments;
+            if (
+                scope === "ai-attachment" &&
+                encodedVaultPath &&
+                encodedRelativePath
+            ) {
+                const vaultPath = decodeBase64UrlSegment(encodedVaultPath);
+                const attachmentId = decodeURIComponent(encodedRelativePath);
+                const result = (await backend.invoke(
+                    "ai_read_managed_attachment",
+                    { vaultPath, attachmentId },
+                )) as { data_base64: string; mime_type: string };
+                const data = Buffer.from(result.data_base64, "base64");
+                return new Response(new Uint8Array(data), {
+                    headers: {
+                        "content-type": result.mime_type,
+                        "cache-control": "no-store",
+                    },
+                });
+            }
+
             if (scope === "vault" && encodedVaultPath && encodedRelativePath) {
                 const vaultPath = decodeBase64UrlSegment(encodedVaultPath);
                 const relativePath =
                     decodeBase64UrlSegment(encodedRelativePath);
+                if (relativePath.split(/[\\/]/).some((part) => part.toLowerCase() === ".neverwrite-managed")) {
+                    throw new Error("Managed attachment storage is private.");
+                }
                 const filePath = resolvePreviewFilePath(
                     vaultPath,
                     relativePath,
@@ -365,6 +413,9 @@ export function registerPreviewProtocolHandler() {
                     .slice(3)
                     .map((segment) => decodeURIComponent(segment))
                     .join("/");
+                if (relativePath.split("/").some((part) => part.toLowerCase() === ".neverwrite-managed")) {
+                    throw new Error("Managed attachment storage is private.");
+                }
                 const filePath = resolvePreviewFilePath(
                     vaultPath,
                     relativePath,
@@ -418,10 +469,12 @@ export function registerPreviewProtocolHandler() {
 }
 
 export function registerIpcHandlers(options: IpcRegistrationOptions) {
-    registerInvokeHandler(options);
+    const backend = createBackend(options);
+    registerInvokeHandler(backend);
     registerDialogHandlers();
     registerOpenerHandlers();
     registerWindowHandlers();
     registerRuntimeEventHandlers();
     registerAppLogHandlers();
+    return backend;
 }

@@ -12,7 +12,6 @@ import { getCurrentWindow } from "@neverwrite/runtime";
 import {
     DEFAULT_RIGHT_PANEL_WIDTH,
     DEFAULT_SIDEBAR_WIDTH,
-    MIN_RIGHT_PANEL_WIDTH,
     MIN_SIDEBAR_WIDTH,
     useLayoutStore,
 } from "../../app/store/layoutStore";
@@ -28,6 +27,11 @@ import {
     AGENT_SIDEBAR_DRAG_EVENT,
     type AgentSidebarDragDetail,
 } from "../../features/ai/agentSidebarDragEvents";
+import {
+    getSidebarViewMinimumWidth,
+    type MovableSidebarView,
+    type SidebarSide,
+} from "./sidebarViews";
 
 // Both macOS (native "sidebar" vibrancy) and Windows 11 (native acrylic
 // backgroundMaterial) paint a translucent window material beneath the
@@ -103,9 +107,10 @@ interface AppLayoutProps {
     left: React.ReactNode;
     center: React.ReactNode;
     right?: React.ReactNode;
+    preferredCenterMinimumWidth?: number;
 }
 
-export function AppLayout({ left, center, right }: AppLayoutProps) {
+export function AppLayout({ left, center, right, preferredCenterMinimumWidth = MIN_CENTER_PEEK_WIDTH }: AppLayoutProps) {
     const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
     const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
     const showSidebarAtWidth = useLayoutStore((s) => s.showSidebarAtWidth);
@@ -113,6 +118,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const rightPanelExpanded = useLayoutStore((s) => s.rightPanelExpanded);
     const rightPanelWidth = useLayoutStore((s) => s.rightPanelWidth);
+    const activeRightView = useLayoutStore((s) => s.activeSidebarView.right);
+    const rightMinimumWidth = getSidebarViewMinimumWidth(activeRightView);
     const collapseRightPanelToWidth = useLayoutStore(
         (s) => s.collapseRightPanelToWidth,
     );
@@ -132,9 +139,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const sidebarDockFrameRef = useRef<number | null>(null);
     const sidebarDockUnmountTimerRef = useRef<number | null>(null);
     const previousSidebarCollapsedRef = useRef(sidebarCollapsed);
-    const [renderDockedSidebar, setRenderDockedSidebar] = useState(
-        !sidebarCollapsed,
-    );
+    const [renderDockedSidebar, setRenderDockedSidebar] =
+        useState(!sidebarCollapsed);
     const [dockedSidebarWidth, setDockedSidebarWidth] = useState(() =>
         sidebarCollapsed ? 0 : sidebarWidth,
     );
@@ -157,7 +163,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const sidebarOverlayRef = useRef<HTMLDivElement>(null);
     const overlayDismissTimerRef = useRef<number | null>(null);
     const sidebarPointerRef = useRef<PointerPosition | null>(null);
-    const sidebarDragActiveRef = useRef(false);
+    const sidebarDragOriginRef = useRef<SidebarSide | null>(null);
 
     // Demote the inner wrapper once its own slide finishes. Guard on the
     // event target so transitions bubbling up from sidebar descendants don't
@@ -214,12 +220,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     );
 
     const scheduleHideSidebarOverlay = useCallback(() => {
-        if (sidebarDragActiveRef.current) return;
+        if (sidebarDragOriginRef.current === "left") return;
         if (overlayDismissTimerRef.current !== null) return;
         overlayDismissTimerRef.current = window.setTimeout(() => {
             overlayDismissTimerRef.current = null;
             if (
-                sidebarDragActiveRef.current ||
+                sidebarDragOriginRef.current === "left" ||
                 isSidebarPointerInSafeZone()
             ) {
                 return;
@@ -339,6 +345,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     // a drop target for note drags, so the simple hover flow is enough.
     const [rightOverlayVisible, setRightOverlayVisible] = useState(false);
     const rightOverlayRef = useRef<HTMLDivElement>(null);
+    const rightPanelRef = useRef<HTMLDivElement>(null);
     const rightOverlayDismissTimerRef = useRef<number | null>(null);
     const rightPointerRef = useRef<PointerPosition | null>(null);
 
@@ -375,9 +382,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     );
 
     const scheduleHideRightOverlay = useCallback(() => {
+        if (sidebarDragOriginRef.current === "right") return;
         if (rightOverlayDismissTimerRef.current !== null) return;
         rightOverlayDismissTimerRef.current = window.setTimeout(() => {
             rightOverlayDismissTimerRef.current = null;
+            if (sidebarDragOriginRef.current === "right") return;
             if (isRightPointerInSafeZone()) return;
             setRightOverlayVisible(false);
         }, EDGE_PEEK_DISMISS_DELAY_MS);
@@ -413,9 +422,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
 
     useEffect(() => {
         const handleSidebarOriginDrag = (
-            detail:
-                | FileTreeNoteDragDetail
-                | AgentSidebarDragDetail,
+            detail: FileTreeNoteDragDetail | AgentSidebarDragDetail,
+            sourceView: MovableSidebarView,
         ) => {
             if (!detail) return;
             if (Number.isFinite(detail.x) && Number.isFinite(detail.y)) {
@@ -426,28 +434,30 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             }
 
             if (detail.phase === "start" || detail.phase === "move") {
-                const rootRect = rootRef.current?.getBoundingClientRect();
-                const overlayLeft = rootRect?.left ?? 0;
-                const startedInsideSidebarOverlay =
-                    detail.phase === "start" &&
-                    sidebarCollapsed &&
-                    sidebarOverlayVisible &&
-                    ("origin" in detail
-                        ? detail.origin?.kind !== "workspace-tab"
-                        : true) &&
-                    detail.x >= overlayLeft &&
-                    detail.x <= overlayLeft + sidebarWidth;
-
-                if (
-                    !sidebarDragActiveRef.current &&
-                    !startedInsideSidebarOverlay
-                ) {
-                    return;
+                if (detail.phase === "start") {
+                    if (
+                        "origin" in detail &&
+                        detail.origin?.kind === "workspace-tab"
+                    ) {
+                        sidebarDragOriginRef.current = null;
+                        return;
+                    }
+                    sidebarDragOriginRef.current =
+                        useLayoutStore.getState().movableSidebarPlacement[
+                            sourceView
+                        ];
                 }
-
-                sidebarDragActiveRef.current = true;
-                if (sidebarCollapsed) {
+                if (
+                    sidebarDragOriginRef.current === "left" &&
+                    sidebarCollapsed
+                ) {
                     showSidebarOverlay();
+                }
+                if (
+                    sidebarDragOriginRef.current === "right" &&
+                    rightPanelCollapsed
+                ) {
+                    showRightOverlay();
                 }
                 return;
             }
@@ -457,10 +467,14 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 detail.phase === "cancel" ||
                 detail.phase === "attach"
             ) {
-                if (!sidebarDragActiveRef.current) return;
-                sidebarDragActiveRef.current = false;
-                if (sidebarCollapsed) {
+                const origin = sidebarDragOriginRef.current;
+                if (!origin) return;
+                sidebarDragOriginRef.current = null;
+                if (origin === "left" && sidebarCollapsed) {
                     scheduleHideSidebarOverlay();
+                }
+                if (origin === "right" && rightPanelCollapsed) {
+                    scheduleHideRightOverlay();
                 }
             }
         };
@@ -468,12 +482,14 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         const handleFileTreeDrag = (event: Event) => {
             handleSidebarOriginDrag(
                 (event as CustomEvent<FileTreeNoteDragDetail>).detail,
+                "files",
             );
         };
 
         const handleAgentSidebarDrag = (event: Event) => {
             handleSidebarOriginDrag(
                 (event as CustomEvent<AgentSidebarDragDetail>).detail,
+                "agents",
             );
         };
 
@@ -483,7 +499,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             handleAgentSidebarDrag,
         );
         return () => {
-            sidebarDragActiveRef.current = false;
+            sidebarDragOriginRef.current = null;
             window.removeEventListener(
                 FILE_TREE_NOTE_DRAG_EVENT,
                 handleFileTreeDrag,
@@ -495,10 +511,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         };
     }, [
         scheduleHideSidebarOverlay,
+        scheduleHideRightOverlay,
         showSidebarOverlay,
+        showRightOverlay,
+        rightPanelCollapsed,
         sidebarCollapsed,
-        sidebarOverlayVisible,
-        sidebarWidth,
     ]);
 
     // Tear down the timer on unmount; also retract the overlay as soon as the
@@ -553,7 +570,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
               `transform ${SIDEBAR_DOCK_TRANSITION_MS}ms ${SIDEBAR_DOCK_TRANSITION_EASING}`,
           ].join(", ");
     const sidebarPeekEnabled = sidebarCollapsed && !dockedSidebarShouldRender;
-    const effectiveLeft = dockedSidebarShouldRender ? dockedSidebarWidth : 0;
+    const centerReserve = layoutWidth > 0 ? Math.min(preferredCenterMinimumWidth, Math.max(MIN_CENTER_PEEK_WIDTH, layoutWidth - (dockedSidebarShouldRender ? MIN_SIDEBAR_WIDTH : 0) - (rightPanelCollapsed ? 0 : rightMinimumWidth))) : MIN_CENTER_PEEK_WIDTH;
+    const effectiveLeft = dockedSidebarShouldRender ? Math.min(dockedSidebarWidth, layoutWidth > 0 ? Math.max(MIN_SIDEBAR_WIDTH, layoutWidth - (rightPanelCollapsed ? 0 : rightMinimumWidth) - centerReserve) : dockedSidebarWidth) : 0;
 
     // macOS only: hide the native traffic-light buttons whenever the sidebar
     // is fully collapsed. They would otherwise float over the empty editor
@@ -585,7 +603,6 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     // --- Right panel ---
     const [isResizingRight, setIsResizingRight] = useState(false);
     const [collapsePreviewRight, setCollapsePreviewRight] = useState(false);
-    const rightPanelRef = useRef<HTMLDivElement>(null);
     const rightResizerRef = useRef<HTMLDivElement>(null);
     const rightSessionRef = useRef<HorizontalResizeSession | null>(null);
     const rightFrameRef = useRef<number | null>(null);
@@ -594,11 +611,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const effectiveRightForLeftCalc = rightPanelCollapsed ? 0 : rightPanelWidth;
     const maxLeftWidthForLayout = Math.max(
         MIN_SIDEBAR_WIDTH,
-        layoutWidth - effectiveRightForLeftCalc - MIN_CENTER_PEEK_WIDTH,
+        layoutWidth - effectiveRightForLeftCalc - centerReserve,
     );
     const maxRightWidthForLayout = Math.max(
-        MIN_RIGHT_PANEL_WIDTH,
-        layoutWidth - effectiveLeft - MIN_CENTER_PEEK_WIDTH,
+        rightMinimumWidth,
+        layoutWidth - effectiveLeft - centerReserve,
     );
     const effectiveRight = rightPanelCollapsed
         ? 0
@@ -777,11 +794,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             setIsResizingRight(false);
 
             if (s.pendingWidth < RIGHT_COLLAPSE_TRIGGER_WIDTH) {
-                collapseRightPanelToWidth(MIN_RIGHT_PANEL_WIDTH);
+                collapseRightPanelToWidth(rightMinimumWidth);
                 return;
             }
             const clamped = Math.max(
-                MIN_RIGHT_PANEL_WIDTH,
+                rightMinimumWidth,
                 Math.min(maxRightWidthForLayout, s.pendingWidth),
             );
             const snapped =
@@ -794,6 +811,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             applyRightWidth,
             collapseRightPanelToWidth,
             maxRightWidthForLayout,
+            rightMinimumWidth,
             showRightPanelAtWidth,
             syncRightPreview,
         ],
@@ -921,7 +939,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     aria-hidden={!dockedSidebarInteractive || undefined}
                     inert={!dockedSidebarInteractive || undefined}
                     style={{
-                        width: dockedSidebarWidth,
+                        width: effectiveLeft,
                         flexShrink: 0,
                         overflow: "hidden",
                         pointerEvents: dockedSidebarInteractive
@@ -944,9 +962,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         data-sidebar-dock-inner
                         onTransitionEnd={handleDockTransitionEnd}
                         style={{
-                            width: isResizingLeft
-                                ? dockedSidebarWidth
-                                : sidebarWidth,
+                            width: isResizingLeft ? dockedSidebarWidth : effectiveLeft,
                             height: "100%",
                             opacity: sidebarDockHidden ? 0 : 1,
                             // Keep the wrapper in a compositor layer ONLY while
@@ -1102,7 +1118,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                                 : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
                         }}
                     >
-                        {right}
+                        {!rightPanelCollapsed && right}
                     </div>
                 )}
             </div>
@@ -1247,8 +1263,21 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         width: rightPanelWidth,
                         zIndex: 20,
                         overflow: "hidden",
-                        backgroundColor: "var(--bg-secondary)",
-                        borderLeft: "1px solid var(--border)",
+                        // Keep Arc-style right peeks visually equivalent to
+                        // the left sidebar: native material shows through a
+                        // fixed sidebar tint, independent of chat glass opacity.
+                        backgroundColor: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "var(--sidebar-vibrancy-tint)"
+                            : "var(--bg-secondary)",
+                        backdropFilter: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "blur(24px) saturate(140%)"
+                            : undefined,
+                        WebkitBackdropFilter: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "blur(24px) saturate(140%)"
+                            : undefined,
+                        borderLeft: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "none"
+                            : "1px solid var(--border)",
                         boxShadow:
                             "-4px 0 24px rgba(0, 0, 0, 0.22), -1px 0 6px rgba(0, 0, 0, 0.10)",
                     }}

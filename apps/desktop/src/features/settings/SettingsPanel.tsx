@@ -1,11 +1,20 @@
-import { useState, useEffect, useLayoutEffect, useRef } from "react";
+import {
+    useState,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@neverwrite/runtime";
 import { getCurrentWebviewWindow } from "@neverwrite/runtime";
 import { openPath, openUrl, revealItemInDir } from "@neverwrite/runtime";
 import {
     EDITOR_FONT_FAMILY_OPTIONS,
+    MAX_GLASS_OPACITY,
+    MIN_GLASS_OPACITY,
     PDF_DEFAULT_ZOOM_STEPS,
+    UI_FONT_FAMILY_OPTIONS,
     useSettingsStore,
     type EditorFontFamily,
     type SpellcheckLanguage,
@@ -15,6 +24,7 @@ import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { useThemeStore } from "../../app/store/themeStore";
 import { themes, type ThemeName } from "../../app/themes/index";
 import {
+    ACTIVE_VAULT_RECENT_REMOVAL_ERROR,
     clearRecentVaults,
     useVaultStore,
     getRecentVaults,
@@ -24,11 +34,32 @@ import {
 import { useChatStore } from "../ai/store/chatStore";
 import type { ActivityDisplayMode } from "../ai/activityDisplayMode";
 import { useSpellcheckStore } from "../spellcheck/store";
-import { getShortcutSettingsEntries } from "../../app/shortcuts/registry";
 import {
+    getConfigurableShortcutSettingsEntries,
+    getDefaultShortcutBindingsWithAliases,
+    getFixedShortcutSettingsEntries,
+    getShortcutBindings,
+    getShortcutBindingsWithAliases,
+    getShortcutDefinition,
+    getShortcutSettingsEntries,
+    type ConfigurableShortcutActionId,
+    type ShortcutActionId,
+    type ShortcutBinding,
+    type ShortcutSettingsEntry,
+} from "../../app/shortcuts/registry";
+import { useShortcutOverrides } from "../../app/shortcuts/useShortcutOverrides";
+import {
+    formatShortcutBinding,
     formatPrimaryShortcut,
     formatShortcutAction,
 } from "../../app/shortcuts/format";
+import {
+    applyShortcutOverrideChanges,
+    getShortcutOverride,
+    resetAllShortcutOverrides,
+    resetShortcutOverride,
+    setShortcutOverride,
+} from "../../app/shortcuts/preferences";
 import {
     buildSpellcheckLanguageDescription,
     buildSpellcheckLanguageSelectOptions,
@@ -56,6 +87,8 @@ import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
 import { SCREENSHOT_RETENTION_OPTIONS } from "../ai/screenshotRetention";
 import { PROVIDER_CATALOG } from "../ai/utils/runtimeMetadata";
 import { AIProvidersSettings } from "./AIProvidersSettings";
+import { AIHistoryStorageControl } from "../ai/components/AIHistoryStorageControl";
+import { ShortcutRecorder } from "./ShortcutRecorder";
 import { ExtensionFilterInput } from "./ExtensionFilterInput";
 import { useAppUpdateStore } from "../updates/store";
 import {
@@ -571,6 +604,7 @@ function SliderField({
 
 const THEME_ORDER: ThemeName[] = [
     "default",
+    "automata",
     "ocean",
     "forest",
     "rose",
@@ -733,9 +767,16 @@ function Row({
     );
 }
 
-function SectionLabel({ children }: { children: string }) {
+function SectionLabel({
+    children,
+    id,
+}: {
+    children: string;
+    id?: string;
+}) {
     return (
         <div
+            id={id}
             style={{
                 fontSize: 10,
                 fontWeight: 600,
@@ -947,6 +988,9 @@ function AppearanceSettings({
         fileTreeScale,
         agentsSidebarScale,
         fileTreeStickyFolders,
+        aiChatContentWidth,
+        glassOpacity,
+        uiFontFamily,
         setSetting,
     } = useSettingsStore();
     const [appZoomPercent, setAppZoomPercent] = useAppZoomPercent();
@@ -990,6 +1034,27 @@ function AppearanceSettings({
             ],
         ],
     );
+    const showInterface = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Interface",
+        [
+            [
+                "Interface font",
+                "Font used for app controls and navigation. Editor, chat, composer, terminal, and code surfaces keep their own font settings.",
+                ...UI_FONT_FAMILY_OPTIONS.flatMap((option) => [
+                    option.value,
+                    option.label,
+                ]),
+            ],
+            [
+                "Glass opacity",
+                "Control how solid translucent interface surfaces appear. Lower values reveal more content behind the composer and menus.",
+                "Transparency",
+                "Composer",
+                "Menus",
+            ],
+        ],
+    );
     const showZoom = sectionHasSettingsSearchMatches(searchQuery, "Zoom", [
         [
             "App zoom",
@@ -997,8 +1062,21 @@ function AppearanceSettings({
             appZoomShortcut,
         ],
     ]);
+    const showChat = sectionHasSettingsSearchMatches(searchQuery, "Chat", [
+        [
+            "Chat content width",
+            "Maximum width of AI chat messages, composer, and related panels, in pixels.",
+        ],
+    ]);
 
-    if (!showMode && !showTheme && !showNavigation && !showZoom) {
+    if (
+        !showMode &&
+        !showTheme &&
+        !showInterface &&
+        !showNavigation &&
+        !showZoom &&
+        !showChat
+    ) {
         return <EmptyPanelSearchResult />;
     }
 
@@ -1030,6 +1108,49 @@ function AppearanceSettings({
                     <ThemePicker value={themeName} onChange={setThemeName} />
                 </>
             ) : null}
+
+            {showInterface ? <SectionLabel>Interface</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Interface"
+                label="Interface font"
+                description="Font used for app controls and navigation. Editor, chat, composer, terminal, and code surfaces keep their own font settings."
+                keywords={UI_FONT_FAMILY_OPTIONS.flatMap((option) => [
+                    option.value,
+                    option.label,
+                ])}
+                control={
+                    <SelectField
+                        value={uiFontFamily}
+                        options={UI_FONT_FAMILY_OPTIONS}
+                        onChange={(value) =>
+                            setSetting(
+                                "uiFontFamily",
+                                value as EditorFontFamily,
+                            )
+                        }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Interface"
+                label="Glass opacity"
+                description="Control how solid translucent interface surfaces appear. Lower values reveal more content behind the composer and menus."
+                keywords={["Transparency", "Composer", "Menus"]}
+                control={
+                    <SliderField
+                        value={glassOpacity}
+                        min={MIN_GLASS_OPACITY}
+                        max={MAX_GLASS_OPACITY}
+                        step={5}
+                        onChange={(value) =>
+                            setSetting("glassOpacity", value)
+                        }
+                        formatValue={(value) => `${value}%`}
+                    />
+                }
+            />
 
             {showNavigation ? <SectionLabel>Navigation</SectionLabel> : null}
             <SearchableRow
@@ -1071,6 +1192,24 @@ function AppearanceSettings({
                         onChange={(v) =>
                             setSetting("fileTreeStickyFolders", v)
                         }
+                    />
+                }
+            />
+
+            {showChat ? <SectionLabel>Chat</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
+                label="Chat content width"
+                description="Maximum width of AI chat messages, composer, and related panels, in pixels."
+                control={
+                    <SliderField
+                        value={aiChatContentWidth}
+                        min={480}
+                        max={1200}
+                        step={20}
+                        onChange={(v) => setSetting("aiChatContentWidth", v)}
+                        formatValue={(value) => `${value}px`}
                     />
                 }
             />
@@ -2209,6 +2348,9 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         getRecentVaults(),
     );
     const [confirmPath, setConfirmPath] = useState<string | null>(null);
+    const [removeRecentError, setRemoveRecentError] = useState<string | null>(
+        null,
+    );
     const [recentSearch, setRecentSearch] = useState("");
 
     const normalizedRecentSearch = recentSearch.trim().toLowerCase();
@@ -2259,9 +2401,19 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     }
 
     const handleRemoveVault = async (path: string) => {
-        await removeVaultFromList(path);
-        setRecents(getRecentVaults());
-        setConfirmPath(null);
+        setRemoveRecentError(null);
+        try {
+            await removeVaultFromList(path);
+            setRecents(getRecentVaults());
+            setConfirmPath(null);
+        } catch (error) {
+            setRemoveRecentError(
+                error instanceof Error &&
+                    error.message === ACTIVE_VAULT_RECENT_REMOVAL_ERROR
+                    ? ACTIVE_VAULT_RECENT_REMOVAL_ERROR
+                    : "Could not delete device-local data. The vault remains in Recents so you can retry.",
+            );
+        }
     };
 
     const handleClearRecents = () => {
@@ -2434,10 +2586,36 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                                         <div
                                             style={{
                                                 display: "flex",
+                                                alignItems: "center",
                                                 gap: 4,
                                                 flexShrink: 0,
                                             }}
                                         >
+                                            <span
+                                                style={{
+                                                    maxWidth: 220,
+                                                    fontSize: 10,
+                                                    lineHeight: 1.3,
+                                                    color: "var(--text-secondary)",
+                                                }}
+                                            >
+                                                Device-local AI chats will be
+                                                deleted. Chats stored inside
+                                                the vault remain.
+                                            </span>
+                                            {removeRecentError ? (
+                                                <span
+                                                    role="alert"
+                                                    style={{
+                                                        maxWidth: 240,
+                                                        fontSize: 10,
+                                                        lineHeight: 1.3,
+                                                        color: "#ef4444",
+                                                    }}
+                                                >
+                                                    {removeRecentError}
+                                                </span>
+                                            ) : null}
                                             <button
                                                 onClick={() =>
                                                     handleRemoveVault(
@@ -2476,10 +2654,18 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                                         </div>
                                     ) : (
                                         <button
-                                            onClick={() =>
-                                                setConfirmPath(vault.path)
+                                            type="button"
+                                            aria-label={`Remove ${vault.name} from Recents`}
+                                            disabled={vault.path === vaultPath}
+                                            onClick={() => {
+                                                setRemoveRecentError(null);
+                                                setConfirmPath(vault.path);
+                                            }}
+                                            title={
+                                                vault.path === vaultPath
+                                                    ? "Switch to another vault before removing this one from Recents"
+                                                    : "Remove vault from Recents and delete device-local data"
                                             }
-                                            title="Remove vault from list and delete cached data"
                                             style={{
                                                 width: 24,
                                                 height: 24,
@@ -2489,9 +2675,15 @@ function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                                                 borderRadius: 5,
                                                 border: "none",
                                                 background: "transparent",
-                                                cursor: "pointer",
+                                                cursor:
+                                                    vault.path === vaultPath
+                                                        ? "not-allowed"
+                                                        : "pointer",
                                                 color: "var(--text-secondary)",
-                                                opacity: 0.5,
+                                                opacity:
+                                                    vault.path === vaultPath
+                                                        ? 0.25
+                                                        : 0.5,
                                                 flexShrink: 0,
                                             }}
                                             onMouseEnter={(e) => {
@@ -3800,40 +3992,455 @@ function FileTreeSettings({
     );
 }
 
+function shortcutBindingsEqual(
+    left: ShortcutBinding,
+    right: ShortcutBinding,
+) {
+    const normalizeKey = (key: string) =>
+        key === " " || key.toLowerCase() === "spacebar"
+            ? "space"
+            : key.toLowerCase();
+    const modifiers = ["meta", "ctrl", "alt", "shift"] as const;
+    return (
+        normalizeKey(left.key) === normalizeKey(right.key) &&
+        modifiers.every(
+            (modifier) =>
+                Boolean(left.modifiers?.includes(modifier)) ===
+                Boolean(right.modifiers?.includes(modifier)),
+        )
+    );
+}
+
+function ShortcutConfirmationDialog({
+    title,
+    description,
+    confirmLabel,
+    onConfirm,
+    onCancel,
+}: {
+    title: string;
+    description: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+    onCancel: () => void;
+}) {
+    const cancelRef = useRef<HTMLButtonElement>(null);
+    const confirmRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        const previousFocus = document.activeElement as HTMLElement | null;
+        cancelRef.current?.focus();
+        return () => previousFocus?.focus();
+    }, []);
+
+    return createPortal(
+        <div
+            role="presentation"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) onCancel();
+            }}
+            style={{
+                position: "fixed",
+                inset: 0,
+                zIndex: 10020,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 20,
+                backgroundColor: "rgba(0, 0, 0, 0.42)",
+            }}
+        >
+            <div
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="shortcut-confirmation-title"
+                aria-describedby="shortcut-confirmation-description"
+                onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onCancel();
+                        return;
+                    }
+                    if (event.key !== "Tab") return;
+                    if (event.shiftKey && event.target === cancelRef.current) {
+                        event.preventDefault();
+                        confirmRef.current?.focus();
+                    } else if (
+                        !event.shiftKey &&
+                        event.target === confirmRef.current
+                    ) {
+                        event.preventDefault();
+                        cancelRef.current?.focus();
+                    }
+                }}
+                style={{
+                    width: "min(420px, 100%)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: 18,
+                    backgroundColor: "var(--bg-secondary)",
+                    boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
+                }}
+            >
+                <h2
+                    id="shortcut-confirmation-title"
+                    style={{
+                        margin: 0,
+                        color: "var(--text-primary)",
+                        fontSize: 15,
+                        fontWeight: 600,
+                    }}
+                >
+                    {title}
+                </h2>
+                <p
+                    id="shortcut-confirmation-description"
+                    style={{
+                        margin: "8px 0 16px",
+                        color: "var(--text-secondary)",
+                        fontSize: 12,
+                        lineHeight: 1.55,
+                    }}
+                >
+                    {description}
+                </p>
+                <div
+                    style={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        gap: 7,
+                    }}
+                >
+                    <button
+                        ref={cancelRef}
+                        type="button"
+                        onClick={onCancel}
+                        style={{
+                            padding: "5px 10px",
+                            border: "1px solid var(--border)",
+                            borderRadius: 6,
+                            backgroundColor: "var(--bg-tertiary)",
+                            color: "var(--text-primary)",
+                            fontFamily: "inherit",
+                            fontSize: 12,
+                            cursor: "pointer",
+                        }}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        ref={confirmRef}
+                        type="button"
+                        onClick={onConfirm}
+                        style={{
+                            padding: "5px 10px",
+                            border: "1px solid var(--accent)",
+                            borderRadius: 6,
+                            backgroundColor: "var(--accent)",
+                            color: "#fff",
+                            fontFamily: "inherit",
+                            fontSize: 12,
+                            cursor: "pointer",
+                        }}
+                    >
+                        {confirmLabel}
+                    </button>
+                </div>
+            </div>
+        </div>,
+        document.body,
+    );
+}
+
+interface PendingShortcutConflict {
+    targetActionId: ConfigurableShortcutActionId;
+    targetLabel: string;
+    conflictingActionId: ConfigurableShortcutActionId;
+    conflictingLabel: string;
+    requestedBinding: ShortcutBinding;
+    previousTargetBinding: ShortcutBinding;
+    resetsTarget: boolean;
+}
+
+function ShortcutKeycap({ label }: { label: string }) {
+    return (
+        <kbd
+            style={{
+                minWidth: 72,
+                padding: "3px 7px",
+                border: "1px solid var(--border)",
+                borderRadius: 5,
+                backgroundColor: "var(--bg-tertiary)",
+                color: "var(--text-secondary)",
+                fontFamily: "inherit",
+                fontSize: 11,
+                textAlign: "center",
+                whiteSpace: "nowrap",
+            }}
+        >
+            {label}
+        </kbd>
+    );
+}
+
+function ShortcutSectionHeader({
+    title,
+    id,
+    action,
+}: {
+    title: string;
+    id: string;
+    action?: ReactNode;
+}) {
+    return (
+        <div
+            style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+            }}
+        >
+            <SectionLabel id={id}>{title}</SectionLabel>
+            {action}
+        </div>
+    );
+}
+
+function filterShortcutEntries<ActionId extends ShortcutActionId>(
+    entries: ShortcutSettingsEntry<ActionId>[],
+    searchQuery: SettingsSearchQuery,
+    section: string,
+    extraTerms: string,
+) {
+    return entries.filter((shortcut) =>
+        matchesSettingsSearch(
+            searchQuery,
+            "Keyboard shortcuts",
+            section,
+            shortcut.category,
+            shortcut.label,
+            shortcut.shortcut,
+            extraTerms,
+        ),
+    );
+}
+
 function ShortcutsSettings({
     searchQuery,
 }: {
     searchQuery: SettingsSearchQuery;
 }) {
     const platform = getDesktopPlatform();
-    const shortcuts = getShortcutSettingsEntries(platform);
-    const filteredShortcuts = shortcuts.filter((shortcut) =>
-        matchesSettingsSearch(
-            searchQuery,
-            "Keyboard shortcuts",
-            shortcut.category,
-            shortcut.label,
-            shortcut.shortcut,
-        ),
+    const configurableShortcuts =
+        getConfigurableShortcutSettingsEntries(platform);
+    const fixedShortcuts = getFixedShortcutSettingsEntries(platform);
+    const filteredConfigurable = filterShortcutEntries(
+        configurableShortcuts,
+        searchQuery,
+        "Customizable shortcuts",
+        "Record shortcut Reset Reset all global editable",
+    );
+    const filteredFixed = filterShortcutEntries(
+        fixedShortcuts,
+        searchQuery,
+        "Fixed shortcuts",
+        "read only reference",
+    );
+    const configurableGroups = filteredConfigurable.reduce<
+        Record<string, typeof configurableShortcuts>
+    >((groups, shortcut) => {
+        (groups[shortcut.category] ??= []).push(shortcut);
+        return groups;
+    }, {});
+    const fixedGroups = filteredFixed.reduce<
+        Record<string, typeof fixedShortcuts>
+    >((groups, shortcut) => {
+        (groups[shortcut.category] ??= []).push(shortcut);
+        return groups;
+    }, {});
+    const [pendingConflict, setPendingConflict] =
+        useState<PendingShortcutConflict | null>(null);
+    const [confirmResetAll, setConfirmResetAll] = useState(false);
+    const [status, setStatus] = useState<string | null>(null);
+    const hasOverrides = configurableShortcuts.some(
+        (shortcut) => getShortcutOverride(shortcut.id, platform) !== null,
     );
 
-    const grouped = filteredShortcuts.reduce<Record<string, typeof shortcuts>>(
-        (acc, s) => {
-            (acc[s.category] ??= []).push(s);
-            return acc;
-        },
-        {},
-    );
+    const findConflict = (
+        targetActionId: ConfigurableShortcutActionId,
+        binding: ShortcutBinding,
+        excludedActionIds: readonly ConfigurableShortcutActionId[] = [],
+    ) =>
+        configurableShortcuts.find(
+            (shortcut) =>
+                shortcut.id !== targetActionId &&
+                !excludedActionIds.includes(shortcut.id) &&
+                getShortcutBindingsWithAliases(shortcut.id, platform).some(
+                    (candidate) => shortcutBindingsEqual(candidate, binding),
+                ),
+        ) ?? null;
 
-    if (shortcuts.length === 0) {
+    const findFixedConflict = (binding: ShortcutBinding) =>
+        fixedShortcuts.find((shortcut) =>
+            getShortcutBindingsWithAliases(shortcut.id, platform).some(
+                (candidate) => shortcutBindingsEqual(candidate, binding),
+            ),
+        ) ?? null;
+
+    const findConflictsForBindings = (
+        targetActionId: ConfigurableShortcutActionId,
+        bindings: readonly ShortcutBinding[],
+    ) =>
+        bindings.flatMap((binding) => {
+            const conflict = findConflict(targetActionId, binding);
+            return conflict ? [{ binding, conflict }] : [];
+        });
+
+    const saveBinding = (
+        actionId: ConfigurableShortcutActionId,
+        binding: ShortcutBinding,
+    ) => {
+        const fixedConflict = findFixedConflict(binding);
+        if (fixedConflict) {
+            setStatus(
+                `${formatShortcutBinding(binding, platform)} is reserved for ${fixedConflict.label} and cannot be reassigned.`,
+            );
+            return;
+        }
+
+        const conflict = findConflict(actionId, binding);
+        if (conflict) {
+            const previousTargetBinding = getShortcutBindings(
+                actionId,
+                platform,
+            )[0];
+            if (!previousTargetBinding) return;
+            setPendingConflict({
+                targetActionId: actionId,
+                targetLabel: getShortcutDefinition(actionId).label,
+                conflictingActionId: conflict.id,
+                conflictingLabel: conflict.label,
+                requestedBinding: binding,
+                previousTargetBinding,
+                resetsTarget: false,
+            });
+            return;
+        }
+
+        const saved = setShortcutOverride(actionId, platform, binding);
+        setStatus(
+            saved
+                ? `${getShortcutDefinition(actionId).label} shortcut updated.`
+                : "The shortcut could not be saved.",
+        );
+    };
+
+    const resetBinding = (actionId: ConfigurableShortcutActionId) => {
+        const definition = getShortcutDefinition(actionId);
+        const defaultBindings = getDefaultShortcutBindingsWithAliases(
+            actionId,
+            platform,
+        );
+        const defaultBinding = defaultBindings[0];
+        const previousTargetBinding = getShortcutBindings(
+            actionId,
+            platform,
+        )[0];
+        if (!defaultBinding || !previousTargetBinding) return;
+
+        const restoredBindingConflicts = findConflictsForBindings(
+            actionId,
+            defaultBindings,
+        );
+        const aliasConflict = restoredBindingConflicts.find(
+            ({ binding }) => !shortcutBindingsEqual(binding, defaultBinding),
+        );
+        if (aliasConflict) {
+            setStatus(
+                `${definition.label} cannot be restored because ${formatShortcutBinding(aliasConflict.binding, platform)} is assigned to ${aliasConflict.conflict.label}. Reassign ${aliasConflict.conflict.label} first.`,
+            );
+            return;
+        }
+
+        const conflict = restoredBindingConflicts[0]?.conflict ?? null;
+        if (conflict) {
+            setPendingConflict({
+                targetActionId: actionId,
+                targetLabel: definition.label,
+                conflictingActionId: conflict.id,
+                conflictingLabel: conflict.label,
+                requestedBinding: defaultBinding,
+                previousTargetBinding,
+                resetsTarget: true,
+            });
+            return;
+        }
+
+        const reset = resetShortcutOverride(actionId, platform);
+        setStatus(
+            reset
+                ? `${definition.label} restored to its default shortcut.`
+                : "The shortcut could not be reset.",
+        );
+    };
+
+    const replaceConflict = () => {
+        if (!pendingConflict) return;
+
+        const requestedBindingConflict = findConflict(
+            pendingConflict.targetActionId,
+            pendingConflict.requestedBinding,
+            [pendingConflict.conflictingActionId],
+        );
+        const movedBindingConflict = findConflict(
+            pendingConflict.conflictingActionId,
+            pendingConflict.previousTargetBinding,
+            [pendingConflict.targetActionId],
+        );
+        const blockingConflict =
+            requestedBindingConflict ?? movedBindingConflict;
+        if (blockingConflict) {
+            setStatus(
+                `The shortcut swap was not applied because ${blockingConflict.label} already uses one of the resulting bindings. Resolve that shortcut first.`,
+            );
+            setPendingConflict(null);
+            return;
+        }
+
+        const saved = applyShortcutOverrideChanges(platform, [
+            {
+                actionId: pendingConflict.conflictingActionId,
+                binding: pendingConflict.previousTargetBinding,
+            },
+            {
+                actionId: pendingConflict.targetActionId,
+                binding: pendingConflict.resetsTarget
+                    ? null
+                    : pendingConflict.requestedBinding,
+            },
+        ]);
+        setStatus(
+            saved
+                ? `${pendingConflict.targetLabel} and ${pendingConflict.conflictingLabel} shortcuts updated.`
+                : "The shortcuts could not be updated.",
+        );
+        setPendingConflict(null);
+    };
+
+    if (
+        configurableShortcuts.length === 0 &&
+        fixedShortcuts.length === 0
+    ) {
         return (
             <div>
                 <SectionLabel>Shortcuts</SectionLabel>
                 <p
                     style={{
-                        fontSize: 12,
-                        color: "var(--text-secondary)",
                         padding: "12px 0",
+                        color: "var(--text-secondary)",
+                        fontSize: 12,
                     }}
                 >
                     No shortcuts registered yet.
@@ -3842,56 +4449,275 @@ function ShortcutsSettings({
         );
     }
 
-    if (filteredShortcuts.length === 0) {
+    if (filteredConfigurable.length === 0 && filteredFixed.length === 0) {
         return <EmptyPanelSearchResult />;
     }
 
     return (
         <div>
-            {Object.entries(grouped).map(([cat, items]) => (
-                <div key={cat}>
-                    <SectionLabel>{cat}</SectionLabel>
-                    {items.map((item) => (
-                        <div
-                            key={item.label}
-                            style={{
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                padding: "9px 0",
-                                borderBottom: "1px solid var(--border)",
-                            }}
-                        >
-                            <span
+            <div
+                role="status"
+                style={{
+                    marginBottom: status ? 8 : 0,
+                    color: "var(--text-secondary)",
+                    fontSize: 11,
+                }}
+            >
+                {status}
+            </div>
+
+            {filteredConfigurable.length > 0 && (
+                <section
+                    aria-labelledby="customizable-shortcuts-heading"
+                    aria-describedby="customizable-shortcuts-description"
+                >
+                    <ShortcutSectionHeader
+                        title="Customizable shortcuts"
+                        id="customizable-shortcuts-heading"
+                        action={
+                            <button
+                                type="button"
+                                disabled={!hasOverrides}
+                                onClick={() => setConfirmResetAll(true)}
                                 style={{
-                                    fontSize: 13,
-                                    color: "var(--text-primary)",
-                                }}
-                            >
-                                {item.label}
-                            </span>
-                            <kbd
-                                style={{
-                                    fontSize: 11,
-                                    fontFamily: "inherit",
-                                    color: "var(--text-secondary)",
-                                    backgroundColor: "var(--bg-tertiary)",
+                                    marginTop: 18,
+                                    padding: "4px 8px",
                                     border: "1px solid var(--border)",
                                     borderRadius: 5,
-                                    padding: "2px 7px",
+                                    backgroundColor: "var(--bg-tertiary)",
+                                    color: "var(--text-primary)",
+                                    fontFamily: "inherit",
+                                    fontSize: 11,
+                                    cursor: hasOverrides
+                                        ? "pointer"
+                                        : "not-allowed",
+                                    opacity: hasOverrides ? 1 : 0.45,
                                 }}
                             >
-                                {item.shortcut}
-                            </kbd>
-                        </div>
-                    ))}
-                </div>
-            ))}
+                                Reset all
+                            </button>
+                        }
+                    />
+                    <p
+                        id="customizable-shortcuts-description"
+                        style={{
+                            margin: "-2px 0 4px",
+                            color: "var(--text-secondary)",
+                            fontSize: 11,
+                            lineHeight: 1.45,
+                        }}
+                    >
+                        Global for this installation. Changes apply immediately
+                        across every vault.
+                    </p>
+                    {Object.entries(configurableGroups).map(
+                        ([category, shortcuts]) => (
+                            <div key={category}>
+                                <SectionLabel>{category}</SectionLabel>
+                                {shortcuts.map((shortcut) => {
+                                    const customized =
+                                        getShortcutOverride(
+                                            shortcut.id,
+                                            platform,
+                                        ) !== null;
+                                    return (
+                                        <div
+                                            key={shortcut.id}
+                                            data-shortcut-action={shortcut.id}
+                                            style={{
+                                                display: "flex",
+                                                alignItems: "center",
+                                                gap: 8,
+                                                minHeight: 42,
+                                                padding: "7px 0",
+                                                borderBottom:
+                                                    "1px solid var(--border)",
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    flex: 1,
+                                                    minWidth: 120,
+                                                }}
+                                            >
+                                                <div
+                                                    style={{
+                                                        color: "var(--text-primary)",
+                                                        fontSize: 13,
+                                                    }}
+                                                >
+                                                    {shortcut.label}
+                                                </div>
+                                                {customized && (
+                                                    <div
+                                                        style={{
+                                                            marginTop: 1,
+                                                            color: "var(--accent)",
+                                                            fontSize: 10,
+                                                        }}
+                                                    >
+                                                        Customized
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <ShortcutKeycap
+                                                label={shortcut.shortcut}
+                                            />
+                                            <ShortcutRecorder
+                                                actionLabel={shortcut.label}
+                                                platform={platform}
+                                                onRecord={(binding) =>
+                                                    saveBinding(
+                                                        shortcut.id,
+                                                        binding,
+                                                    )
+                                                }
+                                            />
+                                            <button
+                                                type="button"
+                                                aria-label={`Reset shortcut for ${shortcut.label}`}
+                                                disabled={!customized}
+                                                onClick={() =>
+                                                    resetBinding(shortcut.id)
+                                                }
+                                                style={{
+                                                    width: 50,
+                                                    padding: "4px 7px",
+                                                    border: "1px solid var(--border)",
+                                                    borderRadius: 5,
+                                                    backgroundColor:
+                                                        "transparent",
+                                                    color: "var(--text-secondary)",
+                                                    fontFamily: "inherit",
+                                                    fontSize: 11,
+                                                    cursor: customized
+                                                        ? "pointer"
+                                                        : "not-allowed",
+                                                    opacity: customized
+                                                        ? 1
+                                                        : 0.4,
+                                                }}
+                                            >
+                                                Reset
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ),
+                    )}
+                </section>
+            )}
+
+            {filteredFixed.length > 0 && (
+                <section
+                    aria-labelledby="fixed-shortcuts-heading"
+                    aria-describedby="fixed-shortcuts-description"
+                >
+                    <ShortcutSectionHeader
+                        title="Fixed shortcuts"
+                        id="fixed-shortcuts-heading"
+                    />
+                    <p
+                        id="fixed-shortcuts-description"
+                        style={{
+                            margin: "-2px 0 4px",
+                            color: "var(--text-secondary)",
+                            fontSize: 11,
+                            lineHeight: 1.45,
+                        }}
+                    >
+                        Contextual editor and interaction shortcuts remain fixed
+                        to preserve predictable local behavior.
+                    </p>
+                    {Object.entries(fixedGroups).map(
+                        ([category, shortcuts]) => (
+                            <div key={category}>
+                                <SectionLabel>{category}</SectionLabel>
+                                {shortcuts.map((shortcut) => (
+                                    <div
+                                        key={shortcut.id}
+                                        data-shortcut-action={shortcut.id}
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                            gap: 10,
+                                            minHeight: 38,
+                                            padding: "7px 0",
+                                            borderBottom:
+                                                "1px solid var(--border)",
+                                        }}
+                                    >
+                                        <span
+                                            style={{
+                                                color: "var(--text-primary)",
+                                                fontSize: 13,
+                                            }}
+                                        >
+                                            {shortcut.label}
+                                        </span>
+                                        <ShortcutKeycap
+                                            label={shortcut.shortcut}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        ),
+                    )}
+                </section>
+            )}
+
+            {pendingConflict && (
+                <ShortcutConfirmationDialog
+                    title="Shortcut already in use"
+                    description={`${formatShortcutBinding(
+                        pendingConflict.requestedBinding,
+                        platform,
+                    )} is currently assigned to ${
+                        pendingConflict.conflictingLabel
+                    }. ${pendingConflict.conflictingLabel} will move to ${formatShortcutBinding(
+                        pendingConflict.previousTargetBinding,
+                        platform,
+                    )}.`}
+                    confirmLabel={
+                        pendingConflict.resetsTarget
+                            ? "Reset and move"
+                            : "Replace shortcut"
+                    }
+                    onConfirm={replaceConflict}
+                    onCancel={() => setPendingConflict(null)}
+                />
+            )}
+
+            {confirmResetAll && (
+                <ShortcutConfirmationDialog
+                    title="Reset all shortcuts?"
+                    description="All customizable shortcuts for the current platform will return to their defaults. Shortcuts saved for other platforms are preserved."
+                    confirmLabel="Reset all"
+                    onConfirm={() => {
+                        const reset = resetAllShortcutOverrides(platform);
+                        setStatus(
+                            reset
+                                ? "All shortcuts restored to their defaults."
+                                : "The shortcuts could not be reset.",
+                        );
+                        setConfirmResetAll(false);
+                    }}
+                    onCancel={() => setConfirmResetAll(false)}
+                />
+            )}
         </div>
     );
 }
 
-function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
+function AISettings({
+    searchQuery,
+    vaultPath,
+}: {
+    searchQuery: SettingsSearchQuery;
+    vaultPath: string | null;
+}) {
     const aiReviewEnabled = useSettingsStore((s) => s.aiReviewEnabled);
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const setSetting = useSettingsStore((s) => s.setSetting);
@@ -3958,6 +4784,13 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         ],
     );
     const showChat = sectionHasSettingsSearchMatches(searchQuery, "Chat", [
+        [
+            "Store AI chats inside this vault",
+            "AI chat history and pasted attachments will sync or be shared with this vault. Keep this off for shared or cloud-synced vaults.",
+            "device",
+            "vault",
+            "sync",
+        ],
         ["Chat font family", "Font used for messages in the chat.", ...fontKeywords],
         ["Chat font size", "Font size of messages in the chat, in pixels."],
         [
@@ -4050,6 +4883,18 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                 }
             />
             {showChat ? <SectionLabel>Chat</SectionLabel> : null}
+            {showChat &&
+            matchesSettingsSearch(
+                searchQuery,
+                "Chat",
+                "Store AI chats inside this vault",
+                "AI chat history and pasted attachments will sync or be shared with this vault. Keep this off for shared or cloud-synced vaults.",
+                "device",
+                "vault",
+                "sync",
+            ) ? (
+                <AIHistoryStorageControl vaultPath={vaultPath} />
+            ) : null}
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Chat"
@@ -4495,7 +5340,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     terminal: "Font, size, and shell environment settings",
     developers: "Control which vault files appear in the file tree and pickers",
     vault: "Current vault and recent history",
-    shortcuts: "Keyboard shortcuts reference",
+    shortcuts: "Customize global shortcuts and review fixed bindings",
     ai_providers: "AI runtimes, authentication, and API keys",
     ai: "AI assistant chat preferences",
     feedback: "GitHub issues, discussions, and feedback links",
@@ -4638,6 +5483,11 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
     ],
     shortcuts: [
         "Keyboard shortcuts",
+        "Customizable shortcuts",
+        "Fixed shortcuts",
+        "Record shortcut",
+        "Reset all",
+        "global",
         "Shortcuts",
         "hotkeys",
         "commands",
@@ -4767,11 +5617,20 @@ function getDynamicCategorySearchValues(
                 shortcut.shortcut,
             ]);
         case "ai_providers":
-            return PROVIDER_CATALOG.flatMap((provider) => [
-                provider.id,
-                provider.name,
-                provider.company,
-            ]);
+            return [
+                ...PROVIDER_CATALOG.flatMap((provider) => [
+                    provider.id,
+                    provider.name,
+                    provider.company,
+                ]),
+                "Custom ACP runtimes",
+                "Runtime name",
+                "Command",
+                "Arguments",
+                "Environment",
+                "Authentication managed by the runtime",
+                "Deleted definitions retained for history",
+            ];
         case "ai":
             return EDITOR_FONT_FAMILY_OPTIONS.flatMap((option) => [
                 option.value,
@@ -4794,13 +5653,17 @@ export function SettingsPanel({
     standalone?: boolean;
     initialCategory?: Category;
 }) {
+    useShortcutOverrides();
+
     const initializeUpdates = useAppUpdateStore((state) => state.initialize);
     const updateAvailable = useAppUpdateStore(
         (state) => !!state.status?.update,
     );
     const updateSearchStatus = useAppUpdateStore((state) => state.status);
     const updateSearchError = useAppUpdateStore((state) => state.error);
-    const currentVaultPath = useVaultStore((state) => state.vaultPath);
+    const openVaultPath = useVaultStore((state) => state.vaultPath);
+    const currentVaultPath =
+        openVaultPath ?? (standalone ? readSearchParam("vault") : null);
     const sectionFromUrl = standalone ? readSearchParam("section") : null;
     const resolvedInitialCategory =
         initialCategory && isCategory(initialCategory)
@@ -5332,7 +6195,10 @@ export function SettingsPanel({
                             )}
                         {filteredCategories.length > 0 &&
                             activeCategory === "ai" && (
-                                <AISettings searchQuery={activeSearchQuery} />
+                                <AISettings
+                                    searchQuery={activeSearchQuery}
+                                    vaultPath={currentVaultPath}
+                                />
                             )}
                     </div>
                 </div>

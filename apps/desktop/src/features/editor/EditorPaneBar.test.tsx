@@ -192,6 +192,38 @@ describe("EditorPaneBar", () => {
         ).not.toBeNull();
     });
 
+    it("copies the full note path from the tab context menu", async () => {
+        const user = userEvent.setup();
+        const writeText = vi
+            .spyOn(navigator.clipboard, "writeText")
+            .mockResolvedValue(undefined);
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/a",
+                    path: "/vault/notes/a.md",
+                    title: "Alpha",
+                    modified_at: 1,
+                    created_at: 1,
+                },
+            ],
+        });
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-a"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+        await user.click(
+            await screen.findByRole("button", { name: "Copy Path" }),
+        );
+
+        expect(writeText).toHaveBeenCalledWith("/vault/notes/a.md");
+    });
+
     it("shows pane history navigation buttons when open behavior uses history", () => {
         useSettingsStore.getState().setSetting("tabOpenBehavior", "history");
 
@@ -201,47 +233,6 @@ describe("EditorPaneBar", () => {
         expect(screen.getByTitle("Go forward")).toBeInTheDocument();
     });
 
-    it("navigates a chat session history from the pane controls", () => {
-        useSettingsStore.getState().setSetting("tabOpenBehavior", "history");
-        useEditorStore.getState().hydrateWorkspace(
-            [
-                {
-                    id: "primary",
-                    tabs: [
-                        {
-                            id: "chat-history",
-                            kind: "ai-chat",
-                            sessionId: "session-b",
-                            title: "Second",
-                            history: [
-                                { sessionId: "session-a", title: "First" },
-                                { sessionId: "session-b", title: "Second" },
-                            ],
-                            historyIndex: 1,
-                        },
-                    ],
-                    activeTabId: "chat-history",
-                },
-            ],
-            "primary",
-        );
-
-        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
-
-        expect(screen.getByTitle("Go back")).toBeEnabled();
-        expect(screen.getByTitle("Go forward")).toBeDisabled();
-
-        fireEvent.click(screen.getByTitle("Go back"));
-        expect(
-            useEditorStore.getState().tabs.find((tab) => tab.id === "chat-history"),
-        ).toMatchObject({ sessionId: "session-a", historyIndex: 0 });
-        expect(screen.getByTitle("Go forward")).toBeEnabled();
-
-        fireEvent.click(screen.getByTitle("Go forward"));
-        expect(
-            useEditorStore.getState().tabs.find((tab) => tab.id === "chat-history"),
-        ).toMatchObject({ sessionId: "session-b", historyIndex: 1 });
-    });
 
     it("hides pane history navigation buttons when open behavior creates new tabs", () => {
         useSettingsStore.getState().setSetting("tabOpenBehavior", "new_tab");
@@ -384,8 +375,7 @@ describe("EditorPaneBar", () => {
                         createNoteTab("tab-a", "Alpha"),
                         {
                             id: "tab-chat",
-                            kind: "ai-chat",
-                            sessionId: "session-busy",
+                            kind: "note", noteId: "session-busy", content: "document",
                             title: "Chat",
                         },
                         createNoteTab("tab-c", "Gamma"),
@@ -501,7 +491,7 @@ describe("EditorPaneBar", () => {
         ).toEqual(["tab-c"]);
     });
 
-    it("closes a tab with an active agent", async () => {
+    it("closes a document while a background agent continues", async () => {
         useEditorStore.getState().hydrateWorkspace(
             [
                 {
@@ -509,8 +499,7 @@ describe("EditorPaneBar", () => {
                     tabs: [
                         {
                             id: "tab-chat",
-                            kind: "ai-chat",
-                            sessionId: "session-busy",
+                            kind: "file", relativePath: "document.txt", path: "/vault/document.txt", mimeType: "text/plain", viewer: "text", content: "document",
                             title: "Chat",
                         },
                     ],
@@ -529,43 +518,12 @@ describe("EditorPaneBar", () => {
         });
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
-        fireEvent.click(screen.getByTitle("Close Busy agent"));
+        fireEvent.click(screen.getByTitle("Close Chat"));
         await waitFor(() => {
             expect(useEditorStore.getState().tabs).toEqual([]);
         });
     });
 
-    it("shows an activity dot for tabs with a working agent", () => {
-        useEditorStore.getState().hydrateWorkspace(
-            [
-                {
-                    id: "primary",
-                    tabs: [
-                        {
-                            id: "tab-chat",
-                            kind: "ai-chat",
-                            sessionId: "session-busy",
-                            title: "Chat",
-                        },
-                    ],
-                    activeTabId: "tab-chat",
-                },
-            ],
-            "primary",
-        );
-        useChatStore.setState({
-            sessionsById: {
-                "session-busy": {
-                    ...createChatSession("session-busy", "Busy agent"),
-                    status: "streaming",
-                },
-            },
-        });
-
-        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
-
-        expect(screen.getByTitle("Agent busy")).toBeInTheDocument();
-    });
 
     it("moves a tab into a new right split from the tab context menu", async () => {
         const user = userEvent.setup();
@@ -1163,27 +1121,6 @@ describe("EditorPaneBar", () => {
         expect(useEditorStore.getState().focusedPaneId).toBe("primary");
     });
 
-    it("does not start renaming workspace chat tabs from a double click on the tab title", async () => {
-        useChatStore.setState({
-            sessionsById: {
-                "session-a": createChatSession("session-a", "Workspace chat"),
-            },
-        });
-        useEditorStore.getState().openChat("session-a", {
-            title: "Stale title",
-            paneId: "primary",
-        });
-
-        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
-
-        fireEvent.doubleClick(screen.getByText("Workspace chat"));
-
-        expect(screen.queryByDisplayValue("Workspace chat")).toBeNull();
-        expect(
-            useChatStore.getState().sessionsById["session-a"]?.customTitle ??
-                null,
-        ).toBeNull();
-    });
 
     it("creates a new note from the pane plus-button context menu in the current pane", async () => {
         const createNote = vi.fn().mockResolvedValue({

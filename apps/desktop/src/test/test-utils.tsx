@@ -1,3 +1,5 @@
+import { useChatTabsStore } from "../features/ai/store/chatTabsStore";
+import { useLayoutStore } from "../app/store/layoutStore";
 import { act, render } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { invoke } from "@neverwrite/runtime";
@@ -196,4 +198,12 @@ export function getMockCurrentWebview() {
             };
         }
     ).__mockCurrentWebview;
+}
+
+export function selectChatForTest(sessionId: string, options?: { background?: boolean; title?: string; paneId?: string; historySessionId?: string | null }) {
+    useChatTabsStore.getState().ensureSessionTab(sessionId, options?.historySessionId);
+    if (!options?.background) {
+        useChatTabsStore.getState().showConversation(sessionId);
+        useLayoutStore.getState().setChatPaneVisible(true);
+    }
 }

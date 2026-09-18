@@ -153,6 +153,18 @@ describe("sessionPresentation history selection", () => {
         expect(getReviewTabTitle(session, runtimes)).toBe("Review Grok");
     });
 
+    it("uses the persisted custom runtime name when its descriptor is unavailable", () => {
+        const session = {
+            ...createSession("persisted:custom-history", "custom-history"),
+            runtimeId: "custom:123e4567-e89b-12d3-a456-426614174000",
+            runtimeDisplayName: "Local reviewer",
+        };
+
+        expect(getReviewTabTitle(session, runtimes)).toBe(
+            "Review Local reviewer",
+        );
+    });
+
     it("formats subagent review tab titles with the visible session name", () => {
         const session = {
             ...createSession("live-session-4", "history-4"),

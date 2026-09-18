@@ -15,7 +15,7 @@ function renderWith(overrides: Partial<MarkdownNoteHeaderProps> = {}) {
         lineWrapping: true,
         onTitleChange: () => {},
         titleInputRef: { current: null },
-        locationParent: "Notes",
+        locationSegments: ["Notes"],
         frontmatterRaw: null,
         onFrontmatterChange: vi.fn(),
         propertiesExpanded: false,
@@ -34,7 +34,7 @@ function renderHeader(lineWrapping: boolean) {
             lineWrapping={lineWrapping}
             onTitleChange={() => {}}
             titleInputRef={{ current: null }}
-            locationParent="Notes"
+            locationSegments={["Notes"]}
             frontmatterRaw={null}
             onFrontmatterChange={() => {}}
             propertiesExpanded={false}
@@ -249,7 +249,7 @@ describe("MarkdownNoteHeader — OKF status", () => {
                     lineWrapping
                     onTitleChange={() => {}}
                     titleInputRef={{ current: null }}
-                    locationParent="Notes"
+                    locationSegments={["Notes"]}
                     frontmatterRaw={fm(`status: ${raw}`)}
                     onFrontmatterChange={vi.fn()}
                     propertiesExpanded={false}
@@ -499,7 +499,7 @@ describe("MarkdownNoteHeader — OKF status", () => {
                     lineWrapping
                     onTitleChange={() => {}}
                     titleInputRef={{ current: null }}
-                    locationParent="Notes"
+                    locationSegments={["Notes"]}
                     frontmatterRaw={raw}
                     onFrontmatterChange={(next) => {
                         changes.push(next);
@@ -574,7 +574,7 @@ describe("MarkdownNoteHeader — OKF status", () => {
             lineWrapping: true,
             onTitleChange: () => {},
             titleInputRef: { current: null },
-            locationParent: "Notes",
+            locationSegments: ["Notes"],
             frontmatterRaw: fm("status: draft\nstatus_by: simon"),
             onFrontmatterChange,
             propertiesExpanded: false,

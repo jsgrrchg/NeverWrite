@@ -81,11 +81,12 @@ pnpm run check
 | --- | --- | --- |
 | Rust crates under `crates/` | `cargo test` from repo root | `cargo test -p <crate-name>` while iterating, then full `cargo test` before handoff |
 | Native backend under `apps/desktop/native-backend/` | `cargo test` and `cargo build -p neverwrite-native-backend` from repo root | From `apps/desktop`: `npm run electron:vault-editor:smoke` and `npm run electron:ai-runtime:smoke` |
+| AI history storage, transactional recovery, or managed attachments | `cargo test -p neverwrite-native-backend ai_history --no-fail-fast` | Verify the `AI history recovery (Windows)` CI job; perform the Windows packaged-app smoke below before a desktop release |
 | Desktop React/TypeScript under `apps/desktop/src/` | From `apps/desktop`: `npm run lint`, `npm test`, `npm run build` | Add `npm run electron:build` when Electron preload/main boundaries or runtime imports may be affected |
 | Desktop Electron main/preload under `apps/desktop/src-electron/` | From `apps/desktop`: `npm run lint`, `npm test`, `npm run electron:build` | Add native sidecar build plus both Electron sidecar smokes |
 | AI runtime setup, ACP integration, session history, or change-control plumbing | From `apps/desktop`: `npm test` and `npm run electron:ai-runtime:smoke` | Add `cargo test` and `npm run electron:build` when native commands or Electron IPC are involved |
 | Vault opening, file tree, search, wikilinks, maps, filesystem watching, or editor save flows | `cargo test`, `cargo build -p neverwrite-native-backend`, then from `apps/desktop`: `npm run electron:vault-editor:smoke` | Add `npm test` for affected desktop UI/state tests |
-| Desktop packaging config, `apps/desktop/scripts/`, `apps/desktop/build/`, `apps/desktop/embedded/`, vendored runtime packaging, or vendor ACP compatibility crates | From `apps/desktop`: `npm run electron:build`, `npm run electron:package:unsigned`, `npm run electron:app:smoke:packaged`, `npm run electron:sidecar:smoke:packaged` | Prefer the dedicated workflow in [`.github/workflows/electron-package-smoke.yml`](../.github/workflows/electron-package-smoke.yml) for macOS universal, Windows x64/ARM64, and Linux x64/ARM64 coverage. Linux ARM64 validates packaged contents and packages but cannot execute runtime smokes on the x64 runner. |
+| Desktop packaging config, `apps/desktop/scripts/`, `apps/desktop/build/`, `apps/desktop/embedded/`, packaged runtime preparation, or vendor ACP compatibility crates | From `apps/desktop`: `npm run electron:build`, `npm run electron:package:unsigned`, `npm run electron:app:smoke:packaged`, `npm run electron:sidecar:smoke:packaged` | Prefer the dedicated workflow in [`.github/workflows/electron-package-smoke.yml`](../.github/workflows/electron-package-smoke.yml) for macOS universal, Windows x64/ARM64, and Linux x64/ARM64 coverage. Linux ARM64 validates packaged contents and packages but cannot execute runtime smokes on the x64 runner. |
 | Web clipper under `apps/web-clipper/` | From `apps/web-clipper`: `pnpm run check` | `pnpm test:run` for faster unit-test iteration; `pnpm build` when validating unpacked extension artifacts |
 | Web clipper to desktop API integration | From `apps/web-clipper`: `pnpm run check`; from `apps/desktop`: relevant web clipper API tests if touched | Manually test with desktop running and authorized unpacked extension origins when changing origin, pairing, or deep-link behavior |
 | Release metadata, version files, appcast, or release scripts | `node scripts/validate-release-metadata.mjs --tag vX.Y.Z` from repo root | Release-only builds are covered by [`.github/workflows/release-desktop.yml`](../.github/workflows/release-desktop.yml) and require signing/platform setup |
@@ -106,7 +107,7 @@ npm run electron:ai-runtime:smoke
 
 `electron:vault-editor:smoke` exercises opening a fixture vault, note/file CRUD, search, backlinks, wikilinks, maps, and filesystem watcher events through the sidecar.
 
-`electron:ai-runtime:smoke` uses a fake ACP runtime to validate runtime descriptors, setup state, session creation, streamed assistant output, tool diff projection, session history persistence/search/fork/delete, agent-origin file restoration, and unsupported terminal auth handling.
+`electron:ai-runtime:smoke` uses a fake ACP runtime to validate runtime descriptors, built-in and custom setup state, isolated custom environment launch, capability-driven resume/load/new-session-only behavior, negotiated options/commands/usage, permission and user-input requests, tool diff projection, history persistence/search/fork/delete, custom definition restore/reconnect, process cleanup, agent-origin file restoration, and unsupported terminal auth handling.
 
 Packaged smokes require a packaged Electron output first:
 
@@ -117,7 +118,7 @@ npm run electron:app:smoke:packaged
 npm run electron:sidecar:smoke:packaged
 ```
 
-The packaged app smoke launches the packaged Electron executable with `ELECTRON_RUN_AS_NODE=1`. The packaged sidecar smoke locates the bundled native backend and sends a `ping` command. Both scripts default to `apps/desktop/dist-electron`, but can be pointed at another build output with:
+The packaged app smoke launches the packaged Electron executable with `ELECTRON_RUN_AS_NODE=1`. The packaged sidecar smoke runs a deterministic ACP `initialize` / `session/new` / `session/prompt` code-mode turn, proves the packaged standalone host process executed the tool, verifies a missing host fails closed with a clear diagnostic, and sends a `ping` command to the bundled native backend. Both scripts default to `apps/desktop/dist-electron`, but can be pointed at another build output with:
 
 ```bash
 NEVERWRITE_ELECTRON_OUTPUT_DIR=/path/to/electron-dist
@@ -125,6 +126,29 @@ NEVERWRITE_ELECTRON_DIST_ARCH=x64
 ```
 
 For custom paths, use `NEVERWRITE_PACKAGED_APP_EXECUTABLE` or `NEVERWRITE_PACKAGED_SIDECAR_PATH`.
+
+## Windows AI History Release Smoke
+
+The `AI history recovery (Windows)` CI job executes the transaction and recovery
+suite on a real Windows runner. Configure that check as required in GitHub branch
+protection for `main`.
+
+Before releasing a desktop build that changes AI history storage, validate the
+packaged app manually on a Windows machine. This is a release check, not a
+per-PR blocker: filesystem tools, endpoint protection, sync clients, and local
+ACLs cannot be simulated reliably in unit tests.
+
+Use a disposable vault and record the result with the release validation:
+
+- [ ] Open a new vault and confirm new AI history uses device storage.
+- [ ] Move storage from device to vault and back to device.
+- [ ] Paste an image into a chat and confirm the move preserves its preview.
+- [ ] Start a move, force-close the app, then reopen the same vault.
+- [ ] Confirm Settings shows recovery when needed and that neither history nor
+  the managed pasted attachment is silently lost.
+
+If recovery is required, do not choose a root by timestamp or delete the
+journal. Preserve the diagnostic and follow the recovery UI before continuing.
 
 ## Deep Link QA
 
@@ -245,9 +269,10 @@ cargo build -p neverwrite-native-backend
 
 ## CI Parity
 
-The main PR workflow in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) has three jobs:
+The main PR workflow in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) has four jobs:
 
 - Rust: `cargo test`
+- AI history recovery (Windows): `cargo test -p neverwrite-native-backend ai_history::migration --no-fail-fast`
 - Desktop: `npm ci`, `npm run lint`, `npm test`, `npm run electron:build`, `cargo build -p neverwrite-native-backend`, and both debug sidecar smokes
 - Web Clipper: `pnpm install --frozen-lockfile` and `pnpm run check`
 

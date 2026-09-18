@@ -34,6 +34,7 @@ pub struct AiSessionErrorPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AiRuntimeConnectionPayload {
     pub runtime_id: String,
+    pub session_id: Option<String>,
     pub status: String,
     pub message: Option<String>,
 }
@@ -92,6 +93,8 @@ pub struct AiToolActivityPayload {
     pub kind: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<AiToolActivityActionPayload>,
     pub target: Option<String>,
     pub summary: Option<String>,
@@ -106,6 +109,8 @@ pub struct AiStatusEventPayload {
     pub kind: String,
     pub status: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
     pub detail: Option<String>,
     pub emphasis: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -204,6 +209,8 @@ pub struct AiPermissionOptionPayload {
     pub option_id: String,
     pub name: String,
     pub kind: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub permission_scope: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

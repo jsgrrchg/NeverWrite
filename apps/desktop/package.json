@@ -1,7 +1,7 @@
 {
     "name": "desktop",
     "private": true,
-    "version": "0.5.1",
+    "version": "0.8.1",
     "homepage": "https://github.com/jsgrrchg/NeverWrite",
     "type": "module",
     "main": "out/electron/main/index.js",
@@ -10,11 +10,13 @@
     },
     "scripts": {
         "preinstall": "node scripts/require-npm.mjs",
+        "postinstall": "patch-package",
         "dev": "node scripts/run-electron-dev.mjs",
         "renderer:dev": "vite",
         "build": "tsc -b && vite build",
         "lint": "eslint .",
         "test": "vitest run",
+        "test:v8-artifacts": "vitest run scripts/codex-v8-artifacts.test.mjs",
         "test:watch": "vitest",
         "test:e2e": "playwright test --config e2e/playwright.config.ts",
         "test:e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
@@ -33,7 +35,11 @@
         "electron:package:unsigned": "node scripts/build-electron-release.mjs --dir --unsigned",
         "electron:dist:mac": "node scripts/build-electron-release.mjs --platform mac",
         "electron:dist:win": "node scripts/build-electron-release.mjs --platform win",
-        "electron:release:local": "node scripts/build-electron-release.mjs"
+        "electron:release:local": "node scripts/build-electron-release.mjs",
+        "test:claude-runtime": "node --test scripts/claude-runtime-contracts.test.mjs",
+        "claude:prepare": "node scripts/prepare-claude-runtime.mjs",
+        "test:claude-preparation": "node --test scripts/claude-runtime.test.mjs scripts/claude-upstream-watch.test.mjs",
+        "claude:smoke": "node scripts/smoke-claude-runtime.mjs"
     },
     "dependencies": {
         "@codemirror/commands": "^6.10.3",
@@ -66,11 +72,11 @@
         "@xterm/addon-web-links": "^0.12.0",
         "@xterm/addon-webgl": "^0.19.0",
         "@xterm/xterm": "^6.0.0",
-        "electron-updater": "^6.8.3",
+        "electron-updater": "^6.8.9",
         "katex": "^0.16.45",
-        "mermaid": "^11.16.0",
+        "mermaid": "^11.16.1",
         "papaparse": "^5.5.3",
-        "pdfjs-dist": "^5.6.205",
+        "pdfjs-dist": "^6.2.108",
         "react": "19.2.5",
         "react-datasheet-grid": "^4.11.6",
         "react-dom": "19.2.5",
@@ -99,11 +105,13 @@
         "eslint-plugin-react-refresh": "^0.4.24",
         "globals": "^16.5.0",
         "jsdom": "^26.1.0",
+        "patch-package": "8.0.1",
         "rcedit": "^5.0.2",
+        "tar": "7.5.20",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.59.0",
         "vite": "^8.0.16",
-        "vitest": "^4.1.9",
+        "vitest": "^4.1.11",
         "yaml": "^2.8.3"
     },
     "overrides": {
@@ -114,10 +122,10 @@
             "lodash-es": "4.18.1"
         },
         "@excalidraw/excalidraw": {
-            "nanoid": "3.3.11"
+            "nanoid": "3.3.18"
         },
         "@excalidraw/mermaid-to-excalidraw": {
-            "nanoid": "5.1.9"
+            "nanoid": "5.1.16"
         },
         "chevrotain": {
             "lodash-es": "4.18.1"

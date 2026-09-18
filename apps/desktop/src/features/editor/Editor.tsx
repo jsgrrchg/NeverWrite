@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "../ai/store/chatTabsStore";
 import {
     useEffect,
     useRef,
@@ -476,8 +477,9 @@ export function Editor({
     const isPaneFocused = useEditorStore((state) =>
         paneId ? selectFocusedPaneId(state) === paneId : true,
     );
+    const isEditorSurfaceFocused = useChatTabsStore(state => state.focusedSurface === "editor");
     const isInteractionActive =
-        isPaneFocused && isVisible && isPaneActiveInstance;
+        isEditorSurfaceFocused && isPaneFocused && isVisible && isPaneActiveInstance;
     const pendingReveal = useEditorStore((s) => s.pendingReveal);
     const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
     const pendingSelectionReveal = useEditorStore(
@@ -3999,7 +4001,7 @@ export function Editor({
 
     const activeLocation = activeTabInfo
         ? getNoteLocation(activeTabInfo.noteId)
-        : { parent: "" };
+        : { parentSegments: [] };
     const addWordToSpellcheckDictionary = async (word: string) => {
         await useSpellcheckStore
             .getState()
@@ -4257,7 +4259,7 @@ export function Editor({
                         onTitleChange={applyTitleChange}
                         titleInputRef={titleInputRef}
                         onTitleContextMenu={handleTitleContextMenu}
-                        locationParent={activeLocation.parent}
+                        locationSegments={activeLocation.parentSegments}
                         frontmatterRaw={activeFrontmatter}
                         onFrontmatterChange={applyFrontmatterChange}
                         propertiesExpanded={propertiesExpanded}

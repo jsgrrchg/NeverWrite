@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "../ai/store/chatTabsStore";
 import { act, fireEvent, screen } from "@testing-library/react";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
@@ -2922,13 +2923,30 @@ describe("Editor", () => {
         expect(useEditorStore.getState().activeTabId).toBe("tab-1");
     });
 
-    it("closes an active agent tab on Cmd+W without interrupting its session", async () => {
+    it("does not close a document when the chat surface owns the shortcut", async () => {
+        setEditorTabs([{ id: "note", noteId: "note", title: "Note", content: "Keep" }]);
+        useChatTabsStore.getState().showConversation("chat");
+        renderComponent(<Editor />);
+        await act(async () => {
+            window.dispatchEvent(new KeyboardEvent("keydown", {
+                key: "w",
+                metaKey: getDesktopPlatform() === "macos",
+                ctrlKey: getDesktopPlatform() !== "macos",
+                bubbles: true,
+                cancelable: true,
+            }));
+        });
+        expect(useEditorStore.getState().tabs.map(tab => tab.id)).toEqual(["note"]);
+    });
+
+    it("closes an active document on Cmd+W without interrupting a background session", async () => {
         setEditorTabs(
             [
                 {
                     id: "tab-chat",
-                    kind: "ai-chat",
-                    sessionId: "session-busy",
+                    kind: "note",
+                    noteId: "notes/other",
+                    content: "Other body",
                     title: "Chat",
                 },
                 {

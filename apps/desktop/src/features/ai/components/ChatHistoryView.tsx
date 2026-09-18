@@ -1,3 +1,7 @@
+import { archiveChat, unarchiveChat } from "../chatArchiving";
+import { isSessionArchived, useArchivedChatsStore } from "../store/archivedChatsStore";
+import { useChatTabsStore, type ChatHistoryFilter } from "../store/chatTabsStore";
+import { useElementWidth } from "../../../components/layout/useElementWidth";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { useEditorStore } from "../../../app/store/editorStore";
@@ -35,6 +39,12 @@ export function ChatHistoryView({
     onRequestClose,
     showBackButton = true,
 }: ChatHistoryViewProps) {
+    const { ref: containerRef, width: availableWidth } = useElementWidth<HTMLDivElement>();
+    const narrow = availableWidth !== null && availableWidth < 640;
+    const [showTranscript, setShowTranscript] = useState(false);
+    const archiveEntries = useArchivedChatsStore(state => state.entries);
+    const historyFilter = useChatTabsStore(state => state.historyFilter);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
     const sessionsById = useChatStore((s) => s.sessionsById);
     const sessionOrder = useChatStore((s) => s.sessionOrder);
     const runtimes = useChatStore((s) => s.runtimes);
@@ -65,10 +75,10 @@ export function ChatHistoryView({
         () =>
             sessionOrder
                 .map((id) => sessionsById[id])
-                .filter(Boolean) as NonNullable<
+                .filter(session => session && (historyFilter === "all" || isSessionArchived(session, sessionsById, archiveEntries) === (historyFilter === "archived"))) as NonNullable<
                 (typeof sessionsById)[string]
             >[],
-        [sessionsById, sessionOrder],
+        [sessionsById, sessionOrder, historyFilter, archiveEntries],
     );
     const selectedSession = useMemo(
         () =>
@@ -158,23 +168,17 @@ export function ChatHistoryView({
 
     const confirmDelete = useCallback(() => {
         if (deleteConfirmIds.length === 0) return;
-        if (
-            selectedSession?.sessionId &&
-            deleteConfirmIds.includes(selectedSession.sessionId)
-        ) {
-            onSelectHistorySessionId(null);
-        }
         void (async () => {
             for (const sessionId of deleteConfirmIds) {
                 await deleteSession(sessionId);
             }
-        })();
-        setDeleteConfirmIds([]);
+            setDeleteError(null);
+            setDeleteConfirmIds([]);
+        })().catch(error => setDeleteError(String(error)));
+
     }, [
         deleteConfirmIds,
         deleteSession,
-        selectedSession,
-        onSelectHistorySessionId,
     ]);
 
     const cancelDelete = useCallback(() => {
@@ -255,9 +259,11 @@ export function ChatHistoryView({
 
     return (
         <div
+            ref={containerRef}
             className="flex h-full min-h-0 flex-col"
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
+            {deleteError && <p role="alert" className="p-2 text-xs">Could not delete chat: {deleteError}</p>}
             {/* Header */}
             <div
                 className="flex shrink-0 items-center gap-2 px-3 py-1"
@@ -322,6 +328,14 @@ export function ChatHistoryView({
                 </select>
             </div>
 
+            <div className="flex shrink-0 flex-wrap items-center gap-3 px-3 py-2 text-xs">
+                <label>Show <select aria-label="Chat history filter" value={historyFilter} onChange={event => useChatTabsStore.getState().setHistoryFilter(event.target.value as ChatHistoryFilter)}>
+                    <option value="all">All</option><option value="active">Active</option><option value="archived">Archived</option>
+                </select></label>
+                {selectedSession && !selectedSession.parentSessionId && <button type="button" onClick={() => isSessionArchived(selectedSession, sessionsById, archiveEntries) ? unarchiveChat(selectedSession.sessionId) : archiveChat(selectedSession.sessionId)}>{isSessionArchived(selectedSession, sessionsById, archiveEntries) ? "Unarchive" : "Archive"}</button>}
+                {selectedSession && isSessionArchived(selectedSession, sessionsById, archiveEntries) && <><span>Archived</span><button type="button" onClick={() => { unarchiveChat(selectedSession.sessionId); openChatSessionInWorkspace(selectedSession.sessionId); }}>Unarchive and continue</button></>}
+            </div>
+            <p className="shrink-0 px-3 pb-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>Retention applies to active and archived chats. {historyRetentionDays ? `History older than ${historyRetentionDays} days is automatically deleted.` : "History is kept indefinitely."}</p>
             {/* Master-detail body */}
             <div className="flex min-h-0 flex-1">
                 {/* Session list (master) */}
@@ -329,7 +343,8 @@ export function ChatHistoryView({
                     ref={listPanelRef}
                     className="shrink-0"
                     style={{
-                        width: listWidth,
+                        display: narrow && showTranscript ? "none" : undefined,
+                        width: narrow ? "100%" : Math.min(listWidth, Math.max(MIN_LIST_WIDTH, (availableWidth ?? 1000) - 320)),
                         borderRight: "1px solid var(--border)",
                     }}
                 >
@@ -337,7 +352,8 @@ export function ChatHistoryView({
                         sessions={sessions}
                         runtimes={runtimeOptions}
                         selectedSessionId={selectedHistorySessionId}
-                        onSelectSession={onSelectHistorySessionId}
+                        onReconcileSelection={onSelectHistorySessionId}
+                        onSelectSession={id => { onSelectHistorySessionId(id); setShowTranscript(true); }}
                         onRestoreSession={handleRestoreSession}
                         onDeleteSession={handleDeleteSession}
                         onDeleteSessions={handleDeleteSessions}
@@ -351,6 +367,7 @@ export function ChatHistoryView({
                 <div
                     className="relative shrink-0 cursor-col-resize touch-none"
                     style={{
+                        display: narrow ? "none" : undefined,
                         width: RESIZER_HITBOX,
                         marginLeft: -RESIZER_OVERLAP,
                         marginRight: -RESIZER_OVERLAP,
@@ -370,7 +387,9 @@ export function ChatHistoryView({
                 </div>
 
                 {/* Transcript viewer (detail) */}
-                <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-1 flex-col" style={{ display: narrow && !showTranscript ? "none" : undefined }}>
+                    {narrow && <button type="button" className="shrink-0 p-2 text-left text-xs" onClick={() => setShowTranscript(false)}>Back to conversations</button>}
+                    <div className="min-h-0 flex-1">
                     {selectedHistorySessionId ? (
                         <HistoryTranscriptViewer
                             historySessionId={selectedHistorySessionId}
@@ -393,6 +412,7 @@ export function ChatHistoryView({
                             Select a conversation to view
                         </div>
                     )}
+                    </div>
                 </div>
             </div>
 

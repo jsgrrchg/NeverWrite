@@ -1,5 +1,6 @@
 import { waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import type { ContextMenuEntry } from "../../components/context-menu/ContextMenu";
 import { resetChatStore, useChatStore } from "../ai/store/chatStore";
 import { CLAUDE_TERMINAL_RUNTIME_ID } from "../ai/utils/runtimeMetadata";
@@ -44,37 +45,52 @@ function seedRuntimes() {
             },
         ],
         selectedRuntimeId: "codex-acp",
+        setupStatusByRuntimeId: {
+            [CLAUDE_TERMINAL_RUNTIME_ID]: {
+                runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+                binaryReady: true,
+                binarySource: "env",
+                authReady: true,
+                onboardingRequired: false,
+                authMethods: [],
+            },
+        },
     });
 }
 
-function isContextMenuItem(entry: ContextMenuEntry): entry is ContextMenuItem {
-    return "label" in entry;
-}
-
-function getNewAgentChild(label: string): ContextMenuItem {
-    const newAgent = buildNewTabContextMenuEntries({
-        paneId: "secondary",
-    }).find(
+function getEntry(label: string): ContextMenuItem | undefined {
+    return buildNewTabContextMenuEntries({ paneId: "secondary" }).find(
         (entry): entry is ContextMenuItem =>
-            isContextMenuItem(entry) && entry.label === "New Agent",
+            "label" in entry && entry.label === label,
     );
-    const child = newAgent?.children?.find(
-        (entry): entry is ContextMenuItem =>
-            isContextMenuItem(entry) && entry.label === label,
-    );
-    expect(child).toBeDefined();
-    return child!;
 }
 
 describe("newTabMenuActions", () => {
     beforeEach(() => {
         resetChatStore();
+        useSettingsStore.setState({ claudeCodeEnabled: false });
         vi.clearAllMocks();
         seedRuntimes();
     });
 
-    it("opens Claude Code agent entries as terminal sessions in the target pane", async () => {
-        getNewAgentChild("Claude Code").action?.();
+    it("creates a canonical agent directly without a provider submenu", async () => {
+        const newAgent = getEntry("New Agent");
+
+        expect(newAgent?.children).toBeUndefined();
+        newAgent?.action?.();
+
+        await waitFor(() => {
+            expect(
+                chatPaneMovementMock.createNewChatInWorkspace,
+            ).toHaveBeenCalledWith();
+        });
+        expect(getEntry("Codex")).toBeUndefined();
+    });
+
+    it("adds Claude Code as a separate action when enabled for the vault", async () => {
+        useSettingsStore.setState({ claudeCodeEnabled: true });
+
+        getEntry("Claude Code")?.action?.();
 
         await waitFor(() => {
             expect(
@@ -84,26 +100,27 @@ describe("newTabMenuActions", () => {
         expect(
             chatPaneMovementMock.createNewChatInWorkspace,
         ).not.toHaveBeenCalled();
-        expect(useChatStore.getState().selectedRuntimeId).toBe(
-            CLAUDE_TERMINAL_RUNTIME_ID,
-        );
     });
 
-    it("keeps ACP agent entries on the normal chat creation path", async () => {
-        useChatStore.setState({
-            selectedRuntimeId: CLAUDE_TERMINAL_RUNTIME_ID,
-        });
+    it("does not expose ACP runtimes as creation actions", () => {
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "custom:123e4567-e89b-12d3-a456-426614174000",
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+        }));
 
-        getNewAgentChild("Codex").action?.();
-
-        await waitFor(() => {
-            expect(
-                chatPaneMovementMock.createNewChatInWorkspace,
-            ).toHaveBeenCalledWith("codex-acp", { paneId: "secondary" });
-        });
-        expect(
-            claudeCodeTerminalMock.openClaudeCodeTerminalWithContext,
-        ).not.toHaveBeenCalled();
-        expect(useChatStore.getState().selectedRuntimeId).toBe("codex-acp");
+        expect(getEntry("Local reviewer")).toBeUndefined();
+        expect(getEntry("New Agent")).toBeDefined();
     });
 });

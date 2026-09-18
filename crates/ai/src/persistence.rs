@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -7,12 +7,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const PRODUCT_STATE_DIR_NAME: &str = ".neverwrite";
+use crate::domain::AcpContinuationStrategy;
 
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
+const CONVERSATION_BINDINGS_FILE: &str = "conversation-bindings.json";
 const SESSION_COMPACTION_MARKER_FILE: &str = "compact-state.json";
+const SESSION_CHECKPOINT_FILE: &str = "session-checkpoint.json";
+const PREVIOUS_CHECKPOINT_FILE: &str = "previous-checkpoint.json";
 const FORMAT_VERSION: u32 = 1;
 const MB: u64 = 1024 * 1024;
 const DEFAULT_TRANSCRIPT_COMPACTION_POLICY: TranscriptCompactionPolicy =
@@ -21,6 +24,30 @@ const DEFAULT_TRANSCRIPT_COMPACTION_POLICY: TranscriptCompactionPolicy =
         max_physical_to_indexed_ratio: 2,
         force_physical_bytes: 64 * MB,
     };
+
+/// Finder writes this regular file to directories it has inspected. It is not
+/// part of NeverWrite's history format and must not affect storage ownership
+/// or transaction safety decisions.
+pub fn is_incidental_filesystem_metadata(path: &Path, metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_file() && path.file_name().is_some_and(|name| name == ".DS_Store")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedTurnProvenance {
+    pub binding_id: String,
+    pub runtime_id: String,
+    #[serde(default)]
+    pub runtime_session_id: Option<String>,
+    pub model_id: String,
+    pub mode_id: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+    pub start_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_omitted_turn_count: Option<u64>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedMessage {
@@ -59,6 +86,87 @@ pub struct PersistedMessage {
     pub plan_detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_action: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_provenance: Option<PersistedTurnProvenance>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedConversationSelection {
+    pub runtime_id: String,
+    pub model_id: String,
+    pub mode_id: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedProviderBinding {
+    pub binding_id: String,
+    pub conversation_id: String,
+    pub runtime_id: String,
+    #[serde(default)]
+    pub runtime_display_name: Option<String>,
+    #[serde(default)]
+    pub runtime_revision: Option<u64>,
+    #[serde(default)]
+    pub runtime_launch_fingerprint: Option<String>,
+    #[serde(default)]
+    pub runtime_session_id: Option<String>,
+    #[serde(default)]
+    pub continuation_strategy: Option<AcpContinuationStrategy>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    pub model_id: String,
+    pub mode_id: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modes: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_options: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub efforts_by_model: BTreeMap<String, Vec<String>>,
+    pub runtime_state: String,
+    #[serde(default)]
+    pub context_cursor: Option<String>,
+    #[serde(default)]
+    pub context_generation: u64,
+    #[serde(default)]
+    pub created_at: Option<u64>,
+    #[serde(default)]
+    pub updated_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedTranscriptObservation {
+    pub message_count: usize,
+    pub updated_at: u64,
+    #[serde(default)]
+    pub transcript_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedConversationBindings {
+    pub version: u32,
+    pub revision: u64,
+    pub conversation_id: String,
+    pub preferred_selection: PersistedConversationSelection,
+    #[serde(default)]
+    pub active_binding_id: Option<String>,
+    #[serde(default)]
+    pub provider_bindings: Vec<PersistedProviderBinding>,
+    #[serde(default)]
+    pub context_summary: Option<String>,
+    pub transcript_observation: PersistedTranscriptObservation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PersistedSessionHistoryEnvelope {
+    #[serde(flatten)]
+    pub history: PersistedSessionHistory,
+    pub conversation_bindings: PersistedConversationBindings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +179,16 @@ pub struct PersistedSessionHistory {
     pub closed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_launch_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_strategy: Option<AcpContinuationStrategy>,
     pub model_id: String,
     pub mode_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,6 +239,72 @@ pub struct SessionSearchResult {
     pub matched_messages: Vec<MatchedMessage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectedHistoryFormat {
+    Directory,
+    LegacyJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectedHistory {
+    pub session_id: String,
+    pub relative_path: String,
+    pub format: InspectedHistoryFormat,
+    pub content_fingerprint: String,
+    pub artifact_fingerprint: String,
+    pub managed_attachment_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageArtifactIssue {
+    pub relative_path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnknownStorageEntry {
+    pub relative_path: String,
+    pub entry_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DuplicateSessionId {
+    pub session_id: String,
+    pub artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionIdClaim {
+    pub session_id: String,
+    pub relative_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoverableStorageState {
+    pub relative_path: String,
+    pub state_type: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryStorageInventory {
+    pub storage_root_exists: bool,
+    pub sessions_root_exists: bool,
+    pub sessions: Vec<InspectedHistory>,
+    pub session_id_claims: Vec<SessionIdClaim>,
+    pub corrupt_artifacts: Vec<StorageArtifactIssue>,
+    pub duplicate_session_ids: Vec<DuplicateSessionId>,
+    pub recoverable_states: Vec<RecoverableStorageState>,
+    pub unknown_entries: Vec<UnknownStorageEntry>,
+    pub read_errors: Vec<StorageArtifactIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageInventory {
+    pub fingerprint: String,
+    pub histories: HistoryStorageInventory,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSessionMetadata {
     version: u32,
@@ -131,6 +315,16 @@ struct PersistedSessionMetadata {
     closed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_launch_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continuation_strategy: Option<AcpContinuationStrategy>,
     model_id: String,
     mode_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,6 +346,16 @@ struct PersistedSessionMetadata {
     preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     forked_from: Option<String>,
+}
+
+fn normalize_fork_runtime_identity(
+    mut metadata: PersistedSessionMetadata,
+) -> PersistedSessionMetadata {
+    if metadata.forked_from.is_some() {
+        metadata.runtime_session_id = None;
+        metadata.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
+    }
+    metadata
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,14 +390,21 @@ struct LegacySessionArtifacts {
     dir_path: Option<PathBuf>,
 }
 
-fn sessions_dir(vault_root: &Path) -> PathBuf {
-    vault_root.join(PRODUCT_STATE_DIR_NAME).join("sessions")
+fn sessions_dir(storage_root: &Path) -> PathBuf {
+    storage_root.join("sessions")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
+    digest_hex(&sha256_digest(bytes))
+}
+
+fn sha256_digest(bytes: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let digest = hasher.finalize();
+    hasher.finalize().into()
+}
+
+fn digest_hex(digest: &[u8; 32]) -> String {
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
         use std::fmt::Write as _;
@@ -202,13 +413,331 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex
 }
 
+#[derive(Default)]
+struct InventoryFingerprintBuilder {
+    records: Vec<Vec<u8>>,
+}
+
+impl InventoryFingerprintBuilder {
+    fn add(&mut self, kind: &str, relative_path: &str, content: &[u8]) {
+        self.add_digest(kind, relative_path, &sha256_digest(content));
+    }
+
+    fn add_digest(&mut self, kind: &str, relative_path: &str, digest: &[u8; 32]) {
+        let mut record = Vec::new();
+        append_fingerprint_part(&mut record, kind.as_bytes());
+        append_fingerprint_part(&mut record, relative_path.as_bytes());
+        append_fingerprint_part(&mut record, digest);
+        self.records.push(record);
+    }
+
+    fn finish(mut self) -> String {
+        self.records.sort();
+        let mut hasher = Sha256::new();
+        for record in self.records {
+            hasher.update((record.len() as u64).to_le_bytes());
+            hasher.update(record);
+        }
+        digest_hex(&hasher.finalize().into())
+    }
+}
+
+fn append_fingerprint_part(target: &mut Vec<u8>, part: &[u8]) {
+    target.extend_from_slice(&(part.len() as u64).to_le_bytes());
+    target.extend_from_slice(part);
+}
+
+struct Sha256Writer<'a>(&'a mut Sha256);
+
+impl Write for Sha256Writer<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn update_canonical_json(value: &serde_json::Value, output: &mut Sha256) {
+    match value {
+        serde_json::Value::Null => output.update(b"null"),
+        serde_json::Value::Bool(value) => {
+            output.update(if *value { &b"true"[..] } else { &b"false"[..] })
+        }
+        serde_json::Value::Number(value) => output.update(value.to_string().as_bytes()),
+        serde_json::Value::String(value) => {
+            serde_json::to_writer(Sha256Writer(output), value)
+                .expect("serializing a JSON string cannot fail");
+        }
+        serde_json::Value::Array(values) => {
+            output.update(b"[");
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    output.update(b",");
+                }
+                update_canonical_json(value, output);
+            }
+            output.update(b"]");
+        }
+        serde_json::Value::Object(values) => {
+            output.update(b"{");
+            let sorted = values.iter().collect::<BTreeMap<_, _>>();
+            for (index, (key, value)) in sorted.into_iter().enumerate() {
+                if index > 0 {
+                    output.update(b",");
+                }
+                serde_json::to_writer(Sha256Writer(output), key)
+                    .expect("serializing a JSON object key cannot fail");
+                output.update(b":");
+                update_canonical_json(value, output);
+            }
+            output.update(b"}");
+        }
+    }
+}
+
+fn artifact_fingerprint(_path: &Path, bytes: &[u8]) -> [u8; 32] {
+    sha256_digest(bytes)
+}
+
+fn raw_file_fingerprint(path: &Path) -> std::io::Result<[u8; 32]> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn artifact_file_fingerprint(path: &Path) -> std::io::Result<[u8; 32]> {
+    raw_file_fingerprint(path)
+}
+
+fn relative_storage_path(storage_root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(storage_root).unwrap_or(path);
+    lossless_path_string(relative)
+}
+
+fn lossless_path_string(path: &Path) -> String {
+    if let Some(value) = path.to_str() {
+        let normalized = value.replace('\\', "/");
+        if normalized.starts_with("@neverwrite-bytes:") {
+            return format!("@neverwrite-utf8:{normalized}");
+        }
+        return normalized;
+    }
+
+    encode_non_utf8_path(path)
+}
+
+#[cfg(unix)]
+fn encode_non_utf8_path(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut encoded = String::from("@neverwrite-bytes:");
+    for byte in path.as_os_str().as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+#[cfg(windows)]
+fn encode_non_utf8_path(path: &Path) -> String {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut encoded = String::from("@neverwrite-bytes:");
+    for unit in path.as_os_str().encode_wide() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut encoded, "{unit:04x}");
+    }
+    encoded
+}
+
+#[cfg(not(any(unix, windows)))]
+fn encode_non_utf8_path(path: &Path) -> String {
+    format!(
+        "@neverwrite-bytes:{}",
+        sha256_hex(path.to_string_lossy().as_bytes())
+    )
+}
+
+fn push_corrupt_artifact(
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+    relative_path: String,
+    error: impl Into<String>,
+) {
+    let error = error.into();
+    fingerprint.add("corrupt", &relative_path, error.as_bytes());
+    inventory.corrupt_artifacts.push(StorageArtifactIssue {
+        relative_path,
+        error,
+    });
+}
+
+fn push_read_error(
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+    relative_path: String,
+    error: impl Into<String>,
+) {
+    let error = error.into();
+    fingerprint.add("read-error", &relative_path, error.as_bytes());
+    inventory.read_errors.push(StorageArtifactIssue {
+        relative_path,
+        error,
+    });
+}
+
+fn push_unknown_entry(
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+    relative_path: String,
+    entry_type: impl Into<String>,
+) {
+    let entry_type = entry_type.into();
+    fingerprint.add("unknown", &relative_path, entry_type.as_bytes());
+    inventory.unknown_entries.push(UnknownStorageEntry {
+        relative_path,
+        entry_type,
+    });
+}
+
+struct ReadArtifact {
+    bytes: Vec<u8>,
+    fingerprint: [u8; 32],
+}
+
+fn read_expected_artifact(
+    storage_root: &Path,
+    path: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) -> Option<ReadArtifact> {
+    let relative_path = relative_storage_path(storage_root, path);
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_path,
+                "Required history artifact is missing.",
+            );
+            return None;
+        }
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return None;
+        }
+    };
+
+    if !metadata.file_type().is_file() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_path,
+            "Required history artifact is not a regular file.",
+        );
+        return None;
+    }
+
+    match fs::read(path) {
+        Ok(bytes) => {
+            let artifact_fingerprint = artifact_fingerprint(path, &bytes);
+            fingerprint.add_digest("file", &relative_path, &artifact_fingerprint);
+            Some(ReadArtifact {
+                bytes,
+                fingerprint: artifact_fingerprint,
+            })
+        }
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            None
+        }
+    }
+}
+
+fn fingerprint_unknown_tree(
+    storage_root: &Path,
+    path: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) {
+    let relative_path = relative_storage_path(storage_root, path);
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    let file_type = metadata.file_type();
+
+    if file_type.is_symlink() {
+        match fs::read_link(path) {
+            Ok(target) => {
+                let target = lossless_path_string(&target);
+                fingerprint.add("symlink", &relative_path, target.as_bytes());
+            }
+            Err(error) => push_read_error(inventory, fingerprint, relative_path, error.to_string()),
+        }
+        return;
+    }
+
+    if file_type.is_file() {
+        match artifact_file_fingerprint(path) {
+            Ok(artifact_fingerprint) => {
+                fingerprint.add_digest("file", &relative_path, &artifact_fingerprint)
+            }
+            Err(error) => push_read_error(inventory, fingerprint, relative_path, error.to_string()),
+        }
+        return;
+    }
+
+    if !file_type.is_dir() {
+        fingerprint.add("special", &relative_path, &[]);
+        return;
+    }
+
+    fingerprint.add("directory", &relative_path, &[]);
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                fingerprint_unknown_tree(storage_root, &entry.path(), inventory, fingerprint)
+            }
+            Err(error) => push_read_error(
+                inventory,
+                fingerprint,
+                format!("{relative_path}/<unreadable-entry>"),
+                error.to_string(),
+            ),
+        }
+    }
+}
+
 // `session_id` remains a logical product identifier; disk layout uses a hashed storage key.
 fn session_storage_key(session_id: &str) -> String {
     format!("session-{}", sha256_hex(session_id.as_bytes()))
 }
 
-fn storage_session_dir(vault_root: &Path, session_id: &str) -> PathBuf {
-    sessions_dir(vault_root).join(session_storage_key(session_id))
+fn storage_session_dir(storage_root: &Path, session_id: &str) -> PathBuf {
+    sessions_dir(storage_root).join(session_storage_key(session_id))
 }
 
 fn session_meta_path(session_dir: &Path) -> PathBuf {
@@ -220,33 +749,133 @@ fn session_index_path(session_dir: &Path) -> PathBuf {
 }
 
 fn session_transcript_path(session_dir: &Path) -> PathBuf {
-    session_dir.join(SESSION_TRANSCRIPT_FILE)
+    match read_checkpoint(session_dir) {
+        Ok(Some(checkpoint)) => session_dir.join(checkpoint.transcript_file),
+        Ok(None) => session_dir.join(SESSION_TRANSCRIPT_FILE),
+        // Callers first load the checkpoint/header and surface its error. Never
+        // silently write into a legacy transcript when the commit is unreadable.
+        Err(_) => session_dir.join("unavailable-transcript"),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionCheckpoint {
+    version: u32,
+    metadata: PersistedSessionMetadata,
+    index: PersistedTranscriptIndex,
+    transcript_file: String,
+}
+
+fn checkpoint_transcript_name(name: &str) -> bool {
+    name == SESSION_TRANSCRIPT_FILE
+        || name
+            .strip_prefix("transcript-")
+            .and_then(|name| name.strip_suffix(".jsonl"))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+}
+
+fn read_checkpoint(session_dir: &Path) -> Result<Option<SessionCheckpoint>, String> {
+    // Session-level validation replaces the old all-or-nothing root scan.
+    // Check the directory itself before following any artifact paths.
+    match fs::symlink_metadata(session_dir) {
+        Ok(metadata) if !metadata.file_type().is_dir() => {
+            return Err("Session storage is not a regular directory.".into());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    let path = session_dir.join(SESSION_CHECKPOINT_FILE);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    let checkpoint: SessionCheckpoint = read_json_file(&path)?;
+    if checkpoint.version != FORMAT_VERSION
+        || !checkpoint_transcript_name(&checkpoint.transcript_file)
+    {
+        return Err("Unsupported or invalid session checkpoint.".into());
+    }
+    validate_lazy_session_files(&checkpoint.metadata, &checkpoint.index)?;
+    let transcript = fs::symlink_metadata(session_dir.join(&checkpoint.transcript_file))
+        .map_err(|error| format!("Session checkpoint is waiting for its transcript: {error}"))?;
+    if !transcript.file_type().is_file() {
+        return Err("Checkpoint transcript is not a regular file.".into());
+    }
+    for (&offset, &length) in checkpoint
+        .index
+        .message_offsets
+        .iter()
+        .zip(&checkpoint.index.message_lengths)
+    {
+        if offset
+            .checked_add(length)
+            .is_none_or(|end| end > transcript.len())
+        {
+            return Err("Session checkpoint is waiting for complete transcript data. Retry after synchronization finishes.".into());
+        }
+    }
+    Ok(Some(checkpoint))
+}
+
+fn publish_checkpoint(
+    session_dir: &Path,
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+    transcript_path: &Path,
+) -> Result<(), String> {
+    validate_lazy_session_files(metadata, index)?;
+    // Retain the prior commit and its transcript for explicit recovery. Readers
+    // never silently fall back to older data that a subsequent save could erase.
+    if let Some(previous) = read_checkpoint(session_dir)? {
+        write_json_atomic(&session_dir.join(PREVIOUS_CHECKPOINT_FILE), &previous)?;
+    }
+    // Compatibility projections are not the commit point. A reader uses the
+    // previous checkpoint until the complete new header is atomically published.
+    write_json_atomic(&session_meta_path(session_dir), metadata)?;
+    write_json_atomic(&session_index_path(session_dir), index)?;
+    let checkpoint = SessionCheckpoint {
+        version: FORMAT_VERSION,
+        metadata: metadata.clone(),
+        index: index.clone(),
+        transcript_file: session_sidecar_file_name(transcript_path)?,
+    };
+    write_json_atomic(&session_dir.join(SESSION_CHECKPOINT_FILE), &checkpoint)
+}
+
+fn conversation_bindings_path(session_dir: &Path) -> PathBuf {
+    session_dir.join(CONVERSATION_BINDINGS_FILE)
 }
 
 fn session_compaction_marker_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SESSION_COMPACTION_MARKER_FILE)
 }
 
-fn storage_session_meta_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    session_meta_path(&storage_session_dir(vault_root, session_id))
+fn storage_session_meta_file(storage_root: &Path, session_id: &str) -> PathBuf {
+    session_meta_path(&storage_session_dir(storage_root, session_id))
 }
 
-fn storage_session_index_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    session_index_path(&storage_session_dir(vault_root, session_id))
+fn storage_session_index_file(storage_root: &Path, session_id: &str) -> PathBuf {
+    session_index_path(&storage_session_dir(storage_root, session_id))
 }
 
-fn storage_session_transcript_file(vault_root: &Path, session_id: &str) -> PathBuf {
-    session_transcript_path(&storage_session_dir(vault_root, session_id))
+fn storage_session_transcript_file(storage_root: &Path, session_id: &str) -> PathBuf {
+    session_transcript_path(&storage_session_dir(storage_root, session_id))
 }
 
-fn storage_session_is_complete(vault_root: &Path, session_id: &str) -> bool {
-    storage_session_meta_file(vault_root, session_id).exists()
-        && storage_session_index_file(vault_root, session_id).exists()
-        && storage_session_transcript_file(vault_root, session_id).exists()
+fn storage_conversation_bindings_file(storage_root: &Path, session_id: &str) -> PathBuf {
+    conversation_bindings_path(&storage_session_dir(storage_root, session_id))
 }
 
-fn ensure_sessions_root(vault_root: &Path) -> Result<(), String> {
-    fs::create_dir_all(sessions_dir(vault_root)).map_err(|e| e.to_string())
+fn storage_session_is_complete(storage_root: &Path, session_id: &str) -> bool {
+    storage_session_meta_file(storage_root, session_id).exists()
+        && storage_session_index_file(storage_root, session_id).exists()
+        && storage_session_transcript_file(storage_root, session_id).exists()
+}
+
+fn ensure_sessions_root(storage_root: &Path) -> Result<(), String> {
+    fs::create_dir_all(sessions_dir(storage_root)).map_err(|e| e.to_string())
 }
 
 fn trim_non_empty(value: &str) -> Option<String> {
@@ -300,6 +929,13 @@ fn hash_message(message: &PersistedMessage) -> Result<String, String> {
 }
 
 fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
+    if !fs::symlink_metadata(path)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_file()
+    {
+        return Err("History artifact is not a regular file.".into());
+    }
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
     serde_json::from_str(&raw).map_err(|e| e.to_string())
 }
@@ -314,10 +950,27 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    let temp_path = path.with_extension(format!("{suffix}.tmp"));
+    let temp_path = path.with_extension(format!("{suffix}-{}.tmp", uuid::Uuid::new_v4()));
     let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
-    fs::write(&temp_path, bytes).map_err(|error| error.to_string())?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|error| error.to_string())?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| error.to_string())?;
     fs::rename(&temp_path, path).map_err(|error| error.to_string())?;
+    sync_history_directory(parent)
+}
+
+fn sync_history_directory(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -327,22 +980,33 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 }
 
 fn load_session_metadata(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
 ) -> Result<PersistedSessionMetadata, String> {
-    read_json_file(&storage_session_meta_file(vault_root, session_id))
+    load_session_metadata_from_dir(&storage_session_dir(storage_root, session_id))
 }
 
 fn load_session_index(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
 ) -> Result<PersistedTranscriptIndex, String> {
-    read_json_file(&storage_session_index_file(vault_root, session_id))
+    load_session_index_from_dir(&storage_session_dir(storage_root, session_id))
 }
 
 fn load_session_metadata_from_dir(session_dir: &Path) -> Result<PersistedSessionMetadata, String> {
+    if let Some(checkpoint) = read_checkpoint(session_dir)? {
+        return Ok(normalize_fork_runtime_identity(checkpoint.metadata));
+    }
     recover_incomplete_compaction(session_dir)?;
-    read_json_file(&session_meta_path(session_dir))
+    read_json_file(&session_meta_path(session_dir)).map(normalize_fork_runtime_identity)
+}
+
+fn load_session_index_from_dir(session_dir: &Path) -> Result<PersistedTranscriptIndex, String> {
+    if let Some(checkpoint) = read_checkpoint(session_dir)? {
+        return Ok(checkpoint.index);
+    }
+    recover_incomplete_compaction(session_dir)?;
+    read_json_file(&session_index_path(session_dir))
 }
 
 fn indexed_transcript_bytes(index: &PersistedTranscriptIndex) -> u64 {
@@ -366,6 +1030,1152 @@ fn validate_lazy_session_files(
         return Err("Persisted transcript metadata and index are inconsistent.".to_string());
     }
     Ok(())
+}
+
+enum StrictTranscriptInspectionError {
+    Read(std::io::Error),
+    Corrupt(String),
+}
+
+impl From<std::io::Error> for StrictTranscriptInspectionError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Read(error)
+    }
+}
+
+struct StrictTranscriptFingerprints {
+    artifact: [u8; 32],
+    content: String,
+    managed_attachment_ids: Vec<String>,
+}
+
+fn collect_managed_attachment_ids(
+    message: &PersistedMessage,
+    ids: &mut HashSet<String>,
+) -> Result<(), String> {
+    let Some(attachments) = message.attachments.as_ref() else {
+        return Ok(());
+    };
+    let attachments = attachments
+        .as_array()
+        .ok_or_else(|| "Persisted message attachments are not an array.".to_string())?;
+
+    for attachment in attachments {
+        let Some(object) = attachment.as_object() else {
+            return Err("Persisted message contains a non-object attachment.".to_string());
+        };
+        let Some(value) = object.get("managedAttachmentId") else {
+            continue;
+        };
+        let id = value
+            .as_str()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| "Persisted managed attachment contains an invalid ID.".to_string())?;
+        ids.insert(id.to_string());
+    }
+
+    Ok(())
+}
+
+pub fn managed_attachment_ids_in_history(
+    history: &PersistedSessionHistory,
+) -> Result<Vec<String>, String> {
+    let mut ids = HashSet::new();
+    for message in &history.messages {
+        collect_managed_attachment_ids(message, &mut ids)?;
+    }
+    let mut ids = ids.into_iter().collect::<Vec<_>>();
+    ids.sort();
+    Ok(ids)
+}
+
+fn inspect_strict_transcript_file(
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+    transcript_path: &Path,
+) -> Result<StrictTranscriptFingerprints, StrictTranscriptInspectionError> {
+    validate_lazy_session_files(metadata, index)
+        .map_err(StrictTranscriptInspectionError::Corrupt)?;
+    if metadata.version != FORMAT_VERSION {
+        return Err(StrictTranscriptInspectionError::Corrupt(format!(
+            "Unsupported session metadata version: {}.",
+            metadata.version
+        )));
+    }
+    if index.version != FORMAT_VERSION {
+        return Err(StrictTranscriptInspectionError::Corrupt(format!(
+            "Unsupported transcript index version: {}.",
+            index.version
+        )));
+    }
+
+    let transcript = File::open(transcript_path)?;
+    let mut reader = BufReader::new(transcript);
+    let mut artifact_hasher = Sha256::new();
+    let mut line = Vec::new();
+    let mut line_index = 0_usize;
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        line_index += 1;
+        artifact_hasher.update(&line);
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        if line.is_empty() {
+            continue;
+        }
+        serde_json::from_slice::<PersistedMessage>(&line).map_err(|error| {
+            StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript row {} is invalid: {error}",
+                line_index
+            ))
+        })?;
+    }
+
+    let history = history_from_metadata(metadata.clone(), Vec::new());
+    let mut content_hasher =
+        history_content_hasher(&history).map_err(StrictTranscriptInspectionError::Corrupt)?;
+    let mut managed_attachment_ids = HashSet::new();
+    let mut transcript = File::open(transcript_path)?;
+    let transcript_length = transcript.metadata()?.len();
+    for position in 0..index.message_offsets.len() {
+        let offset = index.message_offsets[position];
+        let indexed_length = index.message_lengths[position];
+        let end = offset.checked_add(indexed_length).ok_or_else(|| {
+            StrictTranscriptInspectionError::Corrupt(
+                "Persisted transcript range overflows.".to_string(),
+            )
+        })?;
+        if end > transcript_length {
+            return Err(StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript entry {position} points outside the transcript."
+            )));
+        }
+        let length = usize::try_from(indexed_length).map_err(|_| {
+            StrictTranscriptInspectionError::Corrupt(
+                "Persisted transcript length exceeds this platform.".to_string(),
+            )
+        })?;
+        transcript.seek(SeekFrom::Start(offset))?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|error| {
+            StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript entry {position} is too large to inspect: {error}"
+            ))
+        })?;
+        bytes.resize(length, 0);
+        transcript.read_exact(&mut bytes).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                StrictTranscriptInspectionError::Corrupt(format!(
+                    "Persisted transcript entry {position} points outside the transcript."
+                ))
+            } else {
+                StrictTranscriptInspectionError::Read(error)
+            }
+        })?;
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+        }
+        let message = serde_json::from_slice::<PersistedMessage>(&bytes).map_err(|error| {
+            StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript entry {position} is invalid: {error}"
+            ))
+        })?;
+        let message_hash =
+            hash_message(&message).map_err(StrictTranscriptInspectionError::Corrupt)?;
+        if message_hash != index.message_hashes[position] {
+            return Err(StrictTranscriptInspectionError::Corrupt(format!(
+                "Persisted transcript entry {position} does not match its index hash."
+            )));
+        }
+        collect_managed_attachment_ids(&message, &mut managed_attachment_ids)
+            .map_err(StrictTranscriptInspectionError::Corrupt)?;
+        update_history_content_field(&mut content_hasher, "message", &message)
+            .map_err(StrictTranscriptInspectionError::Corrupt)?;
+    }
+
+    let mut managed_attachment_ids = managed_attachment_ids.into_iter().collect::<Vec<_>>();
+    managed_attachment_ids.sort();
+
+    Ok(StrictTranscriptFingerprints {
+        artifact: artifact_hasher.finalize().into(),
+        content: digest_hex(&content_hasher.finalize().into()),
+        managed_attachment_ids,
+    })
+}
+
+fn combined_artifact_fingerprint(fingerprints: &[[u8; 32]]) -> String {
+    let mut hasher = Sha256::new();
+    for fingerprint in fingerprints {
+        hasher.update(fingerprint);
+    }
+    digest_hex(&hasher.finalize().into())
+}
+
+fn update_history_content_field<T: Serialize + ?Sized>(
+    hasher: &mut Sha256,
+    name: &str,
+    value: &T,
+) -> Result<(), String> {
+    hasher.update(name.as_bytes());
+    let value = serde_json::to_value(value).map_err(|error| error.to_string())?;
+    update_canonical_json(&value, hasher);
+    Ok(())
+}
+
+fn history_content_hasher(history: &PersistedSessionHistory) -> Result<Sha256, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"neverwrite-history-content-v1");
+    update_history_content_field(&mut hasher, "version", &history.version)?;
+    update_history_content_field(&mut hasher, "session_id", &history.session_id)?;
+    update_history_content_field(&mut hasher, "parent_session_id", &history.parent_session_id)?;
+    update_history_content_field(&mut hasher, "closed_at", &history.closed_at)?;
+    update_history_content_field(&mut hasher, "runtime_id", &history.runtime_id)?;
+    // Keep fingerprints stable for pre-custom-runtime histories while making
+    // every continuation identity field part of custom history equality.
+    if history.runtime_display_name.is_some()
+        || history.runtime_revision.is_some()
+        || history.runtime_launch_fingerprint.is_some()
+        || history.runtime_session_id.is_some()
+        || history.continuation_strategy.is_some()
+    {
+        update_history_content_field(
+            &mut hasher,
+            "runtime_display_name",
+            &history.runtime_display_name,
+        )?;
+        update_history_content_field(&mut hasher, "runtime_revision", &history.runtime_revision)?;
+        update_history_content_field(
+            &mut hasher,
+            "runtime_launch_fingerprint",
+            &history.runtime_launch_fingerprint,
+        )?;
+        update_history_content_field(
+            &mut hasher,
+            "runtime_session_id",
+            &history.runtime_session_id,
+        )?;
+        update_history_content_field(
+            &mut hasher,
+            "continuation_strategy",
+            &history.continuation_strategy,
+        )?;
+    }
+    update_history_content_field(&mut hasher, "model_id", &history.model_id)?;
+    update_history_content_field(&mut hasher, "mode_id", &history.mode_id)?;
+    update_history_content_field(&mut hasher, "models", &history.models)?;
+    update_history_content_field(&mut hasher, "modes", &history.modes)?;
+    update_history_content_field(&mut hasher, "config_options", &history.config_options)?;
+    update_history_content_field(&mut hasher, "additional_roots", &history.additional_roots)?;
+    update_history_content_field(&mut hasher, "created_at", &history.created_at)?;
+    update_history_content_field(&mut hasher, "updated_at", &history.updated_at)?;
+    update_history_content_field(&mut hasher, "start_index", &history.start_index)?;
+    update_history_content_field(&mut hasher, "message_count", &history.message_count)?;
+    update_history_content_field(&mut hasher, "title", &history.title)?;
+    update_history_content_field(&mut hasher, "custom_title", &history.custom_title)?;
+    update_history_content_field(&mut hasher, "preview", &history.preview)?;
+    Ok(hasher)
+}
+
+fn persisted_history_content_fingerprint(
+    history: &PersistedSessionHistory,
+) -> Result<String, String> {
+    let mut hasher = history_content_hasher(history)?;
+    for message in &history.messages {
+        update_history_content_field(&mut hasher, "message", message)?;
+    }
+    Ok(digest_hex(&hasher.finalize().into()))
+}
+
+fn conversation_bindings_content_fingerprint(
+    bindings: &PersistedConversationBindings,
+) -> Result<String, String> {
+    let mut value = serde_json::to_value(bindings).map_err(|error| error.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("revision");
+        object.remove("transcript_observation");
+        if let Some(provider_bindings) = object
+            .get_mut("provider_bindings")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for binding in provider_bindings {
+                if let Some(binding) = binding.as_object_mut() {
+                    binding.remove("created_at");
+                    binding.remove("updated_at");
+                    binding.remove("runtime_state");
+                }
+            }
+        }
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"neverwrite-conversation-bindings-content-v1");
+    update_canonical_json(&value, &mut hasher);
+    Ok(digest_hex(&hasher.finalize().into()))
+}
+
+fn combined_history_content_fingerprint(
+    history_fingerprint: &str,
+    bindings: &PersistedConversationBindings,
+) -> Result<String, String> {
+    let bindings_fingerprint = conversation_bindings_content_fingerprint(bindings)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"neverwrite-canonical-history-content-v1");
+    hasher.update((history_fingerprint.len() as u64).to_le_bytes());
+    hasher.update(history_fingerprint.as_bytes());
+    hasher.update((bindings_fingerprint.len() as u64).to_le_bytes());
+    hasher.update(bindings_fingerprint.as_bytes());
+    Ok(digest_hex(&hasher.finalize().into()))
+}
+
+fn inspect_compaction_state(
+    storage_root: &Path,
+    session_dir: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) -> HashSet<std::ffi::OsString> {
+    let marker_path = session_compaction_marker_path(session_dir);
+    let mut known_entries = HashSet::new();
+    let marker_metadata = match fs::symlink_metadata(&marker_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return known_entries,
+        Err(error) => {
+            push_read_error(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &marker_path),
+                error.to_string(),
+            );
+            return known_entries;
+        }
+    };
+    known_entries.insert(std::ffi::OsString::from(SESSION_COMPACTION_MARKER_FILE));
+    if !marker_metadata.file_type().is_file() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_storage_path(storage_root, &marker_path),
+            "Transcript compaction marker is not a regular file.",
+        );
+        return known_entries;
+    }
+
+    let Some(marker_artifact) =
+        read_expected_artifact(storage_root, &marker_path, inventory, fingerprint)
+    else {
+        return known_entries;
+    };
+    let state = match serde_json::from_slice::<TranscriptCompactionState>(&marker_artifact.bytes) {
+        Ok(state) => state,
+        Err(error) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &marker_path),
+                format!("Invalid transcript compaction marker: {error}"),
+            );
+            return known_entries;
+        }
+    };
+    if state.version != FORMAT_VERSION {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_storage_path(storage_root, &marker_path),
+            format!(
+                "Unsupported transcript compaction marker version: {}.",
+                state.version
+            ),
+        );
+        return known_entries;
+    }
+
+    for file_name in [
+        &state.metadata_tmp,
+        &state.index_tmp,
+        &state.transcript_tmp,
+        &state.metadata_backup,
+        &state.index_backup,
+        &state.transcript_backup,
+    ] {
+        let sidecar_path = match session_sidecar_from_marker(session_dir, file_name) {
+            Ok(path) => path,
+            Err(error) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &marker_path),
+                    error,
+                );
+                return known_entries;
+            }
+        };
+        known_entries.insert(std::ffi::OsString::from(file_name.as_str()));
+        match fs::symlink_metadata(&sidecar_path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let relative_path = relative_storage_path(storage_root, &sidecar_path);
+                match artifact_file_fingerprint(&sidecar_path) {
+                    Ok(artifact_fingerprint) => {
+                        fingerprint.add_digest("file", &relative_path, &artifact_fingerprint)
+                    }
+                    Err(error) => {
+                        push_read_error(inventory, fingerprint, relative_path, error.to_string())
+                    }
+                }
+            }
+            Ok(_) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &sidecar_path),
+                    "Transcript compaction sidecar is not a regular file.",
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => push_read_error(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &sidecar_path),
+                error.to_string(),
+            ),
+        }
+    }
+
+    inventory.recoverable_states.push(RecoverableStorageState {
+        relative_path: relative_storage_path(storage_root, &marker_path),
+        state_type: "interrupted_transcript_compaction".to_string(),
+    });
+    known_entries
+}
+
+fn inspect_session_directory(
+    storage_root: &Path,
+    session_dir: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) {
+    let relative_dir = relative_storage_path(storage_root, session_dir);
+    if let Err(error) = read_checkpoint(session_dir) {
+        push_corrupt_artifact(inventory, fingerprint, relative_dir.clone(), error);
+        return;
+    }
+    fingerprint.add("directory", &relative_dir, &[]);
+    let compaction_entries =
+        inspect_compaction_state(storage_root, session_dir, inventory, fingerprint);
+
+    match fs::read_dir(session_dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        push_read_error(
+                            inventory,
+                            fingerprint,
+                            format!("{relative_dir}/<unreadable-entry>"),
+                            error.to_string(),
+                        );
+                        continue;
+                    }
+                };
+                let name = entry.file_name();
+                if name == SESSION_META_FILE
+                    || name == SESSION_INDEX_FILE
+                    || name == SESSION_TRANSCRIPT_FILE
+                    || name == CONVERSATION_BINDINGS_FILE
+                    || compaction_entries.contains(&name)
+                {
+                    continue;
+                }
+
+                let path = entry.path();
+                if name == SESSION_CHECKPOINT_FILE
+                    || name == PREVIOUS_CHECKPOINT_FILE
+                    || name.to_str().is_some_and(|name| {
+                        name != SESSION_TRANSCRIPT_FILE && checkpoint_transcript_name(name)
+                    })
+                {
+                    read_expected_artifact(storage_root, &path, inventory, fingerprint);
+                    continue;
+                }
+                if fs::symlink_metadata(&path)
+                    .is_ok_and(|metadata| is_incidental_filesystem_metadata(&path, &metadata))
+                {
+                    continue;
+                }
+                let relative_path = relative_storage_path(storage_root, &path);
+                let entry_type = fs::symlink_metadata(&path)
+                    .map(|metadata| {
+                        let file_type = metadata.file_type();
+                        if file_type.is_symlink() {
+                            "symlink"
+                        } else if file_type.is_dir() {
+                            "directory"
+                        } else if file_type.is_file() {
+                            "file"
+                        } else {
+                            "special"
+                        }
+                    })
+                    .unwrap_or("unreadable");
+                push_unknown_entry(inventory, fingerprint, relative_path, entry_type);
+                fingerprint_unknown_tree(storage_root, &path, inventory, fingerprint);
+            }
+        }
+        Err(error) => push_read_error(
+            inventory,
+            fingerprint,
+            relative_dir.clone(),
+            error.to_string(),
+        ),
+    }
+
+    let metadata_path = session_meta_path(session_dir);
+    let index_path = session_index_path(session_dir);
+    let transcript_path = session_transcript_path(session_dir);
+    let bindings_path = conversation_bindings_path(session_dir);
+    let metadata_bytes =
+        read_expected_artifact(storage_root, &metadata_path, inventory, fingerprint);
+    let index_bytes = read_expected_artifact(storage_root, &index_path, inventory, fingerprint);
+    let bindings_bytes = match fs::symlink_metadata(&bindings_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            push_read_error(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &bindings_path),
+                error.to_string(),
+            );
+            None
+        }
+        Ok(metadata) if metadata.file_type().is_file() => {
+            read_expected_artifact(storage_root, &bindings_path, inventory, fingerprint)
+        }
+        Ok(_) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_storage_path(storage_root, &bindings_path),
+                "Conversation bindings sidecar is not a regular file.",
+            );
+            None
+        }
+    };
+    let transcript_relative_path = relative_storage_path(storage_root, &transcript_path);
+    let transcript_artifact_fingerprint = match fs::symlink_metadata(&transcript_path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            match artifact_file_fingerprint(&transcript_path) {
+                Ok(artifact_fingerprint) => {
+                    fingerprint.add_digest(
+                        "file",
+                        &transcript_relative_path,
+                        &artifact_fingerprint,
+                    );
+                    Some(artifact_fingerprint)
+                }
+                Err(error) => {
+                    push_read_error(
+                        inventory,
+                        fingerprint,
+                        transcript_relative_path,
+                        error.to_string(),
+                    );
+                    None
+                }
+            }
+        }
+        Ok(_) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                transcript_relative_path,
+                "Required history artifact is not a regular file.",
+            );
+            None
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                transcript_relative_path,
+                "Required history artifact is missing.",
+            );
+            None
+        }
+        Err(error) => {
+            push_read_error(
+                inventory,
+                fingerprint,
+                transcript_relative_path,
+                error.to_string(),
+            );
+            None
+        }
+    };
+
+    let metadata = metadata_bytes.as_ref().and_then(|artifact| {
+        match serde_json::from_slice::<PersistedSessionMetadata>(&artifact.bytes) {
+            Ok(metadata) => Some(metadata),
+            Err(error) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &metadata_path),
+                    format!("Invalid session metadata: {error}"),
+                );
+                None
+            }
+        }
+    });
+    let index = index_bytes.as_ref().and_then(|artifact| {
+        match serde_json::from_slice::<PersistedTranscriptIndex>(&artifact.bytes) {
+            Ok(index) => Some(index),
+            Err(error) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &index_path),
+                    format!("Invalid transcript index: {error}"),
+                );
+                None
+            }
+        }
+    });
+
+    let Some(metadata) = metadata else {
+        return;
+    };
+    if metadata.session_id.trim().is_empty() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_storage_path(storage_root, &metadata_path),
+            "Session metadata contains an empty session ID.",
+        );
+        return;
+    }
+    inventory.session_id_claims.push(SessionIdClaim {
+        session_id: metadata.session_id.clone(),
+        relative_path: relative_dir.clone(),
+    });
+    let parsed_bindings = if let Some(artifact) = &bindings_bytes {
+        match serde_json::from_slice::<PersistedConversationBindings>(&artifact.bytes)
+            .map(normalize_single_provider_binding)
+        {
+            Ok(bindings)
+                if bindings.version == FORMAT_VERSION
+                    && bindings.conversation_id == metadata.session_id =>
+            {
+                match validate_persisted_conversation_bindings(&bindings) {
+                    Ok(()) => Some(bindings),
+                    Err(error) => {
+                        push_corrupt_artifact(
+                            inventory,
+                            fingerprint,
+                            relative_storage_path(storage_root, &bindings_path),
+                            error,
+                        );
+                        None
+                    }
+                }
+            }
+            Ok(bindings) if bindings.version != FORMAT_VERSION => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &bindings_path),
+                    format!(
+                        "Unsupported conversation bindings version: {}.",
+                        bindings.version
+                    ),
+                );
+                None
+            }
+            Ok(_) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &bindings_path),
+                    "Conversation bindings belong to another conversation.",
+                );
+                None
+            }
+            Err(error) => {
+                push_corrupt_artifact(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &bindings_path),
+                    format!("Invalid conversation bindings: {error}"),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let (Some(index), Some(transcript_artifact_fingerprint)) =
+        (index, transcript_artifact_fingerprint)
+    else {
+        return;
+    };
+    let transcript_fingerprints =
+        match inspect_strict_transcript_file(&metadata, &index, &transcript_path) {
+            Ok(fingerprints) => fingerprints,
+            Err(StrictTranscriptInspectionError::Corrupt(error)) => {
+                push_corrupt_artifact(inventory, fingerprint, relative_dir, error);
+                return;
+            }
+            Err(StrictTranscriptInspectionError::Read(error)) => {
+                push_read_error(
+                    inventory,
+                    fingerprint,
+                    relative_storage_path(storage_root, &transcript_path),
+                    error.to_string(),
+                );
+                return;
+            }
+        };
+    if transcript_fingerprints.artifact != transcript_artifact_fingerprint {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_dir,
+            "Transcript changed while it was being inspected.",
+        );
+        return;
+    }
+    let (Some(metadata_artifact), Some(index_artifact)) =
+        (metadata_bytes.as_ref(), index_bytes.as_ref())
+    else {
+        return;
+    };
+    if let Ok(Some(checkpoint)) = read_checkpoint(session_dir) {
+        if serde_json::to_value(&checkpoint.metadata).ok() != serde_json::to_value(&metadata).ok()
+            || serde_json::to_value(&checkpoint.index).ok() != serde_json::to_value(&index).ok()
+        {
+            push_read_error(
+                inventory,
+                fingerprint,
+                relative_dir,
+                "Session compatibility files are not synchronized with the checkpoint.",
+            );
+            return;
+        }
+    }
+    let effective_bindings = parsed_bindings
+        .map(|bindings| reconcile_conversation_bindings(bindings, &metadata, &index))
+        .unwrap_or_else(|| synthesize_conversation_bindings(&metadata, &index));
+    let content_fingerprint = match combined_history_content_fingerprint(
+        &transcript_fingerprints.content,
+        &effective_bindings,
+    ) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            push_corrupt_artifact(inventory, fingerprint, relative_dir, error);
+            return;
+        }
+    };
+    inventory.sessions.push(InspectedHistory {
+        session_id: metadata.session_id,
+        relative_path: relative_dir,
+        format: InspectedHistoryFormat::Directory,
+        content_fingerprint,
+        artifact_fingerprint: {
+            let mut artifacts = vec![
+                metadata_artifact.fingerprint,
+                index_artifact.fingerprint,
+                transcript_fingerprints.artifact,
+            ];
+            if let Some(bindings_artifact) = bindings_bytes {
+                artifacts.push(bindings_artifact.fingerprint);
+            }
+            combined_artifact_fingerprint(&artifacts)
+        },
+        managed_attachment_ids: transcript_fingerprints.managed_attachment_ids,
+    });
+}
+
+fn inspect_legacy_json_history(
+    storage_root: &Path,
+    path: &Path,
+    inventory: &mut HistoryStorageInventory,
+    fingerprint: &mut InventoryFingerprintBuilder,
+) {
+    let relative_path = relative_storage_path(storage_root, path);
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    if !metadata.file_type().is_file() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_path,
+            "Legacy session history is not a regular file.",
+        );
+        return;
+    }
+    let artifact_fingerprint = match raw_file_fingerprint(path) {
+        Ok(artifact_fingerprint) => {
+            fingerprint.add_digest("file", &relative_path, &artifact_fingerprint);
+            artifact_fingerprint
+        }
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            push_read_error(inventory, fingerprint, relative_path, error.to_string());
+            return;
+        }
+    };
+    let history = match serde_json::from_reader::<_, PersistedSessionHistory>(BufReader::new(file))
+    {
+        Ok(history) => history,
+        Err(error) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_path,
+                format!("Invalid legacy session history: {error}"),
+            );
+            return;
+        }
+    };
+    if history.session_id.trim().is_empty() {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_path,
+            "Legacy session history contains an empty session ID.",
+        );
+        return;
+    }
+    inventory.session_id_claims.push(SessionIdClaim {
+        session_id: history.session_id.clone(),
+        relative_path: relative_path.clone(),
+    });
+    if history.version != FORMAT_VERSION {
+        push_corrupt_artifact(
+            inventory,
+            fingerprint,
+            relative_path,
+            format!("Unsupported legacy session version: {}.", history.version),
+        );
+        return;
+    }
+
+    let history = normalize_legacy_history(history);
+    let managed_attachment_ids = match managed_attachment_ids_in_history(&history) {
+        Ok(ids) => ids,
+        Err(error) => {
+            push_corrupt_artifact(inventory, fingerprint, relative_path, error);
+            return;
+        }
+    };
+    let history_fingerprint = match persisted_history_content_fingerprint(&history) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            push_corrupt_artifact(
+                inventory,
+                fingerprint,
+                relative_path,
+                format!("Could not fingerprint legacy session content: {error}"),
+            );
+            return;
+        }
+    };
+    let metadata = metadata_from_history(&history, history.messages.len());
+    let index = PersistedTranscriptIndex {
+        version: FORMAT_VERSION,
+        message_offsets: vec![],
+        message_lengths: vec![],
+        message_hashes: match history
+            .messages
+            .iter()
+            .map(hash_message)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(hashes) => hashes,
+            Err(error) => {
+                push_corrupt_artifact(inventory, fingerprint, relative_path, error);
+                return;
+            }
+        },
+    };
+    let bindings = synthesize_conversation_bindings(&metadata, &index);
+    let content_fingerprint =
+        match combined_history_content_fingerprint(&history_fingerprint, &bindings) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                push_corrupt_artifact(inventory, fingerprint, relative_path, error);
+                return;
+            }
+        };
+    inventory.sessions.push(InspectedHistory {
+        session_id: history.session_id,
+        relative_path,
+        format: InspectedHistoryFormat::LegacyJson,
+        content_fingerprint,
+        artifact_fingerprint: digest_hex(&artifact_fingerprint),
+        managed_attachment_ids,
+    });
+}
+
+fn finish_storage_inventory(
+    mut histories: HistoryStorageInventory,
+    fingerprint: InventoryFingerprintBuilder,
+) -> StorageInventory {
+    histories.sessions.sort_by(|left, right| {
+        left.session_id
+            .cmp(&right.session_id)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+    histories.session_id_claims.sort_by(|left, right| {
+        left.session_id
+            .cmp(&right.session_id)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+    histories.corrupt_artifacts.sort_by(|left, right| {
+        left.relative_path
+            .cmp(&right.relative_path)
+            .then_with(|| left.error.cmp(&right.error))
+    });
+    histories.unknown_entries.sort_by(|left, right| {
+        left.relative_path
+            .cmp(&right.relative_path)
+            .then_with(|| left.entry_type.cmp(&right.entry_type))
+    });
+    histories.read_errors.sort_by(|left, right| {
+        left.relative_path
+            .cmp(&right.relative_path)
+            .then_with(|| left.error.cmp(&right.error))
+    });
+    histories.recoverable_states.sort_by(|left, right| {
+        left.relative_path
+            .cmp(&right.relative_path)
+            .then_with(|| left.state_type.cmp(&right.state_type))
+    });
+
+    let mut artifacts_by_session = BTreeMap::<String, Vec<String>>::new();
+    for claim in &histories.session_id_claims {
+        artifacts_by_session
+            .entry(claim.session_id.clone())
+            .or_default()
+            .push(claim.relative_path.clone());
+    }
+    histories.duplicate_session_ids = artifacts_by_session
+        .into_iter()
+        .filter_map(|(session_id, mut artifacts)| {
+            if artifacts.len() < 2 {
+                return None;
+            }
+            artifacts.sort();
+            Some(DuplicateSessionId {
+                session_id,
+                artifacts,
+            })
+        })
+        .collect();
+
+    StorageInventory {
+        fingerprint: fingerprint.finish(),
+        histories,
+    }
+}
+
+/// Inspects every history artifact without applying loader recovery or skipping failures.
+///
+/// The regular loaders intentionally remain tolerant for existing users. Destructive storage
+/// decisions must use this inventory instead: an unreadable or unknown artifact is represented
+/// explicitly and therefore cannot be mistaken for an empty root.
+pub fn inspect_history_storage(storage_root: &Path) -> StorageInventory {
+    let mut histories = HistoryStorageInventory::default();
+    let mut fingerprint = InventoryFingerprintBuilder::default();
+    let storage_metadata = match fs::symlink_metadata(storage_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fingerprint.add("storage-root", "", b"missing");
+            return finish_storage_inventory(histories, fingerprint);
+        }
+        Err(error) => {
+            fingerprint.add("storage-root", "", b"unreadable");
+            push_read_error(
+                &mut histories,
+                &mut fingerprint,
+                ".".to_string(),
+                error.to_string(),
+            );
+            return finish_storage_inventory(histories, fingerprint);
+        }
+    };
+    histories.storage_root_exists = true;
+    fingerprint.add("storage-root", "", b"present");
+    if !storage_metadata.file_type().is_dir() {
+        push_corrupt_artifact(
+            &mut histories,
+            &mut fingerprint,
+            ".".to_string(),
+            "History storage root is not a regular directory.",
+        );
+        return finish_storage_inventory(histories, fingerprint);
+    }
+
+    let sessions_root = sessions_dir(storage_root);
+    let root_entries = match fs::read_dir(storage_root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            push_read_error(
+                &mut histories,
+                &mut fingerprint,
+                ".".to_string(),
+                error.to_string(),
+            );
+            return finish_storage_inventory(histories, fingerprint);
+        }
+    };
+    for entry in root_entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                push_read_error(
+                    &mut histories,
+                    &mut fingerprint,
+                    "<unreadable-entry>".to_string(),
+                    error.to_string(),
+                );
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path == sessions_root {
+            continue;
+        }
+        if fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| is_incidental_filesystem_metadata(&path, &metadata))
+        {
+            continue;
+        }
+        let relative_path = relative_storage_path(storage_root, &path);
+        let entry_type = fs::symlink_metadata(&path)
+            .map(|metadata| {
+                let file_type = metadata.file_type();
+                if file_type.is_symlink() {
+                    "symlink"
+                } else if file_type.is_dir() {
+                    "directory"
+                } else if file_type.is_file() {
+                    "file"
+                } else {
+                    "special"
+                }
+            })
+            .unwrap_or("unreadable");
+        push_unknown_entry(&mut histories, &mut fingerprint, relative_path, entry_type);
+        fingerprint_unknown_tree(storage_root, &path, &mut histories, &mut fingerprint);
+    }
+
+    let sessions_metadata = match fs::symlink_metadata(&sessions_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fingerprint.add("sessions-root", "sessions", b"missing");
+            return finish_storage_inventory(histories, fingerprint);
+        }
+        Err(error) => {
+            push_read_error(
+                &mut histories,
+                &mut fingerprint,
+                "sessions".to_string(),
+                error.to_string(),
+            );
+            return finish_storage_inventory(histories, fingerprint);
+        }
+    };
+    if !sessions_metadata.file_type().is_dir() {
+        push_corrupt_artifact(
+            &mut histories,
+            &mut fingerprint,
+            "sessions".to_string(),
+            "History sessions root is not a regular directory.",
+        );
+        return finish_storage_inventory(histories, fingerprint);
+    }
+    histories.sessions_root_exists = true;
+    fingerprint.add("sessions-root", "sessions", b"present");
+
+    let entries = match fs::read_dir(&sessions_root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            push_read_error(
+                &mut histories,
+                &mut fingerprint,
+                "sessions".to_string(),
+                error.to_string(),
+            );
+            return finish_storage_inventory(histories, fingerprint);
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                push_read_error(
+                    &mut histories,
+                    &mut fingerprint,
+                    "sessions/<unreadable-entry>".to_string(),
+                    error.to_string(),
+                );
+                continue;
+            }
+        };
+        let path = entry.path();
+        let relative_path = relative_storage_path(storage_root, &path);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                push_read_error(
+                    &mut histories,
+                    &mut fingerprint,
+                    relative_path,
+                    error.to_string(),
+                );
+                continue;
+            }
+        };
+        if is_incidental_filesystem_metadata(&path, &metadata) {
+            continue;
+        }
+        let file_type = metadata.file_type();
+        if file_type.is_dir() {
+            inspect_session_directory(storage_root, &path, &mut histories, &mut fingerprint);
+        } else if file_type.is_file()
+            && path.extension().and_then(|extension| extension.to_str()) == Some("json")
+        {
+            inspect_legacy_json_history(storage_root, &path, &mut histories, &mut fingerprint);
+        } else {
+            let entry_type = if file_type.is_symlink() {
+                "symlink"
+            } else if file_type.is_file() {
+                "file"
+            } else {
+                "special"
+            };
+            push_unknown_entry(&mut histories, &mut fingerprint, relative_path, entry_type);
+            fingerprint_unknown_tree(storage_root, &path, &mut histories, &mut fingerprint);
+        }
+    }
+
+    finish_storage_inventory(histories, fingerprint)
 }
 
 fn history_window_bounds(history: &PersistedSessionHistory) -> Result<(usize, usize), String> {
@@ -403,6 +2213,11 @@ fn metadata_from_history(
         parent_session_id: history.parent_session_id.clone(),
         closed_at: history.closed_at.clone(),
         runtime_id: history.runtime_id.clone(),
+        runtime_display_name: history.runtime_display_name.clone(),
+        runtime_revision: history.runtime_revision,
+        runtime_launch_fingerprint: history.runtime_launch_fingerprint.clone(),
+        runtime_session_id: history.runtime_session_id.clone(),
+        continuation_strategy: history.continuation_strategy,
         model_id: history.model_id.clone(),
         mode_id: history.mode_id.clone(),
         models: history.models.clone(),
@@ -435,6 +2250,11 @@ fn history_from_metadata(
         parent_session_id: metadata.parent_session_id,
         closed_at: metadata.closed_at,
         runtime_id: metadata.runtime_id,
+        runtime_display_name: metadata.runtime_display_name,
+        runtime_revision: metadata.runtime_revision,
+        runtime_launch_fingerprint: metadata.runtime_launch_fingerprint,
+        runtime_session_id: metadata.runtime_session_id,
+        continuation_strategy: metadata.continuation_strategy,
         model_id: metadata.model_id,
         mode_id: metadata.mode_id,
         models: metadata.models,
@@ -454,12 +2274,21 @@ fn history_from_metadata(
 
 fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, String> {
     let history = read_json_file::<PersistedSessionHistory>(path)?;
-    Ok(PersistedSessionHistory {
+    Ok(normalize_legacy_history(history))
+}
+
+fn normalize_legacy_history(history: PersistedSessionHistory) -> PersistedSessionHistory {
+    PersistedSessionHistory {
         version: history.version,
         session_id: history.session_id,
         parent_session_id: history.parent_session_id,
         closed_at: history.closed_at,
         runtime_id: history.runtime_id,
+        runtime_display_name: history.runtime_display_name,
+        runtime_revision: history.runtime_revision,
+        runtime_launch_fingerprint: history.runtime_launch_fingerprint,
+        runtime_session_id: history.runtime_session_id,
+        continuation_strategy: history.continuation_strategy,
         model_id: history.model_id,
         mode_id: history.mode_id,
         models: history.models,
@@ -476,24 +2305,463 @@ fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, Stri
             .preview
             .or_else(|| derive_preview(&history.messages)),
         messages: history.messages,
-    })
+    }
 }
 
 fn load_history_from_session_dir(
     session_dir: &Path,
     include_messages: bool,
 ) -> Result<PersistedSessionHistory, String> {
-    let metadata = load_session_metadata_from_dir(session_dir)?;
+    let snapshot = load_session_snapshot(session_dir)?;
     let messages = if include_messages {
-        load_all_lazy_messages_from_dir(session_dir)?
+        read_lazy_history_page_from_files(
+            &snapshot.transcript_path,
+            &snapshot.metadata,
+            &snapshot.index,
+            0,
+            snapshot.metadata.message_count,
+        )?
+        .messages
     } else {
         vec![]
     };
-    Ok(history_from_metadata(metadata, messages))
+    Ok(history_from_metadata(snapshot.metadata, messages))
 }
 
-fn legacy_session_priority(vault_root: &Path, path: &Path, session_id: &str) -> u8 {
-    if path == storage_session_dir(vault_root, session_id) {
+enum ConversationBindingsFileState {
+    Missing,
+    Supported(Box<PersistedConversationBindings>),
+    Unusable,
+}
+
+fn legacy_binding_id(conversation_id: &str, runtime_id: &str) -> String {
+    format!("legacy:{conversation_id}:{runtime_id}")
+}
+
+fn config_option_values(config_options: &Option<serde_json::Value>) -> BTreeMap<String, String> {
+    config_options
+        .as_ref()
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            Some((
+                option.get("id")?.as_str()?.to_string(),
+                option.get("value")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn transcript_fingerprint(index: &PersistedTranscriptIndex) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"neverwrite-canonical-transcript-v1");
+    for hash in &index.message_hashes {
+        hasher.update((hash.len() as u64).to_le_bytes());
+        hasher.update(hash.as_bytes());
+    }
+    digest_hex(&hasher.finalize().into())
+}
+
+fn binding_from_metadata(
+    metadata: &PersistedSessionMetadata,
+    binding_id: String,
+) -> PersistedProviderBinding {
+    let runtime_id = metadata.runtime_id.clone().unwrap_or_default();
+    PersistedProviderBinding {
+        binding_id,
+        conversation_id: metadata.session_id.clone(),
+        runtime_id,
+        runtime_display_name: metadata.runtime_display_name.clone(),
+        runtime_revision: metadata.runtime_revision,
+        runtime_launch_fingerprint: metadata.runtime_launch_fingerprint.clone(),
+        runtime_session_id: metadata.runtime_session_id.clone(),
+        continuation_strategy: metadata.continuation_strategy,
+        capabilities: vec![],
+        model_id: metadata.model_id.clone(),
+        mode_id: metadata.mode_id.clone(),
+        options: config_option_values(&metadata.config_options),
+        models: metadata.models.clone(),
+        modes: metadata.modes.clone(),
+        config_options: metadata.config_options.clone(),
+        efforts_by_model: BTreeMap::new(),
+        runtime_state: "persisted_only".to_string(),
+        context_cursor: None,
+        context_generation: 0,
+        created_at: Some(metadata.created_at),
+        updated_at: Some(metadata.updated_at),
+    }
+}
+
+fn synthesize_conversation_bindings(
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+) -> PersistedConversationBindings {
+    let runtime_id = metadata.runtime_id.clone().unwrap_or_default();
+    let binding_id = legacy_binding_id(&metadata.session_id, &runtime_id);
+    PersistedConversationBindings {
+        version: FORMAT_VERSION,
+        revision: 0,
+        conversation_id: metadata.session_id.clone(),
+        preferred_selection: PersistedConversationSelection {
+            runtime_id,
+            model_id: metadata.model_id.clone(),
+            mode_id: metadata.mode_id.clone(),
+            options: config_option_values(&metadata.config_options),
+        },
+        active_binding_id: Some(binding_id.clone()),
+        provider_bindings: vec![binding_from_metadata(metadata, binding_id)],
+        context_summary: None,
+        transcript_observation: PersistedTranscriptObservation {
+            message_count: metadata.message_count,
+            updated_at: metadata.updated_at,
+            transcript_fingerprint: Some(transcript_fingerprint(index)),
+        },
+    }
+}
+
+fn bindings_identify_fork(bindings: &PersistedConversationBindings) -> bool {
+    let prefix = format!("fork:{}:", bindings.conversation_id);
+    bindings
+        .provider_bindings
+        .iter()
+        .any(|binding| binding.binding_id.starts_with(&prefix))
+}
+
+fn normalize_fork_binding_runtime_identity(
+    mut bindings: PersistedConversationBindings,
+) -> PersistedConversationBindings {
+    for binding in &mut bindings.provider_bindings {
+        binding.runtime_session_id = None;
+        binding.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
+    }
+    bindings
+}
+
+fn validate_persisted_conversation_bindings(
+    bindings: &PersistedConversationBindings,
+) -> Result<(), String> {
+    if bindings.version != FORMAT_VERSION {
+        return Err(format!(
+            "Unsupported conversation bindings version: {}.",
+            bindings.version
+        ));
+    }
+    if bindings.conversation_id.trim().is_empty() {
+        return Err("Conversation bindings contain an empty conversation ID.".to_string());
+    }
+    if bindings.provider_bindings.len() > 1 {
+        return Err("A conversation cannot contain bindings for multiple providers.".to_string());
+    }
+    let mut ids = HashSet::new();
+    for binding in &bindings.provider_bindings {
+        if binding.binding_id.trim().is_empty() || !ids.insert(binding.binding_id.as_str()) {
+            return Err(
+                "Conversation bindings contain an invalid or duplicate binding ID.".to_string(),
+            );
+        }
+        if binding.conversation_id != bindings.conversation_id {
+            return Err("Provider binding belongs to another conversation.".to_string());
+        }
+    }
+    if bindings
+        .active_binding_id
+        .as_ref()
+        .is_some_and(|active_id| !ids.contains(active_id.as_str()))
+    {
+        return Err("Conversation bindings reference a missing active binding.".to_string());
+    }
+    Ok(())
+}
+
+fn normalize_single_provider_binding(
+    mut bindings: PersistedConversationBindings,
+) -> PersistedConversationBindings {
+    if bindings.provider_bindings.len() <= 1 {
+        return bindings;
+    }
+
+    let active_index = bindings
+        .active_binding_id
+        .as_ref()
+        .and_then(|active_id| {
+            bindings
+                .provider_bindings
+                .iter()
+                .position(|binding| &binding.binding_id == active_id)
+        })
+        .unwrap_or(0);
+    let active = bindings.provider_bindings.remove(active_index);
+    bindings.active_binding_id = Some(active.binding_id.clone());
+    if bindings.transcript_observation.message_count > 0 {
+        bindings.preferred_selection = PersistedConversationSelection {
+            runtime_id: active.runtime_id.clone(),
+            model_id: active.model_id.clone(),
+            mode_id: active.mode_id.clone(),
+            options: active.options.clone(),
+        };
+    }
+    bindings.provider_bindings = vec![active];
+    bindings
+}
+
+fn read_conversation_bindings_file(session_dir: &Path) -> ConversationBindingsFileState {
+    let path = conversation_bindings_path(session_dir);
+    if !path.exists() {
+        return ConversationBindingsFileState::Missing;
+    }
+    let Ok(bindings) = read_json_file::<PersistedConversationBindings>(&path)
+        .map(normalize_single_provider_binding)
+    else {
+        return ConversationBindingsFileState::Unusable;
+    };
+    if validate_persisted_conversation_bindings(&bindings).is_err() {
+        return ConversationBindingsFileState::Unusable;
+    }
+    ConversationBindingsFileState::Supported(Box::new(bindings))
+}
+
+fn reconcile_conversation_bindings(
+    mut bindings: PersistedConversationBindings,
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+) -> PersistedConversationBindings {
+    if bindings.conversation_id != metadata.session_id
+        || bindings
+            .provider_bindings
+            .iter()
+            .any(|binding| binding.conversation_id != metadata.session_id)
+    {
+        return synthesize_conversation_bindings(metadata, index);
+    }
+
+    let current_fingerprint = transcript_fingerprint(index);
+    let legacy_changed = bindings.transcript_observation.message_count != metadata.message_count
+        || bindings.transcript_observation.updated_at < metadata.updated_at
+        || bindings
+            .transcript_observation
+            .transcript_fingerprint
+            .as_deref()
+            != Some(current_fingerprint.as_str());
+
+    if legacy_changed {
+        let runtime_id = metadata.runtime_id.clone().unwrap_or_default();
+        let previous = bindings
+            .provider_bindings
+            .iter()
+            .find(|binding| binding.runtime_id == runtime_id);
+        let binding_id = previous
+            .map(|binding| binding.binding_id.clone())
+            .unwrap_or_else(|| legacy_binding_id(&metadata.session_id, &runtime_id));
+        let mut projected = binding_from_metadata(metadata, binding_id.clone());
+        if let Some(previous) = previous {
+            projected.capabilities = previous.capabilities.clone();
+            projected.context_generation = previous.context_generation.saturating_add(1);
+            projected.created_at = previous.created_at.or(projected.created_at);
+        } else {
+            projected.context_generation = 1;
+        }
+        bindings.provider_bindings = vec![projected];
+        bindings.active_binding_id = Some(binding_id);
+        bindings.preferred_selection = PersistedConversationSelection {
+            runtime_id,
+            model_id: metadata.model_id.clone(),
+            mode_id: metadata.mode_id.clone(),
+            options: config_option_values(&metadata.config_options),
+        };
+    }
+
+    bindings.transcript_observation = PersistedTranscriptObservation {
+        message_count: metadata.message_count,
+        updated_at: metadata.updated_at,
+        transcript_fingerprint: Some(current_fingerprint),
+    };
+    bindings
+}
+
+fn load_conversation_bindings_from_dir(
+    session_dir: &Path,
+) -> Result<PersistedConversationBindings, String> {
+    let snapshot = load_session_snapshot(session_dir)?;
+    let metadata = snapshot.metadata;
+    let index = snapshot.index;
+    let mut bindings = match read_conversation_bindings_file(session_dir) {
+        ConversationBindingsFileState::Supported(bindings) => {
+            reconcile_conversation_bindings(*bindings, &metadata, &index)
+        }
+        ConversationBindingsFileState::Missing | ConversationBindingsFileState::Unusable => {
+            synthesize_conversation_bindings(&metadata, &index)
+        }
+    };
+    if metadata.forked_from.is_some() || bindings_identify_fork(&bindings) {
+        bindings = normalize_fork_binding_runtime_identity(bindings);
+    }
+    Ok(bindings)
+}
+
+fn project_active_binding_to_history(
+    history: &mut PersistedSessionHistory,
+    bindings: &PersistedConversationBindings,
+) -> Result<(), String> {
+    if bindings.version != FORMAT_VERSION || bindings.conversation_id != history.session_id {
+        return Err("Invalid canonical conversation bindings payload.".to_string());
+    }
+    if bindings
+        .provider_bindings
+        .iter()
+        .any(|binding| binding.conversation_id != history.session_id)
+    {
+        return Err("Provider binding belongs to another conversation.".to_string());
+    }
+    validate_persisted_conversation_bindings(bindings)?;
+    let active = bindings
+        .active_binding_id
+        .as_ref()
+        .and_then(|active_id| {
+            bindings
+                .provider_bindings
+                .iter()
+                .find(|binding| &binding.binding_id == active_id)
+        })
+        .ok_or_else(|| "Canonical conversation has no active provider binding.".to_string())?;
+    history.runtime_id = Some(active.runtime_id.clone());
+    history.runtime_display_name = active.runtime_display_name.clone();
+    history.runtime_revision = active.runtime_revision;
+    history.runtime_launch_fingerprint = active.runtime_launch_fingerprint.clone();
+    history.runtime_session_id = active.runtime_session_id.clone();
+    history.continuation_strategy = active.continuation_strategy;
+    history.model_id = active.model_id.clone();
+    history.mode_id = active.mode_id.clone();
+    history.models = active.models.clone();
+    history.modes = active.modes.clone();
+    history.config_options = active.config_options.clone();
+    Ok(())
+}
+
+fn merge_conversation_bindings(
+    existing: Option<PersistedConversationBindings>,
+    mut incoming: PersistedConversationBindings,
+) -> PersistedConversationBindings {
+    if let Some(existing) = existing {
+        incoming.context_summary = incoming.context_summary.or(existing.context_summary);
+        incoming.revision = incoming.revision.max(existing.revision).saturating_add(1);
+    } else {
+        incoming.revision = incoming.revision.saturating_add(1);
+    }
+    incoming
+}
+
+pub fn save_session_history_with_bindings(
+    storage_root: &Path,
+    history: &PersistedSessionHistory,
+    bindings: Option<PersistedConversationBindings>,
+) -> Result<(), String> {
+    let session_dir = storage_session_dir(storage_root, &history.session_id);
+    let disk_state = read_conversation_bindings_file(&session_dir);
+    if matches!(disk_state, ConversationBindingsFileState::Unusable) {
+        return save_session_history(storage_root, history);
+    }
+
+    let Some(bindings) = bindings else {
+        return save_session_history(storage_root, history);
+    };
+    validate_persisted_conversation_bindings(&bindings)?;
+    if bindings.conversation_id != history.session_id {
+        return Err("Canonical bindings do not match the persisted history.".to_string());
+    }
+    let existing = match disk_state {
+        ConversationBindingsFileState::Supported(existing) => Some(*existing),
+        ConversationBindingsFileState::Missing => None,
+        ConversationBindingsFileState::Unusable => unreachable!(),
+    };
+    let mut bindings = merge_conversation_bindings(existing, bindings);
+    let mut projected_history = history.clone();
+    project_active_binding_to_history(&mut projected_history, &bindings)?;
+    save_session_history(storage_root, &projected_history)?;
+
+    let metadata = load_session_metadata(storage_root, &history.session_id)?;
+    let index = load_session_index(storage_root, &history.session_id)?;
+    bindings.transcript_observation = PersistedTranscriptObservation {
+        message_count: metadata.message_count,
+        updated_at: metadata.updated_at,
+        transcript_fingerprint: Some(transcript_fingerprint(&index)),
+    };
+    write_json_atomic(
+        &storage_conversation_bindings_file(storage_root, &history.session_id),
+        &bindings,
+    )
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionEnvelopeInventory {
+    pub histories: Vec<PersistedSessionHistoryEnvelope>,
+    pub issues: Vec<SessionLoadIssue>,
+}
+
+pub fn load_all_session_histories_with_bindings(
+    storage_root: &Path,
+    include_messages: bool,
+) -> Result<Vec<PersistedSessionHistoryEnvelope>, String> {
+    Ok(load_session_inventory_with_bindings(storage_root, include_messages)?.histories)
+}
+
+pub fn load_session_inventory_with_bindings(
+    storage_root: &Path,
+    include_messages: bool,
+) -> Result<SessionEnvelopeInventory, String> {
+    let inventory = load_session_history_inventory(storage_root, include_messages)?;
+    let mut issues = inventory.issues;
+    let mut histories = Vec::new();
+    for mut history in inventory.histories {
+        let relative_path = relative_storage_path(
+            storage_root,
+            &storage_session_dir(storage_root, &history.session_id),
+        );
+        let result: Result<PersistedSessionHistoryEnvelope, String> = (|| {
+            let session_dir = storage_session_dir(storage_root, &history.session_id);
+            let conversation_bindings = if read_checkpoint(&session_dir)?.is_some()
+                || storage_session_is_complete(storage_root, &history.session_id)
+            {
+                load_conversation_bindings_from_dir(&session_dir)?
+            } else {
+                let metadata = metadata_from_history(
+                    &history,
+                    history.message_count.unwrap_or(history.messages.len()),
+                );
+                let index = PersistedTranscriptIndex {
+                    version: FORMAT_VERSION,
+                    message_offsets: vec![],
+                    message_lengths: vec![],
+                    message_hashes: history
+                        .messages
+                        .iter()
+                        .map(hash_message)
+                        .collect::<Result<Vec<_>, _>>()?,
+                };
+                synthesize_conversation_bindings(&metadata, &index)
+            };
+            if bindings_identify_fork(&conversation_bindings) {
+                history.runtime_session_id = None;
+                history.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
+            }
+            Ok(PersistedSessionHistoryEnvelope {
+                history,
+                conversation_bindings,
+            })
+        })();
+        match result {
+            Ok(history) => histories.push(history),
+            Err(message) => issues.push(SessionLoadIssue {
+                relative_path,
+                message,
+            }),
+        }
+    }
+    Ok(SessionEnvelopeInventory { histories, issues })
+}
+
+fn legacy_session_priority(storage_root: &Path, path: &Path, session_id: &str) -> u8 {
+    if path == storage_session_dir(storage_root, session_id) {
         3
     } else if path.is_dir() {
         2
@@ -503,15 +2771,15 @@ fn legacy_session_priority(vault_root: &Path, path: &Path, session_id: &str) -> 
 }
 
 fn find_legacy_session_artifacts(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
 ) -> Result<LegacySessionArtifacts, String> {
-    let dir = sessions_dir(vault_root);
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
         return Ok(LegacySessionArtifacts::default());
     }
 
-    let storage_dir = storage_session_dir(vault_root, session_id);
+    let storage_dir = storage_session_dir(storage_root, session_id);
     let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
     let mut artifacts = LegacySessionArtifacts::default();
 
@@ -530,8 +2798,10 @@ fn find_legacy_session_artifacts(
                 Ok(value) => value,
                 Err(_) => continue,
             };
-            if metadata.session_id == session_id {
-                artifacts.dir_path = Some(path);
+            if metadata.session_id == session_id && artifacts.dir_path.replace(path).is_some() {
+                return Err(
+                    "Duplicate session copies require recovery; all copies were preserved.".into(),
+                );
             }
             continue;
         }
@@ -544,19 +2814,32 @@ fn find_legacy_session_artifacts(
             Ok(value) => value,
             Err(_) => continue,
         };
-        if history.session_id == session_id {
-            artifacts.file_path = Some(path);
+        if history.session_id == session_id && artifacts.file_path.replace(path).is_some() {
+            return Err(
+                "Duplicate session copies require recovery; all copies were preserved.".into(),
+            );
         }
     }
 
     Ok(artifacts)
 }
 
+fn ensure_session_has_no_duplicates(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    let artifacts = find_legacy_session_artifacts(storage_root, session_id)?;
+    let count = usize::from(storage_session_dir(storage_root, session_id).exists())
+        + usize::from(artifacts.dir_path.is_some())
+        + usize::from(artifacts.file_path.is_some());
+    if count > 1 {
+        return Err("Duplicate session copies require recovery; all copies were preserved.".into());
+    }
+    Ok(())
+}
+
 fn load_legacy_history(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
 ) -> Result<Option<PersistedSessionHistory>, String> {
-    let artifacts = find_legacy_session_artifacts(vault_root, session_id)?;
+    let artifacts = find_legacy_session_artifacts(storage_root, session_id)?;
     if let Some(dir_path) = artifacts.dir_path {
         return load_history_from_session_dir(&dir_path, true).map(Some);
     }
@@ -566,19 +2849,32 @@ fn load_legacy_history(
     Ok(None)
 }
 
-fn remove_legacy_history_artifacts(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    let artifacts = find_legacy_session_artifacts(vault_root, session_id)?;
-    if let Some(file_path) = artifacts.file_path {
-        fs::remove_file(file_path).map_err(|e| e.to_string())?;
-    }
-    if let Some(dir_path) = artifacts.dir_path {
-        fs::remove_dir_all(dir_path).map_err(|e| e.to_string())?;
+fn remove_legacy_history_artifacts(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    let artifacts = find_legacy_session_artifacts(storage_root, session_id)?;
+    for path in artifacts.file_path.into_iter().chain(artifacts.dir_path) {
+        let canonical =
+            load_history_from_session_dir(&storage_session_dir(storage_root, session_id), true)?;
+        let candidate = if path.is_dir() {
+            load_history_from_session_dir(&path, true)?
+        } else {
+            normalize_legacy_history(load_legacy_history_file(&path)?)
+        };
+        if serde_json::to_value(&canonical).map_err(|e| e.to_string())?
+            != serde_json::to_value(&candidate).map_err(|e| e.to_string())?
+        {
+            return Err("Divergent session copy preserved; recovery is required.".into());
+        }
+        if path.is_dir() {
+            fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+        } else {
+            fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
 
 fn write_full_lazy_history(
-    vault_root: &Path,
+    storage_root: &Path,
     history: &PersistedSessionHistory,
 ) -> Result<(), String> {
     let (start_index, total_count) = history_window_bounds(history)?;
@@ -586,13 +2882,18 @@ fn write_full_lazy_history(
         return Err("Full lazy history writes require a complete transcript.".to_string());
     }
 
-    ensure_sessions_root(vault_root)?;
-    let session_dir = storage_session_dir(vault_root, &history.session_id);
+    ensure_sessions_root(storage_root)?;
+    let session_dir = storage_session_dir(storage_root, &history.session_id);
     fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
+    sync_history_directory(&sessions_dir(storage_root))?;
 
     let transcript_path = session_transcript_path(&session_dir);
-    let transcript_tmp = transcript_path.with_extension("jsonl.tmp");
-    let mut transcript_file = File::create(&transcript_tmp).map_err(|e| e.to_string())?;
+    let transcript_tmp = transcript_path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let mut transcript_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&transcript_tmp)
+        .map_err(|e| e.to_string())?;
 
     let mut offsets = Vec::with_capacity(history.messages.len());
     let mut lengths = Vec::with_capacity(history.messages.len());
@@ -611,7 +2912,7 @@ fn write_full_lazy_history(
         cursor += bytes.len() as u64;
     }
 
-    transcript_file.flush().map_err(|e| e.to_string())?;
+    transcript_file.sync_all().map_err(|e| e.to_string())?;
     fs::rename(&transcript_tmp, &transcript_path).map_err(|e| e.to_string())?;
 
     let metadata = metadata_from_history(history, total_count);
@@ -622,33 +2923,36 @@ fn write_full_lazy_history(
         message_hashes: hashes,
     };
 
-    write_json_atomic(&session_meta_path(&session_dir), &metadata)?;
-    write_json_atomic(&session_index_path(&session_dir), &index)?;
-    remove_legacy_history_artifacts(vault_root, &history.session_id)?;
+    publish_checkpoint(&session_dir, &metadata, &index, &transcript_path)?;
+    remove_legacy_history_artifacts(storage_root, &history.session_id)?;
 
     Ok(())
 }
 
-fn ensure_lazy_session_from_legacy(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    recover_incomplete_compaction(&storage_session_dir(vault_root, session_id))?;
-    if storage_session_is_complete(vault_root, session_id) {
+fn ensure_lazy_session_from_legacy(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    if read_checkpoint(&storage_session_dir(storage_root, session_id))?.is_some() {
+        return Ok(());
+    }
+    recover_incomplete_compaction(&storage_session_dir(storage_root, session_id))?;
+    if storage_session_is_complete(storage_root, session_id) {
         return Ok(());
     }
 
-    let Some(history) = load_legacy_history(vault_root, session_id)? else {
+    ensure_session_has_no_duplicates(storage_root, session_id)?;
+    let Some(history) = load_legacy_history(storage_root, session_id)? else {
         return Ok(());
     };
 
-    write_full_lazy_history(vault_root, &history)
+    write_full_lazy_history(storage_root, &history)
 }
 
 fn load_lazy_history_page(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
     start_index: usize,
     limit: usize,
 ) -> Result<PersistedSessionHistoryPage, String> {
-    let session_dir = storage_session_dir(vault_root, session_id);
+    let session_dir = storage_session_dir(storage_root, session_id);
     load_lazy_history_page_from_dir(&session_dir, start_index, limit)
 }
 
@@ -657,12 +2961,18 @@ fn load_lazy_history_page_from_dir(
     start_index: usize,
     limit: usize,
 ) -> Result<PersistedSessionHistoryPage, String> {
-    let (metadata, index) = load_repaired_lazy_session_files(session_dir)?;
-    read_lazy_history_page_from_files(session_dir, &metadata, &index, start_index, limit)
+    let snapshot = load_session_snapshot(session_dir)?;
+    read_lazy_history_page_from_files(
+        &snapshot.transcript_path,
+        &snapshot.metadata,
+        &snapshot.index,
+        start_index,
+        limit,
+    )
 }
 
 fn read_lazy_history_page_from_files(
-    session_dir: &Path,
+    transcript_path: &Path,
     metadata: &PersistedSessionMetadata,
     index: &PersistedTranscriptIndex,
     start_index: usize,
@@ -672,8 +2982,7 @@ fn read_lazy_history_page_from_files(
     let start = start_index.min(total_messages);
     let end = start.saturating_add(limit).min(total_messages);
 
-    let mut transcript =
-        File::open(session_transcript_path(session_dir)).map_err(|e| e.to_string())?;
+    let mut transcript = File::open(transcript_path).map_err(|e| e.to_string())?;
     let mut messages = Vec::with_capacity(end.saturating_sub(start));
 
     for idx in start..end {
@@ -682,6 +2991,9 @@ fn read_lazy_history_page_from_files(
             index.message_offsets[idx],
             index.message_lengths[idx] as usize,
         )?;
+        if hash_message(&message)? != index.message_hashes[idx] {
+            return Err(format!("Transcript entry {idx} does not match its checkpoint. Retry after synchronization finishes."));
+        }
         messages.push(message);
     }
 
@@ -699,7 +3011,21 @@ fn read_indexed_transcript_message(
     offset: u64,
     length: usize,
 ) -> Result<PersistedMessage, String> {
-    let mut bytes = vec![0_u8; length];
+    let file_length = transcript
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .len();
+    if offset
+        .checked_add(length as u64)
+        .is_none_or(|end| end > file_length)
+    {
+        return Err("Indexed transcript range is unavailable.".into());
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|error| error.to_string())?;
+    bytes.resize(length, 0);
     transcript
         .seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
@@ -762,43 +3088,40 @@ fn should_compact_transcript(
     physical_bytes >= indexed_bytes.saturating_mul(policy.max_physical_to_indexed_ratio.max(1))
 }
 
-fn compact_transcript_if_needed(
-    session_dir: &Path,
-    metadata: &PersistedSessionMetadata,
-    index: &PersistedTranscriptIndex,
-    policy: TranscriptCompactionPolicy,
-) -> Result<PersistedTranscriptIndex, String> {
-    validate_lazy_session_files(metadata, index)?;
-
-    let transcript_path = session_transcript_path(session_dir);
-    let physical_bytes = fs::metadata(&transcript_path)
-        .map_err(|error| error.to_string())?
-        .len();
-    let indexed_bytes = indexed_transcript_bytes(index);
-
-    if should_compact_transcript(physical_bytes, indexed_bytes, policy) {
-        persist_compacted_lazy_history(session_dir, metadata, index)
-    } else {
-        Ok(index.clone())
-    }
+// Capture the header and transcript generation once. Reads never compact or
+// republish a checkpoint: synchronization may publish another version meanwhile.
+struct SessionReadSnapshot {
+    metadata: PersistedSessionMetadata,
+    index: PersistedTranscriptIndex,
+    transcript_path: PathBuf,
 }
 
-fn load_repaired_lazy_session_files(
-    session_dir: &Path,
-) -> Result<(PersistedSessionMetadata, PersistedTranscriptIndex), String> {
-    recover_incomplete_compaction(session_dir)?;
-
-    let metadata = read_json_file(&session_meta_path(session_dir))?;
-    let index = read_json_file(&session_index_path(session_dir))?;
-    let index = compact_transcript_if_needed(
-        session_dir,
-        &metadata,
-        &index,
-        DEFAULT_TRANSCRIPT_COMPACTION_POLICY,
-    )?;
-    validate_lazy_session_files(&metadata, &index)?;
-
-    Ok((metadata, index))
+fn load_session_snapshot(session_dir: &Path) -> Result<SessionReadSnapshot, String> {
+    let snapshot = if let Some(checkpoint) = read_checkpoint(session_dir)? {
+        SessionReadSnapshot {
+            metadata: normalize_fork_runtime_identity(checkpoint.metadata),
+            index: checkpoint.index,
+            transcript_path: session_dir.join(checkpoint.transcript_file),
+        }
+    } else {
+        recover_incomplete_compaction(session_dir)?;
+        SessionReadSnapshot {
+            metadata: normalize_fork_runtime_identity(read_json_file(&session_meta_path(
+                session_dir,
+            ))?),
+            index: read_json_file(&session_index_path(session_dir))?,
+            transcript_path: session_dir.join(SESSION_TRANSCRIPT_FILE),
+        }
+    };
+    validate_lazy_session_files(&snapshot.metadata, &snapshot.index)?;
+    if !fs::symlink_metadata(&snapshot.transcript_path)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_file()
+    {
+        return Err("Transcript is not a regular file.".into());
+    }
+    Ok(snapshot)
 }
 
 fn unique_session_sidecar_path(path: &Path, label: &str, suffix: u128) -> Result<PathBuf, String> {
@@ -849,6 +3172,11 @@ fn write_compacted_transcript_tmp(
         )?;
         let bytes = serialize_message_bytes(&message)?;
         let hash = hash_message(&message)?;
+        if hash != source_index.message_hashes[idx] {
+            return Err(
+                "Transcript changed before compaction; the committed version was preserved.".into(),
+            );
+        }
 
         target
             .write_all(&bytes)
@@ -935,6 +3263,18 @@ fn persist_compacted_lazy_history(
     metadata: &PersistedSessionMetadata,
     source_index: &PersistedTranscriptIndex,
 ) -> Result<PersistedTranscriptIndex, String> {
+    if read_checkpoint(session_dir)?.is_some() {
+        let transcript_path =
+            session_dir.join(format!("transcript-{}.jsonl", uuid::Uuid::new_v4()));
+        let compacted_index =
+            write_compacted_transcript_tmp(session_dir, source_index, &transcript_path)?;
+        File::open(&transcript_path)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        sync_history_directory(session_dir)?;
+        publish_checkpoint(session_dir, metadata, &compacted_index, &transcript_path)?;
+        return Ok(compacted_index);
+    }
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -1026,56 +3366,54 @@ fn persist_compacted_lazy_history(
     Ok(compacted_index)
 }
 
-fn load_all_lazy_messages_from_dir(session_dir: &Path) -> Result<Vec<PersistedMessage>, String> {
-    let (metadata, index) = load_repaired_lazy_session_files(session_dir)?;
-    if metadata.message_count == 0 {
-        return Ok(vec![]);
-    }
-
-    Ok(read_lazy_history_page_from_files(
-        session_dir,
-        &metadata,
-        &index,
-        0,
-        metadata.message_count,
-    )?
-    .messages)
-}
-
 pub fn save_session_history(
-    vault_root: &Path,
+    storage_root: &Path,
     history: &PersistedSessionHistory,
 ) -> Result<(), String> {
     save_session_history_with_compaction_policy(
-        vault_root,
+        storage_root,
         history,
         DEFAULT_TRANSCRIPT_COMPACTION_POLICY,
     )
 }
 
 fn save_session_history_with_compaction_policy(
-    vault_root: &Path,
+    storage_root: &Path,
     history: &PersistedSessionHistory,
     compaction_policy: TranscriptCompactionPolicy,
 ) -> Result<(), String> {
-    ensure_lazy_session_from_legacy(vault_root, &history.session_id)?;
+    ensure_session_has_no_duplicates(storage_root, &history.session_id)?;
+    recover_incomplete_compaction(&storage_session_dir(storage_root, &history.session_id))?;
+    ensure_lazy_session_from_legacy(storage_root, &history.session_id)?;
     let (start_index, total_count) = history_window_bounds(history)?;
 
-    let metadata_path = storage_session_meta_file(vault_root, &history.session_id);
-    let index_path = storage_session_index_file(vault_root, &history.session_id);
-    if !metadata_path.exists() || !index_path.exists() {
+    let metadata_path = storage_session_meta_file(storage_root, &history.session_id);
+    let index_path = storage_session_index_file(storage_root, &history.session_id);
+    if read_checkpoint(&storage_session_dir(storage_root, &history.session_id))?.is_none()
+        && (!metadata_path.exists() || !index_path.exists())
+    {
         if start_index != 0 || total_count != history.messages.len() {
             return Err(
                 "Cannot persist a partial transcript window before the base transcript exists."
                     .to_string(),
             );
         }
-        return write_full_lazy_history(vault_root, history);
+        return write_full_lazy_history(storage_root, history);
     }
 
-    let existing_metadata = load_session_metadata(vault_root, &history.session_id)?;
-    let existing_index = load_session_index(vault_root, &history.session_id)?;
-    validate_index(&existing_index)?;
+    let snapshot = load_session_snapshot(&storage_session_dir(storage_root, &history.session_id))?;
+    let existing_metadata = snapshot.metadata;
+    let existing_index = snapshot.index;
+    validate_lazy_session_files(&existing_metadata, &existing_index)?;
+    let session_dir = storage_session_dir(storage_root, &history.session_id);
+    if read_checkpoint(&session_dir)?.is_none() {
+        publish_checkpoint(
+            &session_dir,
+            &existing_metadata,
+            &existing_index,
+            &snapshot.transcript_path,
+        )?;
+    }
 
     if start_index > existing_metadata.message_count {
         return Err("Transcript patch starts beyond the stored history.".to_string());
@@ -1107,7 +3445,7 @@ fn save_session_history_with_compaction_policy(
         .extend_from_slice(&existing_index.message_hashes[start_index..start_index + common]);
 
     if common < history.messages.len() {
-        let transcript_path = storage_session_transcript_file(vault_root, &history.session_id);
+        let transcript_path = snapshot.transcript_path.clone();
         let mut transcript = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1129,7 +3467,7 @@ fn save_session_history_with_compaction_policy(
             cursor += bytes.len() as u64;
         }
 
-        transcript.flush().map_err(|e| e.to_string())?;
+        transcript.sync_all().map_err(|e| e.to_string())?;
     }
 
     if next_offsets.len() != total_count
@@ -1147,8 +3485,8 @@ fn save_session_history_with_compaction_policy(
         message_hashes: next_hashes,
     };
 
-    let session_dir = storage_session_dir(vault_root, &history.session_id);
-    let transcript_path = session_transcript_path(&session_dir);
+    let session_dir = storage_session_dir(storage_root, &history.session_id);
+    let transcript_path = snapshot.transcript_path;
     let physical_bytes = fs::metadata(&transcript_path)
         .map_err(|error| error.to_string())?
         .len();
@@ -1157,28 +3495,29 @@ fn save_session_history_with_compaction_policy(
     if should_compact_transcript(physical_bytes, indexed_bytes, compaction_policy) {
         persist_compacted_lazy_history(&session_dir, &next_metadata, &next_index)?;
     } else {
-        write_json_atomic(&metadata_path, &next_metadata)?;
-        write_json_atomic(&index_path, &next_index)?;
+        publish_checkpoint(&session_dir, &next_metadata, &next_index, &transcript_path)?;
     }
 
-    remove_legacy_history_artifacts(vault_root, &history.session_id)?;
+    remove_legacy_history_artifacts(storage_root, &history.session_id)?;
 
     Ok(())
 }
 
 pub fn load_session_history_page(
-    vault_root: &Path,
+    storage_root: &Path,
     session_id: &str,
     start_index: usize,
     limit: usize,
 ) -> Result<PersistedSessionHistoryPage, String> {
-    ensure_lazy_session_from_legacy(vault_root, session_id)?;
+    ensure_lazy_session_from_legacy(storage_root, session_id)?;
 
-    if storage_session_is_complete(vault_root, session_id) {
-        return load_lazy_history_page(vault_root, session_id, start_index, limit);
+    if read_checkpoint(&storage_session_dir(storage_root, session_id))?.is_some()
+        || storage_session_is_complete(storage_root, session_id)
+    {
+        return load_lazy_history_page(storage_root, session_id, start_index, limit);
     }
 
-    let Some(history) = load_legacy_history(vault_root, session_id)? else {
+    let Some(history) = load_legacy_history(storage_root, session_id)? else {
         return Ok(PersistedSessionHistoryPage {
             session_id: session_id.to_string(),
             total_messages: 0,
@@ -1201,18 +3540,25 @@ pub fn load_session_history_page(
     })
 }
 
-pub fn delete_session_history(vault_root: &Path, session_id: &str) -> Result<(), String> {
-    let dir = storage_session_dir(vault_root, session_id);
+pub fn delete_session_history(storage_root: &Path, session_id: &str) -> Result<(), String> {
+    ensure_session_has_no_duplicates(storage_root, session_id)?;
+    let dir = storage_session_dir(storage_root, session_id);
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
-    remove_legacy_history_artifacts(vault_root, session_id)?;
+    let artifacts = find_legacy_session_artifacts(storage_root, session_id)?;
+    if let Some(path) = artifacts.file_path {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    if let Some(path) = artifacts.dir_path {
+        fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
 
-pub fn delete_all_session_histories(vault_root: &Path) -> Result<(), String> {
-    let dir = sessions_dir(vault_root);
+pub fn delete_all_session_histories(storage_root: &Path) -> Result<(), String> {
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
         return Ok(());
     }
@@ -1241,61 +3587,56 @@ fn now_ms() -> Result<u64, String> {
 }
 
 pub fn prune_expired_session_histories(
-    vault_root: &Path,
+    storage_root: &Path,
     max_age_days: u32,
 ) -> Result<usize, String> {
     if max_age_days == 0 {
         return Ok(0);
     }
 
-    let dir = sessions_dir(vault_root);
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
         return Ok(0);
     }
 
     let max_age_ms = u64::from(max_age_days) * 24 * 60 * 60 * 1000;
     let cutoff_ms = now_ms()?.saturating_sub(max_age_ms);
+    // Inventory every candidate before deleting any: pruning one copy must not
+    // make another copy of the same logical session appear unambiguous.
     let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    let mut deleted = 0;
-
+    let mut candidates = Vec::new();
+    let mut copies_by_id: HashMap<String, usize> = HashMap::new();
     for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
+        let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if path.is_dir() {
-            let metadata = match load_session_metadata_from_dir(&path) {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-
-            if metadata.updated_at < cutoff_ms && fs::remove_dir_all(&path).is_ok() {
-                deleted += 1;
-            }
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        let header = if file_type.is_dir() {
+            load_session_metadata_from_dir(&path)
+                .map(|metadata| (metadata.session_id, metadata.updated_at))
+        } else if file_type.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("json")
+        {
+            load_legacy_history_file(&path).map(|history| (history.session_id, history.updated_at))
+        } else {
             continue;
-        }
-
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-
-        let raw = match fs::read_to_string(&path) {
-            Ok(r) => r,
-            Err(_) => continue,
         };
-
-        let history = match serde_json::from_str::<PersistedSessionHistory>(&raw) {
-            Ok(history) => history,
-            Err(_) => continue,
+        let Ok((session_id, updated_at)) = header else {
+            continue;
         };
-
-        if history.updated_at >= cutoff_ms {
+        *copies_by_id.entry(session_id.clone()).or_default() += 1;
+        candidates.push((path, file_type.is_dir(), session_id, updated_at));
+    }
+    let mut deleted = 0;
+    for (path, is_dir, session_id, updated_at) in candidates {
+        if updated_at >= cutoff_ms || copies_by_id[&session_id] > 1 {
             continue;
         }
-
-        if fs::remove_file(&path).is_ok() {
+        let result = if is_dir {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        };
+        if result.is_ok() {
             deleted += 1;
         }
     }
@@ -1303,15 +3644,39 @@ pub fn prune_expired_session_histories(
     Ok(deleted)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionLoadIssue {
+    pub relative_path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionHistoryInventory {
+    pub histories: Vec<PersistedSessionHistory>,
+    pub issues: Vec<SessionLoadIssue>,
+}
+
 pub fn load_all_session_histories(
-    vault_root: &Path,
+    storage_root: &Path,
     include_messages: bool,
 ) -> Result<Vec<PersistedSessionHistory>, String> {
-    let dir = sessions_dir(vault_root);
+    Ok(load_session_history_inventory(storage_root, include_messages)?.histories)
+}
+
+pub fn load_session_history_inventory(
+    storage_root: &Path,
+    include_messages: bool,
+) -> Result<SessionHistoryInventory, String> {
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
-        return Ok(vec![]);
+        return Ok(SessionHistoryInventory {
+            histories: vec![],
+            issues: vec![],
+        });
     }
 
+    let mut issues = Vec::new();
+    let mut seen_session_ids = std::collections::HashSet::new();
     let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
     let mut histories_by_session_id: HashMap<String, (u8, PersistedSessionHistory)> =
         HashMap::new();
@@ -1319,16 +3684,44 @@ pub fn load_all_session_histories(
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(error) => {
+                issues.push(SessionLoadIssue {
+                    relative_path: "sessions".into(),
+                    message: error.to_string(),
+                });
+                continue;
+            }
         };
 
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            issues.push(SessionLoadIssue {
+                relative_path: relative_storage_path(storage_root, &path),
+                message: "Session is a symbolic link.".into(),
+            });
+            continue;
+        }
+        if file_type.is_dir() {
             let history = match load_history_from_session_dir(&path, include_messages) {
                 Ok(history) => history,
-                Err(_) => continue,
+                Err(error) => {
+                    issues.push(SessionLoadIssue {
+                        relative_path: relative_storage_path(storage_root, &path),
+                        message: error,
+                    });
+                    continue;
+                }
             };
-            let priority = legacy_session_priority(vault_root, &path, &history.session_id);
+            if !seen_session_ids.insert(history.session_id.clone()) {
+                issues.push(SessionLoadIssue {
+                    relative_path: relative_storage_path(storage_root, &path),
+                    message:
+                        "Duplicate session copies require recovery; all copies were preserved."
+                            .into(),
+                });
+            }
+            let priority = legacy_session_priority(storage_root, &path, &history.session_id);
             upsert_history(
                 &mut histories_by_session_id,
                 history.session_id.clone(),
@@ -1344,8 +3737,22 @@ pub fn load_all_session_histories(
 
         let history = match load_legacy_history_file(&path) {
             Ok(history) => history,
-            Err(_) => continue,
+            Err(error) => {
+                issues.push(SessionLoadIssue {
+                    relative_path: relative_storage_path(storage_root, &path),
+                    message: error,
+                });
+                continue;
+            }
         };
+
+        if !seen_session_ids.insert(history.session_id.clone()) {
+            issues.push(SessionLoadIssue {
+                relative_path: relative_storage_path(storage_root, &path),
+                message: "Duplicate session copies require recovery; all copies were preserved."
+                    .into(),
+            });
+        }
 
         if include_messages {
             upsert_history(
@@ -1358,6 +3765,11 @@ pub fn load_all_session_histories(
                     parent_session_id: history.parent_session_id,
                     closed_at: history.closed_at,
                     runtime_id: history.runtime_id,
+                    runtime_display_name: history.runtime_display_name,
+                    runtime_revision: history.runtime_revision,
+                    runtime_launch_fingerprint: history.runtime_launch_fingerprint,
+                    runtime_session_id: history.runtime_session_id,
+                    continuation_strategy: history.continuation_strategy,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
                     models: history.models,
@@ -1388,6 +3800,11 @@ pub fn load_all_session_histories(
                     parent_session_id: history.parent_session_id,
                     closed_at: history.closed_at,
                     runtime_id: history.runtime_id,
+                    runtime_display_name: history.runtime_display_name,
+                    runtime_revision: history.runtime_revision,
+                    runtime_launch_fingerprint: history.runtime_launch_fingerprint,
+                    runtime_session_id: history.runtime_session_id,
+                    continuation_strategy: history.continuation_strategy,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
                     models: history.models,
@@ -1414,7 +3831,7 @@ pub fn load_all_session_histories(
         .map(|(_, history)| history)
         .collect::<Vec<_>>();
     histories.sort_by_key(|history| std::cmp::Reverse(history.updated_at));
-    Ok(histories)
+    Ok(SessionHistoryInventory { histories, issues })
 }
 
 fn upsert_history(
@@ -1442,14 +3859,14 @@ const MAX_MATCHED_MESSAGES_PER_SESSION: usize = 5;
 const SNIPPET_CONTEXT_CHARS: usize = 50;
 
 pub fn search_session_content(
-    vault_root: &Path,
+    storage_root: &Path,
     query: &str,
 ) -> Result<Vec<SessionSearchResult>, String> {
     if query.trim().is_empty() {
         return Ok(vec![]);
     }
     let query_lower = query.to_lowercase();
-    let dir = sessions_dir(vault_root);
+    let dir = sessions_dir(storage_root);
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -1565,15 +3982,20 @@ fn search_in_legacy_file(path: &Path, query_lower: &str) -> Result<SessionSearch
 // Session fork
 // ---------------------------------------------------------------------------
 
-pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Result<String, String> {
-    ensure_lazy_session_from_legacy(vault_root, source_session_id)?;
+pub fn fork_session_history(
+    storage_root: &Path,
+    source_session_id: &str,
+) -> Result<String, String> {
+    ensure_lazy_session_from_legacy(storage_root, source_session_id)?;
 
-    let source_dir = storage_session_dir(vault_root, source_session_id);
+    let source_dir = storage_session_dir(storage_root, source_session_id);
     if !source_dir.exists() {
         return Err(format!("Source session not found: {source_session_id}"));
     }
 
-    let source_meta = load_session_metadata_from_dir(&source_dir)?;
+    let source_snapshot = load_session_snapshot(&source_dir)?;
+    let source_meta = source_snapshot.metadata;
+    let source_bindings = load_conversation_bindings_from_dir(&source_dir)?;
 
     let new_session_id = uuid::Uuid::new_v4().to_string();
     let now_ms = SystemTime::now()
@@ -1581,32 +4003,37 @@ pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Resul
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    ensure_sessions_root(vault_root)?;
-    let dest_dir = storage_session_dir(vault_root, &new_session_id);
+    ensure_sessions_root(storage_root)?;
+    let dest_dir = storage_session_dir(storage_root, &new_session_id);
     fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
 
     // Copy transcript and index as-is
-    let src_transcript = session_transcript_path(&source_dir);
-    let src_index = session_index_path(&source_dir);
+    let src_transcript = source_snapshot.transcript_path;
+    let source_index = source_snapshot.index;
     if src_transcript.exists() {
         fs::copy(&src_transcript, session_transcript_path(&dest_dir)).map_err(|e| e.to_string())?;
     }
-    if src_index.exists() {
-        fs::copy(&src_index, session_index_path(&dest_dir)).map_err(|e| e.to_string())?;
-    }
+    write_json_atomic(&session_index_path(&dest_dir), &source_index)?;
 
     // Write new metadata with fresh ID and timestamps
     let forked_title = source_meta
         .custom_title
         .or(source_meta.title)
         .map(|t| format!("{t} (fork)"));
-
     let new_metadata = PersistedSessionMetadata {
         version: source_meta.version,
         session_id: new_session_id.clone(),
         parent_session_id: None,
         closed_at: None,
         runtime_id: source_meta.runtime_id,
+        runtime_display_name: source_meta.runtime_display_name,
+        runtime_revision: source_meta.runtime_revision,
+        runtime_launch_fingerprint: source_meta.runtime_launch_fingerprint,
+        // A transcript fork must not reconnect to the source runtime session.
+        // Its next turn starts a fresh native session and receives the copied
+        // transcript as bounded resume context.
+        runtime_session_id: None,
+        continuation_strategy: Some(AcpContinuationStrategy::NewSessionOnly),
         model_id: source_meta.model_id,
         mode_id: source_meta.mode_id,
         models: source_meta.models,
@@ -1623,6 +4050,32 @@ pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Resul
     };
 
     write_json_atomic(&session_meta_path(&dest_dir), &new_metadata)?;
+
+    let mut forked_bindings = source_bindings;
+    forked_bindings.conversation_id = new_session_id.clone();
+    forked_bindings.revision = forked_bindings.revision.saturating_add(1);
+    let next_active_binding_id = forked_bindings
+        .provider_bindings
+        .first_mut()
+        .map(|binding| {
+            binding.binding_id = format!("fork:{new_session_id}:{}", binding.runtime_id);
+            binding.conversation_id = new_session_id.clone();
+            binding.runtime_session_id = None;
+            binding.continuation_strategy = Some(AcpContinuationStrategy::NewSessionOnly);
+            binding.context_cursor = None;
+            binding.context_generation = binding.context_generation.saturating_add(1);
+            binding.created_at = Some(now_ms);
+            binding.updated_at = Some(now_ms);
+            binding.binding_id.clone()
+        });
+    forked_bindings.active_binding_id = next_active_binding_id;
+    let dest_index = load_session_index_from_dir(&dest_dir)?;
+    forked_bindings.transcript_observation = PersistedTranscriptObservation {
+        message_count: new_metadata.message_count,
+        updated_at: new_metadata.updated_at,
+        transcript_fingerprint: Some(transcript_fingerprint(&dest_index)),
+    };
+    write_json_atomic(&conversation_bindings_path(&dest_dir), &forked_bindings)?;
 
     Ok(new_session_id)
 }
@@ -1686,6 +4139,11 @@ mod tests {
             parent_session_id: None,
             closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
+            runtime_display_name: None,
+            runtime_revision: None,
+            runtime_launch_fingerprint: None,
+            runtime_session_id: None,
+            continuation_strategy: None,
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
             models: None,
@@ -1731,6 +4189,7 @@ mod tests {
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
+                    turn_provenance: None,
                 },
                 PersistedMessage {
                     id: "assistant:1".to_string(),
@@ -1753,6 +4212,7 @@ mod tests {
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
+                    turn_provenance: None,
                 },
             ],
         }
@@ -1775,6 +4235,11 @@ mod tests {
             parent_session_id: None,
             closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
+            runtime_display_name: None,
+            runtime_revision: None,
+            runtime_launch_fingerprint: None,
+            runtime_session_id: None,
+            continuation_strategy: None,
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
             models: None,
@@ -1792,8 +4257,8 @@ mod tests {
         }
     }
 
-    fn transcript_line_count(vault_root: &Path, session_id: &str) -> usize {
-        let file = File::open(storage_session_transcript_file(vault_root, session_id))
+    fn transcript_line_count(storage_root: &Path, session_id: &str) -> usize {
+        let file = File::open(storage_session_transcript_file(storage_root, session_id))
             .expect("transcript should open");
         BufReader::new(file)
             .lines()
@@ -1810,10 +4275,10 @@ mod tests {
         }
     }
 
-    fn persist_default_compaction_candidate(vault_root: &Path) -> (usize, u64, String) {
+    fn persist_default_compaction_candidate(storage_root: &Path) -> (usize, u64, String) {
         let history = sample_history();
         save_session_history_with_compaction_policy(
-            vault_root,
+            storage_root,
             &history,
             disabled_compaction_policy(),
         )
@@ -1826,18 +4291,19 @@ mod tests {
                 "obsolete transcript bytes ".repeat(45_000)
             );
             save_session_history_with_compaction_policy(
-                vault_root,
+                storage_root,
                 &assistant_update_patch(final_content.clone(), 30 + version),
                 disabled_compaction_policy(),
             )
             .expect("inflating update should persist");
         }
 
-        let inflated_lines = transcript_line_count(vault_root, "session-1");
-        let inflated_bytes = fs::metadata(storage_session_transcript_file(vault_root, "session-1"))
-            .expect("inflated transcript metadata should load")
-            .len();
-        let index = load_session_index(vault_root, "session-1").expect("index should load");
+        let inflated_lines = transcript_line_count(storage_root, "session-1");
+        let inflated_bytes =
+            fs::metadata(storage_session_transcript_file(storage_root, "session-1"))
+                .expect("inflated transcript metadata should load")
+                .len();
+        let index = load_session_index(storage_root, "session-1").expect("index should load");
 
         assert!(inflated_lines > history.messages.len());
         assert!(should_compact_transcript(
@@ -1885,6 +4351,399 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(first, third);
         assert!(first.starts_with("session-"));
+    }
+
+    #[test]
+    fn strict_inspector_reports_every_artifact_the_tolerant_loader_skips() {
+        let storage_root = make_temp_dir();
+        let valid_history = sample_history();
+        save_session_history(&storage_root, &valid_history).expect("valid history should persist");
+
+        let duplicate_path = sessions_dir(&storage_root).join("duplicate.json");
+        write_json_atomic(&duplicate_path, &valid_history).expect("duplicate should persist");
+        fs::write(sessions_dir(&storage_root).join("broken.json"), b"{broken")
+            .expect("broken history should persist");
+        fs::write(sessions_dir(&storage_root).join("unknown.bin"), b"unknown")
+            .expect("unknown entry should persist");
+        fs::write(
+            storage_root.join("unexpected-root.bin"),
+            b"unknown root entry",
+        )
+        .expect("unknown root entry should persist");
+
+        let corrupt_meta = sample_history_with_session_id("corrupt-meta");
+        save_session_history(&storage_root, &corrupt_meta).expect("history should persist");
+        fs::remove_file(
+            storage_session_dir(&storage_root, "corrupt-meta").join(SESSION_CHECKPOINT_FILE),
+        )
+        .unwrap();
+        fs::write(
+            storage_session_meta_file(&storage_root, "corrupt-meta"),
+            b"{broken",
+        )
+        .expect("metadata should be corrupted");
+
+        let corrupt_index = sample_history_with_session_id("corrupt-index");
+        save_session_history(&storage_root, &corrupt_index).expect("history should persist");
+        fs::write(
+            storage_session_index_file(&storage_root, "corrupt-index"),
+            b"{broken",
+        )
+        .expect("index should be corrupted");
+
+        let corrupt_transcript = sample_history_with_session_id("corrupt-transcript");
+        save_session_history(&storage_root, &corrupt_transcript).expect("history should persist");
+        fs::remove_file(
+            storage_session_dir(&storage_root, "corrupt-transcript").join(SESSION_CHECKPOINT_FILE),
+        )
+        .unwrap();
+        fs::write(
+            storage_session_transcript_file(&storage_root, "corrupt-transcript"),
+            b"{broken\n",
+        )
+        .expect("transcript should be corrupted");
+
+        let valid_session_dir = storage_session_dir(&storage_root, &valid_history.session_id);
+        fs::write(valid_session_dir.join("unexpected.txt"), b"unexpected")
+            .expect("nested unknown entry should persist");
+        let corrupt_duplicate_dir = sessions_dir(&storage_root).join("corrupt-duplicate");
+        fs::create_dir_all(&corrupt_duplicate_dir).expect("duplicate directory should exist");
+        for file_name in [
+            SESSION_META_FILE,
+            SESSION_INDEX_FILE,
+            SESSION_TRANSCRIPT_FILE,
+        ] {
+            fs::copy(
+                valid_session_dir.join(file_name),
+                corrupt_duplicate_dir.join(file_name),
+            )
+            .expect("duplicate artifact should copy");
+        }
+        fs::write(corrupt_duplicate_dir.join(SESSION_INDEX_FILE), b"{broken")
+            .expect("duplicate index should be corrupted");
+
+        let tolerant = load_all_session_histories(&storage_root, false)
+            .expect("the normal loader should remain tolerant");
+        assert!(tolerant
+            .iter()
+            .any(|history| history.session_id == valid_history.session_id));
+        assert!(!tolerant
+            .iter()
+            .any(|history| history.session_id == "corrupt-meta"));
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert_eq!(inventory.histories.sessions.len(), 2);
+        assert_eq!(inventory.histories.duplicate_session_ids.len(), 1);
+        assert_eq!(
+            inventory.histories.duplicate_session_ids[0].session_id,
+            valid_history.session_id
+        );
+        assert!(inventory.histories.duplicate_session_ids[0]
+            .artifacts
+            .iter()
+            .any(|path| path.contains("corrupt-duplicate")));
+        for expected in ["broken.json", "session-meta.json", "index.json"] {
+            assert!(
+                inventory
+                    .histories
+                    .corrupt_artifacts
+                    .iter()
+                    .any(|artifact| artifact.relative_path.contains(expected)),
+                "missing corruption diagnostic for {expected}"
+            );
+        }
+        assert!(inventory
+            .histories
+            .corrupt_artifacts
+            .iter()
+            .any(|artifact| artifact.error.contains("Persisted transcript")));
+        for expected in ["unknown.bin", "unexpected.txt", "unexpected-root.bin"] {
+            assert!(
+                inventory
+                    .histories
+                    .unknown_entries
+                    .iter()
+                    .any(|entry| entry.relative_path.contains(expected)),
+                "missing unknown entry diagnostic for {expected}"
+            );
+        }
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn strict_inspector_ignores_regular_finder_metadata() {
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("history should persist");
+
+        fs::write(storage_root.join(".DS_Store"), b"finder metadata")
+            .expect("root finder metadata should persist");
+        fs::write(
+            sessions_dir(&storage_root).join(".DS_Store"),
+            b"finder metadata",
+        )
+        .expect("sessions finder metadata should persist");
+        fs::write(
+            storage_session_dir(&storage_root, &history.session_id).join(".DS_Store"),
+            b"finder metadata",
+        )
+        .expect("session finder metadata should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert_eq!(inventory.histories.sessions.len(), 1);
+        assert!(inventory.histories.unknown_entries.is_empty());
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn strict_inspector_rejects_non_file_finder_metadata() {
+        let storage_root = make_temp_dir();
+        fs::create_dir(storage_root.join(".DS_Store"))
+            .expect("finder metadata directory should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert!(inventory
+            .histories
+            .unknown_entries
+            .iter()
+            .any(|entry| entry.relative_path == ".DS_Store"));
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_inspector_rejects_finder_metadata_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let storage_root = make_temp_dir();
+        symlink("missing-target", storage_root.join(".DS_Store"))
+            .expect("finder metadata symlink should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert!(inventory
+            .histories
+            .unknown_entries
+            .iter()
+            .any(|entry| entry.relative_path == ".DS_Store" && entry.entry_type == "symlink"));
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn strict_inspector_rejects_oversized_index_ranges_before_allocating() {
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("history should persist");
+        let index_path = storage_session_index_file(&storage_root, &history.session_id);
+        let mut index: PersistedTranscriptIndex =
+            read_json_file(&index_path).expect("index should load");
+        index.message_lengths[0] = u64::MAX;
+        write_json_atomic(&index_path, &index).expect("corrupt index should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+
+        assert!(inventory.histories.sessions.is_empty());
+        assert!(inventory
+            .histories
+            .corrupt_artifacts
+            .iter()
+            .any(|artifact| artifact.error.contains("points outside the transcript")));
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn content_fingerprints_ignore_json_object_key_order() {
+        let first_root = make_temp_dir();
+        let second_root = make_temp_dir();
+        ensure_sessions_root(&first_root).expect("first sessions root should exist");
+        ensure_sessions_root(&second_root).expect("second sessions root should exist");
+        let first = br#"{
+            "version": 1,
+            "session_id": "stable-session",
+            "model_id": "test-model",
+            "mode_id": "default",
+            "created_at": 10,
+            "updated_at": 20,
+            "messages": [{
+                "id": "message-1",
+                "role": "user",
+                "kind": "text",
+                "content": "hello",
+                "timestamp": 10,
+                "meta": {"z": 2, "a": 1}
+            }]
+        }"#;
+        let second = br#"{
+            "messages": [{
+                "timestamp": 10,
+                "content": "hello",
+                "kind": "text",
+                "role": "user",
+                "id": "message-1",
+                "meta": {"a": 1, "z": 2}
+            }],
+            "updated_at": 20,
+            "created_at": 10,
+            "mode_id": "default",
+            "model_id": "test-model",
+            "session_id": "stable-session",
+            "version": 1
+        }"#;
+        fs::write(sessions_dir(&first_root).join("history.json"), first)
+            .expect("first history should persist");
+        fs::write(sessions_dir(&second_root).join("history.json"), second)
+            .expect("second history should persist");
+
+        let first_inventory = inspect_history_storage(&first_root);
+        let second_inventory = inspect_history_storage(&second_root);
+        assert_eq!(first_inventory.histories.sessions.len(), 1);
+        assert_eq!(second_inventory.histories.sessions.len(), 1);
+        assert_eq!(
+            first_inventory.histories.sessions[0].content_fingerprint,
+            second_inventory.histories.sessions[0].content_fingerprint
+        );
+        assert_ne!(
+            first_inventory.histories.sessions[0].artifact_fingerprint,
+            second_inventory.histories.sessions[0].artifact_fingerprint
+        );
+        assert_ne!(first_inventory.fingerprint, second_inventory.fingerprint);
+
+        fs::remove_dir_all(first_root).ok();
+        fs::remove_dir_all(second_root).ok();
+    }
+
+    #[test]
+    fn content_fingerprint_matches_across_legacy_and_directory_formats() {
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("directory history should persist");
+        write_json_atomic(&sessions_dir(&storage_root).join("legacy.json"), &history)
+            .expect("legacy history should persist");
+
+        let inventory = inspect_history_storage(&storage_root);
+        assert_eq!(inventory.histories.sessions.len(), 2);
+        assert_eq!(
+            inventory.histories.sessions[0].content_fingerprint,
+            inventory.histories.sessions[1].content_fingerprint
+        );
+        assert_ne!(
+            inventory.histories.sessions[0].artifact_fingerprint,
+            inventory.histories.sessions[1].artifact_fingerprint
+        );
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[test]
+    fn content_fingerprint_includes_custom_runtime_continuation_identity() {
+        let first_root = make_temp_dir();
+        let second_root = make_temp_dir();
+        let mut first = sample_history();
+        first.runtime_id = Some("custom:123e4567-e89b-12d3-a456-426614174000".to_string());
+        first.runtime_display_name = Some("Local reviewer".to_string());
+        first.runtime_revision = Some(1);
+        first.runtime_launch_fingerprint = Some("launch-v1".to_string());
+        first.runtime_session_id = Some("runtime-session-1".to_string());
+        first.continuation_strategy = Some(AcpContinuationStrategy::Resume);
+        let mut second = first.clone();
+        second.runtime_session_id = Some("runtime-session-2".to_string());
+
+        save_session_history(&first_root, &first).expect("first history should persist");
+        save_session_history(&second_root, &second).expect("second history should persist");
+
+        let first_inventory = inspect_history_storage(&first_root);
+        let second_inventory = inspect_history_storage(&second_root);
+        assert_ne!(
+            first_inventory.histories.sessions[0].content_fingerprint,
+            second_inventory.histories.sessions[0].content_fingerprint
+        );
+
+        fs::remove_dir_all(first_root).ok();
+        fs::remove_dir_all(second_root).ok();
+    }
+
+    #[test]
+    fn strict_inventory_fingerprint_covers_unindexed_transcript_bytes() {
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("history should persist");
+        let before = inspect_history_storage(&storage_root);
+        let transcript = storage_session_transcript_file(&storage_root, &history.session_id);
+        OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .expect("transcript should open")
+            .write_all(b"\n")
+            .expect("unindexed byte should append");
+
+        let after = inspect_history_storage(&storage_root);
+        assert_eq!(before.histories.sessions.len(), 1);
+        assert_eq!(after.histories.sessions.len(), 1);
+        assert_ne!(before.fingerprint, after.fingerprint);
+        assert_ne!(
+            before.histories.sessions[0].artifact_fingerprint,
+            after.histories.sessions[0].artifact_fingerprint
+        );
+        assert_eq!(
+            before.histories.sessions[0].content_fingerprint,
+            after.histories.sessions[0].content_fingerprint
+        );
+
+        fs::remove_dir_all(storage_root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_inventory_distinguishes_non_utf8_paths() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let storage_root = Path::new("storage");
+        let first_path = storage_root.join(OsString::from_vec(vec![
+            b'u', b'n', b'k', b'n', b'o', b'w', b'n', b'-', 0xfe, b'.', b'b', b'i', b'n',
+        ]));
+        let second_path = storage_root.join(OsString::from_vec(vec![
+            b'u', b'n', b'k', b'n', b'o', b'w', b'n', b'-', 0xff, b'.', b'b', b'i', b'n',
+        ]));
+        let first = relative_storage_path(storage_root, &first_path);
+        let second = relative_storage_path(storage_root, &second_path);
+        assert!(first.starts_with("@neverwrite-bytes:"));
+        assert!(second.starts_with("@neverwrite-bytes:"));
+        assert_ne!(first, second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_inspector_reports_permission_denied_artifacts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let storage_root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&storage_root, &history).expect("history should persist");
+        let transcript = storage_session_transcript_file(&storage_root, &history.session_id);
+        let original_permissions = fs::metadata(&transcript)
+            .expect("transcript metadata should load")
+            .permissions();
+        fs::set_permissions(&transcript, fs::Permissions::from_mode(0o000))
+            .expect("transcript permissions should change");
+
+        let read_is_denied = fs::read(&transcript).is_err();
+        let inventory = inspect_history_storage(&storage_root);
+        fs::set_permissions(&transcript, original_permissions)
+            .expect("transcript permissions should restore");
+        if read_is_denied {
+            assert!(inventory
+                .histories
+                .read_errors
+                .iter()
+                .any(|error| error.relative_path.ends_with(SESSION_TRANSCRIPT_FILE)));
+        }
+
+        fs::remove_dir_all(storage_root).ok();
     }
 
     #[test]
@@ -1952,7 +4811,7 @@ mod tests {
     fn delete_all_session_histories_only_clears_sessions_dir() {
         let dir = make_temp_dir();
         let history = sample_history();
-        let sibling = dir.join(PRODUCT_STATE_DIR_NAME).join("keep.txt");
+        let sibling = dir.join("keep.txt");
 
         save_session_history(&dir, &history).expect("history should persist");
         fs::create_dir_all(sibling.parent().expect("sibling parent should exist"))
@@ -1978,9 +4837,7 @@ mod tests {
         let dir = make_temp_dir();
         let mut history = sample_history();
         history.updated_at = 1;
-        let sibling = dir
-            .join(PRODUCT_STATE_DIR_NAME)
-            .join("keep-after-prune.txt");
+        let sibling = dir.join("keep-after-prune.txt");
 
         save_session_history(&dir, &history).expect("history should persist");
         fs::create_dir_all(sibling.parent().expect("sibling parent should exist"))
@@ -2039,6 +4896,39 @@ mod tests {
     }
 
     #[test]
+    fn inspector_and_fork_preserve_managed_attachment_ids() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.messages[0].attachments = Some(serde_json::json!([{
+            "id": "ui-attachment",
+            "type": "file",
+            "noteId": null,
+            "label": "Screenshot",
+            "path": null,
+            "managedAttachmentId": "ma_0123456789abcdef0123456789abcdef",
+            "fileName": "pasted-image.png",
+            "mimeType": "image/png"
+        }]));
+        save_session_history(&dir, &history).expect("history should persist");
+
+        let inventory = inspect_history_storage(&dir);
+        assert_eq!(
+            inventory.histories.sessions[0].managed_attachment_ids,
+            vec!["ma_0123456789abcdef0123456789abcdef"]
+        );
+
+        let fork_id = fork_session_history(&dir, &history.session_id).expect("history should fork");
+        let fork =
+            load_session_history_page(&dir, &fork_id, 0, 20).expect("forked history should load");
+        assert_eq!(
+            fork.messages[0].attachments,
+            history.messages[0].attachments
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn preserves_parent_session_id_in_lazy_metadata() {
         let dir = make_temp_dir();
         let mut history = sample_history_with_session_id("child-session");
@@ -2067,6 +4957,151 @@ mod tests {
         let full = load_all_session_histories(&dir, true).expect("full history should load");
         assert_eq!(full[0].parent_session_id.as_deref(), Some("parent-session"));
         assert_eq!(full[0].closed_at.as_deref(), Some("123"));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn preserves_custom_runtime_identity_in_lazy_metadata() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.runtime_id = Some("custom:123e4567-e89b-12d3-a456-426614174000".to_string());
+        history.runtime_display_name = Some("Local reviewer".to_string());
+        history.runtime_revision = Some(4);
+        history.runtime_launch_fingerprint = Some("fingerprint-v4".to_string());
+        history.runtime_session_id = Some("runtime-session-9".to_string());
+        history.continuation_strategy = Some(AcpContinuationStrategy::Load);
+
+        save_session_history(&dir, &history).expect("custom history should persist");
+
+        let summaries =
+            load_all_session_histories(&dir, false).expect("history summaries should load");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].runtime_display_name.as_deref(),
+            Some("Local reviewer")
+        );
+        assert_eq!(summaries[0].runtime_revision, Some(4));
+        assert_eq!(
+            summaries[0].runtime_launch_fingerprint.as_deref(),
+            Some("fingerprint-v4")
+        );
+        assert_eq!(
+            summaries[0].runtime_session_id.as_deref(),
+            Some("runtime-session-9")
+        );
+        assert_eq!(
+            summaries[0].continuation_strategy,
+            Some(AcpContinuationStrategy::Load)
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn builtin_runtime_fork_discards_source_runtime_session_identity() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.runtime_session_id = Some("source-runtime-session".to_string());
+        history.continuation_strategy = Some(AcpContinuationStrategy::Resume);
+
+        save_session_history(&dir, &history).expect("history should persist");
+        let forked_session_id =
+            fork_session_history(&dir, &history.session_id).expect("history should fork");
+        let forked = load_all_session_histories(&dir, false)
+            .expect("forked history should load")
+            .into_iter()
+            .find(|candidate| candidate.session_id == forked_session_id)
+            .expect("forked history should be present");
+
+        assert_eq!(forked.runtime_session_id, None);
+        assert_eq!(
+            forked.continuation_strategy,
+            Some(AcpContinuationStrategy::NewSessionOnly)
+        );
+        let forked_bindings =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &forked_session_id))
+                .expect("forked bindings should load");
+        assert!(forked_bindings.provider_bindings.iter().all(|binding| {
+            binding.runtime_session_id.is_none()
+                && binding.continuation_strategy == Some(AcpContinuationStrategy::NewSessionOnly)
+        }));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_fork_sidecar_isolated_when_loaded() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.runtime_session_id = Some("shared-runtime-session".to_string());
+        history.continuation_strategy = Some(AcpContinuationStrategy::Resume);
+        save_session_history(&dir, &history).expect("history should persist");
+
+        let session_dir = storage_session_dir(&dir, &history.session_id);
+        let mut bindings =
+            load_conversation_bindings_from_dir(&session_dir).expect("bindings should synthesize");
+        let fork_binding_id = format!("fork:{}:codex-acp", history.session_id);
+        bindings.active_binding_id = Some(fork_binding_id.clone());
+        bindings.provider_bindings[0].binding_id = fork_binding_id;
+        write_json_atomic(&conversation_bindings_path(&session_dir), &bindings)
+            .expect("legacy fork sidecar should persist");
+
+        let restored = load_all_session_histories_with_bindings(&dir, false)
+            .expect("legacy fork should load")
+            .into_iter()
+            .find(|candidate| candidate.history.session_id == history.session_id)
+            .expect("legacy fork should be present");
+        assert_eq!(restored.history.runtime_session_id, None);
+        assert_eq!(
+            restored.history.continuation_strategy,
+            Some(AcpContinuationStrategy::NewSessionOnly)
+        );
+
+        assert!(restored
+            .conversation_bindings
+            .provider_bindings
+            .iter()
+            .all(|binding| {
+                binding.runtime_session_id.is_none()
+                    && binding.continuation_strategy
+                        == Some(AcpContinuationStrategy::NewSessionOnly)
+            }));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn custom_runtime_fork_discards_source_runtime_session_identity() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        history.runtime_id = Some("custom:123e4567-e89b-12d3-a456-426614174000".to_string());
+        history.runtime_session_id = Some("source-runtime-session".to_string());
+        history.continuation_strategy = Some(AcpContinuationStrategy::Resume);
+
+        save_session_history(&dir, &history).expect("custom history should persist");
+        let forked_session_id =
+            fork_session_history(&dir, &history.session_id).expect("custom history should fork");
+        let forked = load_all_session_histories(&dir, false)
+            .expect("forked history should load")
+            .into_iter()
+            .find(|candidate| candidate.session_id == forked_session_id)
+            .expect("forked history should be present");
+
+        assert_eq!(forked.runtime_session_id, None);
+        assert_eq!(
+            forked.continuation_strategy,
+            Some(AcpContinuationStrategy::NewSessionOnly)
+        );
+        let forked_bindings =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &forked_session_id))
+                .expect("forked bindings should load");
+        assert_eq!(forked_bindings.conversation_id, forked_session_id);
+        assert!(forked_bindings.provider_bindings.iter().all(|binding| {
+            binding.conversation_id == forked_bindings.conversation_id
+                && binding.runtime_session_id.is_none()
+                && binding.context_cursor.is_none()
+        }));
 
         fs::remove_dir_all(dir).ok();
     }
@@ -2123,6 +5158,11 @@ mod tests {
         assert_eq!(histories.len(), 1);
         assert_eq!(histories[0].session_id, "legacy-no-parent");
         assert_eq!(histories[0].parent_session_id, None);
+        assert_eq!(histories[0].runtime_display_name, None);
+        assert_eq!(histories[0].runtime_revision, None);
+        assert_eq!(histories[0].runtime_launch_fingerprint, None);
+        assert_eq!(histories[0].runtime_session_id, None);
+        assert_eq!(histories[0].continuation_strategy, None);
 
         fs::remove_dir_all(dir).ok();
     }
@@ -2197,6 +5237,11 @@ mod tests {
             parent_session_id: None,
             closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
+            runtime_display_name: None,
+            runtime_revision: None,
+            runtime_launch_fingerprint: None,
+            runtime_session_id: None,
+            continuation_strategy: None,
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
             models: None,
@@ -2232,6 +5277,7 @@ mod tests {
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
+                    turn_provenance: None,
                 },
                 PersistedMessage {
                     id: "plan:1".to_string(),
@@ -2254,6 +5300,7 @@ mod tests {
                     plan_entries: None,
                     plan_detail: Some("Do the thing".to_string()),
                     tool_action: None,
+                    turn_provenance: None,
                 },
             ],
         };
@@ -2358,6 +5405,186 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn checkpoint_access_rejects_symlinked_session_directories() {
+        use std::os::unix::fs::symlink;
+        let root = make_temp_dir();
+        let outside = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&outside, &history).unwrap();
+        fs::create_dir_all(sessions_dir(&root)).unwrap();
+        symlink(
+            storage_session_dir(&outside, &history.session_id),
+            storage_session_dir(&root, &history.session_id),
+        )
+        .unwrap();
+        assert!(save_session_history(&root, &history).is_err());
+        assert!(load_session_history_page(&root, &history.session_id, 0, 10).is_err());
+        assert_eq!(
+            load_all_session_histories(&outside, true).unwrap()[0].messages[0].content,
+            history.messages[0].content
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn duplicate_session_copies_are_reported_and_preserved_on_save_and_delete() {
+        for directory_copy in [false, true] {
+            let root = make_temp_dir();
+            let other = make_temp_dir();
+            let history = sample_history();
+            save_session_history(&root, &history).unwrap();
+            let dir = storage_session_dir(&root, &history.session_id);
+            let checkpoint = fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap();
+            let mut divergent = history.clone();
+            divergent.messages[0].content = "Only in the conflict copy".into();
+            let conflict = if directory_copy {
+                save_session_history(&other, &divergent).unwrap();
+                let conflict = sessions_dir(&root).join("conflict-copy");
+                fs::rename(storage_session_dir(&other, &history.session_id), &conflict).unwrap();
+                conflict
+            } else {
+                let conflict = sessions_dir(&root).join("conflict.json");
+                write_json_atomic(&conflict, &divergent).unwrap();
+                conflict
+            };
+            let inventory = load_session_history_inventory(&root, false).unwrap();
+            assert_eq!(inventory.histories.len(), 1);
+            assert!(inventory
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("Duplicate")));
+            assert!(save_session_history(&root, &history)
+                .unwrap_err()
+                .contains("Duplicate"));
+            assert!(delete_session_history(&root, &history.session_id).is_err());
+            assert!(conflict.exists());
+            assert_eq!(
+                fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap(),
+                checkpoint
+            );
+            let preserved = if directory_copy {
+                load_history_from_session_dir(&conflict, true).unwrap()
+            } else {
+                load_legacy_history_file(&conflict).unwrap()
+            };
+            assert_eq!(preserved.messages[0].content, divergent.messages[0].content);
+            let mut unrelated = history.clone();
+            unrelated.session_id = "healthy-session".into();
+            save_session_history(&root, &unrelated).unwrap();
+            assert_eq!(
+                load_session_history_page(&root, &unrelated.session_id, 0, 10)
+                    .unwrap()
+                    .messages
+                    .len(),
+                2
+            );
+            assert_eq!(prune_expired_session_histories(&root, 1).unwrap(), 1);
+            assert!(!storage_session_dir(&root, &unrelated.session_id).exists());
+            assert!(conflict.exists());
+            assert_eq!(
+                fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap(),
+                checkpoint
+            );
+            assert!(load_session_history_inventory(&root, false)
+                .unwrap()
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("Duplicate")));
+            fs::remove_dir_all(root).unwrap();
+            fs::remove_dir_all(other).unwrap();
+        }
+    }
+
+    #[test]
+    fn snapshot_reads_the_original_generation_after_checkpoint_replacement() {
+        let root = make_temp_dir();
+        let mut history = sample_history();
+        save_session_history(&root, &history).unwrap();
+        let dir = storage_session_dir(&root, &history.session_id);
+        let snapshot = load_session_snapshot(&dir).unwrap();
+        history.messages[0].content = "New synchronized content with a different length".into();
+        history.messages.truncate(1);
+        history.message_count = Some(1);
+        save_session_history(&root, &history).unwrap();
+        let current = read_checkpoint(&dir).unwrap().unwrap();
+        persist_compacted_lazy_history(&dir, &current.metadata, &current.index).unwrap();
+        assert_ne!(snapshot.transcript_path, session_transcript_path(&dir));
+        let old_page = read_lazy_history_page_from_files(
+            &snapshot.transcript_path,
+            &snapshot.metadata,
+            &snapshot.index,
+            0,
+            10,
+        )
+        .unwrap();
+        assert_eq!(old_page.messages.len(), 2);
+        assert_eq!(old_page.messages[0].content, "Hello");
+        let new_page = load_session_history_page(&root, &history.session_id, 0, 10).unwrap();
+        assert_eq!(new_page.messages.len(), 1);
+        assert_eq!(new_page.messages[0].content, history.messages[0].content);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_survives_interrupted_or_reordered_header_publication() {
+        let root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&root, &history).unwrap();
+        let dir = storage_session_dir(&root, &history.session_id);
+        // Simulate a crash/sync between publishing compatibility files and commit.
+        fs::write(session_meta_path(&dir), b"{partial").unwrap();
+        fs::write(session_index_path(&dir), b"{partial").unwrap();
+        let loaded = load_all_session_histories(&root, true).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].messages[0].content, history.messages[0].content);
+        save_session_history(&root, &history).unwrap();
+        assert!(dir.join(PREVIOUS_CHECKPOINT_FILE).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_waits_for_synced_transcript_without_overwriting_anything() {
+        let root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&root, &history).unwrap();
+        let dir = storage_session_dir(&root, &history.session_id);
+        let transcript = session_transcript_path(&dir);
+        let bytes = fs::read(&transcript).unwrap();
+        let commit = fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap();
+        fs::write(&transcript, b"").unwrap();
+        let inventory = load_session_history_inventory(&root, false).unwrap();
+        assert!(inventory.histories.is_empty());
+        assert_eq!(inventory.issues.len(), 1);
+        assert!(save_session_history(&root, &history).is_err());
+        assert_eq!(fs::read(dir.join(SESSION_CHECKPOINT_FILE)).unwrap(), commit);
+        fs::write(&transcript, bytes).unwrap();
+        assert_eq!(load_all_session_histories(&root, true).unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_compaction_preserves_the_previous_transcript_generation() {
+        let root = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&root, &history).unwrap();
+        let dir = storage_session_dir(&root, &history.session_id);
+        let previous_path = session_transcript_path(&dir);
+        let previous_bytes = fs::read(&previous_path).unwrap();
+        let checkpoint = read_checkpoint(&dir).unwrap().unwrap();
+        persist_compacted_lazy_history(&dir, &checkpoint.metadata, &checkpoint.index).unwrap();
+        assert_ne!(session_transcript_path(&dir), previous_path);
+        assert_eq!(fs::read(&previous_path).unwrap(), previous_bytes);
+        assert_eq!(load_all_session_histories(&root, true).unwrap().len(), 1);
+        assert!(inspect_history_storage(&root)
+            .histories
+            .unknown_entries
+            .is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn recovers_interrupted_transcript_compaction_before_loading_history() {
         let dir = make_temp_dir();
@@ -2365,6 +5592,7 @@ mod tests {
         save_session_history(&dir, &history).expect("history should persist");
 
         let session_dir = storage_session_dir(&dir, "session-1");
+        fs::remove_file(session_dir.join(SESSION_CHECKPOINT_FILE)).unwrap();
         let metadata_path = session_meta_path(&session_dir);
         let index_path = session_index_path(&session_dir);
         let transcript_path = session_transcript_path(&session_dir);
@@ -2401,6 +5629,35 @@ mod tests {
         };
         write_json_atomic(&session_compaction_marker_path(&session_dir), &marker)
             .expect("marker should write");
+
+        let marker_path = session_compaction_marker_path(&session_dir);
+        let marker_before = fs::read(&marker_path).expect("marker should read");
+        let transcript_before = fs::read(&transcript_path).expect("partial transcript should read");
+        let inventory = inspect_history_storage(&dir);
+        assert_eq!(inventory.histories.recoverable_states.len(), 1);
+        assert_eq!(
+            inventory.histories.recoverable_states[0].state_type,
+            "interrupted_transcript_compaction"
+        );
+        assert!(!inventory.histories.unknown_entries.iter().any(|entry| {
+            entry.relative_path.contains("compact-state")
+                || entry.relative_path.contains("compact-tmp")
+                || entry.relative_path.contains("compact-bak")
+        }));
+        assert_eq!(
+            fs::read(&marker_path).expect("inspection must preserve marker"),
+            marker_before
+        );
+        assert_eq!(
+            fs::read(&transcript_path).expect("inspection must preserve transcript"),
+            transcript_before
+        );
+        assert!(metadata_backup.exists());
+        assert!(index_backup.exists());
+        assert!(transcript_backup.exists());
+        assert!(metadata_tmp.exists());
+        assert!(index_tmp.exists());
+        assert!(transcript_tmp.exists());
 
         let histories = load_all_session_histories(&dir, true).expect("history should recover");
         assert_eq!(histories.len(), 1);
@@ -2465,6 +5722,7 @@ mod tests {
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
+            turn_provenance: None,
         };
         let permission = PersistedMessage {
             id: "permission:1".to_string(),
@@ -2515,6 +5773,7 @@ mod tests {
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
+            turn_provenance: None,
         };
         let user_input = PersistedMessage {
             id: "input:1".to_string(),
@@ -2547,6 +5806,7 @@ mod tests {
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
+            turn_provenance: None,
         };
         let plan = PersistedMessage {
             id: "plan:1".to_string(),
@@ -2579,6 +5839,17 @@ mod tests {
                 "session_id": "child-session",
                 "label": "Open child"
             })),
+            turn_provenance: Some(PersistedTurnProvenance {
+                binding_id: "binding-1".to_string(),
+                runtime_id: "codex-acp".to_string(),
+                runtime_session_id: Some("runtime-1".to_string()),
+                model_id: "test-model".to_string(),
+                mode_id: "default".to_string(),
+                options: BTreeMap::new(),
+                start_reason: "normal".to_string(),
+                handoff_truncated: Some(true),
+                handoff_omitted_turn_count: Some(3),
+            }),
         };
 
         let expected_messages = vec![
@@ -2594,6 +5865,11 @@ mod tests {
             parent_session_id: None,
             closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
+            runtime_display_name: None,
+            runtime_revision: None,
+            runtime_launch_fingerprint: None,
+            runtime_session_id: None,
+            continuation_strategy: None,
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
             models: None,
@@ -2634,9 +5910,9 @@ mod tests {
     }
 
     #[test]
-    fn compacts_inflated_transcript_when_loading_history_page() {
+    fn preserves_inflated_transcript_when_loading_history_page() {
         let dir = make_temp_dir();
-        let (_inflated_lines, inflated_bytes, final_content) =
+        let (inflated_lines, inflated_bytes, final_content) =
             persist_default_compaction_candidate(&dir);
 
         let page =
@@ -2647,19 +5923,19 @@ mod tests {
             .expect("compacted transcript metadata should load")
             .len();
 
-        assert_eq!(compacted_lines, page.total_messages);
+        assert_eq!(compacted_lines, inflated_lines);
         assert_eq!(page.total_messages, 2);
         assert_eq!(page.messages[0].id, "user:1");
         assert_eq!(page.messages[1].content, final_content);
-        assert!(compacted_bytes < inflated_bytes);
+        assert_eq!(compacted_bytes, inflated_bytes);
 
         fs::remove_dir_all(dir).ok();
     }
 
     #[test]
-    fn compacts_inflated_transcript_when_loading_all_messages() {
+    fn preserves_inflated_transcript_when_loading_all_messages() {
         let dir = make_temp_dir();
-        let (_inflated_lines, inflated_bytes, final_content) =
+        let (inflated_lines, inflated_bytes, final_content) =
             persist_default_compaction_candidate(&dir);
 
         let histories = load_all_session_histories(&dir, true).expect("full history should load");
@@ -2673,8 +5949,8 @@ mod tests {
         assert_eq!(histories[0].messages.len(), 2);
         assert_eq!(histories[0].messages[0].id, "user:1");
         assert_eq!(histories[0].messages[1].content, final_content);
-        assert_eq!(compacted_lines, histories[0].message_count.unwrap());
-        assert!(compacted_bytes < inflated_bytes);
+        assert_eq!(compacted_lines, inflated_lines);
+        assert_eq!(compacted_bytes, inflated_bytes);
 
         fs::remove_dir_all(dir).ok();
     }
@@ -2699,5 +5975,265 @@ mod tests {
         );
 
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_history_load_synthesizes_bindings_without_writing_the_sidecar() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("legacy-compatible history should persist");
+
+        let envelopes = load_all_session_histories_with_bindings(&dir, false)
+            .expect("canonical history summaries should load");
+
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0].conversation_bindings.revision, 0);
+        assert_eq!(
+            envelopes[0].conversation_bindings.conversation_id,
+            history.session_id
+        );
+        assert_eq!(
+            envelopes[0].conversation_bindings.provider_bindings[0].runtime_id,
+            "codex-acp"
+        );
+        assert!(!storage_conversation_bindings_file(&dir, &history.session_id).exists());
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn canonical_save_materializes_sidecar_and_keeps_legacy_projection() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let mut bindings =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &history.session_id))
+                .expect("legacy projection should synthesize");
+        let active = &mut bindings.provider_bindings[0];
+        active.runtime_id = "claude-acp".to_string();
+        active.model_id = "sonnet".to_string();
+        bindings.preferred_selection.runtime_id = "claude-acp".to_string();
+        bindings.preferred_selection.model_id = "sonnet".to_string();
+
+        save_session_history_with_bindings(&dir, &history, Some(bindings))
+            .expect("canonical history should persist");
+
+        let sidecar: PersistedConversationBindings = read_json_file(
+            &storage_conversation_bindings_file(&dir, &history.session_id),
+        )
+        .expect("sidecar should load");
+        let metadata =
+            load_session_metadata(&dir, &history.session_id).expect("legacy metadata should load");
+        assert_eq!(sidecar.revision, 1);
+        assert_eq!(metadata.runtime_id.as_deref(), Some("claude-acp"));
+        assert_eq!(metadata.model_id, "sonnet");
+        let inventory = inspect_history_storage(&dir);
+        assert!(inventory.histories.unknown_entries.is_empty());
+        assert!(inventory.histories.corrupt_artifacts.is_empty());
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_multi_provider_sidecar_normalizes_to_the_active_binding() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let session_dir = storage_session_dir(&dir, &history.session_id);
+        let mut bindings = load_conversation_bindings_from_dir(&session_dir)
+            .expect("legacy projection should synthesize");
+        let active_id = bindings.active_binding_id.clone().unwrap();
+        let mut stale = bindings.provider_bindings[0].clone();
+        stale.binding_id = "stale-provider-binding".to_string();
+        stale.runtime_id = "gemini-acp".to_string();
+        bindings.provider_bindings.push(stale);
+        write_json_atomic(&conversation_bindings_path(&session_dir), &bindings)
+            .expect("legacy sidecar should persist");
+
+        let normalized = load_conversation_bindings_from_dir(&session_dir)
+            .expect("legacy sidecar should normalize");
+        assert_eq!(
+            normalized.active_binding_id.as_deref(),
+            Some(active_id.as_str())
+        );
+        assert_eq!(normalized.provider_bindings.len(), 1);
+        assert_eq!(normalized.provider_bindings[0].binding_id, active_id);
+        assert!(inspect_history_storage(&dir)
+            .histories
+            .corrupt_artifacts
+            .is_empty());
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_write_rebinds_the_conversation_to_one_provider() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let bindings =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &history.session_id))
+                .expect("legacy projection should synthesize");
+        save_session_history_with_bindings(&dir, &history, Some(bindings))
+            .expect("sidecar should materialize");
+
+        let mut legacy_write = history.clone();
+        legacy_write.runtime_id = Some("gemini-acp".to_string());
+        legacy_write.model_id = "gemini-pro".to_string();
+        legacy_write.updated_at = 30;
+        legacy_write.messages.push(PersistedMessage {
+            id: "assistant:legacy".to_string(),
+            role: "assistant".to_string(),
+            kind: "text".to_string(),
+            content: "Written after downgrade".to_string(),
+            timestamp: 30,
+            attachments: None,
+            title: None,
+            meta: None,
+            permission_request_id: None,
+            permission_options: None,
+            diffs: None,
+            review_diffs: None,
+            user_input_request_id: None,
+            user_input_questions: None,
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
+            plan_entries: None,
+            plan_detail: None,
+            tool_action: None,
+            turn_provenance: None,
+        });
+        legacy_write.message_count = Some(legacy_write.messages.len());
+        save_session_history(&dir, &legacy_write).expect("legacy write should remain supported");
+
+        let mut envelopes = load_all_session_histories_with_bindings(&dir, true)
+            .expect("upgraded history should reconcile");
+        let envelope = envelopes.pop().expect("history should exist");
+        assert_eq!(envelope.history.messages.len(), 3);
+        assert_eq!(
+            envelope
+                .conversation_bindings
+                .provider_bindings
+                .iter()
+                .map(|binding| binding.runtime_id.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["gemini-acp"])
+        );
+        assert!(envelope
+            .conversation_bindings
+            .provider_bindings
+            .iter()
+            .all(|binding| binding.context_cursor.is_none()));
+
+        save_session_history_with_bindings(
+            &dir,
+            &envelope.history,
+            Some(envelope.conversation_bindings),
+        )
+        .expect("reconciled state should persist");
+        let persisted: PersistedConversationBindings = read_json_file(
+            &storage_conversation_bindings_file(&dir, &history.session_id),
+        )
+        .expect("sidecar should load");
+        assert_eq!(persisted.revision, 2);
+        assert_eq!(persisted.provider_bindings.len(), 1);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn future_sidecar_degrades_to_legacy_without_being_overwritten() {
+        let dir = make_temp_dir();
+        let mut history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let synthesized =
+            load_conversation_bindings_from_dir(&storage_session_dir(&dir, &history.session_id))
+                .expect("bindings should synthesize");
+        let future = serde_json::json!({
+            "version": 99,
+            "future_payload": { "keep": true }
+        });
+        let sidecar_path = storage_conversation_bindings_file(&dir, &history.session_id);
+        write_json_atomic(&sidecar_path, &future).expect("future sidecar should persist");
+        let before = fs::read(&sidecar_path).expect("future sidecar should be readable");
+        history.updated_at = 30;
+
+        save_session_history_with_bindings(&dir, &history, Some(synthesized))
+            .expect("legacy projection should still save");
+
+        assert_eq!(
+            fs::read(&sidecar_path).expect("future sidecar should remain"),
+            before
+        );
+        let loaded = load_all_session_histories_with_bindings(&dir, false)
+            .expect("history should degrade to synthesized bindings");
+        assert_eq!(loaded[0].conversation_bindings.revision, 0);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn corrupt_sidecar_degrades_to_legacy_without_blocking_history_load() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("base history should persist");
+        let sidecar_path = storage_conversation_bindings_file(&dir, &history.session_id);
+        fs::write(&sidecar_path, b"{not-json").expect("corrupt sidecar should persist");
+
+        let loaded = load_all_session_histories_with_bindings(&dir, true)
+            .expect("history should fall back to legacy projection");
+
+        assert_eq!(loaded[0].history.messages.len(), history.messages.len());
+        assert_eq!(loaded[0].conversation_bindings.revision, 0);
+        assert_eq!(
+            fs::read(&sidecar_path).expect("corrupt sidecar should remain"),
+            b"{not-json"
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn versioned_legacy_fixtures_upgrade_lazily_and_idempotently() {
+        for fixture in [
+            include_str!("../testdata/session-history/v0.7.1.json"),
+            include_str!("../testdata/session-history/minimum-v1.json"),
+        ] {
+            let dir = make_temp_dir();
+            let history: PersistedSessionHistory =
+                serde_json::from_str(fixture).expect("legacy fixture should deserialize");
+            save_session_history(&dir, &history).expect("legacy fixture should persist");
+            let sidecar_path = storage_conversation_bindings_file(&dir, &history.session_id);
+            assert!(!sidecar_path.exists());
+
+            let first = load_all_session_histories_with_bindings(&dir, true)
+                .expect("fixture should load")
+                .pop()
+                .expect("fixture history should exist");
+            assert!(!sidecar_path.exists());
+            save_session_history_with_bindings(
+                &dir,
+                &first.history,
+                Some(first.conversation_bindings),
+            )
+            .expect("fixture should upgrade");
+
+            let second = load_all_session_histories_with_bindings(&dir, true)
+                .expect("upgraded fixture should load")
+                .pop()
+                .expect("upgraded fixture history should exist");
+            save_session_history_with_bindings(
+                &dir,
+                &second.history,
+                Some(second.conversation_bindings),
+            )
+            .expect("repeated upgrade should remain valid");
+            let persisted: PersistedConversationBindings =
+                read_json_file(&sidecar_path).expect("materialized sidecar should remain readable");
+            assert_eq!(persisted.provider_bindings.len(), 1);
+
+            fs::remove_dir_all(dir).ok();
+        }
     }
 }

@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@neverwrite/runtime";
 import type { VaultNoteChange } from "../../app/store/vaultStore";
 import { toVaultRelativePath } from "../../app/utils/vaultPaths";
 import type {
+    AcpContinuationStrategy,
     AIAvailableCommandsPayload,
     AIAuthTerminalErrorPayload,
     AIAuthTerminalOutputPayload,
@@ -11,6 +12,11 @@ import type {
     AIBackendRuntimeSetupStatusPayload,
     AIBackendSessionPayload,
     AIChatAttachment,
+    AIClaudeProviderRouting,
+    AICustomAcpExecutableVerification,
+    AICustomAcpRuntimeDefinition,
+    AICustomAcpRuntimeDefinitionInput,
+    AICustomAcpRuntimeId,
     AIChatSession,
     AIConfigOption,
     AIMessageCompletedPayload,
@@ -34,9 +40,10 @@ import type {
     AISessionErrorPayload,
     PersistedSessionHistory,
     PersistedSessionHistoryPage,
+    CustomRuntimeContinuationResult,
+    ConversationSelection,
 } from "./types";
 import { buildFallbackRuntimeDescriptors } from "./utils/runtimeMetadata";
-import { isClaudeTerminalAuthMethodId } from "./utils/authMethods";
 
 const FALLBACK_RUNTIMES: AIRuntimeDescriptor[] =
     buildFallbackRuntimeDescriptors();
@@ -66,6 +73,88 @@ export const AI_AUTH_TERMINAL_STARTED_EVENT = "ai://auth-terminal-started";
 export const AI_AUTH_TERMINAL_OUTPUT_EVENT = "ai://auth-terminal-output";
 export const AI_AUTH_TERMINAL_EXITED_EVENT = "ai://auth-terminal-exited";
 export const AI_AUTH_TERMINAL_ERROR_EVENT = "ai://auth-terminal-error";
+export const AI_HISTORY_STORAGE_CHANGED_EVENT =
+    "ai_history_storage_changed";
+
+export type AIStorageScope = "device" | "vault";
+export type AIHistoryRecoveryRootId =
+    | "device"
+    | "vault"
+    | "previous_device";
+
+export interface AIHistoryRecoveryDetails {
+    reason: string;
+    message: string;
+    canReconcile: boolean;
+    canAdoptIdentity: boolean;
+    conflictingSessionIds: string[];
+    conflictingAttachmentIds: string[];
+    renamedDeviceHistory: boolean;
+}
+
+export interface AIHistoryOrphanedDeviceHistory {
+    vaultKey: string;
+    previousVaultPath: string;
+}
+
+export interface AIHistoryRecoveryDiagnostic {
+    reason: string;
+    message: string;
+    canReconcile: boolean;
+    canAdoptIdentity: boolean;
+    conflictingSessionIds: string[];
+    conflictingAttachmentIds: string[];
+    roots: Array<{
+        id: AIHistoryRecoveryRootId;
+        label: string;
+        hasData: boolean;
+    }>;
+    identityChange: {
+        previousFilesystemIdentity: string;
+        currentFilesystemIdentity: string;
+        scope: AIStorageScope | null;
+    } | null;
+}
+
+export type AIHistoryStorageStatus =
+    | {
+          vaultKey: string;
+          generation: number;
+          status: "ready";
+          scope: AIStorageScope;
+    orphanedDeviceHistories: Array<{
+        vaultKey: string;
+        previousVaultPath: string;
+    }>;
+}
+    | {
+          vaultKey: string;
+          generation: number;
+          status: "moving";
+          from: AIStorageScope;
+          to: AIStorageScope;
+          operationId: string;
+      }
+    | {
+          vaultKey: string;
+          generation: number;
+          status: "recovery_required";
+          details: AIHistoryRecoveryDetails;
+      }
+    | {
+          vaultKey: string;
+          generation: number;
+          status: "error";
+          message: string;
+      };
+
+export interface AIHistoryStorageChangeResult {
+    completed: boolean;
+    status: AIHistoryStorageStatus;
+    historiesMoved: number;
+    attachmentsMoved: number;
+    conflicts: string[];
+}
 
 function normalizeConfigOption(
     option: AIBackendSessionPayload["config_options"][number],
@@ -94,13 +183,17 @@ export function normalizeBackendSession(
         sessionId: session.session_id,
         historySessionId: session.session_id,
         parentSessionId: session.parent_session_id ?? null,
-        runtimeSessionId: session.runtime_session_id ?? null,
+        runtimeSessionId: session.runtime_session_id ?? session.session_id,
         closedAt: session.closed_at ?? null,
         // Backend titles come from the runtime/persisted session state. Manual
         // renames live only in customTitle on the renderer side.
         customTitle: null,
         persistedTitle: session.title ?? null,
         runtimeId: session.runtime_id,
+        runtimeDisplayName: session.runtime_display_name ?? null,
+        runtimeRevision: session.runtime_revision ?? null,
+        runtimeLaunchFingerprint: session.runtime_launch_fingerprint ?? null,
+        continuationStrategy: session.continuation_strategy ?? null,
         additionalRoots: session.additional_roots ?? [],
         // Client-only flag; never spread from backend payload.
         discardedAdditionalRoots: session.discarded_additional_roots ?? [],
@@ -166,39 +259,63 @@ function normalizeRuntimeDescriptor(
 function normalizeRuntimeSetupStatus(
     status: AIBackendRuntimeSetupStatusPayload,
 ): AIRuntimeSetupStatus {
-    let authMethods = status.auth_methods;
-    let authReady = status.auth_ready;
-    let authMethod = status.auth_method ?? undefined;
-
-    // Subscription-based auth (claude-ai-login, console-login, claude-login)
-    // only works with the Claude Code CLI, not the ACP sidecar. Strip these
-    // methods from claude-acp and mark as not-ready when the current auth is
-    // subscription-based so the provider shows as "Not configured" and the user
-    // is directed to use an API key instead.
-    if (status.runtime_id === "claude-acp") {
-        authMethods = authMethods.filter(
-            (m) => !isClaudeTerminalAuthMethodId(m.id),
-        );
-        if (isClaudeTerminalAuthMethodId(authMethod)) {
-            authReady = false;
-            authMethod = undefined;
-        }
-    }
-
     return {
         runtimeId: status.runtime_id,
         binaryReady: status.binary_ready,
         binaryPath: status.binary_path ?? undefined,
         binarySource: status.binary_source,
         hasCustomBinaryPath: status.has_custom_binary_path ?? false,
-        authReady,
-        authMethod,
-        authMethods,
+        authReady: status.auth_ready,
+        authMethod: status.auth_method ?? undefined,
+        authMethods: status.auth_methods,
+        claudeProviderRouting: normalizeClaudeProviderRouting(
+            status.claude_provider_routing,
+        ),
         hasGatewayConfig: status.has_gateway_config ?? false,
         hasGatewayUrl: status.has_gateway_url ?? false,
         onboardingRequired: status.onboarding_required,
         message: status.message ?? undefined,
     };
+}
+
+function normalizeClaudeProviderRouting(
+    routing: AIBackendRuntimeSetupStatusPayload["claude_provider_routing"],
+): AIClaudeProviderRouting | undefined {
+    if (!routing) return undefined;
+    switch (routing.type) {
+        case "default":
+            return { type: "default" };
+        case "anthropic":
+        case "bedrock":
+            return { type: routing.type, baseUrl: routing.base_url };
+        case "vertex":
+            return {
+                type: "vertex",
+                baseUrl: routing.base_url,
+                projectId: routing.project_id,
+                region: routing.region,
+            };
+    }
+}
+
+function serializeClaudeProviderRouting(routing: AIClaudeProviderRouting) {
+    switch (routing.type) {
+        case "default":
+            return { type: "default" } as const;
+        case "anthropic":
+        case "bedrock":
+            return {
+                type: routing.type,
+                base_url: routing.baseUrl,
+            } as const;
+        case "vertex":
+            return {
+                type: "vertex",
+                base_url: routing.baseUrl,
+                project_id: routing.projectId,
+                region: routing.region,
+            } as const;
+    }
 }
 
 function normalizeEnvironmentDiagnostics(diagnostics: {
@@ -265,6 +382,54 @@ export async function aiListRuntimes() {
     }
 }
 
+export async function aiListCustomRuntimes() {
+    return invoke<AICustomAcpRuntimeDefinition[]>("ai_list_custom_runtimes");
+}
+
+export async function aiListDeletedCustomRuntimes() {
+    return invoke<AICustomAcpRuntimeDefinition[]>(
+        "ai_list_deleted_custom_runtimes",
+    );
+}
+
+export async function aiCreateCustomRuntime(
+    definition: AICustomAcpRuntimeDefinitionInput,
+) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_create_custom_runtime", {
+        input: definition,
+    });
+}
+
+export async function aiUpdateCustomRuntime(input: {
+    id: AICustomAcpRuntimeId;
+    definition: AICustomAcpRuntimeDefinitionInput;
+}) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_update_custom_runtime", {
+        input,
+    });
+}
+
+export async function aiDeleteCustomRuntime(id: AICustomAcpRuntimeId) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_delete_custom_runtime", {
+        input: { id },
+    });
+}
+
+export async function aiRestoreCustomRuntime(id: AICustomAcpRuntimeId) {
+    return invoke<AICustomAcpRuntimeDefinition>("ai_restore_custom_runtime", {
+        input: { id },
+    });
+}
+
+export async function aiVerifyCustomRuntime(
+    definition: AICustomAcpRuntimeDefinitionInput,
+) {
+    return invoke<AICustomAcpExecutableVerification>(
+        "ai_verify_custom_runtime",
+        { input: definition },
+    );
+}
+
 export async function aiListSessions(vaultPath: string | null) {
     const sessions = await invoke<AIBackendSessionPayload[]>(
         "ai_list_sessions",
@@ -308,6 +473,7 @@ export async function aiGetEnvironmentDiagnostics() {
 export async function aiUpdateSetup(input: {
     runtimeId: string;
     customBinaryPath?: string;
+    claudeProviderRouting?: AIClaudeProviderRouting;
     codexApiKey: AISecretPatch;
     openaiApiKey: AISecretPatch;
     xaiApiKey?: AISecretPatch;
@@ -326,6 +492,14 @@ export async function aiUpdateSetup(input: {
             input: {
                 ...(input.customBinaryPath !== undefined
                     ? { custom_binary_path: input.customBinaryPath }
+                    : {}),
+                ...(input.claudeProviderRouting !== undefined
+                    ? {
+                          claude_provider_routing:
+                              serializeClaudeProviderRouting(
+                                  input.claudeProviderRouting,
+                              ),
+                      }
                     : {}),
                 codex_api_key: input.codexApiKey,
                 openai_api_key: input.openaiApiKey,
@@ -491,6 +665,35 @@ export async function aiResumeRuntimeSession(
     return normalizeBackendSession(session);
 }
 
+export async function aiContinueCustomRuntimeSession(input: {
+    runtimeId: string;
+    runtimeSessionId: string;
+    runtimeLaunchFingerprint: string;
+    continuationStrategy: AcpContinuationStrategy;
+    confirmedLaunchFingerprint?: string | null;
+    vaultPath: string | null;
+    additionalRoots?: string[] | null;
+}): Promise<CustomRuntimeContinuationResult> {
+    const result = await invoke<
+        | { status: "connected"; session: AIBackendSessionPayload }
+        | Exclude<CustomRuntimeContinuationResult, { status: "connected" }>
+    >("ai_continue_custom_runtime_session", {
+        input: {
+            runtime_id: input.runtimeId,
+            runtime_session_id: input.runtimeSessionId,
+            runtime_launch_fingerprint: input.runtimeLaunchFingerprint,
+            continuation_strategy: input.continuationStrategy,
+            confirmed_launch_fingerprint:
+                input.confirmedLaunchFingerprint ?? null,
+            additional_roots: input.additionalRoots ?? null,
+        },
+        vaultPath: input.vaultPath ?? null,
+    });
+    return result.status === "connected"
+        ? { ...result, session: normalizeBackendSession(result.session) }
+        : result;
+}
+
 export async function aiForkRuntimeSession(
     runtimeId: string,
     sessionId: string,
@@ -575,6 +778,30 @@ export async function aiSendMessage(
         attachments,
     });
     return normalizeBackendSession(session);
+}
+
+export async function aiStartConversationTurn(input: {
+    conversationId: string;
+    bindingId: string;
+    runtimeId: string;
+    sessionId: string;
+    selection: ConversationSelection;
+}) {
+    assertRuntimeSessionId(input.sessionId, "start a conversation turn");
+    await invoke("ai_start_conversation_turn", {
+        input: {
+            conversation_id: input.conversationId,
+            binding_id: input.bindingId,
+            runtime_id: input.runtimeId,
+            session_id: input.sessionId,
+            selection: {
+                runtime_id: input.selection.runtimeId,
+                model_id: input.selection.modelId,
+                mode_id: input.selection.modeId,
+                options: input.selection.options,
+            },
+        },
+    });
 }
 
 export async function aiCancelTurn(sessionId: string) {
@@ -797,11 +1024,103 @@ export async function listenToAiImageGeneration(
     );
 }
 
+export async function getAiHistoryStorageStatus(
+    vaultPath: string,
+): Promise<AIHistoryStorageStatus> {
+    return invoke<AIHistoryStorageStatus>("ai_get_history_storage_status", {
+        vaultPath,
+    });
+}
+
+export async function reconcileAiHistoryStorage(
+    vaultPath: string,
+    targetScope: AIStorageScope,
+    sourceVaultKey?: string,
+): Promise<AIHistoryStorageChangeResult> {
+    return invoke<AIHistoryStorageChangeResult>(
+        "reconcile_ai_history_storage",
+        { vaultPath, targetScope, sourceVaultKey },
+    );
+}
+
+export async function getAiHistoryRecoveryDiagnostic(
+    vaultPath: string,
+): Promise<AIHistoryRecoveryDiagnostic> {
+    return invoke<AIHistoryRecoveryDiagnostic>(
+        "ai_get_history_recovery_diagnostic",
+        { vaultPath },
+    );
+}
+
+export async function getAiHistoryRecoveryRevealPath(
+    vaultPath: string,
+    root: AIHistoryRecoveryRootId,
+): Promise<string> {
+    const result = await invoke<{ path: string }>(
+        "ai_reveal_history_recovery_root",
+        { vaultPath, root },
+    );
+    return result.path;
+}
+
+export async function retryAiHistoryRecovery(
+    vaultPath: string,
+): Promise<AIHistoryStorageStatus> {
+    return invoke<AIHistoryStorageStatus>("ai_retry_history_recovery", {
+        vaultPath,
+    });
+}
+
+export async function adoptAiHistoryStorageIdentity(
+    vaultPath: string,
+    expectedPreviousFilesystemIdentity: string,
+    expectedCurrentFilesystemIdentity: string,
+): Promise<AIHistoryStorageStatus> {
+    return invoke<AIHistoryStorageStatus>(
+        "ai_adopt_history_storage_identity",
+        {
+            vaultPath,
+            expectedPreviousFilesystemIdentity,
+            expectedCurrentFilesystemIdentity,
+        },
+    );
+}
+
+export async function listenToAiHistoryStorageChanged(
+    callback: (status: AIHistoryStorageStatus) => void,
+): Promise<UnlistenFn> {
+    return listen<AIHistoryStorageStatus>(
+        AI_HISTORY_STORAGE_CHANGED_EVENT,
+        (event) => callback(event.payload),
+    );
+}
+
 export async function aiSaveSessionHistory(
     vaultPath: string,
     history: PersistedSessionHistory,
 ): Promise<void> {
     await invoke("ai_save_session_history", { vaultPath, history });
+}
+
+export interface AIHistoryLoadIssue {
+    relative_path: string;
+    message: string;
+}
+
+export interface AIHistoryInventory {
+    histories: PersistedSessionHistory[];
+    issues: AIHistoryLoadIssue[];
+}
+
+export async function aiLoadSessionInventory(vaultPath: string): Promise<AIHistoryInventory> {
+    const result = await invoke<AIHistoryInventory | PersistedSessionHistory[]>("ai_load_session_histories", {
+        vaultPath,
+        includeMessages: false,
+        includeDiagnostics: true,
+    });
+    // Allows renderer/backend upgrades without interpreting a legacy array as
+    // an empty or damaged inventory.
+    return Array.isArray(result) ? { histories: result, issues: [] } : result;
 }
 
 export async function aiLoadSessionHistories(

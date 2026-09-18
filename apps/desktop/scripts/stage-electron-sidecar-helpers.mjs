@@ -6,6 +6,30 @@ export const MAC_UNIVERSAL_COMPONENT_TARGETS = [
     "x86_64-apple-darwin",
 ];
 
+const TARGET_EXECUTABLE_ARCHITECTURES = new Map([
+    ["aarch64-apple-darwin", "arm64"],
+    ["x86_64-apple-darwin", "x86_64"],
+    ["aarch64-pc-windows-msvc", "arm64"],
+    ["x86_64-pc-windows-msvc", "x86_64"],
+    ["aarch64-unknown-linux-gnu", "arm64"],
+    ["x86_64-unknown-linux-gnu", "x86_64"],
+]);
+
+const MACHO_CPU_ARCHITECTURES = new Map([
+    [0x01000007, "x86_64"],
+    [0x0100000c, "arm64"],
+]);
+
+const ELF_MACHINE_ARCHITECTURES = new Map([
+    [62, "x86_64"],
+    [183, "arm64"],
+]);
+
+const PE_MACHINE_ARCHITECTURES = new Map([
+    [0x8664, "x86_64"],
+    [0xaa64, "arm64"],
+]);
+
 export const CODEX_RUNTIME_COMPONENTS = [
     {
         baseName: "codex-acp",
@@ -19,8 +43,120 @@ export const CODEX_RUNTIME_COMPONENTS = [
     },
 ];
 
+export const CODEX_RUNTIME_BASELINE = Object.freeze({
+    tag: "rust-v0.153.4",
+    version: "0.153.4",
+    commit: "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+    v8Version: "150.4.0",
+});
+
+export function validateCodexRuntimeSourceAlignment({
+    adapterManifest,
+    lockfile,
+    ptyManifest,
+}) {
+    const normalizedLockfile = lockfile.replace(/\r\n?/g, "\n");
+    const expectedTag = `tag = "${CODEX_RUNTIME_BASELINE.tag}"`;
+    const declaredTags = [
+        ...adapterManifest.matchAll(/tag\s*=\s*"(rust-v[^"]+)"/g),
+    ].map((match) => match[1]);
+    if (
+        declaredTags.length === 0 ||
+        declaredTags.some((tag) => tag !== CODEX_RUNTIME_BASELINE.tag)
+    ) {
+        throw new Error(
+            `Codex runtime dependencies must all use ${expectedTag}`,
+        );
+    }
+
+    const expectedSource = `git+https://github.com/openai/codex?tag=${CODEX_RUNTIME_BASELINE.tag}#${CODEX_RUNTIME_BASELINE.commit}`;
+    const codexSources = [
+        ...normalizedLockfile.matchAll(
+            /source = "(git\+https:\/\/github\.com\/openai\/codex\?tag=rust-v[^"]+)"/g,
+        ),
+    ].map((match) => match[1]);
+    if (
+        codexSources.length === 0 ||
+        codexSources.some((source) => source !== expectedSource)
+    ) {
+        throw new Error(
+            `Codex lockfile sources must all resolve to ${expectedSource}`,
+        );
+    }
+
+    const ptyVersion = ptyManifest.match(
+        /\[package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/,
+    )?.[1];
+    if (ptyVersion !== CODEX_RUNTIME_BASELINE.version) {
+        throw new Error(
+            `Codex PTY snapshot must be ${CODEX_RUNTIME_BASELINE.version}; found ${ptyVersion ?? "unknown"}`,
+        );
+    }
+
+    const v8Version = normalizedLockfile.match(
+        /\[\[package\]\]\nname = "v8"\nversion = "([^"]+)"/,
+    )?.[1];
+    if (v8Version !== CODEX_RUNTIME_BASELINE.v8Version) {
+        throw new Error(
+            `Codex V8 dependency must remain ${CODEX_RUNTIME_BASELINE.v8Version}; found ${v8Version ?? "unknown"}`,
+        );
+    }
+}
+
 export function executableNameForTarget(baseName, targetTriple) {
     return targetTriple.includes("windows") ? `${baseName}.exe` : baseName;
+}
+
+export function universalMacLipoVerifyArgs(filePath) {
+    return [filePath, "-verify_arch", "arm64", "x86_64"];
+}
+
+export function detectExecutableArchitecture(header) {
+    if (!Buffer.isBuffer(header) || header.length < 20) {
+        return null;
+    }
+
+    const littleEndianMagic = header.readUInt32LE(0);
+    const bigEndianMagic = header.readUInt32BE(0);
+    const machoMagic = new Set([0xfeedface, 0xfeedfacf]);
+    if (
+        machoMagic.has(littleEndianMagic) ||
+        machoMagic.has(bigEndianMagic)
+    ) {
+        const cpuType = machoMagic.has(littleEndianMagic)
+            ? header.readUInt32LE(4)
+            : header.readUInt32BE(4);
+        return MACHO_CPU_ARCHITECTURES.get(cpuType) ?? null;
+    }
+
+    if (
+        header[0] === 0x7f &&
+        header[1] === 0x45 &&
+        header[2] === 0x4c &&
+        header[3] === 0x46
+    ) {
+        const machine =
+            header[5] === 2
+                ? header.readUInt16BE(18)
+                : header.readUInt16LE(18);
+        return ELF_MACHINE_ARCHITECTURES.get(machine) ?? null;
+    }
+
+    if (header[0] === 0x4d && header[1] === 0x5a && header.length >= 64) {
+        const peOffset = header.readUInt32LE(0x3c);
+        if (
+            peOffset + 6 <= header.length &&
+            header.readUInt32LE(peOffset) === 0x00004550
+        ) {
+            return (
+                PE_MACHINE_ARCHITECTURES.get(
+                    header.readUInt16LE(peOffset + 4),
+                ) ?? null
+            );
+        }
+    }
+
+    return null;
 }
 
 export function envSuffixForTarget(targetTriple) {
@@ -237,5 +373,65 @@ export async function validateCodexRuntimeBundleInputs(plan, exists) {
                 );
             }
         }
+    }
+}
+
+export async function validateCodexRuntimeBundleArchitectures(
+    plan,
+    targetTriple,
+    readHeader,
+) {
+    if (targetTriple === MAC_UNIVERSAL_TARGET) {
+        for (const binary of plan.binaries) {
+            // A single universal override is checked with lipo by the staging
+            // script because its fat Mach-O header contains multiple slices.
+            if (binary.inputPaths.length === 1) continue;
+            for (let index = 0; index < binary.inputPaths.length; index += 1) {
+                await validateBinaryArchitecture(
+                    binary,
+                    binary.inputPaths[index],
+                    MAC_UNIVERSAL_COMPONENT_TARGETS[index],
+                    readHeader,
+                );
+            }
+        }
+        return;
+    }
+
+    for (const binary of plan.binaries) {
+        await validateBinaryArchitecture(
+            binary,
+            binary.inputPaths[0],
+            targetTriple,
+            readHeader,
+        );
+    }
+}
+
+async function validateBinaryArchitecture(
+    binary,
+    inputPath,
+    targetTriple,
+    readHeader,
+) {
+    const expectedArchitecture = TARGET_EXECUTABLE_ARCHITECTURES.get(targetTriple);
+    if (!expectedArchitecture) {
+        throw new Error(
+            `Unsupported target for runtime architecture validation: ${targetTriple}`,
+        );
+    }
+
+    const detectedArchitecture = detectExecutableArchitecture(
+        await readHeader(inputPath),
+    );
+    if (!detectedArchitecture) {
+        throw new Error(
+            `${binary.description} executable format could not be inspected for ${targetTriple}: ${inputPath}`,
+        );
+    }
+    if (detectedArchitecture !== expectedArchitecture) {
+        throw new Error(
+            `${binary.description} architecture mismatch for ${targetTriple}: expected ${expectedArchitecture}, detected ${detectedArchitecture}: ${inputPath}`,
+        );
     }
 }

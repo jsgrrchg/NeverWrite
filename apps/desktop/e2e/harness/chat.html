@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Chat pane fixture</title>
+    </head>
+    <body style="margin: 0">
+        <div id="root"></div>
+        <script>
+            window.neverwriteElectron = {
+                invoke: async () => null,
+                listen: async () => () => {},
+                emitTo: async () => {},
+                openDialog: async () => null,
+                confirmDialog: async () => true,
+                openPath: async () => {},
+                revealItemInDir: async () => {},
+                openUrl: async () => {},
+                setZoom: async () => {},
+                onDragDropEvent: async () => () => {},
+                getCurrentWindowLabel: async () => "main",
+                getAllWindows: async () => [],
+                createWindow: async () => {},
+                windowCommand: async () => null,
+                onWindowEvent: async () => () => {},
+                log: async () => {},
+            };
+        </script>
+        <script type="module" src="./chatPaneFixture.tsx"></script>
+    </body>
+</html>

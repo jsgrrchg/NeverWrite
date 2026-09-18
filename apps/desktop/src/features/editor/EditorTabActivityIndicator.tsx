@@ -9,7 +9,7 @@ type TabActivitySessionLookup = Record<
 >;
 
 function getAgentSessionId(tab: Tab): string | null {
-    if (tab.kind === "ai-chat" || tab.kind === "ai-review") {
+    if (tab.kind === "ai-review") {
         return tab.sessionId;
     }
 

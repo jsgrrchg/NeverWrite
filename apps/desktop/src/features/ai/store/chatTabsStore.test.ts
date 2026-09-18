@@ -36,6 +36,28 @@ describe("chatTabsStore", () => {
         expect(useChatTabsStore.getState().activeTabId).toBe(firstTabId);
     });
 
+    it("keeps one tab when a conversation receives a new local session id", () => {
+        useChatTabsStore.getState().openSessionTab("persisted:history-a", {
+            historySessionId: "history-a",
+            runtimeId: "runtime-a",
+        });
+        const tabId = useChatTabsStore.getState().tabs[0]?.id;
+
+        useChatTabsStore.getState().openSessionTab("live-session-a", {
+            historySessionId: "history-a",
+            runtimeId: "runtime-a",
+        });
+
+        expect(useChatTabsStore.getState().tabs).toEqual([
+            expect.objectContaining({
+                id: tabId,
+                conversationId: "history-a",
+                sessionId: "live-session-a",
+                historySessionId: "history-a",
+            }),
+        ]);
+    });
+
     it("reorders tabs without changing the active tab id", () => {
         useChatTabsStore.getState().openSessionTab("session-a");
         useChatTabsStore.getState().openSessionTab("session-b");

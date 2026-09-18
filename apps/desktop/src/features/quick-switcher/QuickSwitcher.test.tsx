@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "../ai/store/chatTabsStore";
 import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QuickSwitcher } from "./QuickSwitcher";
@@ -80,7 +81,7 @@ describe("QuickSwitcher", () => {
         expect(labels.slice(0, 3)).toEqual([
             "Open Anotes/open-a",
             "Open Bnotes/open-b",
-            "Laternotes/later",
+            "Chat historyAll conversations",
         ]);
     });
 
@@ -479,7 +480,7 @@ describe("QuickSwitcher", () => {
         expect((list as HTMLDivElement).scrollTop).toBeGreaterThan(0);
     });
 
-    it("includes open chat tabs in results and activates them without creating duplicates", async () => {
+    it("opens a matching conversation without changing editor panes", async () => {
         vi.useFakeTimers();
 
         useChatStore.setState({
@@ -508,28 +509,8 @@ describe("QuickSwitcher", () => {
             } as never,
         });
 
-        useEditorStore.getState().hydrateWorkspace(
-            [
-                {
-                    id: "left",
-                    tabs: [],
-                    activeTabId: null,
-                },
-                {
-                    id: "right",
-                    tabs: [
-                        {
-                            id: "chat-tab-1",
-                            kind: "ai-chat",
-                            sessionId: "session-chat-1",
-                            title: "Fallback Chat",
-                        },
-                    ],
-                    activeTabId: "chat-tab-1",
-                },
-            ],
-            "left",
-        );
+        useEditorStore.getState().hydrateTabs([], null);
+        const before = useEditorStore.getState().panes;
         setCommands([], "quick-switcher");
 
         renderComponent(<QuickSwitcher />);
@@ -548,36 +529,15 @@ describe("QuickSwitcher", () => {
             screen.getByRole("button", { name: /Research thread/i }),
         );
 
-        const state = useEditorStore.getState();
-        expect(state.activeTabId).toBe("chat-tab-1");
-        expect(state.focusedPaneId).toBe("right");
-        expect(state.panes.flatMap((pane) => pane.tabs)).toHaveLength(1);
+        expect(useChatTabsStore.getState().view.mode).toBe("conversation");
+        expect(useEditorStore.getState().panes).toBe(before);
     });
 
-    it("includes chat history tabs in results and activates them without creating duplicates", async () => {
+    it("opens History in the dedicated pane without changing editor panes", async () => {
         vi.useFakeTimers();
 
-        useEditorStore.getState().hydrateWorkspace(
-            [
-                {
-                    id: "left",
-                    tabs: [],
-                    activeTabId: null,
-                },
-                {
-                    id: "right",
-                    tabs: [
-                        {
-                            id: "history-tab-1",
-                            kind: "ai-chat-history",
-                            title: "History",
-                        },
-                    ],
-                    activeTabId: "history-tab-1",
-                },
-            ],
-            "left",
-        );
+        useEditorStore.getState().hydrateTabs([], null);
+        const before = useEditorStore.getState().panes;
         setCommands([], "quick-switcher");
 
         renderComponent(<QuickSwitcher />);
@@ -585,7 +545,6 @@ describe("QuickSwitcher", () => {
             await vi.runAllTimersAsync();
         });
 
-        expect(screen.getByText("History")).toBeInTheDocument();
         expect(screen.getByText("Chat history")).toBeInTheDocument();
 
         const input = screen.getByPlaceholderText(/Search files/);
@@ -595,9 +554,7 @@ describe("QuickSwitcher", () => {
         });
         fireEvent.click(screen.getByRole("button", { name: /History/i }));
 
-        const state = useEditorStore.getState();
-        expect(state.activeTabId).toBe("history-tab-1");
-        expect(state.focusedPaneId).toBe("right");
-        expect(state.panes.flatMap((pane) => pane.tabs)).toHaveLength(1);
+        expect(useChatTabsStore.getState().view.mode).toBe("history");
+        expect(useEditorStore.getState().panes).toBe(before);
     });
 });

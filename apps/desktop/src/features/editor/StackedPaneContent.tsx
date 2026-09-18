@@ -25,7 +25,6 @@ import { FileTabView } from "./FileTabView";
 import { PdfTabView } from "../pdf/PdfTabView";
 import { SearchView } from "../search/SearchView";
 import { AIReviewView } from "../ai/components/AIReviewView";
-import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorkspaceView";
 import { WorkspaceTerminalView } from "../terminal/WorkspaceTerminalView";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 import { resolveEditorPanelView } from "./editorPanelView";
@@ -46,11 +45,7 @@ const LazyGraphTabView = React.lazy(() =>
     })),
 );
 
-const LazyAIChatSessionView = React.lazy(() =>
-    import("../ai/components/AIChatSessionView").then((m) => ({
-        default: m.AIChatSessionView,
-    })),
-);
+
 
 const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 
@@ -1060,18 +1055,10 @@ function StackedColumnBody({
             );
         // tabId-aware AI views: each column renders its own session/review
         // independently, so they work even when not the active column.
-        case "ai-chat":
-            return (
-                <React.Suspense fallback={null}>
-                    <LazyAIChatSessionView paneId={paneId} tabId={tab.id} />
-                </React.Suspense>
-            );
         case "ai-review":
             return <AIReviewView paneId={paneId} tabId={tab.id} />;
         // Singleton view (only one chat-history tab can exist), so it is safe to
         // render directly in its column.
-        case "ai-chat-history":
-            return <AIChatHistoryWorkspaceView />;
         case "graph":
             return isActive ? (
                 <React.Suspense fallback={null}>

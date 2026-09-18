@@ -23,6 +23,23 @@ impl ChildGuard {
             }
         }
     }
+
+    fn wait_for_clean_exit(mut self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match self.0.try_wait() {
+                Ok(Some(status)) => {
+                    assert!(status.success(), "code-mode host exited with {status}");
+                    return;
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) => panic!("code-mode host did not close after stdin ended"),
+                Err(error) => panic!("failed to wait for code-mode host: {error}"),
+            }
+        }
+    }
 }
 
 impl Drop for ChildGuard {
@@ -54,4 +71,18 @@ fn code_mode_host_starts_and_waits_for_stdio_handshake() {
     );
 
     child.terminate();
+}
+
+#[test]
+fn code_mode_host_closes_without_leaving_a_process_when_stdio_ends() {
+    let child = Command::new(env!("CARGO_BIN_EXE_codex-code-mode-host"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("code-mode host binary should start");
+    let mut child = ChildGuard(child);
+
+    drop(child.0.stdin.take());
+    child.wait_for_clean_exit();
 }

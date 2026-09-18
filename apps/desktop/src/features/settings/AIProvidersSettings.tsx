@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { openUrl } from "@neverwrite/runtime";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import {
     aiGetEnvironmentDiagnostics,
     aiGetSetupStatus,
@@ -27,6 +28,7 @@ import {
 import { checkClaudeCodeInstalled } from "../terminal/claudeCodeTerminal";
 import { useChatStore } from "../ai/store/chatStore";
 import { getClaudeGatewayUrlValidationMessage } from "../ai/utils/claudeGatewayUrl";
+import { CustomAcpRuntimesSettings } from "./CustomAcpRuntimesSettings";
 import {
     EMPTY_SEARCH_QUERY,
     matchesSettingsSearch,
@@ -34,6 +36,7 @@ import {
     type SettingsSearchQuery,
 } from "./settingsSearch";
 import type {
+    AIClaudeProviderRouting,
     AIEnvironmentDiagnostics,
     AIRuntimeDescriptor,
     AIRuntimeSetupStatus,
@@ -47,11 +50,79 @@ const OPENCODE_AUTH_METHOD_ID = "opencode-login";
 const COPILOT_RUNTIME_ID = "copilot-acp";
 const COPILOT_AUTH_METHOD_ID = "copilot-login";
 const GROK_RUNTIME_ID = "grok-acp";
+const CLAUDE_ACP_RUNTIME_ID = "claude-acp";
+const GOOGLE_VERTEX_METHOD_ID = "google-vertex";
+const GOOGLE_VERTEX_METHOD = {
+    id: GOOGLE_VERTEX_METHOD_ID,
+    name: "Google Vertex AI",
+    description: "Use Claude through Google Vertex AI.",
+};
+
+function isVertexConfigured(status: AIRuntimeSetupStatus | null): boolean {
+    return status?.claudeProviderRouting?.type === "vertex";
+}
+
+function getVisibleAuthMethods(status: AIRuntimeSetupStatus) {
+    return status.runtimeId === CLAUDE_ACP_RUNTIME_ID
+        ? [...status.authMethods, GOOGLE_VERTEX_METHOD]
+        : status.authMethods;
+}
 
 function getErrorMessage(error: unknown, fallback: string): string {
     if (error instanceof Error && error.message.trim()) return error.message;
     if (typeof error === "string" && error.trim()) return error;
     return fallback;
+}
+
+function SettingsToggle({
+    value,
+    onChange,
+    disabled = false,
+    label,
+}: {
+    value: boolean;
+    onChange: (value: boolean) => void;
+    disabled?: boolean;
+    label: string;
+}) {
+    return (
+        <button
+            type="button"
+            role="switch"
+            aria-label={label}
+            aria-checked={value}
+            disabled={disabled}
+            onClick={() => onChange(!value)}
+            className="nw-settings-toggle"
+            style={{
+                width: 36,
+                height: 20,
+                borderRadius: 10,
+                border: "none",
+                cursor: disabled ? "not-allowed" : "pointer",
+                backgroundColor: value
+                    ? "var(--accent)"
+                    : "var(--bg-tertiary)",
+                position: "relative",
+                flexShrink: 0,
+                opacity: disabled ? 0.4 : 1,
+            }}
+        >
+            <span
+                style={{
+                    position: "absolute",
+                    top: 2,
+                    left: value ? 18 : 2,
+                    width: 16,
+                    height: 16,
+                    borderRadius: "50%",
+                    backgroundColor: "#fff",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                    transition: "left 0.15s ease",
+                }}
+            />
+        </button>
+    );
 }
 
 function isApiKeyMethod(id?: string) {
@@ -75,6 +146,7 @@ function isBedrockGatewayMethod(id?: string) {
 function getMethodDisplayName(
     status: AIRuntimeSetupStatus | null,
 ): string | null {
+    if (isVertexConfigured(status)) return GOOGLE_VERTEX_METHOD.name;
     if (!status?.authMethod) return null;
     return (
         status.authMethods.find((m) => m.id === status.authMethod)?.name ?? null
@@ -103,6 +175,8 @@ function getShortMethodDesc(id: string): string {
             return "Custom endpoint";
         case "gateway-bedrock":
             return "Bedrock gateway";
+        case GOOGLE_VERTEX_METHOD_ID:
+            return "Google Cloud ADC";
         case "xai-api-key":
             return "xAI API key";
         case "kilo-api-key":
@@ -140,6 +214,8 @@ function getAuthHelpText(id: string): string {
             return "Route requests through a custom gateway endpoint. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.";
         case "gateway-bedrock":
             return "Route Claude requests through a custom Bedrock-compatible gateway endpoint. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.";
+        case GOOGLE_VERTEX_METHOD_ID:
+            return "Authentication is provided by Google Application Default Credentials.";
         case "xai-api-key":
             return `Store an xAI API key locally for ${APP_BRAND_NAME} only.`;
         case "kilo-api-key":
@@ -163,6 +239,8 @@ function getActionLabel(
     status: AIRuntimeSetupStatus,
 ): string {
     if (!methodId) return "Connect";
+    if (methodId === GOOGLE_VERTEX_METHOD_ID)
+        return "Save Vertex configuration";
     if (methodId === "chatgpt") return "Continue with ChatGPT";
     if (isClaudeTerminalAuthMethodId(methodId)) return "Open sign-in terminal";
     if (methodId === "grok-login") return "Open sign-in terminal";
@@ -191,6 +269,7 @@ function getLogoutErrorFallback(runtimeId: string): string {
 }
 
 function getDefaultMethodId(status: AIRuntimeSetupStatus): string {
+    if (isVertexConfigured(status)) return GOOGLE_VERTEX_METHOD_ID;
     if (
         status.authMethod &&
         status.authMethods.some((m) => m.id === status.authMethod)
@@ -222,6 +301,7 @@ interface ProviderAuthInput {
     runtimeId: string;
     methodId: string;
     customBinaryPath?: string;
+    claudeProviderRouting?: AIClaudeProviderRouting;
     codexApiKey: AISecretPatch;
     openaiApiKey: AISecretPatch;
     xaiApiKey: AISecretPatch;
@@ -289,6 +369,7 @@ function getPendingCustomBinaryPath(
 function hasPendingSetupUpdate(input: ProviderAuthInput): boolean {
     return (
         input.customBinaryPath !== undefined ||
+        input.claudeProviderRouting !== undefined ||
         input.codexApiKey.action !== "unchanged" ||
         input.openaiApiKey.action !== "unchanged" ||
         input.xaiApiKey.action !== "unchanged" ||
@@ -298,21 +379,6 @@ function hasPendingSetupUpdate(input: ProviderAuthInput): boolean {
         input.anthropicBedrockBaseUrl !== undefined ||
         input.anthropicCustomHeaders.action !== "unchanged" ||
         input.anthropicAuthToken.action !== "unchanged"
-    );
-}
-
-function EmptyProviderSearchResult() {
-    return (
-        <div
-            style={{
-                fontSize: 12,
-                color: "var(--text-secondary)",
-                lineHeight: 1.5,
-                padding: "24px 0",
-            }}
-        >
-            No matching AI provider settings.
-        </div>
     );
 }
 
@@ -329,10 +395,26 @@ function getProviderSearchValues(
         setupStatus?.binaryPath,
         setupStatus?.binarySource,
         setupStatus?.authMethod,
-        setupStatus?.authReady ? "Connected" : "Not configured",
+        isVertexConfigured(setupStatus)
+            ? "Configured"
+            : setupStatus?.authReady
+              ? "Connected"
+              : "Not configured",
         setupStatus?.binaryReady ? "Binary ready" : "Binary missing",
         setupStatus?.hasGatewayConfig ? "Custom gateway" : undefined,
         setupStatus?.hasGatewayUrl ? "Gateway URL" : undefined,
+        setupStatus?.claudeProviderRouting?.type === "vertex"
+            ? "Google Vertex AI"
+            : undefined,
+        setupStatus?.claudeProviderRouting?.type === "vertex"
+            ? setupStatus.claudeProviderRouting.baseUrl
+            : undefined,
+        setupStatus?.claudeProviderRouting?.type === "vertex"
+            ? setupStatus.claudeProviderRouting.projectId
+            : undefined,
+        setupStatus?.claudeProviderRouting?.type === "vertex"
+            ? setupStatus.claudeProviderRouting.region
+            : undefined,
         supportsRuntimeBinaryOverride(provider.id)
             ? "Runtime binary"
             : undefined,
@@ -358,15 +440,17 @@ function getProviderSearchValues(
             : undefined,
         getMethodDisplayName(setupStatus),
         error,
-        ...(setupStatus?.authMethods.flatMap((method) => [
-            method.id,
-            method.name,
-            method.description,
-            getShortMethodDesc(method.id),
-            getAuthHelpText(method.id),
-            getApiKeyPlaceholder(method.id),
-            getActionLabel(method.id, setupStatus),
-        ]) ?? []),
+        ...(setupStatus
+            ? getVisibleAuthMethods(setupStatus).flatMap((method) => [
+                  method.id,
+                  method.name,
+                  method.description,
+                  getShortMethodDesc(method.id),
+                  getAuthHelpText(method.id),
+                  getApiKeyPlaceholder(method.id),
+                  getActionLabel(method.id, setupStatus),
+              ])
+            : []),
     ];
 }
 
@@ -546,6 +630,7 @@ function ProviderExpandedPanel({
     saving,
     onAuth,
     onClearGateway,
+    onClearVertex,
     onLogout,
 }: {
     setupStatus: AIRuntimeSetupStatus;
@@ -553,6 +638,7 @@ function ProviderExpandedPanel({
     saving: boolean;
     onAuth: (input: ProviderAuthInput) => void;
     onClearGateway: () => void;
+    onClearVertex: () => void;
     onLogout: () => void;
 }) {
     const [selectedMethodId, setSelectedMethodId] = useState(() =>
@@ -562,12 +648,26 @@ function ProviderExpandedPanel({
     const [gatewayUrl, setGatewayUrl] = useState("");
     const [gatewayHeaders, setGatewayHeaders] = useState("");
     const [gatewayToken, setGatewayToken] = useState("");
+    const vertexRouting =
+        setupStatus.claudeProviderRouting?.type === "vertex"
+            ? setupStatus.claudeProviderRouting
+            : null;
+    const [vertexEndpoint, setVertexEndpoint] = useState(
+        vertexRouting?.baseUrl ?? "",
+    );
+    const [vertexProjectId, setVertexProjectId] = useState(
+        vertexRouting?.projectId ?? "",
+    );
+    const [vertexRegion, setVertexRegion] = useState(
+        vertexRouting?.region ?? "",
+    );
     const [customBinaryPath, setCustomBinaryPath] = useState(() =>
         getInitialCustomBinaryPath(setupStatus),
     );
 
+    const visibleAuthMethods = getVisibleAuthMethods(setupStatus);
     const selectedMethod =
-        setupStatus.authMethods.find((m) => m.id === selectedMethodId) ?? null;
+        visibleAuthMethods.find((m) => m.id === selectedMethodId) ?? null;
     const runtimeBinaryOverrideSupported = supportsRuntimeBinaryOverride(
         setupStatus.runtimeId,
     );
@@ -576,6 +676,7 @@ function ProviderExpandedPanel({
         : undefined;
     const apiKeySelected = isApiKeyMethod(selectedMethodId);
     const gatewaySelected = isGatewayMethod(selectedMethodId);
+    const vertexSelected = selectedMethodId === GOOGLE_VERTEX_METHOD_ID;
     const bedrockGatewaySelected = isBedrockGatewayMethod(selectedMethodId);
     const isOpenAi = selectedMethodId === "openai-api-key";
     const isCodex = selectedMethodId === "codex-api-key";
@@ -585,19 +686,43 @@ function ProviderExpandedPanel({
     const gatewayUrlError = gatewaySelected
         ? getClaudeGatewayUrlValidationMessage(gatewayUrl)
         : null;
+    const vertexEndpointError = vertexSelected
+        ? getClaudeGatewayUrlValidationMessage(vertexEndpoint)
+        : null;
+    const vertexProjectIdError =
+        vertexSelected && !vertexProjectId.trim()
+            ? "Project ID is required."
+            : null;
+    const vertexRegionError =
+        vertexSelected && !vertexRegion.trim() ? "Region is required." : null;
 
     const canSubmit =
         !saving &&
         selectedMethod != null &&
         (!apiKeySelected || apiKey.trim() !== "") &&
         (!gatewaySelected ||
-            (gatewayUrl.trim() !== "" && gatewayUrlError == null));
+            (gatewayUrl.trim() !== "" && gatewayUrlError == null)) &&
+        (!vertexSelected ||
+            (vertexEndpoint.trim() !== "" &&
+                vertexEndpointError == null &&
+                vertexProjectIdError == null &&
+                vertexRegionError == null));
 
     const handleSubmit = () => {
         onAuth({
             runtimeId: setupStatus.runtimeId,
             methodId: selectedMethodId,
             customBinaryPath: pendingCustomBinaryPath,
+            claudeProviderRouting: vertexSelected
+                ? {
+                      type: "vertex",
+                      baseUrl: vertexEndpoint.trim(),
+                      projectId: vertexProjectId.trim(),
+                      region: vertexRegion.trim(),
+                  }
+                : isVertexConfigured(setupStatus) && !gatewaySelected
+                  ? { type: "default" }
+                  : undefined,
             openaiApiKey: isOpenAi
                 ? setSecretPatch(apiKey)
                 : unchangedSecretPatch,
@@ -619,7 +744,7 @@ function ProviderExpandedPanel({
                     ? gatewayUrl || undefined
                     : undefined
                 : undefined,
-            anthropicCustomHeaders: gatewaySelected
+            anthropicCustomHeaders: gatewaySelected || vertexSelected
                 ? setOptionalSecretPatch(gatewayHeaders)
                 : unchangedSecretPatch,
             anthropicAuthToken: gatewaySelected && !bedrockGatewaySelected
@@ -638,9 +763,9 @@ function ProviderExpandedPanel({
             }}
         >
             {/* Auth method selector */}
-            {setupStatus.authMethods.length > 0 && (
+            {visibleAuthMethods.length > 0 && (
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {setupStatus.authMethods.map((method) => {
+                    {visibleAuthMethods.map((method) => {
                         const selected = method.id === selectedMethodId;
                         return (
                             <button
@@ -828,8 +953,202 @@ function ProviderExpandedPanel({
                 </>
             )}
 
+            {vertexSelected && (
+                <>
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                        }}
+                    >
+                        <label
+                            htmlFor={`${setupStatus.runtimeId}-vertex-endpoint`}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Vertex endpoint
+                        </label>
+                        <input
+                            id={`${setupStatus.runtimeId}-vertex-endpoint`}
+                            type="url"
+                            value={vertexEndpoint}
+                            onChange={(event) =>
+                                setVertexEndpoint(event.target.value)
+                            }
+                            placeholder="https://vertex.example.com"
+                            style={inputStyle}
+                        />
+                    </div>
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                        }}
+                    >
+                        <label
+                            htmlFor={`${setupStatus.runtimeId}-vertex-project-id`}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Project ID
+                        </label>
+                        <input
+                            id={`${setupStatus.runtimeId}-vertex-project-id`}
+                            type="text"
+                            value={vertexProjectId}
+                            onChange={(event) =>
+                                setVertexProjectId(event.target.value)
+                            }
+                            placeholder="my-google-cloud-project"
+                            style={inputStyle}
+                        />
+                    </div>
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                        }}
+                    >
+                        <label
+                            htmlFor={`${setupStatus.runtimeId}-vertex-region`}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Region
+                        </label>
+                        <input
+                            id={`${setupStatus.runtimeId}-vertex-region`}
+                            type="text"
+                            value={vertexRegion}
+                            onChange={(event) =>
+                                setVertexRegion(event.target.value)
+                            }
+                            placeholder="us-east5"
+                            style={inputStyle}
+                        />
+                    </div>
+                    <div
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                        }}
+                    >
+                        <label
+                            htmlFor={`${setupStatus.runtimeId}-vertex-headers`}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Custom headers (optional)
+                        </label>
+                        <textarea
+                            id={`${setupStatus.runtimeId}-vertex-headers`}
+                            value={gatewayHeaders}
+                            onChange={(event) =>
+                                setGatewayHeaders(event.target.value)
+                            }
+                            placeholder={
+                                "Headers, one per line\nx-api-key: secret"
+                            }
+                            style={{
+                                ...inputStyle,
+                                minHeight: 60,
+                                resize: "vertical",
+                            }}
+                        />
+                    </div>
+                    <div
+                        style={{
+                            fontSize: 11,
+                            color: "var(--text-secondary)",
+                        }}
+                    >
+                        Authentication is provided by Google Application Default
+                        Credentials.
+                    </div>
+                    <div
+                        style={{
+                            fontSize: 11,
+                            color: "var(--text-secondary)",
+                        }}
+                    >
+                        Changes apply to new or reopened sessions. Active chats
+                        keep their current provider configuration.
+                    </div>
+                    {(vertexEndpointError ||
+                        vertexProjectIdError ||
+                        vertexRegionError) && (
+                        <div
+                            style={{
+                                padding: "10px 12px",
+                                borderRadius: 6,
+                                fontSize: 12,
+                                border: "1px solid #7f1d1d",
+                                backgroundColor:
+                                    "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
+                                color: "#fecaca",
+                            }}
+                        >
+                            {vertexEndpointError ??
+                                vertexProjectIdError ??
+                                vertexRegionError}
+                        </div>
+                    )}
+                    {vertexRouting && (
+                        <div
+                            style={{
+                                display: "flex",
+                                justifyContent: "flex-start",
+                            }}
+                        >
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setVertexEndpoint("");
+                                    setVertexProjectId("");
+                                    setVertexRegion("");
+                                    setSelectedMethodId(
+                                        setupStatus.authMethods[0]?.id ??
+                                            "anthropic-api-key",
+                                    );
+                                    onClearVertex();
+                                }}
+                                disabled={saving}
+                                style={{
+                                    padding: "6px 10px",
+                                    borderRadius: 6,
+                                    fontSize: 11,
+                                    color: "var(--text-secondary)",
+                                    border: "1px solid var(--border)",
+                                    backgroundColor: "transparent",
+                                    cursor: saving ? "not-allowed" : "pointer",
+                                    opacity: saving ? 0.5 : 1,
+                                }}
+                            >
+                                Clear Vertex settings
+                            </button>
+                        </div>
+                    )}
+                </>
+            )}
+
             {/* Info box */}
-            {selectedMethod && (
+            {selectedMethod && !vertexSelected && (
                 <div
                     style={{
                         display: "flex",
@@ -921,7 +1240,9 @@ function ProviderExpandedPanel({
                     }}
                 >
                     {saving
-                        ? "Connecting…"
+                        ? vertexSelected
+                            ? "Saving…"
+                            : "Connecting…"
                         : getActionLabel(selectedMethodId, setupStatus)}
                 </button>
             </div>
@@ -997,6 +1318,13 @@ export function AIProvidersSettings({
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const defaultRuntimeId = useChatStore((s) => s.defaultRuntimeId);
     const setDefaultRuntime = useChatStore((s) => s.setDefaultRuntime);
+    const claudeCodeEnabled = useSettingsStore(
+        (s) => s.claudeCodeEnabled,
+    );
+    const setSetting = useSettingsStore((s) => s.setSetting);
+    const refreshRuntimeCatalog = useChatStore(
+        (s) => s.refreshRuntimeCatalog,
+    );
     const [runtimes, setRuntimes] = useState<AIRuntimeDescriptor[]>([]);
     const [setupStatusMap, setSetupStatusMap] = useState<
         Record<string, AIRuntimeSetupStatus>
@@ -1012,6 +1340,7 @@ export function AIProvidersSettings({
         null,
     );
     const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+    const [catalogVersion, setCatalogVersion] = useState(0);
     const [authTerminalRequest, setAuthTerminalRequest] = useState<{
         runtimeId: string;
         methodId: string;
@@ -1115,7 +1444,7 @@ export function AIProvidersSettings({
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [catalogVersion]);
 
     /* ── Handlers ── */
 
@@ -1149,6 +1478,7 @@ export function AIProvidersSettings({
                     const preflight = await aiUpdateSetup({
                         runtimeId: input.runtimeId,
                         customBinaryPath: input.customBinaryPath,
+                        claudeProviderRouting: input.claudeProviderRouting,
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
                         xaiApiKey: input.xaiApiKey,
@@ -1165,6 +1495,15 @@ export function AIProvidersSettings({
                         ...prev,
                         [input.runtimeId]: preflight,
                     }));
+                }
+
+                if (input.methodId === GOOGLE_VERTEX_METHOD_ID) {
+                    setErrorMap((prev) => {
+                        const next = { ...prev };
+                        delete next[input.runtimeId];
+                        return next;
+                    });
+                    return;
                 }
 
                 if (terminalAuth) {
@@ -1274,6 +1613,45 @@ export function AIProvidersSettings({
         [refreshRuntime],
     );
 
+    const handleClearVertex = useCallback(
+        async (runtimeId: string) => {
+            setSavingId(runtimeId);
+            try {
+                const status = await aiUpdateSetup({
+                    runtimeId,
+                    claudeProviderRouting: { type: "default" },
+                    codexApiKey: unchangedSecretPatch,
+                    openaiApiKey: unchangedSecretPatch,
+                    xaiApiKey: unchangedSecretPatch,
+                    gatewayBaseUrl: undefined,
+                    gatewayHeaders: unchangedSecretPatch,
+                    anthropicBaseUrl: undefined,
+                    anthropicBedrockBaseUrl: undefined,
+                    anthropicCustomHeaders: unchangedSecretPatch,
+                    anthropicAuthToken: unchangedSecretPatch,
+                    anthropicApiKey: unchangedSecretPatch,
+                });
+                setSetupStatusMap((prev) => ({ ...prev, [runtimeId]: status }));
+                setErrorMap((prev) => {
+                    const next = { ...prev };
+                    delete next[runtimeId];
+                    return next;
+                });
+            } catch (error) {
+                setErrorMap((prev) => ({
+                    ...prev,
+                    [runtimeId]: getErrorMessage(
+                        error,
+                        "Failed to clear Vertex settings.",
+                    ),
+                }));
+            } finally {
+                setSavingId(null);
+            }
+        },
+        [],
+    );
+
     /* ── Derived data ── */
 
     const installedProviders = PROVIDER_CATALOG.flatMap((p) => {
@@ -1360,32 +1738,120 @@ export function AIProvidersSettings({
         });
     }, [diagnostics, diagnosticsLoading, loadDiagnostics]);
 
-    if (!showInstalledSection && !showDiagnosticsSection && !showAllSection) {
-        return <EmptyProviderSearchResult />;
-    }
-
     /* ── Render ── */
 
-    // Providers available to be set as default (binary/auth ready).
-    const selectableProviders = PROVIDER_CATALOG.filter(
-        (p) => setupStatusMap[p.id]?.authReady === true,
-    );
+    // Providers available to be set as default and ready to start a session.
+    const selectableProviders = runtimes
+        .filter((runtime) =>
+            runtime.runtime.id !== CLAUDE_TERMINAL_RUNTIME_ID &&
+            setupStatusMap[runtime.runtime.id]?.authReady === true &&
+            !setupStatusMap[runtime.runtime.id]?.onboardingRequired,
+        )
+        .map((runtime) => ({
+            id: runtime.runtime.id,
+            name: runtime.runtime.name.replace(/ ACP$/, ""),
+        }));
     const showDefaultSection =
         !isLoading &&
         selectableProviders.length > 0 &&
         matchesSettingsSearch(
             searchQuery,
-            "Default agent",
+            "Default provider",
             "Default",
             "Agent",
             "Provider",
-            "Claude Code",
             ...selectableProviders.flatMap((p) => [p.name, p.id]),
         );
+    const claudeCodeInstalled =
+        setupStatusMap[CLAUDE_TERMINAL_RUNTIME_ID]?.authReady === true;
+    const showClaudeCodeIntegration =
+        !isLoading &&
+        matchesSettingsSearch(
+            searchQuery,
+            "Claude Code integration",
+            "Enable Claude Code for this vault",
+            "Terminal",
+            "Agent menu",
+        );
+
+    const handleCustomCatalogChanged = useCallback(async () => {
+        await refreshRuntimeCatalog();
+        setCatalogVersion((version) => version + 1);
+    }, [refreshRuntimeCatalog]);
 
     return (
         <>
-            {/* ── Default agent ── */}
+            {showClaudeCodeIntegration && (
+                <>
+                    <div
+                        style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            color: "var(--text-secondary)",
+                            paddingBottom: 6,
+                        }}
+                    >
+                        Claude Code integration
+                    </div>
+                    <div
+                        style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                            overflow: "hidden",
+                            marginBottom: 24,
+                            backgroundColor: "var(--bg-secondary)",
+                        }}
+                    >
+                        <div
+                            style={{
+                                padding: 14,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 16,
+                            }}
+                        >
+                            <div style={{ minWidth: 0 }}>
+                                <div
+                                    style={{
+                                        fontSize: 12,
+                                        fontWeight: 600,
+                                        color: "var(--text-primary)",
+                                    }}
+                                >
+                                    Enable Claude Code for this vault
+                                </div>
+                                <div
+                                    style={{
+                                        marginTop: 4,
+                                        fontSize: 11,
+                                        lineHeight: 1.45,
+                                        color: "var(--text-secondary)",
+                                    }}
+                                >
+                                    {claudeCodeInstalled
+                                        ? "Adds Claude Code as an explicit option when creating an agent."
+                                        : "Install Claude Code to enable this integration."}
+                                </div>
+                            </div>
+                            <SettingsToggle
+                                label="Enable Claude Code for this vault"
+                                value={claudeCodeEnabled}
+                                disabled={
+                                    !claudeCodeInstalled && !claudeCodeEnabled
+                                }
+                                onChange={(value) =>
+                                    setSetting("claudeCodeEnabled", value)
+                                }
+                            />
+                        </div>
+                    </div>
+                </>
+            )}
+
+            {/* ── Default provider ── */}
             {showDefaultSection && (
                 <>
                     <div
@@ -1398,7 +1864,7 @@ export function AIProvidersSettings({
                             paddingBottom: 6,
                         }}
                     >
-                        Default agent
+                        Default provider
                     </div>
                     <div
                         style={{
@@ -1422,17 +1888,14 @@ export function AIProvidersSettings({
                                     lineHeight: 1.5,
                                 }}
                             >
-                                The default agent opens when you start a new chat
-                                or use{" "}
+                                The default provider opens when you create a new
+                                agent or use{" "}
                                 <strong style={{ color: "var(--text-primary)" }}>
                                     Add to chat
                                 </strong>{" "}
-                                from the file tree. Select{" "}
-                                <strong style={{ color: "var(--text-primary)" }}>
-                                    Claude Code
-                                </strong>{" "}
-                                to route notes and files directly into a terminal
-                                session — no API key required.
+                                from the file tree. You can choose another
+                                provider until the new chat sends its first
+                                message.
                             </p>
                             <select
                                 value={defaultRuntimeId ?? ""}
@@ -1460,26 +1923,9 @@ export function AIProvidersSettings({
                                 {selectableProviders.map((p) => (
                                     <option key={p.id} value={p.id}>
                                         {p.name}
-                                        {p.id === CLAUDE_TERMINAL_RUNTIME_ID
-                                            ? " — terminal (no API key)"
-                                            : ""}
                                     </option>
                                 ))}
                             </select>
-                            {defaultRuntimeId === CLAUDE_TERMINAL_RUNTIME_ID && (
-                                <p
-                                    style={{
-                                        fontSize: 11,
-                                        color: "var(--text-secondary)",
-                                        margin: "8px 0 0",
-                                        lineHeight: 1.4,
-                                    }}
-                                >
-                                    Claude Code will open in a new terminal tab.
-                                    Attached files appear as @mentions in the
-                                    input — add your question and press Enter.
-                                </p>
-                            )}
                         </div>
                     </div>
                 </>
@@ -1527,7 +1973,11 @@ export function AIProvidersSettings({
                                     !isTerminalRuntime &&
                                     expandedId === provider.id;
                                 const isSaving = savingId === provider.id;
+                                const vertexConfigured = isVertexConfigured(
+                                    provider.setupStatus,
+                                );
                                 const connected =
+                                    vertexConfigured ||
                                     provider.setupStatus?.authReady === true;
                                 const methodName = getMethodDisplayName(
                                     provider.setupStatus,
@@ -1680,7 +2130,9 @@ export function AIProvidersSettings({
                                                 >
                                                     {isTerminalRuntime
                                                         ? "Ready"
-                                                        : connected
+                                                        : vertexConfigured
+                                                          ? "Configured"
+                                                          : connected
                                                           ? "Connected"
                                                           : "Not configured"}
                                                 </div>
@@ -1713,49 +2165,6 @@ export function AIProvidersSettings({
                                             )}
 
                                             {/* Expanded content — not shown for terminal runtime */}
-                                            {!isTerminalRuntime &&
-                                                isExpanded &&
-                                                provider.id === "claude-acp" && (
-                                                    <div
-                                                        style={{
-                                                            padding:
-                                                                "10px 14px",
-                                                            fontSize: 11,
-                                                            color: "var(--text-secondary)",
-                                                            borderTop:
-                                                                "1px solid var(--border)",
-                                                            lineHeight: 1.5,
-                                                        }}
-                                                    >
-                                                        <strong
-                                                            style={{
-                                                                color: "var(--text-primary)",
-                                                            }}
-                                                        >
-                                                            Claude subscription
-                                                        </strong>{" "}
-                                                        authentication only
-                                                        works with{" "}
-                                                        <strong
-                                                            style={{
-                                                                color: "var(--text-primary)",
-                                                            }}
-                                                        >
-                                                            Claude Code
-                                                        </strong>{" "}
-                                                        in the terminal. To use
-                                                        this provider, configure
-                                                        an{" "}
-                                                        <strong
-                                                            style={{
-                                                                color: "var(--text-primary)",
-                                                            }}
-                                                        >
-                                                            Anthropic API key
-                                                        </strong>{" "}
-                                                        below.
-                                                    </div>
-                                                )}
                                             {!isTerminalRuntime && isExpanded &&
                                                 (provider.setupStatus ? (
                                                     <ProviderExpandedPanel
@@ -1771,6 +2180,11 @@ export function AIProvidersSettings({
                                                         }}
                                                         onClearGateway={() => {
                                                             void handleClearGateway(
+                                                                provider.id,
+                                                            );
+                                                        }}
+                                                        onClearVertex={() => {
+                                                            void handleClearVertex(
                                                                 provider.id,
                                                             );
                                                         }}
@@ -1799,6 +2213,11 @@ export function AIProvidersSettings({
                     </div>
                 </>
             ) : null}
+
+            <CustomAcpRuntimesSettings
+                searchQuery={searchQuery}
+                onCatalogChanged={handleCustomCatalogChanged}
+            />
 
             {showDiagnosticsSection ? (
                 <>

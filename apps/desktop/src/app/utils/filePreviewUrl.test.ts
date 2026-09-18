@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     buildCodexGeneratedImagePreviewUrl,
+    buildManagedAttachmentPreviewUrl,
     buildVaultPreviewUrl,
     buildVaultPreviewUrlFromAbsolutePath,
     isGeneratedImagePath,
@@ -21,6 +22,15 @@ describe("filePreviewUrl", () => {
                 "/vault",
             ),
         ).toContain("neverwrite-file://localhost/vault/");
+    });
+
+    it("builds managed attachment previews without a physical path", () => {
+        const url = buildManagedAttachmentPreviewUrl(
+            "/vault",
+            "ma_0123456789abcdef0123456789abcdef",
+        );
+        expect(url).toContain("neverwrite-file://localhost/ai-attachment/");
+        expect(url).not.toContain("assets/chat");
     });
 
     it("preserves query suffixes for local vault previews", () => {

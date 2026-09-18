@@ -8,6 +8,7 @@ import {
     flushPromises,
     renderComponent,
     setEditorTabs,
+    selectChatForTest,
 } from "../../test/test-utils";
 import {
     resetTerminalRuntimeStoreForTests,
@@ -84,23 +85,6 @@ describe("EditorPaneContent", () => {
         resetTerminalRuntimeStoreForTests();
         vi.restoreAllMocks();
         vi.useRealTimers();
-    });
-
-    it("renders the workspace chat history view for history tabs", () => {
-        setEditorTabs([
-            {
-                id: "history-tab-1",
-                kind: "ai-chat-history",
-                title: "History",
-            },
-        ]);
-
-        renderComponent(<EditorPaneContent />);
-
-        expect(
-            screen.getByTestId("ai-chat-history-workspace-view"),
-        ).toBeInTheDocument();
-        expect(screen.getByText("Chat History")).toBeInTheDocument();
     });
 
     it("renders the workspace terminal view for an active terminal tab", () => {
@@ -193,7 +177,7 @@ describe("EditorPaneContent", () => {
         expect(getXtermMockInstances()).toHaveLength(1);
     });
 
-    it("keeps note scroll position when switching to an agent tab and back", async () => {
+    it("keeps note scroll position when selecting a dedicated conversation", async () => {
         vi.useFakeTimers();
         vi.spyOn(EditorView.prototype, "posAtCoords").mockReturnValue(12);
         vi.spyOn(EditorView.prototype, "coordsAtPos").mockReturnValue(null);
@@ -207,12 +191,6 @@ describe("EditorPaneContent", () => {
                     title: "Note",
                     content: "Line 1\nLine 2\nLine 3",
                 },
-                {
-                    id: "chat-tab-1",
-                    kind: "ai-chat",
-                    sessionId: "session-1",
-                    title: "Agent",
-                },
             ],
             "note-tab-1",
         );
@@ -225,7 +203,7 @@ describe("EditorPaneContent", () => {
         view.scrollDOM.scrollLeft = 18;
 
         act(() => {
-            useEditorStore.getState().switchTab("chat-tab-1");
+            selectChatForTest("session-1");
         });
         await flushEditorViewUpdates();
         expect(document.querySelector(".cm-editor")).not.toBeNull();

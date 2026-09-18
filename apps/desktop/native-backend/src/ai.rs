@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Sender},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -17,7 +17,7 @@ use agent_client_protocol::schema::v1::{
     ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationSchema,
     ElicitationScope, ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource,
     FileSystemCapabilities, ImageContent, Implementation, InitializeRequest, InitializeResponse,
-    LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption,
+    LoadSessionRequest, LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption,
     PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
@@ -28,42 +28,60 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
+use agent_client_protocol_schema::v1::LlmProtocol;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use neverwrite_ai::{
-    AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
-    AiImageGenerationPayload, AiMessageCompletedPayload, AiMessageDeltaPayload,
-    AiMessageStartedPayload, AiModeOption, AiModelOption, AiPermissionOptionPayload,
-    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload, AiRuntimeBinarySource,
-    AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
-    AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
-    AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
-    AiToolActivityPayload, AiUrlElicitationRequestPayload, AiUserInputQuestionOptionPayload,
-    AiUserInputQuestionPayload, AiUserInputRequestPayload, DiscardedAdditionalRoot,
-    DiscardedAdditionalRootReason, ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT,
-    AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
-    AI_AVAILABLE_COMMANDS_UPDATED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
-    AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
-    AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT,
-    AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
-    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
-    AI_TOOL_ACTIVITY_EVENT, AI_URL_ELICITATION_REQUEST_EVENT, AI_USER_INPUT_REQUEST_EVENT,
-    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, COPILOT_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID,
-    OPENCODE_RUNTIME_ID,
+    custom_runtimes::{is_custom_acp_runtime_id, CustomAcpRuntimeDefinitionInput},
+    AcpContinuationStrategy, AiAuthMethod, AiClaudeProviderRouting, AiConfigOption,
+    AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload, AiImageGenerationPayload,
+    AiMessageCompletedPayload, AiMessageDeltaPayload, AiMessageStartedPayload, AiModeOption,
+    AiModelOption, AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload,
+    AiPlanUpdatePayload, AiRuntimeBinarySource, AiRuntimeConnectionPayload, AiRuntimeDescriptor,
+    AiRuntimeOption, AiRuntimeSetupStatus, AiSession, AiSessionErrorPayload, AiSessionStatus,
+    AiStatusEventPayload, AiTokenUsageCostPayload, AiTokenUsagePayload,
+    AiToolActivityActionPayload, AiToolActivityPayload, AiUrlElicitationRequestPayload,
+    AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
+    DiscardedAdditionalRoot, DiscardedAdditionalRootReason, ToolDiffState,
+    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
+    AI_AUTH_TERMINAL_STARTED_EVENT, AI_AVAILABLE_COMMANDS_UPDATED_EVENT, AI_IMAGE_GENERATION_EVENT,
+    AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
+    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT,
+    AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT,
+    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
+    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, AI_URL_ELICITATION_REQUEST_EVENT,
+    AI_USER_INPUT_REQUEST_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, COPILOT_RUNTIME_ID,
+    GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::AsyncReadExt as TokioAsyncReadExt;
 use tokio::{process::Command, runtime::Builder, sync::oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::RpcOutput;
+use crate::{
+    acp_providers,
+    custom_acp::{revalidate_custom_acp_launch, CustomAcpLaunchSnapshot, CustomAcpRuntimeManager},
+    runtime_catalog::{
+        AcpProtocolFlavor, ProcessEnvironmentPolicy, RuntimeDefinition, RuntimeProductProfile,
+        RUNTIME_CATALOG,
+    },
+    RpcOutput,
+};
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+static ACP_PROCESS_COUNTER: AtomicU64 = AtomicU64::new(1);
 const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str = "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
 const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
     "Grok login looks invalid or expired. Run Grok login again to reconnect.";
+const CLAUDE_LOGIN_INVALIDATED_MESSAGE: &str =
+    "Claude login looks invalid or expired. Run Claude subscription login again to reconnect.";
+const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+const CLAUDE_AUTH_STATUS_CACHE_TTL: Duration = Duration::from_secs(5);
+const CLAUDE_AUTH_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CLAUDE_AUTH_STATUS_MAX_OUTPUT_BYTES: u64 = 64 * 1024;
 const GROK_STORED_XAI_API_KEY_INVALID_MESSAGE: &str =
     "Stored xAI API key looks invalid. Add a new xAI API key to reconnect Grok.";
 const GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE: &str =
@@ -80,11 +98,14 @@ const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
 const ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
+const NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY: &str = "neverwriteActivityStartedAtMs";
 const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
 const NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX: &str = "neverwrite:status:turn:";
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
+const CODEX_ACP_PARENT_THREAD_ID_KEY: &str = "codexAcpParentThreadId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
+const CODEX_ACP_CHILD_THREAD_ID_KEY: &str = "codexAcpChildThreadId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 const MAX_COMPLETED_URL_ELICITATION_IDS: usize = 256;
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
@@ -125,6 +146,10 @@ const AUTH_TERMINAL_DEFAULT_ROWS: u16 = 28;
 const AUTH_TERMINAL_MONITOR_INTERVAL: Duration = Duration::from_millis(120);
 const AUTH_TERMINAL_OUTPUT_CHUNK_SIZE: usize = 4096;
 const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
+const ACP_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
+const ACP_RUNTIME_CONFIGURATION_ERROR_MARKER: &[u8] = b"error loading config:";
+const ACP_RUNTIME_CONFIGURATION_INVALID_DIAGNOSTIC: &str =
+    "The AI runtime configuration is invalid.";
 const RUNTIME_SETUP_STORE_VERSION: u32 = 3;
 const COPILOT_LOGIN_INVALIDATED_MESSAGE: &str =
     "GitHub Copilot login looks invalid or expired. Run Copilot login again to reconnect.";
@@ -135,91 +160,16 @@ const LEGACY_GEMINI_RUNTIME_ID: &str = "gemini-acp";
 const LEGACY_GEMINI_SECRET_ENV_KEYS: &[&str] = &["GEMINI_API_KEY", "GOOGLE_API_KEY"];
 const RUNTIME_SETUP_LOAD_ERROR_MESSAGE: &str = "Secure credential storage is unavailable. Reconnect this AI provider or configure an environment variable before starting a session.";
 const OPENCODE_AUTH_UNVERIFIED_MESSAGE: &str = "OpenCode auth is managed by the OpenCode CLI. NeverWrite could not verify local OpenCode credentials, but OpenCode may still use /connect, environment variables, or a project .env.";
-
-#[derive(Debug, Clone, Copy)]
-struct RuntimeDefinition {
-    id: &'static str,
-    name: &'static str,
-    description: &'static str,
-    default_executable: &'static str,
-    bin_env_var: &'static str,
-    acp_args: &'static [&'static str],
-    acp_protocol: AcpProtocolFlavor,
-    supports_native_resume: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AcpProtocolFlavor {
-    Current,
-    Legacy12,
-}
-
-const NO_ACP_ARGS: &[&str] = &[];
-const COPILOT_ACP_ARGS: &[&str] = &["--acp"];
-const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
-const SHELL_ACP_ARGS: &[&str] = &["acp"];
-
-const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
-    RuntimeDefinition {
-        id: CODEX_RUNTIME_ID,
-        name: "Codex",
-        description: "OpenAI Codex-compatible agent runtime.",
-        default_executable: "codex",
-        bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
-        acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
-        supports_native_resume: true,
-    },
-    RuntimeDefinition {
-        id: CLAUDE_RUNTIME_ID,
-        name: "Claude",
-        description: "Claude ACP-compatible agent runtime.",
-        default_executable: "claude",
-        bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
-        acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
-        supports_native_resume: false,
-    },
-    RuntimeDefinition {
-        id: COPILOT_RUNTIME_ID,
-        name: "GitHub Copilot",
-        description: "GitHub Copilot CLI running as a native ACP agent.",
-        default_executable: "copilot",
-        bin_env_var: "NEVERWRITE_COPILOT_ACP_BIN",
-        acp_args: COPILOT_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
-        supports_native_resume: false,
-    },
-    RuntimeDefinition {
-        id: GROK_RUNTIME_ID,
-        name: "Grok",
-        description: "Grok ACP-compatible agent runtime.",
-        default_executable: "grok",
-        bin_env_var: "NEVERWRITE_GROK_ACP_BIN",
-        acp_args: GROK_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Legacy12,
-        supports_native_resume: false,
-    },
-    RuntimeDefinition {
-        id: KILO_RUNTIME_ID,
-        name: "Kilo",
-        description: "Kilo ACP-compatible agent runtime.",
-        default_executable: "kilo",
-        bin_env_var: "NEVERWRITE_KILO_ACP_BIN",
-        acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
-        supports_native_resume: false,
-    },
-    RuntimeDefinition {
-        id: OPENCODE_RUNTIME_ID,
-        name: "OpenCode",
-        description: "OpenCode ACP-compatible agent runtime.",
-        default_executable: "opencode",
-        bin_env_var: "NEVERWRITE_OPENCODE_ACP_BIN",
-        acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
-        supports_native_resume: false,
-    },
+const CLAUDE_PROVIDER_ROUTING_ENV_KEYS: &[&str] = &[
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "AWS_BEARER_TOKEN_BEDROCK",
 ];
 
 #[derive(Debug, Clone)]
@@ -266,6 +216,8 @@ struct AiSecretPatch {
 struct AiRuntimeSetupPayload {
     custom_binary_path: Option<String>,
     #[serde(default)]
+    claude_provider_routing: Option<ClaudeProviderRouting>,
+    #[serde(default)]
     codex_api_key: Option<AiSecretPatch>,
     #[serde(default)]
     openai_api_key: Option<AiSecretPatch>,
@@ -284,6 +236,46 @@ struct AiRuntimeSetupPayload {
     anthropic_auth_token: Option<AiSecretPatch>,
     #[serde(default)]
     anthropic_api_key: Option<AiSecretPatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ClaudeProviderRouting {
+    Default,
+    Anthropic {
+        base_url: String,
+    },
+    Bedrock {
+        base_url: String,
+    },
+    Vertex {
+        base_url: String,
+        project_id: String,
+        region: String,
+    },
+}
+
+impl From<&ClaudeProviderRouting> for AiClaudeProviderRouting {
+    fn from(routing: &ClaudeProviderRouting) -> Self {
+        match routing {
+            ClaudeProviderRouting::Default => Self::Default,
+            ClaudeProviderRouting::Anthropic { base_url } => Self::Anthropic {
+                base_url: base_url.clone(),
+            },
+            ClaudeProviderRouting::Bedrock { base_url } => Self::Bedrock {
+                base_url: base_url.clone(),
+            },
+            ClaudeProviderRouting::Vertex {
+                base_url,
+                project_id,
+                region,
+            } => Self::Vertex {
+                base_url: base_url.clone(),
+                project_id: project_id.clone(),
+                region: region.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -323,6 +315,66 @@ struct AiRuntimeSessionInput {
 struct AiCreateSessionInput {
     runtime_id: String,
     additional_roots: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiConversationTurnSelectionInput {
+    runtime_id: String,
+    model_id: String,
+    mode_id: String,
+    #[serde(default)]
+    options: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiStartConversationTurnInput {
+    conversation_id: String,
+    binding_id: String,
+    runtime_id: String,
+    session_id: String,
+    selection: AiConversationTurnSelectionInput,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiCustomRuntimeContinuationInput {
+    runtime_id: String,
+    runtime_session_id: String,
+    runtime_launch_fingerprint: String,
+    continuation_strategy: AcpContinuationStrategy,
+    confirmed_launch_fingerprint: Option<String>,
+    additional_roots: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum CustomRuntimeContinuationResult {
+    Connected {
+        session: Box<AiSession>,
+    },
+    ConfirmationRequired {
+        #[serde(rename = "runtimeId")]
+        runtime_id: String,
+        #[serde(rename = "displayName")]
+        display_name: String,
+        #[serde(rename = "launchFingerprint")]
+        launch_fingerprint: String,
+        message: String,
+    },
+    TranscriptOnly {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiUpdateCustomRuntimeInput {
+    id: String,
+    definition: CustomAcpRuntimeDefinitionInput,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiCustomRuntimeIdInput {
+    id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -367,6 +419,12 @@ struct AiAttachmentInput {
     file_path: Option<String>,
     #[serde(rename = "mimeType")]
     mime_type: Option<String>,
+    #[serde(rename = "managedAttachmentId")]
+    managed_attachment_id: Option<String>,
+    #[serde(rename = "fileName")]
+    file_name: Option<String>,
+    #[serde(skip)]
+    managed_bytes: Option<Vec<u8>>,
     transcription: Option<String>,
     #[serde(rename = "startLine")]
     start_line: Option<u32>,
@@ -377,6 +435,7 @@ struct AiAttachmentInput {
 #[derive(Debug, Clone, Default)]
 struct RuntimeSetupState {
     custom_binary_path: Option<String>,
+    claude_provider_routing: Option<ClaudeProviderRouting>,
     auth_ready: bool,
     auth_method: Option<String>,
     suppress_persisted_auth: bool,
@@ -397,6 +456,8 @@ struct PersistedRuntimeSetupFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedRuntimeSetupState {
     custom_binary_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude_provider_routing: Option<ClaudeProviderRouting>,
     auth_method: Option<String>,
     #[serde(default)]
     auth_invalidated_at_ms: Option<u64>,
@@ -602,6 +663,11 @@ impl RuntimeSetupStore {
                 custom_binary_path: persisted_setup
                     .custom_binary_path
                     .and_then(normalize_optional_string),
+                claude_provider_routing: if runtime_id == CLAUDE_RUNTIME_ID {
+                    persisted_setup.claude_provider_routing
+                } else {
+                    None
+                },
                 auth_method: persisted_setup
                     .auth_method
                     .and_then(normalize_optional_string),
@@ -712,13 +778,15 @@ impl Default for RuntimeSetupStore {
 #[cfg(test)]
 impl RuntimeSetupStore {
     fn in_memory_for_tests() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "neverwrite-ai-runtime-setup-test-{}.json",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default()
-        ));
+        let path = std::env::temp_dir()
+            .join(format!(
+                "neverwrite-ai-runtime-test-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or_default()
+            ))
+            .join("runtime-setup.json");
         Self::with_secret_store(path, Arc::new(InMemoryRuntimeSecretStore::default()))
     }
 }
@@ -757,8 +825,14 @@ impl PersistedRuntimeSetupState {
             .filter(|method| should_persist_auth_method(runtime_id, setup, method));
         let auth_invalidated_at_ms = setup.auth_invalidated_at_ms;
         let external_auth_verified_at_ms = setup.external_auth_verified_at_ms;
+        let claude_provider_routing = if runtime_id == CLAUDE_RUNTIME_ID {
+            setup.claude_provider_routing.clone()
+        } else {
+            None
+        };
 
         if custom_binary_path.is_none()
+            && claude_provider_routing.is_none()
             && auth_method.is_none()
             && auth_invalidated_at_ms.is_none()
             && external_auth_verified_at_ms.is_none()
@@ -770,6 +844,7 @@ impl PersistedRuntimeSetupState {
 
         Ok(Some(Self {
             custom_binary_path,
+            claude_provider_routing,
             auth_method,
             auth_invalidated_at_ms,
             external_auth_verified_at_ms,
@@ -879,23 +954,50 @@ struct ManagedAiSession {
     active_turn_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationTurnBindingOwner {
+    conversation_id: String,
+    runtime_id: String,
+    session_id: String,
+}
+
 #[derive(Default)]
 struct NativeAiInner {
     sessions: HashMap<String, ManagedAiSession>,
     session_order: Vec<String>,
+    conversation_turn_bindings: HashMap<String, ConversationTurnBindingOwner>,
     setup: HashMap<String, RuntimeSetupState>,
     setup_load_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct AcpProcessSpec {
     program: PathBuf,
     args: Vec<String>,
     cwd: PathBuf,
     env: HashMap<String, String>,
     runtime_id: String,
+    acp_protocol: AcpProtocolFlavor,
+    environment_policy: ProcessEnvironmentPolicy,
+    product_profile: RuntimeProductProfile,
+    custom_launch: Option<CustomAcpLaunchSnapshot>,
     auth_method: Option<String>,
     auth_handshake: Option<AcpAuthHandshake>,
+    claude_provider_routing: ClaudeProviderProcessRouting,
+}
+
+#[derive(Clone, Default)]
+enum ClaudeProviderProcessRouting {
+    #[default]
+    Inherit,
+    Default,
+    Configure(ClaudeProviderSnapshot),
+}
+
+#[derive(Clone)]
+struct ClaudeProviderSnapshot {
+    routing: ClaudeProviderRouting,
+    headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -913,6 +1015,7 @@ struct AcpAuthHandshakeRequest {
 
 #[derive(Debug, Clone)]
 struct AcpSessionHandle {
+    process_id: u64,
     command_tx: tokio::sync::mpsc::UnboundedSender<AcpCommand>,
     prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
 }
@@ -1093,6 +1196,9 @@ enum AcpCommand {
         option_id: Option<String>,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
+    Shutdown {
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1107,6 +1213,7 @@ pub(crate) struct NativeAi {
     inner: Arc<Mutex<NativeAiInner>>,
     event_tx: Sender<RpcOutput>,
     setup_store: RuntimeSetupStore,
+    custom_runtimes: CustomAcpRuntimeManager,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
@@ -1127,6 +1234,7 @@ impl NativeAi {
     }
 
     fn with_setup_store(event_tx: Sender<RpcOutput>, setup_store: RuntimeSetupStore) -> Self {
+        let custom_runtime_store_path = setup_store.path.with_file_name("custom-acp-runtimes.json");
         let (setup, setup_load_error) = match setup_store.load() {
             Ok(setup) => (setup, None),
             Err(error) => (HashMap::new(), Some(runtime_setup_load_error(error))),
@@ -1139,6 +1247,7 @@ impl NativeAi {
             })),
             event_tx,
             setup_store,
+            custom_runtimes: CustomAcpRuntimeManager::new(custom_runtime_store_path),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -1167,12 +1276,105 @@ impl NativeAi {
         }
     }
 
+    pub(crate) fn shutdown(&self) -> Result<(), String> {
+        let (session_ids, runtime_handles) = {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            let session_ids = state.sessions.keys().cloned().collect::<Vec<_>>();
+            let mut runtime_handles = HashMap::new();
+            for managed in state.sessions.drain().map(|(_, managed)| managed) {
+                if let Some(handle) = managed.runtime_handle {
+                    runtime_handles.entry(handle.process_id).or_insert(handle);
+                }
+            }
+            state.session_order.clear();
+            state.conversation_turn_bindings.clear();
+            (session_ids, runtime_handles)
+        };
+
+        if let Ok(mut waiters) = self.user_input_waiters.lock() {
+            waiters.clear();
+        }
+        if let Ok(mut waiters) = self.url_elicitation_waiters.lock() {
+            waiters.clear();
+        }
+        if let Ok(mut completed) = self.completed_url_elicitations.lock() {
+            completed.clear();
+        }
+        if let Ok(mut terminal_sessions) = self.auth_terminal_sessions.lock() {
+            for (_, handle) in terminal_sessions.drain() {
+                handle.closed.store(true, Ordering::Relaxed);
+                handle.release_runtime_resources(true);
+            }
+        }
+        for session_id in session_ids {
+            self.tool_diffs.clear_session(&session_id);
+        }
+
+        let errors = runtime_handles
+            .into_values()
+            .filter_map(|handle| handle.shutdown().err())
+            .collect::<Vec<_>>();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Failed to stop one or more AI runtime processes: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
     pub(crate) fn list_runtimes(&self) -> Value {
-        json!(runtime_descriptors())
+        let custom_runtimes = self.custom_runtimes.list().unwrap_or_else(|error| {
+            eprintln!("Failed to load custom ACP runtimes for the runtime catalog: {error}");
+            Vec::new()
+        });
+        json!(runtime_descriptors_with_custom(&custom_runtimes))
+    }
+
+    pub(crate) fn list_custom_runtimes(&self) -> Result<Value, String> {
+        Ok(json!(self.custom_runtimes.list()?))
+    }
+
+    pub(crate) fn list_deleted_custom_runtimes(&self) -> Result<Value, String> {
+        Ok(json!(self.custom_runtimes.list_deleted()?))
+    }
+
+    pub(crate) fn create_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: CustomAcpRuntimeDefinitionInput = input_from_args(args)?;
+        Ok(json!(self.custom_runtimes.create(input)?))
+    }
+
+    pub(crate) fn update_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: AiUpdateCustomRuntimeInput = input_from_args(args)?;
+        Ok(json!(self
+            .custom_runtimes
+            .update(&input.id, input.definition)?))
+    }
+
+    pub(crate) fn delete_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: AiCustomRuntimeIdInput = input_from_args(args)?;
+        Ok(json!(self.custom_runtimes.delete(&input.id)?))
+    }
+
+    pub(crate) fn restore_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: AiCustomRuntimeIdInput = input_from_args(args)?;
+        Ok(json!(self.custom_runtimes.restore(&input.id)?))
+    }
+
+    pub(crate) fn verify_custom_runtime(&self, args: &Value) -> Result<Value, String> {
+        let input: CustomAcpRuntimeDefinitionInput = input_from_args(args)?;
+        Ok(json!(self.custom_runtimes.verify(input)?))
     }
 
     pub(crate) fn get_setup_status(&self, args: &Value) -> Result<Value, String> {
         let runtime_id = required_runtime_id(args)?;
+        if is_custom_acp_runtime_id(&runtime_id) {
+            return Ok(json!(self.custom_runtimes.setup_status(&runtime_id)?));
+        }
         let state = self
             .inner
             .lock()
@@ -1206,7 +1408,9 @@ impl NativeAi {
                 })
             })
             .collect::<Vec<_>>();
-        let runtimes = runtime_descriptors()
+        let custom_runtimes = self.custom_runtimes.list().unwrap_or_default();
+        let runtime_catalog = RUNTIME_CATALOG.with_custom(&custom_runtimes);
+        let runtimes = runtime_descriptors_with_custom(&custom_runtimes)
             .into_iter()
             .map(|descriptor| {
                 let runtime_id = descriptor.runtime.id.clone();
@@ -1222,9 +1426,13 @@ impl NativeAi {
                         )
                     })
                     .unwrap_or_default();
-                let status = match setup_load_error {
-                    Some(message) => setup_load_error_status_for(&runtime_id, message),
-                    None => setup_status_for(&runtime_id, setup_status),
+                let status = if is_custom_acp_runtime_id(&runtime_id) {
+                    self.custom_runtimes.setup_status(&runtime_id)
+                } else {
+                    match setup_load_error {
+                        Some(message) => setup_load_error_status_for(&runtime_id, message),
+                        None => setup_status_for(&runtime_id, setup_status),
+                    }
                 };
                 let (setup_status, setup_error, resolution_display) = match status {
                     Ok(status) => {
@@ -1242,9 +1450,12 @@ impl NativeAi {
                     "runtime_name": runtime_name,
                     "setup_status": setup_status,
                     "setup_error": setup_error,
-                    "launch_program": default_executable_name(&runtime_id),
-                    "launch_args": runtime_definition(&runtime_id)
-                        .map(|definition| definition.acp_args.to_vec())
+                    "launch_program": runtime_catalog
+                        .definition(&runtime_id)
+                        .map(|definition| definition.default_executable()),
+                    "launch_args": runtime_catalog
+                        .definition(&runtime_id)
+                        .map(|definition| definition.acp_args())
                         .unwrap_or_default(),
                     "resolution_display": resolution_display,
                     "auth": runtime_auth_diagnostics(&runtime_id),
@@ -1428,6 +1639,98 @@ impl NativeAi {
         Ok(json!(session))
     }
 
+    pub(crate) fn start_conversation_turn(&self, args: &Value) -> Result<Value, String> {
+        let input: AiStartConversationTurnInput = input_from_args(args)?;
+        if input.conversation_id.trim().is_empty() || input.binding_id.trim().is_empty() {
+            return Err("Conversation and binding ids are required to start a turn.".to_string());
+        }
+        if input.selection.runtime_id != input.runtime_id {
+            return Err(
+                "Conversation turn selection does not match the target runtime.".to_string(),
+            );
+        }
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        {
+            let session = state
+                .sessions
+                .get(&input.session_id)
+                .map(|managed| &managed.session)
+                .ok_or_else(|| format!("AI session not found: {}", input.session_id))?;
+            if session.runtime_id != input.runtime_id {
+                return Err(
+                    "Refusing to start a conversation turn on another provider's session."
+                        .to_string(),
+                );
+            }
+            if session.model_id != input.selection.model_id
+                || session.mode_id != input.selection.mode_id
+            {
+                return Err(
+                    "Conversation turn selection was not applied to the target session."
+                        .to_string(),
+                );
+            }
+            for (option_id, expected_value) in &input.selection.options {
+                let option = session
+                    .config_options
+                    .iter()
+                    .find(|option| option.id == *option_id)
+                    .ok_or_else(|| {
+                        format!("Conversation turn option is unavailable: {option_id}")
+                    })?;
+                if option.value != *expected_value {
+                    return Err(format!(
+                        "Conversation turn option was not applied: {option_id}"
+                    ));
+                }
+            }
+        }
+
+        if let Some(owner) = state.conversation_turn_bindings.get(&input.binding_id) {
+            if owner.conversation_id != input.conversation_id
+                || owner.runtime_id != input.runtime_id
+                || owner.session_id != input.session_id
+            {
+                return Err(
+                    "Conversation binding is already associated with another conversation or session."
+                        .to_string(),
+                );
+            }
+            return Ok(json!(null));
+        }
+        if state
+            .conversation_turn_bindings
+            .iter()
+            .any(|(binding_id, owner)| {
+                binding_id != &input.binding_id && owner.conversation_id == input.conversation_id
+            })
+        {
+            return Err("Conversation is already associated with another binding.".to_string());
+        }
+        if state
+            .conversation_turn_bindings
+            .iter()
+            .any(|(binding_id, owner)| {
+                binding_id != &input.binding_id && owner.session_id == input.session_id
+            })
+        {
+            return Err("Runtime session is already associated with another binding.".to_string());
+        }
+        state.conversation_turn_bindings.insert(
+            input.binding_id,
+            ConversationTurnBindingOwner {
+                conversation_id: input.conversation_id,
+                runtime_id: input.runtime_id,
+                session_id: input.session_id,
+            },
+        );
+        Ok(json!(null))
+    }
+
     pub(crate) fn create_session(
         &self,
         args: &Value,
@@ -1438,18 +1741,33 @@ impl NativeAi {
         let vault_root_for_spec = vault_root.clone().ok_or_else(|| {
             "An open vault is required to start an AI runtime session.".to_string()
         })?;
-        let setup = {
-            let state = self
-                .inner
-                .lock()
-                .map_err(|error| format!("Internal AI state error: {error}"))?;
-            state
-                .setup
-                .get(&input.runtime_id)
-                .cloned()
-                .unwrap_or_default()
+        let (spec, setup, custom_identity) = if is_custom_acp_runtime_id(&input.runtime_id) {
+            let launch = self.custom_runtimes.resolve_launch(&input.runtime_id)?;
+            let identity = (
+                launch.display_name.clone(),
+                launch.revision,
+                launch.launch_fingerprint.clone(),
+            );
+            (
+                custom_acp_process_spec(launch, vault_root_for_spec),
+                RuntimeSetupState::default(),
+                Some(identity),
+            )
+        } else {
+            let setup = {
+                let state = self
+                    .inner
+                    .lock()
+                    .map_err(|error| format!("Internal AI state error: {error}"))?;
+                state
+                    .setup
+                    .get(&input.runtime_id)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
+            (spec, setup, None)
         };
-        let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
         let created = match start_acp_session(
             spec,
             AcpSessionStartMode::New {
@@ -1462,18 +1780,24 @@ impl NativeAi {
                 if let Err(update_error) = self.invalidate_auth_after_session_start_error(
                     &input.runtime_id,
                     &setup,
-                    &error,
+                    error.message(),
                 ) {
                     return Err(format!(
-                        "{error}\n\nFailed to update AI auth state: {update_error}"
+                        "{error}\n\nFailed to update runtime auth state: {update_error}"
                     ));
                 }
-                return Err(error);
+                return Err(error.to_string());
             }
         };
         let mut session = created.session;
         let handle = created.handle;
         session.discarded_additional_roots = normalized.discarded.clone();
+        if let Some((display_name, revision, launch_fingerprint)) = custom_identity {
+            session.runtime_session_id = Some(session.session_id.clone());
+            session.runtime_display_name = Some(display_name);
+            session.runtime_revision = Some(revision);
+            session.runtime_launch_fingerprint = Some(launch_fingerprint);
+        }
 
         let mut state = self
             .inner
@@ -1558,7 +1882,7 @@ impl NativeAi {
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
         let created = match start_acp_session(
             spec,
-            AcpSessionStartMode::Load {
+            AcpSessionStartMode::Resume {
                 session_id: input.session_id,
                 additional_directories: normalized.kept.clone(),
             },
@@ -1569,13 +1893,13 @@ impl NativeAi {
                 if let Err(update_error) = self.invalidate_auth_after_session_start_error(
                     &input.runtime_id,
                     &setup,
-                    &error,
+                    error.message(),
                 ) {
                     return Err(format!(
-                        "{error}\n\nFailed to update AI auth state: {update_error}"
+                        "{error}\n\nFailed to update runtime auth state: {update_error}"
                     ));
                 }
-                return Err(error);
+                return Err(error.to_string());
             }
         };
         let mut session = created.session;
@@ -1602,6 +1926,134 @@ impl NativeAi {
 
         self.emit_session("ai://session-created", &session);
         Ok(json!(session))
+    }
+
+    pub(crate) fn continue_custom_runtime_session(
+        &self,
+        args: &Value,
+        vault_root: Option<PathBuf>,
+    ) -> Result<Value, String> {
+        const CHANGED_MESSAGE: &str = "This custom runtime definition changed since the chat was created. Continue with the modified configuration?";
+        const MISSING_MESSAGE: &str = "This custom ACP runtime is no longer available. Restore it in Settings or start a new chat with another runtime.";
+        const UNSUPPORTED_MESSAGE: &str = "This runtime cannot continue its previous ACP session. The transcript is still available; start a new chat to keep working.";
+
+        let input: AiCustomRuntimeContinuationInput = input_from_args(args)?;
+        if !is_custom_acp_runtime_id(&input.runtime_id) {
+            return Err(format!(
+                "AI runtime '{}' is not a custom ACP runtime.",
+                input.runtime_id
+            ));
+        }
+        if input.runtime_session_id.trim().is_empty()
+            || input.runtime_launch_fingerprint.trim().is_empty()
+        {
+            return Ok(json!(CustomRuntimeContinuationResult::TranscriptOnly {
+                message: UNSUPPORTED_MESSAGE.to_string(),
+            }));
+        }
+        if input.continuation_strategy == AcpContinuationStrategy::NewSessionOnly {
+            return Ok(json!(CustomRuntimeContinuationResult::TranscriptOnly {
+                message: UNSUPPORTED_MESSAGE.to_string(),
+            }));
+        }
+
+        let Some(definition) = self.custom_runtimes.definition(&input.runtime_id)? else {
+            return Ok(json!(CustomRuntimeContinuationResult::TranscriptOnly {
+                message: MISSING_MESSAGE.to_string(),
+            }));
+        };
+        if custom_runtime_requires_confirmation(
+            &input.runtime_launch_fingerprint,
+            input.confirmed_launch_fingerprint.as_deref(),
+            &definition.launch_fingerprint,
+        ) {
+            return Ok(json!(
+                CustomRuntimeContinuationResult::ConfirmationRequired {
+                    runtime_id: definition.id,
+                    display_name: definition.display_name,
+                    launch_fingerprint: definition.launch_fingerprint,
+                    message: CHANGED_MESSAGE.to_string(),
+                }
+            ));
+        }
+
+        let vault_root_for_spec = vault_root.clone().ok_or_else(|| {
+            "An open vault is required to continue an AI runtime session.".to_string()
+        })?;
+        let launch = self.custom_runtimes.resolve_launch(&input.runtime_id)?;
+        if custom_runtime_requires_confirmation(
+            &input.runtime_launch_fingerprint,
+            input.confirmed_launch_fingerprint.as_deref(),
+            &launch.launch_fingerprint,
+        ) {
+            return Ok(json!(
+                CustomRuntimeContinuationResult::ConfirmationRequired {
+                    runtime_id: launch.runtime_id,
+                    display_name: launch.display_name,
+                    launch_fingerprint: launch.launch_fingerprint,
+                    message: CHANGED_MESSAGE.to_string(),
+                }
+            ));
+        }
+
+        let normalized = normalize_additional_roots(input.additional_roots);
+        let identity = (
+            launch.display_name.clone(),
+            launch.revision,
+            launch.launch_fingerprint.clone(),
+        );
+        let start_mode = match input.continuation_strategy {
+            AcpContinuationStrategy::Resume => AcpSessionStartMode::Resume {
+                session_id: input.runtime_session_id,
+                additional_directories: normalized.kept.clone(),
+            },
+            AcpContinuationStrategy::Load => AcpSessionStartMode::Load {
+                session_id: input.runtime_session_id,
+                additional_directories: normalized.kept.clone(),
+            },
+            AcpContinuationStrategy::NewSessionOnly => unreachable!(),
+        };
+        let created = match start_acp_session(
+            custom_acp_process_spec(launch, vault_root_for_spec),
+            start_mode,
+            self.acp_actor_context(),
+        ) {
+            Ok(created) => created,
+            Err(AcpSessionStartError::ContinuationUnavailable(_)) => {
+                return Ok(json!(CustomRuntimeContinuationResult::TranscriptOnly {
+                    message: UNSUPPORTED_MESSAGE.to_string(),
+                }));
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let mut session = created.session;
+        session.discarded_additional_roots = normalized.discarded;
+        session.runtime_display_name = Some(identity.0);
+        session.runtime_revision = Some(identity.1);
+        session.runtime_launch_fingerprint = Some(identity.2);
+        session.status = AiSessionStatus::Idle;
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        state.sessions.insert(
+            session.session_id.clone(),
+            ManagedAiSession {
+                session: session.clone(),
+                vault_root,
+                additional_roots: normalized.kept,
+                runtime_handle: Some(created.handle),
+                active_turn_id: None,
+            },
+        );
+        touch_session(&mut state, &session.session_id);
+        drop(state);
+
+        self.emit_session(AI_SESSION_CREATED_EVENT, &session);
+        Ok(json!(CustomRuntimeContinuationResult::Connected {
+            session: Box::new(session),
+        }))
     }
 
     pub(crate) fn fork_runtime_session(
@@ -1706,14 +2158,18 @@ impl NativeAi {
         })
     }
 
-    pub(crate) fn send_message(&self, args: &Value) -> Result<Value, String> {
+    pub(crate) fn send_message(
+        &self,
+        args: &Value,
+        history_storage: &crate::ai_history::AiHistoryStorageService,
+    ) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         let content = required_string(args, &["content"])?;
         let attachments = args
             .get("attachments")
             .cloned()
             .unwrap_or_else(|| Value::Array(vec![]));
-        let attachments: Vec<AiAttachmentInput> =
+        let mut attachments: Vec<AiAttachmentInput> =
             serde_json::from_value(attachments).map_err(|error| error.to_string())?;
 
         let (prompt, handle) = {
@@ -1735,6 +2191,11 @@ impl NativeAi {
                 .runtime_handle
                 .clone()
                 .ok_or_else(|| "AI runtime session is not connected.".to_string())?;
+            resolve_managed_attachment_inputs(
+                &mut attachments,
+                managed.vault_root.as_deref(),
+                history_storage,
+            )?;
             let prompt = build_prompt_blocks_with_attachments(
                 &content,
                 &attachments,
@@ -1748,7 +2209,13 @@ impl NativeAi {
             (prompt, handle)
         };
 
-        handle.prompt(&session_id, prompt)?;
+        if let Err(error) = handle.prompt(&session_id, prompt) {
+            if error.is_transport_disconnected() {
+                self.disconnect_runtime_session_after_send_failure(&session_id, handle.process_id)?;
+                return Err("The AI runtime disconnected while sending. Reconnect the chat and retry the message.".to_string());
+            }
+            return Err(error.into_message());
+        }
         self.load_session(&json!({ "sessionId": session_id }))
     }
 
@@ -1872,12 +2339,27 @@ impl NativeAi {
             .inner
             .lock()
             .map_err(|error| format!("Internal AI state error: {error}"))?;
-        state
+        let removed = state
             .sessions
             .remove(&session_id)
             .ok_or_else(|| format!("AI session not found: {session_id}"))?;
         state.session_order.retain(|id| id != &session_id);
+        state
+            .conversation_turn_bindings
+            .retain(|_, owner| owner.session_id != session_id);
+        let shutdown_handle = removed.runtime_handle.filter(|handle| {
+            !state.sessions.values().any(|managed| {
+                managed
+                    .runtime_handle
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.process_id == handle.process_id)
+            })
+        });
+        drop(state);
         self.tool_diffs.clear_session(&session_id);
+        if let Some(handle) = shutdown_handle {
+            handle.shutdown()?;
+        }
         Ok(json!(null))
     }
 
@@ -1895,12 +2377,24 @@ impl NativeAi {
             .filter(|(_, managed)| managed.vault_root == vault_root)
             .map(|(session_id, _)| session_id.clone())
             .collect::<Vec<_>>();
+        let mut shutdown_handles = HashMap::new();
         for session_id in session_ids {
             self.cancel_user_input_waiters_for_session(&session_id);
             self.cancel_url_elicitation_waiters_for_session(&session_id);
-            state.sessions.remove(&session_id);
+            if let Some(removed) = state.sessions.remove(&session_id) {
+                if let Some(handle) = removed.runtime_handle {
+                    shutdown_handles.entry(handle.process_id).or_insert(handle);
+                }
+            }
             state.session_order.retain(|id| id != &session_id);
+            state
+                .conversation_turn_bindings
+                .retain(|_, owner| owner.session_id != session_id);
             self.tool_diffs.clear_session(&session_id);
+        }
+        drop(state);
+        for handle in shutdown_handles.into_values() {
+            handle.shutdown()?;
         }
         Ok(json!(null))
     }
@@ -2014,13 +2508,16 @@ impl NativeAi {
         if runtime_id == COPILOT_RUNTIME_ID && is_copilot_auth_error(error) {
             return self.invalidate_copilot_auth();
         }
-        if runtime_id != GROK_RUNTIME_ID || !is_grok_auth_error(error) {
+        let claude_method = (runtime_id == CLAUDE_RUNTIME_ID && is_claude_auth_error(error))
+            .then(|| effective_auth_method_for_acp_process_spec(runtime_id, setup_at_start))
+            .flatten()
+            .filter(|method| matches!(method.as_str(), "claude-ai-login" | "claude-login"));
+        let grok_source = (runtime_id == GROK_RUNTIME_ID && is_grok_auth_error(error))
+            .then(|| grok_auth_failure_source(setup_at_start))
+            .flatten();
+        if claude_method.is_none() && grok_source.is_none() {
             return Ok(());
         }
-
-        let Some(source) = grok_auth_failure_source(setup_at_start) else {
-            return Ok(());
-        };
 
         let (mut pending_setup, setup_load_error) = {
             let state = self
@@ -2034,7 +2531,11 @@ impl NativeAi {
         }
 
         let setup = pending_setup.entry(runtime_id.to_string()).or_default();
-        apply_grok_auth_failure(setup, source);
+        if let Some(method) = claude_method {
+            apply_claude_auth_failure(setup, method);
+        } else if let Some(source) = grok_source {
+            apply_grok_auth_failure(setup, source);
+        }
         self.setup_store.save(&pending_setup)?;
 
         let mut state = self
@@ -2369,6 +2870,58 @@ impl NativeAi {
             .ok_or_else(|| format!("AI session not found: {session_id}"))
     }
 
+    fn disconnect_runtime_session_after_send_failure(
+        &self,
+        session_id: &str,
+        process_id: u64,
+    ) -> Result<(), String> {
+        let runtime_id = {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            let managed = state
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("AI session not found: {session_id}"))?;
+            if managed
+                .runtime_handle
+                .as_ref()
+                .map(|handle| handle.process_id != process_id)
+                .unwrap_or(true)
+            {
+                return Ok(());
+            }
+            let runtime_id = managed.session.runtime_id.clone();
+            for managed in state.sessions.values_mut() {
+                if managed
+                    .runtime_handle
+                    .as_ref()
+                    .is_some_and(|handle| handle.process_id == process_id)
+                {
+                    managed.runtime_handle = None;
+                    managed.session.status = AiSessionStatus::Idle;
+                }
+            }
+            runtime_id
+        };
+
+        eprintln!(
+            "ACP runtime transport disconnected phase=send runtime_id={runtime_id} process_id={process_id}"
+        );
+        emit_event(
+            &self.event_tx,
+            AI_RUNTIME_CONNECTION_EVENT,
+            json!(AiRuntimeConnectionPayload {
+                runtime_id,
+                session_id: Some(session_id.to_string()),
+                status: "error".to_string(),
+                message: Some("The AI runtime disconnected while sending. Reconnect the chat and retry the message.".to_string()),
+            }),
+        );
+        Ok(())
+    }
+
     fn cancel_user_input_waiters_for_session(&self, session_id: &str) {
         cancel_user_input_waiters_matching(&self.user_input_waiters, |waiter| {
             waiter.session_id == session_id
@@ -2390,6 +2943,47 @@ impl NativeAi {
     }
 }
 
+fn resolve_managed_attachment_inputs(
+    attachments: &mut [AiAttachmentInput],
+    vault_root: Option<&Path>,
+    history_storage: &crate::ai_history::AiHistoryStorageService,
+) -> Result<(), String> {
+    for attachment in attachments {
+        let Some(attachment_id) = attachment.managed_attachment_id.as_deref() else {
+            continue;
+        };
+        if attachment.attachment_type.as_deref() != Some("file") {
+            return Err("Managed attachments must use the file attachment type.".to_string());
+        }
+        if attachment.file_path.is_some()
+            || attachment.path.is_some()
+            || attachment.content.is_some()
+        {
+            return Err(
+                "Managed attachments cannot include a physical path or inline content.".to_string(),
+            );
+        }
+        let vault_root = vault_root
+            .ok_or_else(|| "Managed attachments require an open vault session.".to_string())?;
+        let (bytes, file_name, mime_type) =
+            history_storage.resolve_managed_attachment_for_runtime(vault_root, attachment_id)?;
+        if let Some(declared_file_name) = attachment.file_name.as_deref() {
+            if declared_file_name != file_name {
+                return Err("Managed attachment file name does not match its blob.".to_string());
+            }
+        }
+        if let Some(declared_mime_type) = attachment.mime_type.as_deref() {
+            if declared_mime_type != mime_type {
+                return Err("Managed attachment MIME type does not match its blob.".to_string());
+            }
+        }
+        attachment.file_name = Some(file_name);
+        attachment.mime_type = Some(mime_type);
+        attachment.managed_bytes = Some(bytes);
+    }
+    Ok(())
+}
+
 struct CreatedAcpSession {
     session: AiSession,
     handle: AcpSessionHandle,
@@ -2398,6 +2992,10 @@ struct CreatedAcpSession {
 #[derive(Debug, Clone)]
 enum AcpSessionStartMode {
     New {
+        additional_directories: Vec<PathBuf>,
+    },
+    Resume {
+        session_id: String,
         additional_directories: Vec<PathBuf>,
     },
     Load {
@@ -2412,11 +3010,43 @@ impl AcpSessionStartMode {
             AcpSessionStartMode::New {
                 additional_directories,
             }
+            | AcpSessionStartMode::Resume {
+                additional_directories,
+                ..
+            }
             | AcpSessionStartMode::Load {
                 additional_directories,
                 ..
             } => additional_directories,
         }
+    }
+
+    fn continuation_strategy(&self) -> Option<AcpContinuationStrategy> {
+        match self {
+            Self::New { .. } => None,
+            Self::Resume { .. } => Some(AcpContinuationStrategy::Resume),
+            Self::Load { .. } => Some(AcpContinuationStrategy::Load),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AcpSessionStartError {
+    ContinuationUnavailable(String),
+    Other(String),
+}
+
+impl AcpSessionStartError {
+    fn message(&self) -> &str {
+        match self {
+            Self::ContinuationUnavailable(message) | Self::Other(message) => message,
+        }
+    }
+}
+
+impl std::fmt::Display for AcpSessionStartError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message())
     }
 }
 
@@ -2424,18 +3054,46 @@ struct AcpSessionStartResponse {
     session_id: String,
     modes: Option<SessionModeState>,
     config_options: Option<Vec<SessionConfigOption>>,
+    continuation_strategy: Option<AcpContinuationStrategy>,
+}
+
+#[derive(Debug)]
+enum AcpRequestError {
+    CommandChannelClosed,
+    ResponseChannelClosed,
+    Remote(String),
+}
+
+impl AcpRequestError {
+    fn is_transport_disconnected(&self) -> bool {
+        matches!(
+            self,
+            Self::CommandChannelClosed | Self::ResponseChannelClosed
+        )
+    }
+
+    fn into_message(self) -> String {
+        match self {
+            Self::CommandChannelClosed => "The AI runtime command channel is closed.".to_string(),
+            Self::ResponseChannelClosed => "The AI runtime response channel is closed.".to_string(),
+            Self::Remote(message) => message,
+        }
+    }
 }
 
 impl AcpSessionHandle {
     fn request<T>(
         &self,
         build: impl FnOnce(mpsc::Sender<Result<T, String>>) -> AcpCommand,
-    ) -> Result<T, String> {
+    ) -> Result<T, AcpRequestError> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
             .send(build(response_tx))
-            .map_err(|error| error.to_string())?;
-        response_rx.recv().map_err(|error| error.to_string())?
+            .map_err(|_| AcpRequestError::CommandChannelClosed)?;
+        response_rx
+            .recv()
+            .map_err(|_| AcpRequestError::ResponseChannelClosed)?
+            .map_err(AcpRequestError::Remote)
     }
 
     fn prompt_capabilities(&self) -> AcpPromptCapabilities {
@@ -2445,7 +3103,7 @@ impl AcpSessionHandle {
             .unwrap_or_default()
     }
 
-    fn prompt(&self, session_id: &str, prompt: Vec<ContentBlock>) -> Result<(), String> {
+    fn prompt(&self, session_id: &str, prompt: Vec<ContentBlock>) -> Result<(), AcpRequestError> {
         self.request(|response_tx| AcpCommand::Prompt {
             session_id: session_id.to_string(),
             prompt,
@@ -2459,6 +3117,7 @@ impl AcpSessionHandle {
             mode_id: mode_id.to_string(),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
     }
 
     fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), String> {
@@ -2467,6 +3126,7 @@ impl AcpSessionHandle {
             model_id: model_id.to_string(),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
     }
 
     fn set_config_option(
@@ -2481,6 +3141,7 @@ impl AcpSessionHandle {
             value: value.to_string(),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
     }
 
     fn cancel(&self, session_id: &str) -> Result<(), String> {
@@ -2488,6 +3149,7 @@ impl AcpSessionHandle {
             session_id: session_id.to_string(),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
     }
 
     fn respond_permission(&self, request_id: &str, option_id: Option<&str>) -> Result<(), String> {
@@ -2496,6 +3158,12 @@ impl AcpSessionHandle {
             option_id: option_id.map(ToString::to_string),
             response_tx,
         })
+        .map_err(AcpRequestError::into_message)
+    }
+
+    fn shutdown(&self) -> Result<(), String> {
+        self.request(|response_tx| AcpCommand::Shutdown { response_tx })
+            .map_err(AcpRequestError::into_message)
     }
 }
 
@@ -2515,6 +3183,8 @@ struct NativeAcpClient {
     agent_writes: AgentWriteTracker,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
     terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
+    suppress_replayed_session_events: Arc<AtomicBool>,
+    product_profile: RuntimeProductProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -2546,6 +3216,10 @@ impl MessageRole {
 }
 
 impl NativeAcpClient {
+    fn allows_proprietary_actions(&self) -> bool {
+        self.product_profile == RuntimeProductProfile::BuiltIn
+    }
+
     fn emit<T: serde::Serialize>(&self, event_name: &str, payload: T) {
         if let Ok(value) = serde_json::to_value(payload) {
             emit_event(&self.event_tx, event_name, value);
@@ -2664,13 +3338,7 @@ impl NativeAcpClient {
         };
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
-            map_tool_call(
-                session_id,
-                tool_call,
-                action,
-                summary,
-                diffs,
-            ),
+            map_tool_call(session_id, tool_call, action, summary, diffs),
         );
     }
 
@@ -2679,13 +3347,20 @@ impl NativeAcpClient {
         session_id: &str,
         tool_call: &ToolCall,
     ) -> Option<AiToolActivityActionPayload> {
+        if !self.allows_proprietary_actions() {
+            return None;
+        }
         let meta = tool_call.meta.as_ref()?;
         let event_type = meta_string(meta, CODEX_ACP_EVENT_TYPE_KEY)?;
         if event_type != CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE {
             return None;
         }
 
-        let runtime_child_session_id = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)?;
+        let runtime_child_session_id = meta_thread_identity(
+            meta,
+            CODEX_ACP_CHILD_THREAD_ID_KEY,
+            CODEX_ACP_CHILD_SESSION_ID_KEY,
+        )?;
         let child_session_id = self
             .find_app_session_id(&runtime_child_session_id)
             .or_else(|| {
@@ -3083,15 +3758,26 @@ impl NativeAcpClient {
         runtime_session_id: &str,
         meta: Option<&Meta>,
     ) -> Option<AiSession> {
+        if !self.allows_proprietary_actions() {
+            return None;
+        }
         let meta = meta?;
         let event_type = meta_string(meta, CODEX_ACP_EVENT_TYPE_KEY)?;
         if event_type != CODEX_ACP_SUBAGENT_CREATED_EVENT_TYPE {
             return None;
         }
 
-        let runtime_child_session_id = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)
-            .unwrap_or_else(|| runtime_session_id.to_string());
-        let runtime_parent_session_id = meta_string(meta, CODEX_ACP_PARENT_SESSION_ID_KEY)?;
+        let runtime_child_session_id = meta_thread_identity(
+            meta,
+            CODEX_ACP_CHILD_THREAD_ID_KEY,
+            CODEX_ACP_CHILD_SESSION_ID_KEY,
+        )
+        .unwrap_or_else(|| runtime_session_id.to_string());
+        let runtime_parent_session_id = meta_thread_identity(
+            meta,
+            CODEX_ACP_PARENT_THREAD_ID_KEY,
+            CODEX_ACP_PARENT_SESSION_ID_KEY,
+        )?;
         let cwd = meta_string(meta, CODEX_ACP_CWD_KEY).map(PathBuf::from);
         let model_id = meta_string(meta, CODEX_ACP_MODEL_KEY);
         let reasoning_effort = meta_string(meta, CODEX_ACP_REASONING_EFFORT_KEY);
@@ -3169,6 +3855,9 @@ impl NativeAcpClient {
     }
 
     fn handle_turn_lifecycle_update(&self, session_id: &str, meta: Option<&Meta>) -> bool {
+        if !self.allows_proprietary_actions() {
+            return false;
+        }
         let Some(meta) = meta else {
             return false;
         };
@@ -3202,6 +3891,9 @@ impl NativeAcpClient {
     }
 
     fn handle_subagent_lifecycle_breadcrumb(&self, parent_session_id: &str, meta: Option<&Meta>) {
+        if !self.allows_proprietary_actions() {
+            return;
+        }
         let Some(meta) = meta else {
             return;
         };
@@ -3254,7 +3946,11 @@ impl NativeAcpClient {
             return vec![];
         }
 
-        if let Some(runtime_child_session_id) = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) {
+        if let Some(runtime_child_session_id) = meta_thread_identity(
+            meta,
+            CODEX_ACP_CHILD_THREAD_ID_KEY,
+            CODEX_ACP_CHILD_SESSION_ID_KEY,
+        ) {
             if codex_acp_agent_status_is_terminal(meta).unwrap_or(false) {
                 return self
                     .child_session_id_for_parent(parent_session_id, &runtime_child_session_id)
@@ -3272,7 +3968,12 @@ impl NativeAcpClient {
         parent_session_id: &str,
         meta: &Meta,
     ) -> Option<String> {
-        meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY).and_then(|runtime_child_session_id| {
+        meta_thread_identity(
+            meta,
+            CODEX_ACP_CHILD_THREAD_ID_KEY,
+            CODEX_ACP_CHILD_SESSION_ID_KEY,
+        )
+        .and_then(|runtime_child_session_id| {
             self.child_session_id_for_parent(parent_session_id, &runtime_child_session_id)
         })
     }
@@ -3310,7 +4011,8 @@ impl NativeAcpClient {
                     })
                     .filter_map(|status| {
                         status
-                            .get(CODEX_ACP_CHILD_SESSION_ID_KEY)
+                            .get(CODEX_ACP_CHILD_THREAD_ID_KEY)
+                            .or_else(|| status.get(CODEX_ACP_CHILD_SESSION_ID_KEY))
                             .and_then(Value::as_str)
                             .and_then(|runtime_child_session_id| {
                                 self.child_session_id_for_parent(
@@ -3578,6 +4280,12 @@ impl NativeAcpClient {
         &self,
         args: SessionNotification,
     ) -> agent_client_protocol::Result<()> {
+        if self
+            .suppress_replayed_session_events
+            .load(Ordering::Relaxed)
+        {
+            return Ok(());
+        }
         let runtime_session_id = args.session_id.0.to_string();
         let meta = merged_session_notification_meta(&args);
         let session_id = self.resolve_app_session_id(&runtime_session_id, meta.as_ref());
@@ -3829,11 +4537,13 @@ fn start_acp_session(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
     context: AcpActorContext,
-) -> Result<CreatedAcpSession, String> {
+) -> Result<CreatedAcpSession, AcpSessionStartError> {
+    validate_acp_process_spec(&spec).map_err(AcpSessionStartError::Other)?;
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
-    let flavor = acp_protocol_flavor(&spec.runtime_id);
+    let flavor = spec.acp_protocol;
     let handle = AcpSessionHandle {
+        process_id: ACP_PROCESS_COUNTER.fetch_add(1, Ordering::Relaxed),
         command_tx: command_tx.clone(),
         prompt_capabilities: Arc::clone(&context.prompt_capabilities),
     };
@@ -3841,7 +4551,9 @@ fn start_acp_session(
         let runtime = match Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
             Err(error) => {
-                let _ = created_tx.send(Err(format!("Failed to start ACP runtime: {error}")));
+                let _ = created_tx.send(Err(AcpSessionStartError::Other(format!(
+                    "Failed to start ACP runtime: {error}"
+                ))));
                 return;
             }
         };
@@ -3858,16 +4570,50 @@ fn start_acp_session(
     });
     let session = created_rx
         .recv_timeout(ACP_SESSION_START_TIMEOUT)
-        .map_err(|error| match error {
-            mpsc::RecvTimeoutError::Timeout => format!(
-                "Timed out waiting for the AI runtime to create a session after {} seconds.",
-                ACP_SESSION_START_TIMEOUT.as_secs()
-            ),
-            mpsc::RecvTimeoutError::Disconnected => {
-                "AI runtime session startup disconnected before responding.".to_string()
-            }
+        .map_err(|error| {
+            AcpSessionStartError::Other(match error {
+                mpsc::RecvTimeoutError::Timeout => format!(
+                    "Timed out waiting for the AI runtime to create a session after {} seconds.",
+                    ACP_SESSION_START_TIMEOUT.as_secs()
+                ),
+                mpsc::RecvTimeoutError::Disconnected => {
+                    "AI runtime session startup disconnected before responding.".to_string()
+                }
+            })
         })??;
     Ok(CreatedAcpSession { session, handle })
+}
+
+fn validate_acp_process_spec(spec: &AcpProcessSpec) -> Result<(), String> {
+    let Some(launch) = spec.custom_launch.as_ref() else {
+        return Ok(());
+    };
+    revalidate_custom_acp_launch(launch)?;
+    let env_matches = spec.env.len() == launch.env.len()
+        && launch
+            .env
+            .iter()
+            .all(|(key, value)| spec.env.get(key) == Some(value));
+    if spec.runtime_id != launch.runtime_id
+        || spec.program != launch.program
+        || spec.args != launch.args
+        || !env_matches
+        || spec.acp_protocol != AcpProtocolFlavor::Current
+        || spec.environment_policy != ProcessEnvironmentPolicy::Isolated
+        || spec.product_profile != RuntimeProductProfile::Conservative
+        || spec.auth_method.is_some()
+        || spec.auth_handshake.is_some()
+        || !matches!(
+            spec.claude_provider_routing,
+            ClaudeProviderProcessRouting::Inherit
+        )
+    {
+        return Err(format!(
+            "Custom ACP runtime process snapshot is invalid: {}",
+            spec.runtime_id
+        ));
+    }
+    Ok(())
 }
 
 fn run_acp_auth(spec: AcpProcessSpec, method_id: String) -> Result<(), String> {
@@ -3886,7 +4632,7 @@ enum AcpAuthCommand {
 
 fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> Result<(), String> {
     let (result_tx, result_rx) = mpsc::channel();
-    let flavor = acp_protocol_flavor(&spec.runtime_id);
+    let flavor = spec.acp_protocol;
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
@@ -4024,6 +4770,23 @@ fn acp_initialize_response_has_auth_method(
         .any(|method| method.id().0.as_ref() == method_id)
 }
 
+fn apply_acp_process_environment(command: &mut Command, spec: &AcpProcessSpec) {
+    if spec.environment_policy == ProcessEnvironmentPolicy::Isolated {
+        command.env_clear();
+    }
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    if !matches!(
+        &spec.claude_provider_routing,
+        ClaudeProviderProcessRouting::Inherit
+    ) {
+        for key in CLAUDE_PROVIDER_ROUTING_ENV_KEYS {
+            command.env_remove(key);
+        }
+    }
+}
+
 async fn run_acp_auth_inner(
     spec: AcpProcessSpec,
     auth_command: AcpAuthCommand,
@@ -4034,9 +4797,8 @@ async fn run_acp_auth_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
+    command.kill_on_drop(true);
+    apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
         command.process_group(0);
@@ -4114,9 +4876,8 @@ async fn run_acp12_auth_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
+    command.kill_on_drop(true);
+    apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
         command.process_group(0);
@@ -4194,7 +4955,7 @@ async fn run_acp_actor(
     start_mode: AcpSessionStartMode,
     context: AcpActorContext,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
-    created_tx: mpsc::Sender<Result<AiSession, String>>,
+    created_tx: mpsc::Sender<Result<AiSession, AcpSessionStartError>>,
 ) {
     let result = run_acp_actor_inner(
         spec,
@@ -4205,7 +4966,7 @@ async fn run_acp_actor(
     )
     .await;
     if let Err(error) = result {
-        let _ = created_tx.send(Err(error));
+        let _ = created_tx.send(Err(AcpSessionStartError::Other(error)));
     }
 }
 
@@ -4214,7 +4975,7 @@ async fn run_acp12_actor(
     start_mode: AcpSessionStartMode,
     context: AcpActorContext,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
-    created_tx: mpsc::Sender<Result<AiSession, String>>,
+    created_tx: mpsc::Sender<Result<AiSession, AcpSessionStartError>>,
 ) {
     let result = run_acp12_actor_inner(
         spec,
@@ -4225,8 +4986,126 @@ async fn run_acp12_actor(
     )
     .await;
     if let Err(error) = result {
-        let _ = created_tx.send(Err(error));
+        let _ = created_tx.send(Err(AcpSessionStartError::Other(error)));
     }
+}
+
+async fn shutdown_acp_child(child: &mut tokio::process::Child) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        if let Some(process_id) = child.id() {
+            let result = unsafe { libc::kill(-(process_id as i32), libc::SIGKILL) };
+            if result != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(format!("Failed to stop AI runtime process group: {error}"));
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    child
+        .start_kill()
+        .map_err(|error| format!("Failed to stop AI runtime process: {error}"))?;
+    child
+        .wait()
+        .await
+        .map_err(|error| format!("Failed to wait for AI runtime process shutdown: {error}"))?;
+    Ok(())
+}
+
+fn observe_acp_stderr_chunk(
+    config_invalid: &AtomicBool,
+    matched_marker_bytes: &mut usize,
+    chunk: &[u8],
+) {
+    if config_invalid.load(Ordering::Relaxed) {
+        return;
+    }
+
+    for byte in chunk {
+        let byte = byte.to_ascii_lowercase();
+        if byte == ACP_RUNTIME_CONFIGURATION_ERROR_MARKER[*matched_marker_bytes] {
+            *matched_marker_bytes += 1;
+            if *matched_marker_bytes == ACP_RUNTIME_CONFIGURATION_ERROR_MARKER.len() {
+                config_invalid.store(true, Ordering::Relaxed);
+                return;
+            }
+        } else {
+            *matched_marker_bytes = usize::from(byte == ACP_RUNTIME_CONFIGURATION_ERROR_MARKER[0]);
+        }
+    }
+}
+
+async fn capture_acp_stderr(
+    mut stderr: tokio::process::ChildStderr,
+    config_invalid: Arc<AtomicBool>,
+) {
+    let mut matched_marker_bytes = 0;
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let read = match stderr.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => break,
+        };
+        observe_acp_stderr_chunk(&config_invalid, &mut matched_marker_bytes, &chunk[..read]);
+    }
+}
+
+fn append_acp_stderr_diagnostic(message: String, config_invalid: bool) -> String {
+    // ACP stderr can contain arbitrary runtime output, including credentials. Only expose a
+    // fixed diagnostic that NeverWrite recognizes; never propagate the original text.
+    if config_invalid {
+        format!("{message} {ACP_RUNTIME_CONFIGURATION_INVALID_DIAGNOSTIC}")
+    } else {
+        message
+    }
+}
+
+async fn acp_child_exit_message_with_stderr(
+    status: std::process::ExitStatus,
+    stderr_task: &mut Option<tokio::task::JoinHandle<()>>,
+    config_invalid: &AtomicBool,
+) -> String {
+    let message = acp_child_exit_message(status);
+    if let Some(mut task) = stderr_task.take() {
+        match tokio::time::timeout(ACP_STDERR_DRAIN_TIMEOUT, &mut task).await {
+            Ok(_) => {}
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+    }
+    append_acp_stderr_diagnostic(message, config_invalid.load(Ordering::Relaxed))
+}
+
+async fn acp_child_wait_message(
+    wait_result: std::io::Result<std::process::ExitStatus>,
+    stderr_task: &mut Option<tokio::task::JoinHandle<()>>,
+    config_invalid: &AtomicBool,
+) -> String {
+    match wait_result {
+        Ok(status) => acp_child_exit_message_with_stderr(status, stderr_task, config_invalid).await,
+        Err(error) => format!("Failed to wait for AI runtime process: {error}"),
+    }
+}
+
+async fn acp_startup_exit_message(
+    child: &mut tokio::process::Child,
+    stderr_task: &mut Option<tokio::task::JoinHandle<()>>,
+    config_invalid: &AtomicBool,
+) -> Option<String> {
+    let wait_result = match child.try_wait() {
+        Ok(Some(status)) => Ok(status),
+        Ok(None) => match tokio::time::timeout(ACP_STDERR_DRAIN_TIMEOUT, child.wait()).await {
+            Ok(wait_result) => wait_result,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+    Some(acp_child_wait_message(wait_result, stderr_task, config_invalid).await)
 }
 
 async fn run_acp12_actor_inner(
@@ -4234,7 +5113,7 @@ async fn run_acp12_actor_inner(
     start_mode: AcpSessionStartMode,
     context: AcpActorContext,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
-    created_tx: mpsc::Sender<Result<AiSession, String>>,
+    created_tx: mpsc::Sender<Result<AiSession, AcpSessionStartError>>,
 ) -> Result<(), String> {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args);
@@ -4242,14 +5121,22 @@ async fn run_acp12_actor_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
+    command.kill_on_drop(true);
+    apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
         command.process_group(0);
     }
     let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stderr".to_string())?;
+    let config_invalid = Arc::new(AtomicBool::new(false));
+    let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(
+        stderr,
+        Arc::clone(&config_invalid),
+    )));
     let stdin = child
         .stdin
         .take()
@@ -4274,11 +5161,15 @@ async fn run_acp12_actor_inner(
         agent_writes: context.shared.agent_writes.clone(),
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
         terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+        suppress_replayed_session_events: Arc::new(AtomicBool::new(false)),
+        product_profile: spec.product_profile,
     };
     let permission_waiters = client.permission_waiters.clone();
     let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
     let session_created = Arc::new(AtomicBool::new(false));
     let session_created_for_connection = Arc::clone(&session_created);
+    let connected_session_id = Arc::new(Mutex::new(None::<String>));
+    let connected_session_id_for_connection = Arc::clone(&connected_session_id);
     let disconnect_runtime_id = spec.runtime_id.clone();
     let event_tx_for_connection = event_tx.clone();
     let prompt_capabilities = Arc::clone(&context.prompt_capabilities);
@@ -4349,6 +5240,7 @@ async fn run_acp12_actor_inner(
                         AI_RUNTIME_CONNECTION_EVENT,
                         json!(AiRuntimeConnectionPayload {
                             runtime_id: spec.runtime_id.clone(),
+                            session_id: None,
                             status: "ready".to_string(),
                             message: None,
                         }),
@@ -4361,13 +5253,28 @@ async fn run_acp12_actor_inner(
                         initialize_model_state,
                     )
                     .await
-                } => response?,
+                } => match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        if let Some(message) = acp_startup_exit_message(
+                            &mut child,
+                            &mut stderr_task,
+                            &config_invalid,
+                        )
+                        .await
+                        {
+                            return Err(acp12::Error::internal_error().data(message));
+                        }
+                        return Err(error);
+                    }
+                },
                 wait_result = child.wait() => {
-                    let message = wait_result
-                        .map(acp_child_exit_message)
-                        .unwrap_or_else(|error| {
-                            format!("Failed to wait for AI runtime process: {error}")
-                        });
+                    let message = acp_child_wait_message(
+                        wait_result,
+                        &mut stderr_task,
+                        &config_invalid,
+                    )
+                    .await;
                     return Err(acp12::Error::internal_error().data(message));
                 }
             };
@@ -4382,22 +5289,32 @@ async fn run_acp12_actor_inner(
             client
                 .tool_diffs
                 .register_session_cwd(&session.session_id, spec.cwd.clone());
+            if let Ok(mut session_id) = connected_session_id_for_connection.lock() {
+                *session_id = Some(session.session_id.clone());
+            }
             session_created_for_connection.store(true, Ordering::Relaxed);
             let _ = created_tx.send(Ok(session));
             loop {
                 tokio::select! {
                     maybe_command = command_rx.recv() => {
                         let Some(command) = maybe_command else {
+                            let _ = shutdown_acp_child(&mut child).await;
                             return Ok(());
                         };
+                        if let AcpCommand::Shutdown { response_tx } = command {
+                            let result = shutdown_acp_child(&mut child).await;
+                            let _ = response_tx.send(result);
+                            return Ok(());
+                        }
                         handle_acp12_command(command, &connection, &client, &permission_waiters).await;
                     }
                     wait_result = child.wait() => {
-                        let message = wait_result
-                            .map(acp_child_exit_message)
-                            .unwrap_or_else(|error| {
-                                format!("Failed to wait for AI runtime process: {error}")
-                            });
+                        let message = acp_child_wait_message(
+                            wait_result,
+                            &mut stderr_task,
+                            &config_invalid,
+                        )
+                        .await;
                         return Err(acp12::Error::internal_error().data(message));
                     }
                 }
@@ -4415,6 +5332,10 @@ async fn run_acp12_actor_inner(
                 AI_RUNTIME_CONNECTION_EVENT,
                 json!(AiRuntimeConnectionPayload {
                     runtime_id: disconnect_runtime_id,
+                    session_id: connected_session_id
+                        .lock()
+                        .ok()
+                        .and_then(|session_id| session_id.clone()),
                     status: "error".to_string(),
                     message: Some(format!(
                         "The AI runtime process disconnected unexpectedly: {error}"
@@ -4432,7 +5353,7 @@ async fn run_acp_actor_inner(
     start_mode: AcpSessionStartMode,
     context: AcpActorContext,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
-    created_tx: mpsc::Sender<Result<AiSession, String>>,
+    created_tx: mpsc::Sender<Result<AiSession, AcpSessionStartError>>,
 ) -> Result<(), String> {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args);
@@ -4440,14 +5361,22 @@ async fn run_acp_actor_inner(
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
+    command.kill_on_drop(true);
+    apply_acp_process_environment(&mut command, &spec);
     #[cfg(unix)]
     {
         command.process_group(0);
     }
     let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stderr".to_string())?;
+    let config_invalid = Arc::new(AtomicBool::new(false));
+    let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(
+        stderr,
+        Arc::clone(&config_invalid),
+    )));
     let stdin = child
         .stdin
         .take()
@@ -4457,6 +5386,10 @@ async fn run_acp_actor_inner(
         .take()
         .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
     let event_tx = context.shared.event_tx.clone();
+    let suppress_replayed_session_events = Arc::new(AtomicBool::new(matches!(
+        &start_mode,
+        AcpSessionStartMode::Load { .. }
+    )));
     let client = NativeAcpClient {
         event_tx: event_tx.clone(),
         session_state: Arc::clone(&context.shared.session_state),
@@ -4472,15 +5405,20 @@ async fn run_acp_actor_inner(
         agent_writes: context.shared.agent_writes.clone(),
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
         terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+        suppress_replayed_session_events: Arc::clone(&suppress_replayed_session_events),
+        product_profile: spec.product_profile,
     };
     let permission_waiters = client.permission_waiters.clone();
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
     let session_created = Arc::new(AtomicBool::new(false));
     let session_created_for_connection = Arc::clone(&session_created);
+    let connected_session_id = Arc::new(Mutex::new(None::<String>));
+    let connected_session_id_for_connection = Arc::clone(&connected_session_id);
     let disconnect_runtime_id = spec.runtime_id.clone();
     let event_tx_for_connection = event_tx.clone();
     let prompt_capabilities = Arc::clone(&context.prompt_capabilities);
     let client_for_shutdown = client.clone();
+    let created_tx_for_capability_error = created_tx.clone();
 
     let result = Client
         .builder()
@@ -4558,24 +5496,67 @@ async fn run_acp_actor_inner(
                         &prompt_capabilities,
                         prompt_capabilities_from_initialize_response(&initialize_response),
                     );
+                    if is_custom_acp_runtime_id(&spec.runtime_id) {
+                        if let Err(message) = validate_custom_continuation_capability(
+                            &start_mode,
+                            &initialize_response,
+                        ) {
+                            let _ = created_tx_for_capability_error.send(Err(
+                                AcpSessionStartError::ContinuationUnavailable(message.clone()),
+                            ));
+                            return Err(
+                                agent_client_protocol::Error::internal_error().data(message)
+                            );
+                        }
+                    }
                     run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
+                    let provider_fallback_env = configure_claude_provider_for_session(
+                        &connection,
+                        &spec,
+                        &initialize_response,
+                    )
+                    .await?;
                     emit_event(
                         &event_tx_for_connection,
                         AI_RUNTIME_CONNECTION_EVENT,
                         json!(AiRuntimeConnectionPayload {
                             runtime_id: spec.runtime_id.clone(),
+                            session_id: None,
                             status: "ready".to_string(),
                             message: None,
                         }),
                     );
-                    start_acp_runtime_session(&connection, &spec, &start_mode).await
-                } => response?,
+                    start_acp_runtime_session(
+                        &connection,
+                        &spec,
+                        &start_mode,
+                        &initialize_response,
+                        provider_fallback_env.as_ref(),
+                        &suppress_replayed_session_events,
+                    )
+                    .await
+                } => match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        if let Some(message) = acp_startup_exit_message(
+                            &mut child,
+                            &mut stderr_task,
+                            &config_invalid,
+                        )
+                        .await
+                        {
+                            return Err(agent_client_protocol::Error::internal_error().data(message));
+                        }
+                        return Err(error);
+                    }
+                },
                 wait_result = child.wait() => {
-                    let message = wait_result
-                        .map(acp_child_exit_message)
-                        .unwrap_or_else(|error| {
-                            format!("Failed to wait for AI runtime process: {error}")
-                        });
+                    let message = acp_child_wait_message(
+                        wait_result,
+                        &mut stderr_task,
+                        &config_invalid,
+                    )
+                    .await;
                     return Err(agent_client_protocol::Error::internal_error().data(message));
                 }
             };
@@ -4587,25 +5568,39 @@ async fn run_acp_actor_inner(
             );
             session.additional_roots =
                 additional_roots_to_strings(start_mode.additional_directories());
+            if is_custom_acp_runtime_id(&spec.runtime_id) {
+                session.runtime_session_id = Some(session.session_id.clone());
+                session.continuation_strategy = response.continuation_strategy;
+            }
             client
                 .tool_diffs
                 .register_session_cwd(&session.session_id, spec.cwd.clone());
+            if let Ok(mut session_id) = connected_session_id_for_connection.lock() {
+                *session_id = Some(session.session_id.clone());
+            }
             session_created_for_connection.store(true, Ordering::Relaxed);
             let _ = created_tx.send(Ok(session));
             loop {
                 tokio::select! {
                     maybe_command = command_rx.recv() => {
                         let Some(command) = maybe_command else {
+                            let _ = shutdown_acp_child(&mut child).await;
                             return Ok(());
                         };
+                        if let AcpCommand::Shutdown { response_tx } = command {
+                            let result = shutdown_acp_child(&mut child).await;
+                            let _ = response_tx.send(result);
+                            return Ok(());
+                        }
                         handle_acp_command(command, &connection, &client, &permission_waiters).await;
                     }
                     wait_result = child.wait() => {
-                        let message = wait_result
-                            .map(acp_child_exit_message)
-                            .unwrap_or_else(|error| {
-                                format!("Failed to wait for AI runtime process: {error}")
-                            });
+                        let message = acp_child_wait_message(
+                            wait_result,
+                            &mut stderr_task,
+                            &config_invalid,
+                        )
+                        .await;
                         return Err(agent_client_protocol::Error::internal_error().data(message));
                     }
                 }
@@ -4623,6 +5618,10 @@ async fn run_acp_actor_inner(
                 AI_RUNTIME_CONNECTION_EVENT,
                 json!(AiRuntimeConnectionPayload {
                     runtime_id: disconnect_runtime_id,
+                    session_id: connected_session_id
+                        .lock()
+                        .ok()
+                        .and_then(|session_id| session_id.clone()),
                     status: "error".to_string(),
                     message: Some(format!(
                         "The AI runtime process disconnected unexpectedly: {error}"
@@ -4635,12 +5634,145 @@ async fn run_acp_actor_inner(
     }
 }
 
+async fn configure_claude_provider_for_session(
+    connection: &ConnectionTo<Agent>,
+    spec: &AcpProcessSpec,
+    initialize_response: &InitializeResponse,
+) -> Result<Option<HashMap<String, String>>, agent_client_protocol::Error> {
+    let ClaudeProviderProcessRouting::Configure(snapshot) = &spec.claude_provider_routing else {
+        return Ok(None);
+    };
+
+    if !acp_providers::supports_providers(initialize_response) {
+        return claude_provider_legacy_fallback_env(snapshot).map(Some);
+    }
+
+    let (api_type, base_url, vertex) = match &snapshot.routing {
+        ClaudeProviderRouting::Anthropic { base_url } => {
+            (LlmProtocol::Anthropic, base_url.clone(), None)
+        }
+        ClaudeProviderRouting::Bedrock { base_url } => {
+            (LlmProtocol::Bedrock, base_url.clone(), None)
+        }
+        ClaudeProviderRouting::Vertex {
+            base_url,
+            project_id,
+            region,
+        } => (
+            LlmProtocol::Vertex,
+            base_url.clone(),
+            Some(acp_providers::VertexProviderMeta::new(
+                project_id.clone(),
+                region.clone(),
+            )),
+        ),
+        ClaudeProviderRouting::Default => return Ok(None),
+    };
+    let protocol_name = claude_provider_protocol_name(&api_type);
+    acp_providers::configure_main_provider(
+        connection,
+        api_type,
+        base_url,
+        snapshot.headers.clone(),
+        vertex,
+    )
+    .await
+    .map_err(|_| {
+        sanitized_provider_error(&format!(
+            "Claude ACP could not apply the requested {protocol_name} provider configuration before starting the session."
+        ))
+    })?;
+    Ok(None)
+}
+
+fn claude_provider_legacy_fallback_env(
+    snapshot: &ClaudeProviderSnapshot,
+) -> Result<HashMap<String, String>, agent_client_protocol::Error> {
+    match &snapshot.routing {
+        ClaudeProviderRouting::Anthropic { base_url } => Ok(HashMap::from([
+            ("ANTHROPIC_BASE_URL".to_string(), base_url.clone()),
+            (
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                serialize_claude_provider_headers(&snapshot.headers),
+            ),
+            ("ANTHROPIC_AUTH_TOKEN".to_string(), " ".to_string()),
+        ])),
+        ClaudeProviderRouting::Bedrock { base_url } => Ok(HashMap::from([
+            ("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string()),
+            (
+                "AWS_BEARER_TOKEN_BEDROCK".to_string(),
+                " ".to_string(),
+            ),
+            (
+                "ANTHROPIC_BEDROCK_BASE_URL".to_string(),
+                base_url.clone(),
+            ),
+            (
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                serialize_claude_provider_headers(&snapshot.headers),
+            ),
+        ])),
+        ClaudeProviderRouting::Vertex { .. } => Err(sanitized_provider_error(
+            "Claude is configured for Google Vertex AI, but this ACP runtime does not support provider configuration. Update claude-agent-acp to version 0.60.0 or newer.",
+        )),
+        ClaudeProviderRouting::Default => Ok(HashMap::new()),
+    }
+}
+
+fn claude_provider_protocol_name(protocol: &LlmProtocol) -> &'static str {
+    match protocol {
+        LlmProtocol::Anthropic => "Anthropic",
+        LlmProtocol::Bedrock => "Bedrock",
+        LlmProtocol::Vertex => "Vertex",
+        _ => "unknown",
+    }
+}
+
+fn serialize_claude_provider_headers(headers: &HashMap<String, String>) -> String {
+    headers
+        .iter()
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn sanitized_provider_error(message: &str) -> agent_client_protocol::Error {
+    agent_client_protocol::Error::internal_error().data(message.to_string())
+}
+
+fn claude_provider_fallback_meta(env: Option<&HashMap<String, String>>) -> Option<Meta> {
+    env.map(|env| {
+        Meta::from_iter([(
+            "claudeCode".to_string(),
+            json!({
+                "options": {
+                    "env": env,
+                }
+            }),
+        )])
+    })
+}
+
 async fn start_acp_runtime_session(
     connection: &ConnectionTo<Agent>,
     spec: &AcpProcessSpec,
     start_mode: &AcpSessionStartMode,
+    initialize_response: &InitializeResponse,
+    provider_fallback_env: Option<&HashMap<String, String>>,
+    suppress_replayed_session_events: &AtomicBool,
 ) -> Result<AcpSessionStartResponse, agent_client_protocol::Error> {
     let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
+    let provider_meta = claude_provider_fallback_meta(provider_fallback_env);
+    let continuation_strategy = if is_custom_acp_runtime_id(&spec.runtime_id) {
+        Some(
+            validate_custom_continuation_capability(start_mode, initialize_response)
+                .map_err(|message| agent_client_protocol::Error::internal_error().data(message))?,
+        )
+    } else {
+        None
+    };
     match start_mode {
         AcpSessionStartMode::New {
             additional_directories,
@@ -4650,6 +5782,7 @@ async fn start_acp_runtime_session(
                     &spec.runtime_id,
                     cwd,
                     additional_directories,
+                    provider_meta,
                 ))
                 .block_task()
                 .await?;
@@ -4657,6 +5790,28 @@ async fn start_acp_runtime_session(
                 session_id: response.session_id.0.to_string(),
                 modes: response.modes,
                 config_options: response.config_options,
+                continuation_strategy,
+            })
+        }
+        AcpSessionStartMode::Resume {
+            session_id,
+            additional_directories,
+        } => {
+            let response = connection
+                .send_request(resume_session_request(
+                    &spec.runtime_id,
+                    session_id,
+                    cwd,
+                    additional_directories,
+                    provider_meta,
+                ))
+                .block_task()
+                .await?;
+            Ok(AcpSessionStartResponse {
+                session_id: session_id.clone(),
+                modes: None,
+                config_options: response.config_options,
+                continuation_strategy,
             })
         }
         AcpSessionStartMode::Load {
@@ -4664,21 +5819,85 @@ async fn start_acp_runtime_session(
             additional_directories,
         } => {
             let response = connection
-                .send_request(
-                    ResumeSessionRequest::new(SessionId::new(session_id.clone()), cwd)
-                        .additional_directories(additional_wire_paths(
-                            &spec.runtime_id,
-                            additional_directories,
-                        )),
-                )
+                .send_request(load_session_request(
+                    &spec.runtime_id,
+                    session_id,
+                    cwd,
+                    additional_directories,
+                    provider_meta,
+                ))
                 .block_task()
                 .await?;
+            suppress_replayed_session_events.store(false, Ordering::Relaxed);
             Ok(AcpSessionStartResponse {
                 session_id: session_id.clone(),
-                modes: None,
+                modes: response.modes,
                 config_options: response.config_options,
+                continuation_strategy,
             })
         }
+    }
+}
+
+fn custom_continuation_strategy(
+    initialize_response: &InitializeResponse,
+) -> AcpContinuationStrategy {
+    if initialize_response
+        .agent_capabilities
+        .session_capabilities
+        .resume
+        .is_some()
+    {
+        AcpContinuationStrategy::Resume
+    } else if initialize_response.agent_capabilities.load_session {
+        AcpContinuationStrategy::Load
+    } else {
+        AcpContinuationStrategy::NewSessionOnly
+    }
+}
+
+fn validate_custom_continuation_capability(
+    start_mode: &AcpSessionStartMode,
+    initialize_response: &InitializeResponse,
+) -> Result<AcpContinuationStrategy, String> {
+    let observed = custom_continuation_strategy(initialize_response);
+    match start_mode.continuation_strategy() {
+        None => Ok(observed),
+        Some(AcpContinuationStrategy::Resume)
+            if initialize_response
+                .agent_capabilities
+                .session_capabilities
+                .resume
+                .is_some() =>
+        {
+            Ok(AcpContinuationStrategy::Resume)
+        }
+        Some(AcpContinuationStrategy::Load)
+            if initialize_response.agent_capabilities.load_session =>
+        {
+            Ok(AcpContinuationStrategy::Load)
+        }
+        Some(strategy) => Err(format!(
+            "Custom ACP runtime no longer advertises the persisted '{}' continuation strategy.",
+            continuation_strategy_name(strategy)
+        )),
+    }
+}
+
+fn custom_runtime_requires_confirmation(
+    historical_fingerprint: &str,
+    confirmed_fingerprint: Option<&str>,
+    current_fingerprint: &str,
+) -> bool {
+    historical_fingerprint != current_fingerprint
+        && confirmed_fingerprint != Some(current_fingerprint)
+}
+
+fn continuation_strategy_name(strategy: AcpContinuationStrategy) -> &'static str {
+    match strategy {
+        AcpContinuationStrategy::Resume => "resume",
+        AcpContinuationStrategy::Load => "load",
+        AcpContinuationStrategy::NewSessionOnly => "new-session-only",
     }
 }
 
@@ -4705,12 +5924,17 @@ async fn start_acp12_runtime_session(
                 session_id: response.session_id.0.to_string(),
                 modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
                 config_options: acp12_session_config_options(
+                    &spec.runtime_id,
                     response.config_options,
                     response.models.or_else(|| initialize_model_state.clone()),
                 )
                 .map_err(acp12_internal_error)?,
+                continuation_strategy: None,
             })
         }
+        AcpSessionStartMode::Resume { .. } => Err(acp12_internal_error(
+            "ACP 0.12 runtimes do not support session/resume in NeverWrite.".to_string(),
+        )),
         AcpSessionStartMode::Load {
             session_id,
             additional_directories,
@@ -4732,10 +5956,12 @@ async fn start_acp12_runtime_session(
                 session_id: session_id.clone(),
                 modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
                 config_options: acp12_session_config_options(
+                    &spec.runtime_id,
                     response.config_options,
                     response.models.or_else(|| initialize_model_state.clone()),
                 )
                 .map_err(acp12_internal_error)?,
+                continuation_strategy: None,
             })
         }
     }
@@ -4752,6 +5978,7 @@ fn acp12_initialize_model_state(
 }
 
 fn acp12_session_config_options(
+    runtime_id: &str,
     legacy_options: Option<Vec<acp12::schema::SessionConfigOption>>,
     legacy_models: Option<acp12::schema::SessionModelState>,
 ) -> Result<Option<Vec<SessionConfigOption>>, String> {
@@ -4763,7 +5990,7 @@ fn acp12_session_config_options(
     let options = options.get_or_insert_with(Vec::new);
     if !options.iter().any(|option| {
         matches!(
-            map_config_option_category(&option.id.0, option.category.as_ref()),
+            map_config_option_category(runtime_id, &option.id.0, option.category.as_ref()),
             AiConfigOptionCategory::Model
         )
     }) {
@@ -4827,9 +6054,35 @@ fn new_session_request(
     runtime_id: &str,
     cwd: PathBuf,
     additional_directories: &[PathBuf],
+    meta: Option<Meta>,
 ) -> NewSessionRequest {
     NewSessionRequest::new(cwd)
         .additional_directories(additional_wire_paths(runtime_id, additional_directories))
+        .meta(meta)
+}
+
+fn load_session_request(
+    runtime_id: &str,
+    session_id: &str,
+    cwd: PathBuf,
+    additional_directories: &[PathBuf],
+    meta: Option<Meta>,
+) -> LoadSessionRequest {
+    LoadSessionRequest::new(SessionId::new(session_id.to_string()), cwd)
+        .additional_directories(additional_wire_paths(runtime_id, additional_directories))
+        .meta(meta)
+}
+
+fn resume_session_request(
+    runtime_id: &str,
+    session_id: &str,
+    cwd: PathBuf,
+    additional_directories: &[PathBuf],
+    meta: Option<Meta>,
+) -> ResumeSessionRequest {
+    ResumeSessionRequest::new(SessionId::new(session_id.to_string()), cwd)
+        .additional_directories(additional_wire_paths(runtime_id, additional_directories))
+        .meta(meta)
 }
 
 fn additional_wire_paths(runtime_id: &str, additional_directories: &[PathBuf]) -> Vec<PathBuf> {
@@ -4837,6 +6090,23 @@ fn additional_wire_paths(runtime_id: &str, additional_directories: &[PathBuf]) -
         .iter()
         .map(|path| acp_session_wire_path(runtime_id, path))
         .collect()
+}
+
+fn resolve_permission_waiter(
+    permission_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+    request_id: &str,
+    option_id: Option<String>,
+) -> Result<(), String> {
+    let outcome = option_id
+        .map(|value| RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value)))
+        .unwrap_or(RequestPermissionOutcome::Cancelled);
+    permission_waiters
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(request_id)
+        .ok_or_else(|| format!("Permission request not found: {request_id}"))?
+        .send(outcome)
+        .map_err(|_| "Permission request was closed.".to_string())
 }
 
 async fn handle_acp_command(
@@ -4937,25 +6207,13 @@ async fn handle_acp_command(
             option_id,
             response_tx,
         } => {
-            let outcome = option_id
-                .map(|value| {
-                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value))
-                })
-                .unwrap_or(RequestPermissionOutcome::Cancelled);
-            let result = permission_waiters
-                .lock()
-                .map_err(|error| error.to_string())
-                .and_then(|mut waiters| {
-                    waiters
-                        .remove(&request_id)
-                        .ok_or_else(|| format!("Permission request not found: {request_id}"))
-                })
-                .and_then(|sender| {
-                    sender
-                        .send(outcome)
-                        .map_err(|_| "Permission request was closed.".to_string())
-                });
+            let result = resolve_permission_waiter(permission_waiters, &request_id, option_id);
             let _ = response_tx.send(result);
+        }
+        AcpCommand::Shutdown { response_tx } => {
+            let _ = response_tx.send(Err(
+                "ACP shutdown must be handled by the runtime actor.".to_string()
+            ));
         }
     }
 }
@@ -5071,25 +6329,13 @@ async fn handle_acp12_command(
             option_id,
             response_tx,
         } => {
-            let outcome = option_id
-                .map(|value| {
-                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value))
-                })
-                .unwrap_or(RequestPermissionOutcome::Cancelled);
-            let result = permission_waiters
-                .lock()
-                .map_err(|error| error.to_string())
-                .and_then(|mut waiters| {
-                    waiters
-                        .remove(&request_id)
-                        .ok_or_else(|| format!("Permission request not found: {request_id}"))
-                })
-                .and_then(|sender| {
-                    sender
-                        .send(outcome)
-                        .map_err(|_| "Permission request was closed.".to_string())
-                });
+            let result = resolve_permission_waiter(permission_waiters, &request_id, option_id);
             let _ = response_tx.send(result);
+        }
+        AcpCommand::Shutdown { response_tx } => {
+            let _ = response_tx.send(Err(
+                "ACP shutdown must be handled by the runtime actor.".to_string()
+            ));
         }
     }
 }
@@ -5144,6 +6390,10 @@ fn session_from_acp_response(
         closed_at: None,
         title: None,
         runtime_id: runtime_id.to_string(),
+        runtime_display_name: None,
+        runtime_revision: None,
+        runtime_launch_fingerprint: None,
+        continuation_strategy: None,
         model_id,
         mode_id,
         status: AiSessionStatus::Idle,
@@ -5287,7 +6537,11 @@ fn map_session_config_options(
             Some(AiConfigOption {
                 id: option.id.0.to_string(),
                 runtime_id: runtime_id.to_string(),
-                category: map_config_option_category(&option.id.0, option.category.as_ref()),
+                category: map_config_option_category(
+                    runtime_id,
+                    &option.id.0,
+                    option.category.as_ref(),
+                ),
                 label: option.name,
                 description: option.description,
                 kind: "select".to_string(),
@@ -5324,6 +6578,7 @@ fn align_synthesized_config_options_to_acp_state(
 }
 
 fn map_config_option_category(
+    runtime_id: &str,
     option_id: &str,
     category: Option<&SessionConfigOptionCategory>,
 ) -> AiConfigOptionCategory {
@@ -5343,6 +6598,11 @@ fn map_config_option_category(
     ) {
         return AiConfigOptionCategory::Reasoning;
     }
+    if matches!(normalized_id.as_str(), "servicetier" | "fastmode")
+        || (runtime_id == CLAUDE_RUNTIME_ID && normalized_id == "fast")
+    {
+        return AiConfigOptionCategory::ServiceTier;
+    }
 
     match category {
         Some(SessionConfigOptionCategory::Mode) => AiConfigOptionCategory::Mode,
@@ -5355,6 +6615,14 @@ fn map_config_option_category(
             ) =>
         {
             AiConfigOptionCategory::Reasoning
+        }
+        Some(SessionConfigOptionCategory::Other(value))
+            if matches!(
+                normalize_config_option_key(value).as_str(),
+                "servicetier" | "fastmode"
+            ) =>
+        {
+            AiConfigOptionCategory::ServiceTier
         }
         _ => AiConfigOptionCategory::Other,
     }
@@ -5461,6 +6729,9 @@ fn selected_mode_id(
 }
 
 fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<AiConfigOption>) {
+    let has_mode_config_option = config_options
+        .iter()
+        .any(|option| matches!(option.category, AiConfigOptionCategory::Mode));
     if let Some(model_id) = config_options
         .iter()
         .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
@@ -5476,6 +6747,12 @@ fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<
         .filter(|value| !value.trim().is_empty())
     {
         session.mode_id = mode_id;
+    }
+    if has_mode_config_option {
+        // A config option update is the ACP's authoritative model-specific mode catalog.
+        // Keep the legacy modes field aligned so the renderer cannot retain modes removed
+        // after a model switch.
+        session.modes = map_session_modes_from_config_options(&session.runtime_id, &config_options);
     }
     session.config_options = config_options;
 }
@@ -5544,6 +6821,7 @@ fn acp_config_option_remote_command(
     AcpConfigOptionRemoteCommand::SetConfigOption
 }
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
+    let permission_scope = permission_scope_descriptions(option.meta.as_ref());
     AiPermissionOptionPayload {
         option_id: option.option_id.0.to_string(),
         name: option.name,
@@ -5554,7 +6832,35 @@ fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload 
             PermissionOptionKind::RejectAlways => "reject_always".to_string(),
             _ => "other".to_string(),
         },
+        permission_scope,
     }
+}
+
+/// Extract the stable v1 permission scope supplied by agents that support it.
+/// Unknown versions and malformed extension metadata intentionally remain opaque.
+fn permission_scope_descriptions(meta: Option<&Meta>) -> Vec<String> {
+    let Some(permission) = meta
+        .and_then(|meta| meta.get("permission"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+
+    if permission.get("version").and_then(Value::as_u64) != Some(1) {
+        return Vec::new();
+    }
+
+    permission
+        .get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|change| change.get("description").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn map_tool_call(
@@ -5570,6 +6876,7 @@ fn map_tool_call(
         title: tool_call.title.clone(),
         kind: tool_kind_label(&tool_call.kind),
         status: tool_status_label(&tool_call.status),
+        started_at_ms: activity_started_at_ms(tool_call.meta.as_ref()),
         action,
         target: tool_call
             .locations
@@ -6158,6 +7465,10 @@ fn meta_string(meta: &Meta, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn meta_thread_identity(meta: &Meta, thread_key: &str, session_key: &str) -> Option<String> {
+    meta_string(meta, thread_key).or_else(|| meta_string(meta, session_key))
+}
+
 fn codex_acp_agent_status_is_terminal(meta: &Meta) -> Option<bool> {
     meta.get(CODEX_ACP_AGENT_STATUS_KEY)
         .and_then(codex_acp_agent_status_value_is_terminal)
@@ -6167,7 +7478,7 @@ fn codex_acp_agent_status_value_is_terminal(value: &Value) -> Option<bool> {
     if let Some(status) = value.as_str() {
         return Some(matches!(
             status,
-            "errored" | "interrupted" | "shutdown" | "not_found"
+            "completed" | "failed" | "errored" | "shutdown" | "cancelled" | "not_found"
         ));
     }
 
@@ -6175,15 +7486,17 @@ fn codex_acp_agent_status_value_is_terminal(value: &Value) -> Option<bool> {
     if object.keys().any(|key| {
         matches!(
             key.as_str(),
-            "errored" | "interrupted" | "shutdown" | "not_found"
+            "completed" | "failed" | "errored" | "shutdown" | "cancelled" | "not_found"
         )
     }) {
         return Some(true);
     }
-    if object
-        .keys()
-        .any(|key| matches!(key.as_str(), "running" | "pending_init"))
-    {
+    if object.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "starting" | "pending_init" | "running" | "waiting" | "interrupted"
+        )
+    }) {
         return Some(false);
     }
     None
@@ -6291,6 +7604,7 @@ fn map_status_event(
             .to_string(),
         status: tool_status_label(&tool_call.status),
         title: tool_call.title.clone(),
+        started_at_ms: activity_started_at_ms(Some(meta)),
         detail: summarize_tool_content(tool_call),
         emphasis: meta
             .get(ACP_STATUS_EMPHASIS_KEY)
@@ -6299,6 +7613,12 @@ fn map_status_event(
             .to_string(),
         tool_action,
     })
+}
+
+fn activity_started_at_ms(meta: Option<&Meta>) -> Option<i64> {
+    meta.and_then(|meta| meta.get(NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY))
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
 }
 
 fn is_suppressed_status_title(title: &str) -> bool {
@@ -6521,7 +7841,7 @@ fn strip_effort_suffix(value: &str) -> &str {
     value
 }
 
-const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 fn extract_effort(value: &str) -> Option<&str> {
     let suffix = value.rsplit('/').next()?;
@@ -6534,6 +7854,8 @@ fn extract_effort(value: &str) -> Option<&str> {
 fn reasoning_effort_label(effort: &str) -> String {
     match effort {
         "xhigh" => "Extra High".to_string(),
+        "max" => "Maximum".to_string(),
+        "ultra" => "Ultra".to_string(),
         _ => {
             let mut chars = effort.chars();
             match chars.next() {
@@ -6544,52 +7866,57 @@ fn reasoning_effort_label(effort: &str) -> String {
     }
 }
 
-fn runtime_definition(runtime_id: &str) -> Option<&'static RuntimeDefinition> {
-    RUNTIME_DEFINITIONS
-        .iter()
-        .find(|definition| definition.id == runtime_id)
-}
-
-fn acp_protocol_flavor(runtime_id: &str) -> AcpProtocolFlavor {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.acp_protocol)
-        .unwrap_or(AcpProtocolFlavor::Current)
-}
-
+#[cfg(test)]
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
-    RUNTIME_DEFINITIONS
-        .iter()
-        .map(|definition| {
-            let runtime_id = definition.id;
-            let models = default_models(runtime_id);
-            let modes = default_modes_for_runtime_descriptor(runtime_id);
-            let mut capabilities = vec![
-                "create_session".to_string(),
-                "prompt_queueing".to_string(),
-                "user_input".to_string(),
-            ];
-            if definition.supports_native_resume {
-                capabilities.push("resume_session".to_string());
-            }
-            AiRuntimeDescriptor {
-                runtime: AiRuntimeOption {
-                    id: runtime_id.to_string(),
-                    name: definition.name.to_string(),
-                    description: definition.description.to_string(),
-                    capabilities,
-                },
-                config_options: default_config_options(runtime_id, &models, &modes),
-                models,
-                modes,
-            }
-            .with_auth_capabilities(auth_method_ids(runtime_id))
-        })
+    RUNTIME_CATALOG
+        .definitions()
+        .map(runtime_descriptor)
         .collect()
 }
 
+fn runtime_descriptors_with_custom(
+    custom_runtimes: &[neverwrite_ai::custom_runtimes::CustomAcpRuntimeDefinition],
+) -> Vec<AiRuntimeDescriptor> {
+    RUNTIME_CATALOG
+        .with_custom(custom_runtimes)
+        .definitions()
+        .map(runtime_descriptor)
+        .collect()
+}
+
+fn runtime_descriptor(definition: RuntimeDefinition<'_>) -> AiRuntimeDescriptor {
+    let runtime_id = definition.id();
+    let models = default_models(runtime_id);
+    let modes = default_modes_for_runtime_descriptor(runtime_id);
+    let mut capabilities = vec!["create_session".to_string()];
+    if !definition.is_custom() {
+        capabilities.extend(["prompt_queueing".to_string(), "user_input".to_string()]);
+    }
+    if definition.supports_native_resume() {
+        capabilities.push("resume_session".to_string());
+    }
+    let descriptor = AiRuntimeDescriptor {
+        runtime: AiRuntimeOption {
+            id: runtime_id.to_string(),
+            name: definition.name().to_string(),
+            description: definition.description().to_string(),
+            capabilities,
+        },
+        config_options: default_config_options(runtime_id, &models, &modes),
+        models,
+        modes,
+    };
+    if definition.is_custom() {
+        descriptor
+    } else {
+        descriptor.with_auth_capabilities(auth_method_ids(runtime_id))
+    }
+}
+
 fn runtime_supports_native_resume(runtime_id: &str) -> bool {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.supports_native_resume)
+    RUNTIME_CATALOG
+        .definition(runtime_id)
+        .map(|definition| definition.supports_native_resume())
         .unwrap_or(false)
 }
 
@@ -6742,6 +8069,10 @@ fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession
         closed_at: None,
         title: None,
         runtime_id: runtime_id.to_string(),
+        runtime_display_name: None,
+        runtime_revision: None,
+        runtime_launch_fingerprint: None,
+        continuation_strategy: None,
         model_id: models
             .first()
             .map(|model| model.id.clone())
@@ -6789,7 +8120,13 @@ fn setup_status_for_with_inherited_auth(
     };
     let inherited_auth_method = inherited_auth_method
         .filter(|method| inherited_auth_method_applies_to_setup(&setup, method));
-    let auth_ready = binary_ready && (setup.auth_ready || inherited_auth_method.is_some());
+    let provider_auth_ready = runtime_id == CLAUDE_RUNTIME_ID
+        && matches!(
+            setup.claude_provider_routing,
+            Some(ClaudeProviderRouting::Vertex { .. })
+        );
+    let auth_ready = binary_ready
+        && (setup.auth_ready || inherited_auth_method.is_some() || provider_auth_ready);
     let auth_method = setup.auth_method.or(inherited_auth_method);
     let message = if !binary_ready {
         setup.message
@@ -6811,6 +8148,10 @@ fn setup_status_for_with_inherited_auth(
         auth_ready,
         auth_method,
         auth_methods: auth_methods(runtime_id),
+        claude_provider_routing: setup
+            .claude_provider_routing
+            .as_ref()
+            .map(AiClaudeProviderRouting::from),
         has_gateway_config: setup.has_gateway_config,
         has_gateway_url: setup.has_gateway_url,
         onboarding_required: !binary_ready || !auth_ready,
@@ -6894,12 +8235,31 @@ fn runtime_auth_diagnostics(runtime_id: &str) -> Value {
     })
 }
 
+fn custom_acp_process_spec(launch: CustomAcpLaunchSnapshot, cwd: PathBuf) -> AcpProcessSpec {
+    AcpProcessSpec {
+        program: launch.program.clone(),
+        args: launch.args.clone(),
+        cwd,
+        env: launch.env.clone().into_iter().collect(),
+        runtime_id: launch.runtime_id.clone(),
+        acp_protocol: AcpProtocolFlavor::Current,
+        environment_policy: ProcessEnvironmentPolicy::Isolated,
+        product_profile: RuntimeProductProfile::Conservative,
+        custom_launch: Some(launch),
+        auth_method: None,
+        auth_handshake: None,
+        claude_provider_routing: ClaudeProviderProcessRouting::Inherit,
+    }
+}
+
 fn acp_process_spec(
     runtime_id: &str,
     setup: &RuntimeSetupState,
     cwd: PathBuf,
 ) -> Result<AcpProcessSpec, String> {
-    validate_runtime_id(runtime_id)?;
+    let definition = RUNTIME_CATALOG
+        .definition(runtime_id)
+        .ok_or_else(|| format!("Unsupported AI runtime: {runtime_id}"))?;
     let resolved = resolve_acp_command(runtime_id, setup);
     let program = resolved.program.ok_or_else(|| {
         format!(
@@ -6907,6 +8267,7 @@ fn acp_process_spec(
             runtime_name(runtime_id)
         )
     })?;
+    let claude_provider_routing = claude_provider_process_routing(runtime_id, setup)?;
     let mut env = setup.env.clone();
     for key in secret_env_keys_for_runtime(runtime_id) {
         let inherited_secret_should_win = env_secret_present(key)
@@ -6919,21 +8280,27 @@ fn acp_process_spec(
         env.insert("XAI_API_KEY".to_string(), String::new());
     }
     let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
-    if let Some(method) = setup.auth_method.as_deref() {
-        if runtime_id == CLAUDE_RUNTIME_ID && method == "gateway-bedrock" {
-            env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
-            env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
-                .or_default();
-        }
-    }
     if runtime_id == CLAUDE_RUNTIME_ID
-        && env
-            .get("ANTHROPIC_BEDROCK_BASE_URL")
-            .is_some_and(|value| !value.is_empty())
+        && matches!(
+            &claude_provider_routing,
+            ClaudeProviderProcessRouting::Inherit
+        )
+        && matches!(
+            effective_claude_provider_routing(setup),
+            ClaudeProviderRouting::Bedrock { .. }
+        )
     {
         env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
         env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
             .or_default();
+    }
+    if !matches!(
+        &claude_provider_routing,
+        ClaudeProviderProcessRouting::Inherit
+    ) {
+        for key in CLAUDE_PROVIDER_ROUTING_ENV_KEYS {
+            env.remove(*key);
+        }
     }
     Ok(AcpProcessSpec {
         program,
@@ -6941,8 +8308,13 @@ fn acp_process_spec(
         cwd,
         env,
         runtime_id: runtime_id.to_string(),
+        acp_protocol: definition.acp_protocol(),
+        environment_policy: definition.process_environment_policy(),
+        product_profile: definition.product_profile(),
+        custom_launch: None,
         auth_method,
         auth_handshake: acp_auth_handshake_for_runtime(runtime_id),
+        claude_provider_routing,
     })
 }
 
@@ -7036,12 +8408,14 @@ fn resolve_base_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> Reso
     }
 
     if runtime_id == CLAUDE_RUNTIME_ID {
-        let vendor = claude_vendor_entry_path();
-        if vendor.is_file() {
+        if let Some(entry) = claude_dependency_entry_path()
+            .filter(|entry| entry.is_file() && claude_runtime_dependencies_ready(entry))
+        {
             return ResolvedAcpCommand {
-                display: Some(vendor.display().to_string()),
+                display: Some(entry.display().to_string()),
                 program: Some(PathBuf::from("node")),
-                args: vec![vendor.display().to_string()],
+                args: vec![entry.display().to_string()],
+                // Keep the serialized local-runtime source compatible with saved UI state.
                 source: AiRuntimeBinarySource::Vendor,
             };
         }
@@ -7101,7 +8475,7 @@ fn resolve_packaged_acp_command(runtime_id: &str) -> Option<ResolvedAcpCommand> 
                 .join("claude-agent-acp")
                 .join("dist")
                 .join("index.js");
-            if node.is_file() && entry.is_file() {
+            if node.is_file() && entry.is_file() && claude_runtime_dependencies_ready(&entry) {
                 return Some(ResolvedAcpCommand {
                     display: Some(entry.display().to_string()),
                     program: Some(node),
@@ -7305,7 +8679,7 @@ fn home_dir() -> Option<PathBuf> {
     }
 }
 
-fn app_data_dir() -> PathBuf {
+pub(crate) fn app_data_dir() -> PathBuf {
     if let Ok(path) = std::env::var("NEVERWRITE_APP_DATA_DIR") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
@@ -7387,19 +8761,20 @@ fn with_runtime_args(runtime_id: &str, mut resolved: ResolvedAcpCommand) -> Reso
     if resolved.program.is_none() {
         return resolved;
     }
-    if let Some(definition) = runtime_definition(runtime_id) {
-        for arg in definition.acp_args {
-            if !resolved.args.iter().any(|existing| existing == arg) {
-                resolved.args.push((*arg).to_string());
+    if let Some(definition) = RUNTIME_CATALOG.definition(runtime_id) {
+        for arg in definition.acp_args() {
+            if !resolved.args.contains(&arg) {
+                resolved.args.push(arg);
             }
         }
     }
     resolved
 }
 
-fn runtime_bin_env_var(runtime_id: &str) -> &'static str {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.bin_env_var)
+fn runtime_bin_env_var(runtime_id: &str) -> &str {
+    RUNTIME_CATALOG
+        .definition(runtime_id)
+        .and_then(|definition| definition.bin_env_var())
         .unwrap_or("NEVERWRITE_AI_ACP_BIN")
 }
 
@@ -7408,6 +8783,7 @@ fn inherited_auth_method_for_setup(runtime_id: &str, setup: &RuntimeSetupState) 
         runtime_id,
         !setup.suppress_persisted_auth,
         setup.auth_invalidated_at_ms,
+        setup,
     )
 }
 
@@ -7415,6 +8791,7 @@ fn inherited_auth_method(
     runtime_id: &str,
     include_persisted: bool,
     auth_invalidated_at_ms: Option<u64>,
+    setup: &RuntimeSetupState,
 ) -> Option<String> {
     match runtime_id {
         CODEX_RUNTIME_ID => env_secret_present("CODEX_API_KEY")
@@ -7425,6 +8802,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         CLAUDE_RUNTIME_ID => env_secret_present("ANTHROPIC_AUTH_TOKEN")
@@ -7442,6 +8820,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         GROK_RUNTIME_ID => env_secret_present("XAI_API_KEY")
@@ -7451,6 +8830,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         KILO_RUNTIME_ID => env_secret_present("KILO_API_KEY")
@@ -7460,6 +8840,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         OPENCODE_RUNTIME_ID => opencode_env_auth_present()
@@ -7469,6 +8850,7 @@ fn inherited_auth_method(
                     runtime_id,
                     include_persisted,
                     auth_invalidated_at_ms,
+                    setup,
                 )
             }),
         COPILOT_RUNTIME_ID => copilot_env_auth_present().then(|| "copilot-login".to_string()),
@@ -7480,23 +8862,205 @@ fn inherited_persisted_auth_method(
     runtime_id: &str,
     include_persisted: bool,
     auth_invalidated_at_ms: Option<u64>,
+    setup: &RuntimeSetupState,
 ) -> Option<String> {
     include_persisted
-        .then(|| persisted_cli_auth_method_with_invalidated_at(runtime_id, auth_invalidated_at_ms))
+        .then(|| {
+            persisted_cli_auth_method_with_invalidated_at(runtime_id, auth_invalidated_at_ms, setup)
+        })
         .flatten()
 }
 
 fn persisted_cli_auth_method_with_invalidated_at(
     runtime_id: &str,
     auth_invalidated_at_ms: Option<u64>,
+    setup: &RuntimeSetupState,
 ) -> Option<String> {
     let home = home_dir()?;
-    persisted_cli_auth_method_for_home_with_invalidated_at(
+    let method = persisted_cli_auth_method_for_home_with_invalidated_at(
         runtime_id,
         &home,
         is_claude_remote_environment(),
         auth_invalidated_at_ms,
-    )
+    );
+    if runtime_id != CLAUDE_RUNTIME_ID || method.is_none() {
+        return method;
+    }
+
+    match claude_cli_auth_ready(setup) {
+        Some(true) => method,
+        Some(false) => None,
+        None if auth_invalidated_at_ms.is_some() => None,
+        None => method,
+    }
+}
+
+fn parse_claude_auth_status(raw: &[u8]) -> Option<bool> {
+    serde_json::from_slice::<Value>(raw)
+        .ok()?
+        .get("loggedIn")?
+        .as_bool()
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct ClaudeAuthProbeKey {
+    program: PathBuf,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    auth_invalidated_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct ClaudeAuthProbe {
+    key: ClaudeAuthProbeKey,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClaudeAuthProbeCacheEntry {
+    checked_at: Instant,
+    result: Option<bool>,
+}
+
+#[derive(Default)]
+struct ClaudeAuthProbeCache {
+    entries: HashMap<ClaudeAuthProbeKey, ClaudeAuthProbeCacheEntry>,
+}
+
+impl ClaudeAuthProbeCache {
+    fn get(&mut self, key: &ClaudeAuthProbeKey, ttl: Duration) -> Option<Option<bool>> {
+        self.entries
+            .retain(|_, entry| entry.checked_at.elapsed() < ttl);
+        self.entries.get(key).map(|entry| entry.result)
+    }
+
+    fn insert(&mut self, key: ClaudeAuthProbeKey, result: Option<bool>) {
+        self.entries.insert(
+            key,
+            ClaudeAuthProbeCacheEntry {
+                checked_at: Instant::now(),
+                result,
+            },
+        );
+    }
+}
+
+fn claude_auth_probe_cache() -> &'static Mutex<ClaudeAuthProbeCache> {
+    static CACHE: OnceLock<Mutex<ClaudeAuthProbeCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ClaudeAuthProbeCache::default()))
+}
+
+fn resolve_claude_auth_probe(setup: &RuntimeSetupState) -> Option<ClaudeAuthProbe> {
+    let mut resolved = resolve_base_acp_command(CLAUDE_RUNTIME_ID, setup);
+    let program = resolved.program.take()?;
+    resolved.args.extend([
+        "--cli".to_string(),
+        "auth".to_string(),
+        "status".to_string(),
+    ]);
+    let mut env = setup
+        .env
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<Vec<_>>();
+    env.sort_unstable();
+    Some(ClaudeAuthProbe {
+        key: ClaudeAuthProbeKey {
+            program,
+            args: resolved.args,
+            env,
+            auth_invalidated_at_ms: setup.auth_invalidated_at_ms,
+        },
+    })
+}
+
+fn capture_child_output<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        let _ = reader
+            .by_ref()
+            .take(CLAUDE_AUTH_STATUS_MAX_OUTPUT_BYTES)
+            .read_to_end(&mut output);
+        output
+    })
+}
+
+fn terminate_auth_probe(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let process_group = -(child.id() as i32);
+        // The child starts in its own process group, so the negative PID cannot
+        // target NeverWrite or another unrelated group.
+        unsafe {
+            libc::kill(process_group, libc::SIGKILL);
+        }
+        let _ = child.kill();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+fn execute_claude_auth_probe(probe: &ClaudeAuthProbe, timeout: Duration) -> Option<bool> {
+    let mut command = std::process::Command::new(&probe.key.program);
+    command
+        .args(&probe.key.args)
+        .envs(probe.key.env.iter().map(|(key, value)| (key, value)))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn().ok()?;
+    let stdout = child.stdout.take().map(capture_child_output);
+    let stderr = child.stderr.take().map(capture_child_output);
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started_at.elapsed() < timeout => {
+                let remaining = timeout.saturating_sub(started_at.elapsed());
+                thread::sleep(CLAUDE_AUTH_STATUS_POLL_INTERVAL.min(remaining));
+            }
+            Ok(None) | Err(_) => {
+                terminate_auth_probe(&mut child);
+                // Dropping the handles detaches the readers so an inherited
+                // pipe held by a misbehaving descendant cannot extend the
+                // synchronous timeout seen by the caller.
+                drop(stdout);
+                drop(stderr);
+                return None;
+            }
+        }
+    }
+
+    let stdout = stdout
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    parse_claude_auth_status(&stdout).or_else(|| parse_claude_auth_status(&stderr))
+}
+
+fn claude_cli_auth_ready(setup: &RuntimeSetupState) -> Option<bool> {
+    let probe = resolve_claude_auth_probe(setup)?;
+    if let Ok(mut cache) = claude_auth_probe_cache().lock() {
+        if let Some(result) = cache.get(&probe.key, CLAUDE_AUTH_STATUS_CACHE_TTL) {
+            return result;
+        }
+    }
+
+    let result = execute_claude_auth_probe(&probe, CLAUDE_AUTH_STATUS_TIMEOUT);
+    if let Ok(mut cache) = claude_auth_probe_cache().lock() {
+        cache.insert(probe.key, result);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -7750,7 +9314,8 @@ fn should_persist_auth_method(
 fn is_persistable_external_auth_method(runtime_id: &str, method_id: &str) -> bool {
     matches!(
         (runtime_id, method_id),
-        (GROK_RUNTIME_ID, "grok-login")
+        (CLAUDE_RUNTIME_ID, "claude-ai-login" | "claude-login")
+            | (GROK_RUNTIME_ID, "grok-login")
             | (OPENCODE_RUNTIME_ID, "opencode-login")
             | (COPILOT_RUNTIME_ID, "copilot-login")
     )
@@ -7759,7 +9324,7 @@ fn is_persistable_external_auth_method(runtime_id: &str, method_id: &str) -> boo
 fn is_invalidation_tracked_external_auth_runtime(runtime_id: &str) -> bool {
     matches!(
         runtime_id,
-        COPILOT_RUNTIME_ID | GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID
+        CLAUDE_RUNTIME_ID | COPILOT_RUNTIME_ID | GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID
     )
 }
 
@@ -7831,10 +9396,16 @@ fn local_auth_method_for_runtime(runtime_id: &str, setup: &RuntimeSetupState) ->
 }
 
 fn has_local_auth_config(runtime_id: &str, setup: &RuntimeSetupState) -> bool {
-    (runtime_id == CLAUDE_RUNTIME_ID && setup.has_gateway_config)
-        || secret_env_keys_for_runtime(runtime_id)
-            .iter()
-            .any(|key| setup.env.get(*key).is_some_and(|value| !value.is_empty()))
+    if runtime_id == CLAUDE_RUNTIME_ID {
+        return setup.has_gateway_config
+            || ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+                .into_iter()
+                .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()));
+    }
+
+    secret_env_keys_for_runtime(runtime_id)
+        .iter()
+        .any(|key| setup.env.get(*key).is_some_and(|value| !value.is_empty()))
 }
 
 fn refresh_runtime_setup_flags(runtime_id: &str, setup: &mut RuntimeSetupState) {
@@ -7843,10 +9414,11 @@ fn refresh_runtime_setup_flags(runtime_id: &str, setup: &mut RuntimeSetupState) 
         .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()));
     setup.has_gateway_config = runtime_id == CLAUDE_RUNTIME_ID
         && (setup.has_gateway_url
-            || setup
-                .env
-                .get("ANTHROPIC_CUSTOM_HEADERS")
-                .is_some_and(|value| !value.is_empty()));
+            || (setup.claude_provider_routing.is_none()
+                && setup
+                    .env
+                    .get("ANTHROPIC_CUSTOM_HEADERS")
+                    .is_some_and(|value| !value.is_empty())));
 }
 
 fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
@@ -7897,6 +9469,29 @@ enum GrokAuthFailureSource {
     Login,
     StoredXaiApiKey,
     InheritedXaiApiKey,
+}
+
+fn is_claude_auth_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+    [
+        "oauth session expired",
+        "failed to authenticate",
+        "authentication_failed",
+        "authentication required",
+        "auth_required",
+        "not logged in",
+    ]
+    .into_iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn apply_claude_auth_failure(setup: &mut RuntimeSetupState, method: String) {
+    setup.auth_method = Some(method);
+    setup.auth_ready = false;
+    setup.suppress_persisted_auth = false;
+    setup.auth_invalidated_at_ms = Some(current_epoch_ms());
+    setup.message = Some(CLAUDE_LOGIN_INVALIDATED_MESSAGE.to_string());
+    refresh_runtime_setup_flags(CLAUDE_RUNTIME_ID, setup);
 }
 
 fn is_grok_auth_error(error: &str) -> bool {
@@ -7999,9 +9594,10 @@ fn system_time_epoch_ms(time: SystemTime) -> Option<u64> {
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
-fn runtime_name(runtime_id: &str) -> &'static str {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.name)
+fn runtime_name(runtime_id: &str) -> &str {
+    RUNTIME_CATALOG
+        .definition(runtime_id)
+        .map(|definition| definition.name())
         .unwrap_or("AI")
 }
 
@@ -8016,9 +9612,45 @@ fn codex_vendor_binary_path() -> PathBuf {
         .join(runtime_binary_name("codex-acp"))
 }
 
-fn claude_vendor_entry_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../vendor/Claude-agent-acp-upstream/dist/index.js")
+fn claude_dependency_target(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("windows", "aarch64") => Some("aarch64-pc-windows-msvc"),
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        _ => None,
+    }
+}
+
+fn claude_dependency_entry_path() -> Option<PathBuf> {
+    let target = claude_dependency_target(std::env::consts::OS, std::env::consts::ARCH)?;
+    Some(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../.cache/claude-runtime")
+            .join(target)
+            .join("dist/index.js"),
+    )
+}
+
+fn claude_runtime_dependencies_ready(entry: &Path) -> bool {
+    let Some(runtime_root) = entry.parent().and_then(Path::parent) else {
+        return false;
+    };
+    [
+        ["@agentclientprotocol", "sdk"],
+        ["@anthropic-ai", "claude-agent-sdk"],
+        ["zod", ""],
+    ]
+    .iter()
+    .all(|components| {
+        let mut package = runtime_root.join("node_modules").join(components[0]);
+        if !components[1].is_empty() {
+            package = package.join(components[1]);
+        }
+        package.join("package.json").is_file()
+    })
 }
 
 fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
@@ -8220,11 +9852,163 @@ fn is_loopback_gateway_hostname(hostname: &str) -> bool {
         .unwrap_or(false)
 }
 
+impl ClaudeProviderRouting {
+    fn normalized(self) -> Result<Self, String> {
+        match self {
+            Self::Default => Ok(Self::Default),
+            Self::Anthropic { base_url } => Ok(Self::Anthropic {
+                base_url: normalize_claude_provider_url(base_url)?,
+            }),
+            Self::Bedrock { base_url } => Ok(Self::Bedrock {
+                base_url: normalize_claude_provider_url(base_url)?,
+            }),
+            Self::Vertex {
+                base_url,
+                project_id,
+                region,
+            } => Ok(Self::Vertex {
+                base_url: normalize_claude_provider_url(base_url)?,
+                project_id: normalize_required_provider_value(project_id, "Project ID")?,
+                region: normalize_required_provider_value(region, "Region")?,
+            }),
+        }
+    }
+}
+
+fn normalize_claude_provider_url(value: String) -> Result<String, String> {
+    let value = value.trim().to_string();
+    validate_claude_gateway_url(&value)?;
+    Ok(value)
+}
+
+fn normalize_required_provider_value(value: String, label: &str) -> Result<String, String> {
+    normalize_optional_string(value).ok_or_else(|| format!("{label} is required."))
+}
+
+fn effective_claude_provider_routing(setup: &RuntimeSetupState) -> ClaudeProviderRouting {
+    if let Some(routing) = setup.claude_provider_routing.clone() {
+        return routing
+            .normalized()
+            .unwrap_or(ClaudeProviderRouting::Default);
+    }
+
+    claude_provider_routing_from_lookup(|key| setup.env.get(key).cloned())
+        .or_else(|| claude_provider_routing_from_lookup(|key| std::env::var(key).ok()))
+        .unwrap_or(ClaudeProviderRouting::Default)
+}
+
+fn claude_provider_process_routing(
+    runtime_id: &str,
+    setup: &RuntimeSetupState,
+) -> Result<ClaudeProviderProcessRouting, String> {
+    if runtime_id != CLAUDE_RUNTIME_ID {
+        return Ok(ClaudeProviderProcessRouting::Inherit);
+    }
+    let Some(routing) = setup.claude_provider_routing.clone() else {
+        // Existing gateway and inherited environment configurations keep their
+        // established launch path. Only the new typed setting owns ACP provider calls.
+        return Ok(ClaudeProviderProcessRouting::Inherit);
+    };
+    let routing = routing.normalized()?;
+    if routing == ClaudeProviderRouting::Default {
+        return Ok(ClaudeProviderProcessRouting::Default);
+    }
+    Ok(ClaudeProviderProcessRouting::Configure(
+        ClaudeProviderSnapshot {
+            routing,
+            headers: effective_claude_provider_headers(setup)?,
+        },
+    ))
+}
+
+fn effective_claude_provider_headers(
+    setup: &RuntimeSetupState,
+) -> Result<HashMap<String, String>, String> {
+    let raw = std::env::var("ANTHROPIC_CUSTOM_HEADERS")
+        .ok()
+        .and_then(normalize_optional_string)
+        .or_else(|| {
+            setup
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .cloned()
+                .and_then(normalize_optional_string)
+        });
+    raw.map(|value| parse_claude_provider_headers(&value))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn parse_claude_provider_headers(value: &str) -> Result<HashMap<String, String>, String> {
+    let mut headers = HashMap::new();
+    for line in value.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(
+                "Custom provider headers must use one 'Name: value' header per line.".to_string(),
+            );
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(
+                "Custom provider headers must use one 'Name: value' header per line.".to_string(),
+            );
+        }
+        headers.insert(name.to_string(), value.trim().to_string());
+    }
+    Ok(headers)
+}
+
+fn claude_provider_routing_from_lookup(
+    mut value_for: impl FnMut(&str) -> Option<String>,
+) -> Option<ClaudeProviderRouting> {
+    let vertex_base_url =
+        value_for("ANTHROPIC_VERTEX_BASE_URL").and_then(normalize_optional_string);
+    let vertex_project_id =
+        value_for("ANTHROPIC_VERTEX_PROJECT_ID").and_then(normalize_optional_string);
+    let vertex_region = value_for("CLOUD_ML_REGION").and_then(normalize_optional_string);
+    if let (Some(base_url), Some(project_id), Some(region)) =
+        (vertex_base_url, vertex_project_id, vertex_region)
+    {
+        if let Ok(routing) = (ClaudeProviderRouting::Vertex {
+            base_url,
+            project_id,
+            region,
+        })
+        .normalized()
+        {
+            return Some(routing);
+        }
+    }
+    if let Some(routing) = value_for("ANTHROPIC_BEDROCK_BASE_URL")
+        .and_then(normalize_optional_string)
+        .and_then(|base_url| {
+            ClaudeProviderRouting::Bedrock { base_url }
+                .normalized()
+                .ok()
+        })
+    {
+        return Some(routing);
+    }
+    if let Some(base_url) = value_for("ANTHROPIC_BASE_URL").and_then(normalize_optional_string) {
+        return ClaudeProviderRouting::Anthropic { base_url }
+            .normalized()
+            .ok();
+    }
+    None
+}
+
 fn update_auth_state(
     setup: &mut RuntimeSetupState,
     runtime_id: &str,
     input: AiRuntimeSetupPayload,
 ) -> Result<(), String> {
+    let explicit_provider_routing = match input.claude_provider_routing.clone() {
+        Some(_) if runtime_id != CLAUDE_RUNTIME_ID => {
+            return Err("Provider routing is only supported for Claude.".to_string());
+        }
+        Some(routing) => Some(routing.normalized()?),
+        None => None,
+    };
     let anthropic_gateway_url_touched =
         input.gateway_base_url.is_some() || input.anthropic_base_url.is_some();
     let bedrock_gateway_url_touched = input.anthropic_bedrock_base_url.is_some();
@@ -8244,8 +10028,9 @@ fn update_auth_state(
         .anthropic_custom_headers
         .clone()
         .or_else(|| input.gateway_headers.clone());
-    let gateway_config_touched =
-        runtime_id == CLAUDE_RUNTIME_ID && (gateway_url_touched || gateway_headers_patch.is_some());
+    let provider_headers_touched = explicit_provider_routing.is_some();
+    let gateway_config_touched = runtime_id == CLAUDE_RUNTIME_ID
+        && (gateway_url_touched || (gateway_headers_patch.is_some() && !provider_headers_touched));
     let gateway_base_url = input
         .gateway_base_url
         .as_ref()
@@ -8285,12 +10070,16 @@ fn update_auth_state(
             touched_auth |= apply_secret_patch(setup, "ANTHROPIC_AUTH_TOKEN", patch, auth_method);
         }
         if let Some(patch) = gateway_headers_patch {
-            touched_auth |= apply_secret_patch(
-                setup,
-                "ANTHROPIC_CUSTOM_HEADERS",
-                patch,
-                gateway_auth_method,
-            );
+            if provider_headers_touched {
+                apply_provider_secret_patch(setup, "ANTHROPIC_CUSTOM_HEADERS", patch);
+            } else {
+                touched_auth |= apply_secret_patch(
+                    setup,
+                    "ANTHROPIC_CUSTOM_HEADERS",
+                    patch,
+                    gateway_auth_method,
+                );
+            }
         }
         if anthropic_gateway_url_touched {
             if let Some(value) = gateway_base_url {
@@ -8319,6 +10108,13 @@ fn update_auth_state(
                 setup.env.remove("AWS_BEARER_TOKEN_BEDROCK");
             }
             touched_auth = true;
+        }
+        if let Some(routing) = explicit_provider_routing {
+            setup.claude_provider_routing = Some(routing);
+        } else if gateway_url_touched {
+            // Existing gateway updates remain authoritative and are projected
+            // through the resolver without rewriting their persisted shape.
+            setup.claude_provider_routing = None;
         }
     }
     if runtime_id == GROK_RUNTIME_ID {
@@ -8382,6 +10178,20 @@ fn apply_secret_patch(
     false
 }
 
+fn apply_provider_secret_patch(setup: &mut RuntimeSetupState, env_key: &str, patch: AiSecretPatch) {
+    match patch.action.as_str() {
+        "set" => {
+            if let Some(value) = patch.value.and_then(normalize_optional_string) {
+                setup.env.insert(env_key.to_string(), value);
+            }
+        }
+        "clear" => {
+            setup.env.remove(env_key);
+        }
+        _ => {}
+    }
+}
+
 fn build_prompt_with_attachments(
     content: &str,
     attachments: &[AiAttachmentInput],
@@ -8427,6 +10237,18 @@ fn build_prompt_with_attachments(
                 }
             }
             Some("file") => {
+                if let Some(bytes) = attachment.managed_bytes.as_deref() {
+                    context_parts.push(format!(
+                        "<attached_image name=\"{}\" type=\"{}\" size=\"{}\" />",
+                        attachment.label,
+                        attachment
+                            .mime_type
+                            .as_deref()
+                            .unwrap_or("application/octet-stream"),
+                        bytes.len()
+                    ));
+                    continue;
+                }
                 if let Some(file_path) = attachment
                     .file_path
                     .as_deref()
@@ -8540,6 +10362,34 @@ fn build_prompt_blocks_with_attachments(
                 }
             }
             Some("file") => {
+                if let Some(bytes) = attachment.managed_bytes.as_deref() {
+                    let mime = attachment
+                        .mime_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream");
+                    if bytes.len() as u64 > image_limits.max_bytes {
+                        return Err(format!(
+                            "Image attachment is too large for {}: {} exceeds the {} byte limit.",
+                            image_limits.runtime_label,
+                            bytes.len(),
+                            image_limits.max_bytes
+                        ));
+                    }
+                    if capabilities.image {
+                        blocks.push(ContentBlock::Image(
+                            ImageContent::new(BASE64_STANDARD.encode(bytes), mime.to_string())
+                                .uri(attachment_resource_uri(attachment, "attachment")),
+                        ));
+                    } else {
+                        text_context_parts.push(format!(
+                            "<attached_image name=\"{}\" type=\"{}\" size=\"{}\" />",
+                            attachment.label,
+                            mime,
+                            bytes.len()
+                        ));
+                    }
+                    continue;
+                }
                 if let Some(file_path) = attachment
                     .file_path
                     .as_deref()
@@ -8674,6 +10524,12 @@ fn native_image_attachment_limits_for_runtime(
         },
         Some(OPENCODE_RUNTIME_ID) => NativeImageAttachmentLimits {
             runtime_label: "OpenCode",
+            max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(runtime_id) if is_custom_acp_runtime_id(runtime_id) => NativeImageAttachmentLimits {
+            runtime_label: "this custom ACP runtime",
             max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
             max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
             allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
@@ -8850,6 +10706,9 @@ fn text_attachment_mime(attachment: &AiAttachmentInput) -> Option<String> {
 }
 
 fn attachment_resource_uri(attachment: &AiAttachmentInput, fallback_kind: &str) -> String {
+    if let Some(attachment_id) = attachment.managed_attachment_id.as_deref() {
+        return format!("neverwrite://ai-attachment/{attachment_id}");
+    }
     let source = attachment
         .file_path
         .as_deref()
@@ -9042,11 +10901,7 @@ fn required_string(args: &Value, names: &[&str]) -> Result<String, String> {
 }
 
 fn validate_runtime_id(runtime_id: &str) -> Result<(), String> {
-    if runtime_definition(runtime_id).is_some() {
-        Ok(())
-    } else {
-        Err(format!("Unsupported AI runtime: {runtime_id}"))
-    }
+    RUNTIME_CATALOG.validate_id(runtime_id)
 }
 
 fn normalize_optional_string(value: String) -> Option<String> {
@@ -9058,16 +10913,17 @@ fn normalize_optional_string(value: String) -> Option<String> {
     }
 }
 
-fn default_executable_name(runtime_id: &str) -> &'static str {
-    runtime_definition(runtime_id)
-        .map(|definition| definition.default_executable)
+fn default_executable_name(runtime_id: &str) -> &str {
+    RUNTIME_CATALOG
+        .definition(runtime_id)
+        .map(|definition| definition.default_executable())
         .unwrap_or("unknown")
 }
 
 fn diagnostic_executable_names() -> Vec<&'static str> {
-    RUNTIME_DEFINITIONS
-        .iter()
-        .map(|definition| definition.default_executable)
+    RUNTIME_CATALOG
+        .definitions()
+        .map(|definition| definition.default_executable())
         .collect()
 }
 
@@ -9509,11 +11365,11 @@ mod tests {
         AvailableCommandsUpdate, BooleanPropertySchema, CompleteElicitationNotification,
         ConfigOptionUpdate, Content, ElicitationFormMode, ElicitationSchema,
         ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta, MultiSelectPropertySchema,
-        PermissionOptionKind, PlanEntry, PromptCapabilities, SessionConfigOption,
-        SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
-        SessionNotification, SessionUpdate, StringPropertySchema, ToolCallContent, ToolCallId,
-        Terminal, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
-        UsageUpdate,
+        PermissionOptionKind, PlanEntry, PromptCapabilities, SessionCapabilities,
+        SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
+        SessionInfoUpdate, SessionNotification, SessionResumeCapabilities, SessionUpdate,
+        StringPropertySchema, Terminal, ToolCallContent, ToolCallId, ToolCallUpdate,
+        ToolCallUpdateFields, ToolKind, UnstructuredCommandInput, UsageUpdate,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -9521,6 +11377,34 @@ mod tests {
     use std::time::Duration as StdDuration;
 
     static ENV_TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+    struct TestEnvVar {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TestEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for TestEnvVar {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn test_client(event_tx: mpsc::Sender<RpcOutput>) -> NativeAcpClient {
         test_client_with_state(event_tx, Arc::new(Mutex::new(NativeAiInner::default())))
@@ -9545,6 +11429,8 @@ mod tests {
             agent_writes: AgentWriteTracker::default(),
             terminal_output: Arc::new(Mutex::new(HashMap::new())),
             terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+            suppress_replayed_session_events: Arc::new(AtomicBool::new(false)),
+            product_profile: RuntimeProductProfile::BuiltIn,
         }
     }
 
@@ -9568,6 +11454,129 @@ mod tests {
         let empty = normalize_additional_roots(Some(vec![]));
         assert!(empty.kept.is_empty());
         assert!(empty.discarded.is_empty());
+    }
+
+    #[test]
+    fn claude_dependency_paths_match_prepared_host_targets() {
+        for (os, arch, target) in [
+            ("macos", "aarch64", "aarch64-apple-darwin"),
+            ("macos", "x86_64", "x86_64-apple-darwin"),
+            ("windows", "aarch64", "aarch64-pc-windows-msvc"),
+            ("windows", "x86_64", "x86_64-pc-windows-msvc"),
+            ("linux", "aarch64", "aarch64-unknown-linux-gnu"),
+            ("linux", "x86_64", "x86_64-unknown-linux-gnu"),
+        ] {
+            assert_eq!(claude_dependency_target(os, arch), Some(target));
+        }
+        assert_eq!(claude_dependency_target("linux", "unknown"), None);
+        let entry = claude_dependency_entry_path().unwrap();
+        let target =
+            claude_dependency_target(std::env::consts::OS, std::env::consts::ARCH).unwrap();
+        assert!(entry.ends_with(
+            Path::new(".cache/claude-runtime")
+                .join(target)
+                .join("dist/index.js")
+        ));
+    }
+
+    #[test]
+    fn claude_runtime_requires_its_production_dependencies() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("dist/index.js");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, b"").unwrap();
+
+        assert!(!claude_runtime_dependencies_ready(&entry));
+    }
+
+    #[test]
+    fn claude_runtime_accepts_a_complete_production_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("dist/index.js");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, b"").unwrap();
+        for package in [
+            "@agentclientprotocol/sdk",
+            "@anthropic-ai/claude-agent-sdk",
+            "zod",
+        ] {
+            let package_json = temp
+                .path()
+                .join("node_modules")
+                .join(package)
+                .join("package.json");
+            fs::create_dir_all(package_json.parent().unwrap()).unwrap();
+            fs::write(package_json, b"{}").unwrap();
+        }
+
+        assert!(claude_runtime_dependencies_ready(&entry));
+    }
+
+    #[test]
+    fn conversation_turn_rejects_a_selection_for_another_runtime() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let error = ai
+            .start_conversation_turn(&json!({
+                "input": {
+                    "conversation_id": "conversation-1",
+                    "binding_id": "binding-b",
+                    "runtime_id": "provider-b",
+                    "session_id": "local-b",
+                    "selection": {
+                        "runtime_id": "provider-a",
+                        "model_id": "model-a",
+                        "mode_id": "default",
+                        "options": {}
+                    }
+                }
+            }))
+            .expect_err("cross-runtime selections must be rejected");
+
+        assert!(error.contains("does not match the target runtime"));
+    }
+
+    #[test]
+    fn conversation_turn_rejects_unknown_requested_options() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, "session-1");
+        let mut input =
+            test_conversation_turn_input(&ai, "conversation-1", "binding-1", "session-1");
+        input["input"]["selection"]["options"]["unknown-option"] = json!("value");
+
+        let error = ai
+            .start_conversation_turn(&input)
+            .expect_err("unknown requested options must be rejected");
+
+        assert!(error.contains("option is unavailable: unknown-option"));
+    }
+
+    #[test]
+    fn conversation_turn_binds_canonical_identity_to_one_runtime_session() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, "session-1");
+        let input = test_conversation_turn_input(&ai, "conversation-1", "binding-1", "session-1");
+
+        ai.start_conversation_turn(&input)
+            .expect("the initial canonical association should succeed");
+        ai.start_conversation_turn(&input)
+            .expect("reusing the same canonical association should succeed");
+
+        let conflicting =
+            test_conversation_turn_input(&ai, "conversation-2", "binding-1", "session-1");
+        let error = ai
+            .start_conversation_turn(&conflicting)
+            .expect_err("a binding cannot move to another conversation");
+        assert!(error.contains("already associated with another conversation or session"));
+
+        let conflicting =
+            test_conversation_turn_input(&ai, "conversation-2", "binding-2", "session-1");
+        let error = ai
+            .start_conversation_turn(&conflicting)
+            .expect_err("a runtime session cannot belong to another binding");
+        assert!(error.contains("Runtime session is already associated"));
     }
 
     #[test]
@@ -9693,6 +11702,23 @@ mod tests {
     }
 
     #[test]
+    fn client_capabilities_do_not_enable_claude_subagent_extensions() {
+        let capabilities =
+            serde_json::to_value(neverwrite_acp_client_capabilities(CLAUDE_RUNTIME_ID)).unwrap();
+        let air_capabilities = capabilities
+            .pointer("/_meta/jetbrains/air/capabilities")
+            .and_then(Value::as_array);
+
+        assert!(capabilities.get("subagents").is_none());
+        assert!(capabilities.pointer("/_meta/subagent-transcript").is_none());
+        assert!(!air_capabilities.is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| matches!(item.as_str(), Some("nativeSubagentSessions" | "asyncTasks")))
+        }));
+    }
+
+    #[test]
     fn new_session_request_serializes_additional_directories() {
         let request = new_session_request(
             CLAUDE_RUNTIME_ID,
@@ -9701,6 +11727,7 @@ mod tests {
                 PathBuf::from("/external/project"),
                 PathBuf::from("/external/notes"),
             ],
+            None,
         );
 
         assert_eq!(
@@ -9714,15 +11741,38 @@ mod tests {
     }
 
     #[test]
+    fn load_session_request_serializes_additional_directories() {
+        let request = load_session_request(
+            CLAUDE_RUNTIME_ID,
+            "claude-session-1",
+            PathBuf::from("/vault"),
+            &[PathBuf::from("/external/project")],
+            None,
+        );
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "cwd": "/vault",
+                "additionalDirectories": ["/external/project"],
+                "mcpServers": [],
+                "sessionId": "claude-session-1",
+            })
+        );
+    }
+
+    #[test]
     fn resume_session_request_serializes_additional_directories() {
-        let request = ResumeSessionRequest::new("claude-session-1", "/vault")
-            .additional_directories(additional_wire_paths(
-                CLAUDE_RUNTIME_ID,
-                &[
-                    PathBuf::from("/external/project"),
-                    PathBuf::from("/external/notes"),
-                ],
-            ));
+        let request = resume_session_request(
+            CLAUDE_RUNTIME_ID,
+            "claude-session-1",
+            PathBuf::from("/vault"),
+            &[
+                PathBuf::from("/external/project"),
+                PathBuf::from("/external/notes"),
+            ],
+            None,
+        );
 
         assert_eq!(
             serde_json::to_value(request).unwrap(),
@@ -9732,6 +11782,90 @@ mod tests {
                 "sessionId": "claude-session-1",
             })
         );
+    }
+
+    #[test]
+    fn custom_continuation_prefers_resume_then_load_then_new_session_only() {
+        let resume = InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(
+            AgentCapabilities::new()
+                .load_session(true)
+                .session_capabilities(
+                    SessionCapabilities::new().resume(SessionResumeCapabilities::new()),
+                ),
+        );
+        let load = InitializeResponse::new(ProtocolVersion::LATEST)
+            .agent_capabilities(AgentCapabilities::new().load_session(true));
+        let new_only = InitializeResponse::new(ProtocolVersion::LATEST);
+
+        assert_eq!(
+            custom_continuation_strategy(&resume),
+            AcpContinuationStrategy::Resume
+        );
+        assert_eq!(
+            custom_continuation_strategy(&load),
+            AcpContinuationStrategy::Load
+        );
+        assert_eq!(
+            custom_continuation_strategy(&new_only),
+            AcpContinuationStrategy::NewSessionOnly
+        );
+    }
+
+    #[test]
+    fn custom_continuation_revalidates_the_persisted_capability() {
+        let load_only = InitializeResponse::new(ProtocolVersion::LATEST)
+            .agent_capabilities(AgentCapabilities::new().load_session(true));
+        let resume_mode = AcpSessionStartMode::Resume {
+            session_id: "runtime-session".to_string(),
+            additional_directories: Vec::new(),
+        };
+        let load_mode = AcpSessionStartMode::Load {
+            session_id: "runtime-session".to_string(),
+            additional_directories: Vec::new(),
+        };
+
+        assert!(validate_custom_continuation_capability(&resume_mode, &load_only).is_err());
+        assert_eq!(
+            validate_custom_continuation_capability(&load_mode, &load_only),
+            Ok(AcpContinuationStrategy::Load)
+        );
+    }
+
+    #[test]
+    fn custom_continuation_confirmation_is_bound_to_the_current_fingerprint() {
+        assert!(!custom_runtime_requires_confirmation(
+            "launch-a", None, "launch-a"
+        ));
+        assert!(custom_runtime_requires_confirmation(
+            "launch-a", None, "launch-b"
+        ));
+        assert!(!custom_runtime_requires_confirmation(
+            "launch-a",
+            Some("launch-b"),
+            "launch-b"
+        ));
+        assert!(custom_runtime_requires_confirmation(
+            "launch-a",
+            Some("launch-b"),
+            "launch-c"
+        ));
+    }
+
+    #[test]
+    fn load_replay_notifications_are_suppressed() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        client
+            .suppress_replayed_session_events
+            .store(true, Ordering::Relaxed);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "runtime-session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("replayed"))),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(25)).is_err());
     }
 
     const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
@@ -9756,6 +11890,67 @@ mod tests {
     const CODEX_ACP_SUBAGENT_WAITING_END_EVENT: &str = "waiting_end";
     const PARENT_RUNTIME_SESSION_ID: &str = "parent-runtime-session-id";
     const CHILD_RUNTIME_SESSION_ID: &str = "child-runtime-session-id";
+
+    #[test]
+    fn permission_option_preserves_v1_permission_scope_descriptions() {
+        let option = PermissionOption::new(
+            "always-allow-bash",
+            "Always Allow",
+            PermissionOptionKind::AllowAlways,
+        )
+        .meta(Meta::from_iter([(
+            "permission".to_string(),
+            json!({
+                "version": 1,
+                "changes": [
+                    { "description": " Bash(pnpm test:*) " },
+                    { "description": "Edit(src/**)" },
+                    { "description": "" },
+                    { "description": 42 }
+                ]
+            }),
+        )]));
+
+        let payload = map_permission_option(option);
+
+        assert_eq!(
+            payload.permission_scope,
+            vec!["Bash(pnpm test:*)", "Edit(src/**)"]
+        );
+    }
+
+    #[test]
+    fn permission_option_ignores_unknown_permission_scope_versions() {
+        let option = PermissionOption::new(
+            "always-allow-bash",
+            "Always Allow",
+            PermissionOptionKind::AllowAlways,
+        )
+        .meta(Meta::from_iter([(
+            "permission".to_string(),
+            json!({
+                "version": 2,
+                "changes": [{ "description": "Bash(pnpm test:*)" }]
+            }),
+        )]));
+
+        assert!(map_permission_option(option).permission_scope.is_empty());
+    }
+
+    #[test]
+    fn permission_option_ignores_malformed_permission_scope_metadata() {
+        let option = PermissionOption::new(
+            "always-allow-bash",
+            "Always Allow",
+            PermissionOptionKind::AllowAlways,
+        )
+        .meta(Meta::from_iter([(
+            "permission".to_string(),
+            json!({ "version": 1, "changes": { "description": "Bash(*)" } }),
+        )]));
+
+        assert!(map_permission_option(option).permission_scope.is_empty());
+    }
 
     #[test]
     fn session_plan_update_emits_plan_event_without_tool_activity() {
@@ -9869,6 +12064,16 @@ mod tests {
         )
     }
 
+    fn custom_runtime_input(name: &str, command: &str) -> CustomAcpRuntimeDefinitionInput {
+        CustomAcpRuntimeDefinitionInput {
+            display_name: name.to_string(),
+            command: command.to_string(),
+            args: vec!["--stdio".to_string()],
+            env: BTreeMap::from([("AGENT_COLOR".to_string(), "blue".to_string())]),
+            auth_mode: neverwrite_ai::custom_runtimes::CustomAcpAuthMode::External,
+        }
+    }
+
     #[derive(Default)]
     struct FailableRuntimeSecretStore {
         values: Mutex<HashMap<(String, String), String>>,
@@ -9946,7 +12151,7 @@ mod tests {
             ),
             (
                 CODEX_ACP_PARENT_THREAD_ID_KEY.to_string(),
-                json!("parent-thread-id"),
+                json!(PARENT_RUNTIME_SESSION_ID),
             ),
             (
                 CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
@@ -9954,7 +12159,7 @@ mod tests {
             ),
             (
                 CODEX_ACP_CHILD_THREAD_ID_KEY.to_string(),
-                json!("child-thread-id"),
+                json!(CHILD_RUNTIME_SESSION_ID),
             ),
             (CODEX_ACP_AGENT_NICKNAME_KEY.to_string(), json!("Galileo")),
             (CODEX_ACP_AGENT_ROLE_KEY.to_string(), json!("worker")),
@@ -10038,6 +12243,39 @@ mod tests {
         );
     }
 
+    fn test_conversation_turn_input(
+        ai: &NativeAi,
+        conversation_id: &str,
+        binding_id: &str,
+        session_id: &str,
+    ) -> Value {
+        let state = ai.inner.lock().unwrap();
+        let session = &state
+            .sessions
+            .get(session_id)
+            .expect("test session should exist")
+            .session;
+        let options = session
+            .config_options
+            .iter()
+            .map(|option| (option.id.clone(), option.value.clone()))
+            .collect::<HashMap<_, _>>();
+        json!({
+            "input": {
+                "conversation_id": conversation_id,
+                "binding_id": binding_id,
+                "runtime_id": session.runtime_id,
+                "session_id": session_id,
+                "selection": {
+                    "runtime_id": session.runtime_id,
+                    "model_id": session.model_id,
+                    "mode_id": session.mode_id,
+                    "options": options,
+                }
+            }
+        })
+    }
+
     fn mark_test_session_as_child(
         session_state: &Arc<Mutex<NativeAiInner>>,
         session_id: &str,
@@ -10083,9 +12321,498 @@ mod tests {
     }
 
     #[test]
+    fn custom_runtime_descriptor_is_dynamic_and_conservative() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let definition = native_ai
+            .custom_runtimes
+            .create(custom_runtime_input("Local agent", "/missing/agent-acp"))
+            .unwrap();
+
+        let descriptors: Vec<AiRuntimeDescriptor> =
+            serde_json::from_value(native_ai.list_runtimes()).unwrap();
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.runtime.id == definition.id)
+            .unwrap();
+        assert_eq!(descriptor.runtime.name, "Local agent");
+        assert_eq!(descriptor.runtime.capabilities, ["create_session"]);
+        assert!(descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .all(|capability| !capability.contains("auth")));
+        assert_eq!(descriptor.models[0].id, "auto");
+        assert_eq!(descriptor.modes[0].id, "default");
+
+        let status: AiRuntimeSetupStatus = serde_json::from_value(
+            native_ai
+                .get_setup_status(&json!({ "runtimeId": definition.id }))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!status.binary_ready);
+        assert!(status.auth_ready);
+        assert_eq!(status.auth_method.as_deref(), Some("external"));
+        assert!(status.auth_methods.is_empty());
+
+        let session_error = native_ai
+            .create_session(
+                &json!({
+                    "input": {
+                        "runtime_id": definition.id,
+                        "additional_roots": null
+                    }
+                }),
+                Some(temp.path().to_path_buf()),
+            )
+            .unwrap_err();
+        assert!(session_error.contains("executable was not found"));
+        assert!(native_ai.inner.lock().unwrap().sessions.is_empty());
+
+        let auth_error = native_ai
+            .start_auth(&json!({
+                "input": {
+                    "runtimeId": definition.id,
+                    "methodId": "external"
+                }
+            }))
+            .unwrap_err();
+        assert!(auth_error.contains("Unsupported AI runtime"));
+
+        native_ai.custom_runtimes.delete(&definition.id).unwrap();
+        let descriptors: Vec<AiRuntimeDescriptor> =
+            serde_json::from_value(native_ai.list_runtimes()).unwrap();
+        assert!(descriptors
+            .iter()
+            .all(|descriptor| descriptor.runtime.id != definition.id));
+    }
+
+    #[test]
+    fn deleting_runtime_sessions_shuts_down_each_owned_process_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let vault_root = temp.path().to_path_buf();
+        let (first_tx, mut first_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (second_tx, mut second_rx) = tokio::sync::mpsc::unbounded_channel();
+        let first_handle = AcpSessionHandle {
+            process_id: 41,
+            command_tx: first_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let second_handle = AcpSessionHandle {
+            process_id: 42,
+            command_tx: second_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let mut state = native_ai.inner.lock().unwrap();
+        for (session_id, handle) in [
+            ("custom-session-1", first_handle.clone()),
+            ("custom-session-2", first_handle),
+            ("custom-session-3", second_handle),
+        ] {
+            state.sessions.insert(
+                session_id.to_string(),
+                ManagedAiSession {
+                    session: new_session_with_id(CODEX_RUNTIME_ID, session_id.to_string()).unwrap(),
+                    vault_root: Some(vault_root.clone()),
+                    additional_roots: vec![],
+                    runtime_handle: Some(handle),
+                    active_turn_id: None,
+                },
+            );
+        }
+        drop(state);
+
+        let first_shutdown = thread::spawn(move || match first_rx.blocking_recv() {
+            Some(AcpCommand::Shutdown { response_tx }) => {
+                response_tx.send(Ok(())).unwrap();
+                assert!(first_rx.try_recv().is_err());
+            }
+            _ => panic!("expected a shutdown command for the first process"),
+        });
+        let second_shutdown = thread::spawn(move || match second_rx.blocking_recv() {
+            Some(AcpCommand::Shutdown { response_tx }) => {
+                response_tx.send(Ok(())).unwrap();
+                assert!(second_rx.try_recv().is_err());
+            }
+            _ => panic!("expected a shutdown command for the second process"),
+        });
+
+        native_ai
+            .delete_runtime_session(&json!({ "sessionId": "custom-session-3" }))
+            .unwrap();
+        second_shutdown.join().unwrap();
+        native_ai
+            .delete_runtime_sessions_for_vault(Some(vault_root))
+            .unwrap();
+
+        first_shutdown.join().unwrap();
+        assert!(native_ai.inner.lock().unwrap().sessions.is_empty());
+    }
+
+    #[test]
+    fn backend_shutdown_stops_each_owned_process_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = AcpSessionHandle {
+            process_id: 91,
+            command_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let mut state = native_ai.inner.lock().unwrap();
+        for session_id in ["parent-session", "child-session"] {
+            state.sessions.insert(
+                session_id.to_string(),
+                ManagedAiSession {
+                    session: new_session_with_id(CODEX_RUNTIME_ID, session_id.to_string()).unwrap(),
+                    vault_root: None,
+                    additional_roots: vec![],
+                    runtime_handle: Some(handle.clone()),
+                    active_turn_id: None,
+                },
+            );
+            state.session_order.push(session_id.to_string());
+        }
+        drop(state);
+
+        let shutdown = thread::spawn(move || match command_rx.blocking_recv() {
+            Some(AcpCommand::Shutdown { response_tx }) => {
+                response_tx.send(Ok(())).unwrap();
+                assert!(command_rx.try_recv().is_err());
+            }
+            _ => panic!("expected one shutdown command for the shared process"),
+        });
+
+        native_ai.shutdown().unwrap();
+        shutdown.join().unwrap();
+
+        let state = native_ai.inner.lock().unwrap();
+        assert!(state.sessions.is_empty());
+        assert!(state.session_order.is_empty());
+        assert!(state.conversation_turn_bindings.is_empty());
+    }
+
+    #[test]
+    fn send_transport_disconnect_invalidates_the_affected_session_family() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let native_ai =
+            NativeAi::with_setup_store(event_tx, RuntimeSetupStore::in_memory_for_tests());
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(command_rx);
+        let handle = AcpSessionHandle {
+            process_id: 73,
+            command_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let session_id = "disconnected-session";
+        let child_session_id = "disconnected-subagent";
+        let mut state = native_ai.inner.lock().unwrap();
+        for (id, session_handle) in [(session_id, handle.clone()), (child_session_id, handle)] {
+            state.sessions.insert(
+                id.to_string(),
+                ManagedAiSession {
+                    session: new_session_with_id(CODEX_RUNTIME_ID, id.to_string()).unwrap(),
+                    vault_root: None,
+                    additional_roots: vec![],
+                    runtime_handle: Some(session_handle),
+                    active_turn_id: None,
+                },
+            );
+        }
+        drop(state);
+
+        native_ai
+            .disconnect_runtime_session_after_send_failure(session_id, 73)
+            .unwrap();
+
+        let state = native_ai.inner.lock().unwrap();
+        assert!(state.sessions[session_id].runtime_handle.is_none());
+        assert!(state.sessions[child_session_id].runtime_handle.is_none());
+        assert_eq!(
+            state.sessions[session_id].session.status,
+            AiSessionStatus::Idle
+        );
+        drop(state);
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx.recv().unwrap()
+        else {
+            panic!("expected runtime connection event");
+        };
+        assert_eq!(event_name, AI_RUNTIME_CONNECTION_EVENT);
+        assert_eq!(
+            payload.get("runtime_id").and_then(Value::as_str),
+            Some(CODEX_RUNTIME_ID)
+        );
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(session_id)
+        );
+    }
+
+    #[test]
+    fn acp_request_classifies_a_closed_command_channel() {
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(command_rx);
+        let handle = AcpSessionHandle {
+            process_id: 1,
+            command_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+
+        assert!(matches!(
+            handle.prompt("session", vec![]),
+            Err(AcpRequestError::CommandChannelClosed)
+        ));
+    }
+
+    #[test]
+    fn acp_request_classifies_a_closed_response_channel() {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = AcpSessionHandle {
+            process_id: 1,
+            command_tx,
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
+        };
+        let responder = thread::spawn(move || match command_rx.blocking_recv() {
+            Some(AcpCommand::Prompt { response_tx, .. }) => drop(response_tx),
+            _ => panic!("expected prompt command"),
+        });
+
+        assert!(matches!(
+            handle.prompt("session", vec![]),
+            Err(AcpRequestError::ResponseChannelClosed)
+        ));
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn acp_exit_errors_expose_only_a_safe_configuration_diagnostic() {
+        let message = append_acp_stderr_diagnostic(
+            "The AI runtime process exited with status exit status: 1.".to_string(),
+            true,
+        );
+
+        assert_eq!(
+            message,
+            "The AI runtime process exited with status exit status: 1. The AI runtime configuration is invalid."
+        );
+        assert!(!message.contains("/vault/.codex/config.toml"));
+        assert!(!message.contains("private-value"));
+    }
+
+    #[test]
+    fn acp_exit_errors_omit_unrecognized_runtime_stderr() {
+        assert_eq!(
+            append_acp_stderr_diagnostic("The AI runtime process exited.".to_string(), false,),
+            "The AI runtime process exited."
+        );
+    }
+
+    #[test]
+    fn acp_stderr_detection_is_case_insensitive_across_chunks() {
+        let config_invalid = AtomicBool::new(false);
+        let mut matched_marker_bytes = 0;
+
+        observe_acp_stderr_chunk(
+            &config_invalid,
+            &mut matched_marker_bytes,
+            b"Error: ERROR LOAD",
+        );
+        observe_acp_stderr_chunk(&config_invalid, &mut matched_marker_bytes, b"ING CONFIG: ");
+
+        assert!(config_invalid.load(Ordering::Relaxed));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn acp_startup_errors_expose_only_safe_stderr_diagnostics() {
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'Error: error loading config: /vault/.codex/config.toml\\nAWS_SECRET_ACCESS_KEY=private-value\\n' >&2; exit 1",
+            ])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let config_invalid = Arc::new(AtomicBool::new(false));
+        let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(
+            stderr,
+            Arc::clone(&config_invalid),
+        )));
+
+        let message = acp_startup_exit_message(&mut child, &mut stderr_task, &config_invalid)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            message,
+            "The AI runtime process exited with status exit status: 1. The AI runtime configuration is invalid."
+        );
+        assert!(!message.contains("/vault/.codex/config.toml"));
+        assert!(!message.contains("private-value"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn acp_startup_errors_keep_configuration_diagnostic_when_stderr_stays_open() {
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'Error: error loading config: /vault/.codex/config.toml\\n' >&2; sleep 1 >&2 & exit 1",
+            ])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let config_invalid = Arc::new(AtomicBool::new(false));
+        let mut stderr_task = Some(tokio::spawn(capture_acp_stderr(
+            stderr,
+            Arc::clone(&config_invalid),
+        )));
+
+        let message = acp_startup_exit_message(&mut child, &mut stderr_task, &config_invalid)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            message,
+            "The AI runtime process exited with status exit status: 1. The AI runtime configuration is invalid."
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn acp_exit_errors_abort_stderr_capture_after_drain_timeout() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropSignal(Arc<AtomicBool>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let capture_dropped = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let capture_dropped_for_task = Arc::clone(&capture_dropped);
+        let mut stderr_task = Some(tokio::spawn(async move {
+            let _drop_signal = DropSignal(capture_dropped_for_task);
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await
+        }));
+        started_rx.await.unwrap();
+
+        let message = acp_child_exit_message_with_stderr(
+            std::process::ExitStatus::from_raw(1 << 8),
+            &mut stderr_task,
+            &AtomicBool::new(false),
+        )
+        .await;
+
+        assert!(capture_dropped.load(Ordering::SeqCst));
+        assert_eq!(
+            message,
+            "The AI runtime process exited with status exit status: 1."
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_process_spec_preserves_the_validated_isolated_launch_snapshot() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("agent-acp");
+        fs::write(&executable, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let native_ai = test_native_ai_with_secret_store(
+            temp.path().join("runtime-setup.json"),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let mut input = custom_runtime_input("Local agent", &executable.display().to_string());
+        input.args = vec!["--stdio".to_string(), "; touch never".to_string()];
+        let definition = native_ai.custom_runtimes.create(input).unwrap();
+        let launch = native_ai
+            .custom_runtimes
+            .resolve_launch(&definition.id)
+            .unwrap();
+        let spec = custom_acp_process_spec(launch.clone(), temp.path().to_path_buf());
+
+        validate_acp_process_spec(&spec).unwrap();
+        assert_eq!(spec.program, std::fs::canonicalize(executable).unwrap());
+        assert_eq!(spec.args, ["--stdio", "; touch never"]);
+        assert_eq!(spec.acp_protocol, AcpProtocolFlavor::Current);
+        assert_eq!(spec.environment_policy, ProcessEnvironmentPolicy::Isolated);
+        assert_eq!(spec.product_profile, RuntimeProductProfile::Conservative);
+        assert!(spec.auth_method.is_none());
+        assert!(spec.auth_handshake.is_none());
+        assert!(matches!(
+            spec.claude_provider_routing,
+            ClaudeProviderProcessRouting::Inherit
+        ));
+        assert_eq!(
+            spec.env.get("AGENT_COLOR").map(String::as_str),
+            Some("blue")
+        );
+        assert_eq!(spec.custom_launch.as_ref(), Some(&launch));
+
+        let mut tampered = spec.clone();
+        tampered.args.push("--injected".to_string());
+        assert!(validate_acp_process_spec(&tampered).is_err());
+    }
+
+    #[test]
+    fn custom_runtime_uses_conservative_image_limits() {
+        let limits = native_image_attachment_limits_for_runtime(Some(
+            "custom:123e4567-e89b-12d3-a456-426614174000",
+        ));
+        assert_eq!(
+            limits.max_bytes,
+            CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES
+        );
+        assert_eq!(
+            limits.allowed_mime_types,
+            CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES
+        );
+    }
+
+    #[test]
+    fn conservative_product_profile_ignores_proprietary_subagent_metadata() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let mut client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.product_profile = RuntimeProductProfile::Conservative;
+        let meta = subagent_session_created_meta();
+
+        assert!(client
+            .create_subagent_session_from_meta(CHILD_RUNTIME_SESSION_ID, Some(&meta))
+            .is_none());
+        assert!(!client.handle_turn_lifecycle_update(PARENT_RUNTIME_SESSION_ID, Some(&meta)));
+        assert_eq!(session_state.lock().unwrap().sessions.len(), 1);
+    }
+
+    #[test]
     fn gemini_runtime_is_not_registered() {
         assert!(validate_runtime_id("gemini-acp").is_err());
-        assert!(runtime_definition("gemini-acp").is_none());
+        assert!(RUNTIME_CATALOG.definition("gemini-acp").is_none());
         assert!(runtime_descriptors()
             .iter()
             .all(|descriptor| descriptor.runtime.id != "gemini-acp"));
@@ -10137,11 +12864,14 @@ mod tests {
 
     #[test]
     fn grok_runtime_is_registered_with_expected_launch_contract() {
-        let definition = runtime_definition(GROK_RUNTIME_ID).unwrap();
-        assert_eq!(definition.name, "Grok");
-        assert_eq!(definition.default_executable, "grok");
-        assert_eq!(definition.bin_env_var, "NEVERWRITE_GROK_ACP_BIN");
-        assert_eq!(definition.acp_args, ["--no-auto-update", "agent", "stdio"]);
+        let definition = RUNTIME_CATALOG.definition(GROK_RUNTIME_ID).unwrap();
+        assert_eq!(definition.name(), "Grok");
+        assert_eq!(definition.default_executable(), "grok");
+        assert_eq!(definition.bin_env_var(), Some("NEVERWRITE_GROK_ACP_BIN"));
+        assert_eq!(
+            definition.acp_args(),
+            ["--no-auto-update", "agent", "stdio"]
+        );
 
         let descriptors = runtime_descriptors();
         let descriptor = descriptors
@@ -10169,13 +12899,13 @@ mod tests {
 
     #[test]
     fn copilot_runtime_is_registered_with_expected_launch_contract() {
-        let definition = runtime_definition(COPILOT_RUNTIME_ID).unwrap();
-        assert_eq!(definition.name, "GitHub Copilot");
-        assert_eq!(definition.default_executable, "copilot");
-        assert_eq!(definition.bin_env_var, "NEVERWRITE_COPILOT_ACP_BIN");
-        assert_eq!(definition.acp_args, ["--acp"]);
-        assert_eq!(definition.acp_protocol, AcpProtocolFlavor::Current);
-        assert!(!definition.supports_native_resume);
+        let definition = RUNTIME_CATALOG.definition(COPILOT_RUNTIME_ID).unwrap();
+        assert_eq!(definition.name(), "GitHub Copilot");
+        assert_eq!(definition.default_executable(), "copilot");
+        assert_eq!(definition.bin_env_var(), Some("NEVERWRITE_COPILOT_ACP_BIN"));
+        assert_eq!(definition.acp_args(), ["--acp"]);
+        assert_eq!(definition.acp_protocol(), AcpProtocolFlavor::Current);
+        assert!(!definition.supports_native_resume());
 
         let descriptor = runtime_descriptors()
             .into_iter()
@@ -10245,9 +12975,14 @@ mod tests {
             Some(grok_bin_display.as_str())
         );
         assert_eq!(spec.program, grok_bin);
+        assert_eq!(spec.acp_protocol, AcpProtocolFlavor::Legacy12);
+        assert_eq!(spec.environment_policy, ProcessEnvironmentPolicy::Inherited);
         assert_eq!(
             spec.args,
-            GROK_ACP_ARGS
+            RUNTIME_CATALOG
+                .definition(GROK_RUNTIME_ID)
+                .unwrap()
+                .acp_args()
                 .iter()
                 .map(|arg| (*arg).to_string())
                 .collect::<Vec<_>>()
@@ -10584,6 +13319,90 @@ mod tests {
             child.session.runtime_session_id.as_deref(),
             Some(CHILD_RUNTIME_SESSION_ID)
         );
+    }
+
+    #[test]
+    fn repeated_subagent_registration_creates_exactly_one_child_session() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        for _ in 0..2 {
+            run_client_future(
+                client.session_notification(subagent_session_info_created_notification_fixture()),
+            )
+            .unwrap();
+        }
+
+        let events = event_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RpcOutput::Event { event_name, payload }
+                        if event_name == AI_SESSION_CREATED_EVENT
+                            && payload.get("session_id").and_then(Value::as_str)
+                                == Some(CHILD_RUNTIME_SESSION_ID)
+                ))
+                .count(),
+            1,
+            "events={events:?}"
+        );
+        let state = session_state.lock().unwrap();
+        assert_eq!(state.sessions.len(), 2);
+        assert!(state.sessions.contains_key(CHILD_RUNTIME_SESSION_ID));
+    }
+
+    #[test]
+    fn subagent_thread_id_is_authoritative_over_session_aliases() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        let mut meta = subagent_session_created_meta();
+        meta.insert(
+            CODEX_ACP_PARENT_SESSION_ID_KEY.to_string(),
+            json!("stale-parent-session-alias"),
+        );
+        meta.insert(
+            CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+            json!("stale-child-session-alias"),
+        );
+
+        run_client_future(
+            client.session_notification(
+                SessionNotification::new(
+                    "stale-child-session-alias",
+                    SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("Galileo")),
+                )
+                .meta(meta),
+            ),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("authoritative child registration event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_CREATED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("parent_session_id").and_then(Value::as_str),
+            Some(PARENT_RUNTIME_SESSION_ID)
+        );
+        let state = session_state.lock().unwrap();
+        assert!(state.sessions.contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(!state.sessions.contains_key("stale-child-session-alias"));
     }
 
     #[test]
@@ -11303,6 +14122,89 @@ mod tests {
     }
 
     #[test]
+    fn unknown_subagent_close_does_not_invent_a_child_session() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        let unknown_child_thread_id = "unknown-child-thread";
+        let close_meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_CHILD_THREAD_ID_KEY.to_string(),
+                json!(unknown_child_thread_id),
+            ),
+            (
+                CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                json!("stale-child-session-alias"),
+            ),
+            (
+                CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_CLOSE_END_EVENT),
+            ),
+        ]);
+
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("unknown-close"), "Closed unknown child")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::Completed)
+                        .meta(close_meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("close breadcrumb activity")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert!(event_rx.try_recv().is_err());
+        let state = session_state.lock().unwrap();
+        assert_eq!(state.sessions.len(), 1);
+        assert!(!state.sessions.contains_key(unknown_child_thread_id));
+        assert!(!state.sessions.contains_key("stale-child-session-alias"));
+    }
+
+    #[test]
+    fn subagent_terminal_statuses_exclude_nonterminal_lifecycle_states() {
+        for value in [
+            json!({"completed": null}),
+            json!({"errored": "failed"}),
+            json!("shutdown"),
+            json!("cancelled"),
+            json!("not_found"),
+        ] {
+            assert_eq!(
+                codex_acp_agent_status_value_is_terminal(&value),
+                Some(true),
+                "value={value}"
+            );
+        }
+
+        for value in [
+            json!("pending_init"),
+            json!("running"),
+            json!("waiting"),
+            json!("interrupted"),
+        ] {
+            assert_eq!(
+                codex_acp_agent_status_value_is_terminal(&value),
+                Some(false),
+                "value={value}"
+            );
+        }
+    }
+
+    #[test]
     fn terminal_breadcrumb_cannot_close_child_owned_by_another_parent() {
         const OTHER_PARENT_SESSION_ID: &str = "other-parent-session";
 
@@ -11394,11 +14296,14 @@ mod tests {
         }
 
         let error = ai
-            .send_message(&json!({
-                "session_id": CHILD_RUNTIME_SESSION_ID,
-                "content": "continue",
-                "attachments": [],
-            }))
+            .send_message(
+                &json!({
+                    "session_id": CHILD_RUNTIME_SESSION_ID,
+                    "content": "continue",
+                    "attachments": [],
+                }),
+                &crate::ai_history::AiHistoryStorageService::default(),
+            )
             .expect_err("closed child should reject direct prompts");
 
         assert!(error.contains("closed by its parent thread"));
@@ -11924,11 +14829,13 @@ mod tests {
     fn setup_accepts_local_http_claude_gateway_urls() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
+        let runtime = std::env::current_exe().expect("test executable should resolve");
 
         let status = ai
             .update_setup(&json!({
                 "runtimeId": CLAUDE_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": runtime,
                     "anthropic_base_url": "http://localhost:3000",
                     "anthropic_auth_token": { "action": "set", "value": "test-token" }
                 }
@@ -12020,11 +14927,13 @@ mod tests {
     fn setup_accepts_anthropic_api_key_auth() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
+        let runtime = std::env::current_exe().expect("test executable should resolve");
 
         let status = ai
             .update_setup(&json!({
                 "runtimeId": CLAUDE_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": runtime,
                     "anthropic_api_key": { "action": "set", "value": "test-key" }
                 }
             }))
@@ -12038,6 +14947,427 @@ mod tests {
             status.get("auth_ready").and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn claude_provider_routing_keeps_default_auth_independent() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _anthropic_base_url = TestEnvVar::unset("ANTHROPIC_BASE_URL");
+        let _bedrock_base_url = TestEnvVar::unset("ANTHROPIC_BEDROCK_BASE_URL");
+        let _vertex_base_url = TestEnvVar::unset("ANTHROPIC_VERTEX_BASE_URL");
+        let _vertex_project_id = TestEnvVar::unset("ANTHROPIC_VERTEX_PROJECT_ID");
+        let _vertex_region = TestEnvVar::unset("CLOUD_ML_REGION");
+        let setup = RuntimeSetupState {
+            auth_method: Some("anthropic-api-key".to_string()),
+            auth_ready: true,
+            env: HashMap::from([("ANTHROPIC_API_KEY".to_string(), "test-secret".to_string())]),
+            ..RuntimeSetupState::default()
+        };
+
+        assert_eq!(
+            effective_claude_provider_routing(&setup),
+            ClaudeProviderRouting::Default
+        );
+        assert_eq!(setup.auth_method.as_deref(), Some("anthropic-api-key"));
+        assert!(setup.auth_ready);
+    }
+
+    #[test]
+    fn claude_provider_routing_projects_legacy_gateways() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _anthropic_base_url = TestEnvVar::unset("ANTHROPIC_BASE_URL");
+        let _bedrock_base_url = TestEnvVar::unset("ANTHROPIC_BEDROCK_BASE_URL");
+        let _vertex_base_url = TestEnvVar::unset("ANTHROPIC_VERTEX_BASE_URL");
+        let _vertex_project_id = TestEnvVar::unset("ANTHROPIC_VERTEX_PROJECT_ID");
+        let _vertex_region = TestEnvVar::unset("CLOUD_ML_REGION");
+        let mut setup = RuntimeSetupState {
+            env: HashMap::from([(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://gateway.example".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+
+        assert_eq!(
+            effective_claude_provider_routing(&setup),
+            ClaudeProviderRouting::Anthropic {
+                base_url: "https://gateway.example".to_string(),
+            }
+        );
+
+        setup.env.insert(
+            "ANTHROPIC_BEDROCK_BASE_URL".to_string(),
+            "https://bedrock.example".to_string(),
+        );
+        assert_eq!(
+            effective_claude_provider_routing(&setup),
+            ClaudeProviderRouting::Bedrock {
+                base_url: "https://bedrock.example".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_provider_routing_uses_explicit_then_inherited_precedence() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _anthropic_base_url =
+            TestEnvVar::set("ANTHROPIC_BASE_URL", "https://inherited.example");
+        let _bedrock_base_url = TestEnvVar::set(
+            "ANTHROPIC_BEDROCK_BASE_URL",
+            "https://inherited-bedrock.example",
+        );
+        let _vertex_base_url = TestEnvVar::set(
+            "ANTHROPIC_VERTEX_BASE_URL",
+            "https://inherited-vertex.example",
+        );
+        let _vertex_project_id =
+            TestEnvVar::set("ANTHROPIC_VERTEX_PROJECT_ID", "inherited-project");
+        let _vertex_region = TestEnvVar::set("CLOUD_ML_REGION", "us-central1");
+        let setup = RuntimeSetupState {
+            claude_provider_routing: Some(ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "project-1".to_string(),
+                region: "us-east5".to_string(),
+            }),
+            env: HashMap::from([(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://stored.example".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+
+        assert_eq!(
+            effective_claude_provider_routing(&setup),
+            ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "project-1".to_string(),
+                region: "us-east5".to_string(),
+            }
+        );
+
+        let inherited_setup = RuntimeSetupState::default();
+        assert_eq!(
+            effective_claude_provider_routing(&inherited_setup),
+            ClaudeProviderRouting::Vertex {
+                base_url: "https://inherited-vertex.example".to_string(),
+                project_id: "inherited-project".to_string(),
+                region: "us-central1".to_string(),
+            }
+        );
+
+        std::env::remove_var("ANTHROPIC_VERTEX_PROJECT_ID");
+        assert_eq!(
+            effective_claude_provider_routing(&inherited_setup),
+            ClaudeProviderRouting::Bedrock {
+                base_url: "https://inherited-bedrock.example".to_string(),
+            }
+        );
+
+        std::env::set_var("ANTHROPIC_BEDROCK_BASE_URL", "http://unsafe.example");
+        assert_eq!(
+            effective_claude_provider_routing(&inherited_setup),
+            ClaudeProviderRouting::Anthropic {
+                base_url: "https://inherited.example".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_provider_routing_validates_and_normalizes_explicit_setup() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let runtime = std::env::current_exe().expect("test executable should resolve");
+
+        ai.update_setup(&json!({
+            "runtimeId": CLAUDE_RUNTIME_ID,
+            "input": {
+                "custom_binary_path": runtime,
+                "anthropic_api_key": {
+                    "action": "set",
+                    "value": "existing-anthropic-secret"
+                }
+            }
+        }))
+        .expect("existing Claude authentication should update");
+
+        let status = ai
+            .update_setup(&json!({
+                "runtimeId": CLAUDE_RUNTIME_ID,
+                "input": {
+                    "anthropic_custom_headers": {
+                        "action": "set",
+                        "value": "x-api-key: provider-secret"
+                    },
+                    "claude_provider_routing": {
+                        "type": "vertex",
+                        "base_url": " https://vertex.example ",
+                        "project_id": " project-1 ",
+                        "region": " us-east5 "
+                    }
+                }
+            }))
+            .expect("valid explicit routing should update");
+
+        assert_eq!(
+            status.get("claude_provider_routing"),
+            Some(&json!({
+                "type": "vertex",
+                "base_url": "https://vertex.example",
+                "project_id": "project-1",
+                "region": "us-east5"
+            }))
+        );
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("onboarding_required").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let setup = ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(CLAUDE_RUNTIME_ID)
+            .cloned()
+            .expect("Claude setup should exist");
+        assert_eq!(
+            setup.claude_provider_routing,
+            Some(ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "project-1".to_string(),
+                region: "us-east5".to_string(),
+            })
+        );
+        assert_eq!(setup.auth_method.as_deref(), Some("anthropic-api-key"));
+        assert!(setup.auth_ready);
+        assert_eq!(
+            setup
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .map(String::as_str),
+            Some("x-api-key: provider-secret")
+        );
+
+        ai.update_setup(&json!({
+            "runtimeId": CLAUDE_RUNTIME_ID,
+            "input": {
+                "claude_provider_routing": { "type": "default" },
+                "anthropic_custom_headers": { "action": "unchanged" },
+                "anthropic_api_key": { "action": "unchanged" }
+            }
+        }))
+        .expect("clearing provider routing should update");
+        let cleared = ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(CLAUDE_RUNTIME_ID)
+            .cloned()
+            .expect("Claude setup should remain available");
+        assert_eq!(
+            cleared.claude_provider_routing,
+            Some(ClaudeProviderRouting::Default)
+        );
+        assert_eq!(cleared.auth_method.as_deref(), Some("anthropic-api-key"));
+        assert!(cleared.auth_ready);
+        assert_eq!(
+            cleared.env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("existing-anthropic-secret")
+        );
+        assert_eq!(
+            cleared
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .map(String::as_str),
+            Some("x-api-key: provider-secret")
+        );
+
+        let error = ai
+            .update_setup(&json!({
+                "runtimeId": CLAUDE_RUNTIME_ID,
+                "input": {
+                    "claude_provider_routing": {
+                        "type": "vertex",
+                        "base_url": "http://vertex.example",
+                        "project_id": "project-1",
+                        "region": ""
+                    }
+                }
+            }))
+            .expect_err("invalid explicit routing should fail");
+        assert_eq!(error, "HTTP gateways are only allowed for localhost.");
+    }
+
+    #[test]
+    fn provider_lifecycle_snapshots_only_typed_claude_settings() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _headers = TestEnvVar::unset("ANTHROPIC_CUSTOM_HEADERS");
+        let explicit = RuntimeSetupState {
+            claude_provider_routing: Some(ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "project-1".to_string(),
+                region: "us-east5".to_string(),
+            }),
+            env: HashMap::from([(
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                "authorization: Bearer provider-secret".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+        let snapshot = claude_provider_process_routing(CLAUDE_RUNTIME_ID, &explicit)
+            .expect("typed provider routing should snapshot");
+        let ClaudeProviderProcessRouting::Configure(snapshot) = snapshot else {
+            panic!("typed provider routing should use ACP configuration");
+        };
+        assert_eq!(
+            snapshot.routing,
+            explicit.claude_provider_routing.clone().unwrap()
+        );
+        assert_eq!(
+            snapshot.headers.get("authorization").map(String::as_str),
+            Some("Bearer provider-secret")
+        );
+
+        let mut spec_setup = explicit.clone();
+        spec_setup.custom_binary_path = Some(
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        );
+        spec_setup.env.insert(
+            "ANTHROPIC_VERTEX_BASE_URL".to_string(),
+            "https://stale-process-env.example".to_string(),
+        );
+        let spec = acp_process_spec(
+            CLAUDE_RUNTIME_ID,
+            &spec_setup,
+            std::env::current_dir().unwrap(),
+        )
+        .expect("typed provider process spec should resolve");
+        assert!(!spec.env.contains_key("ANTHROPIC_CUSTOM_HEADERS"));
+        assert!(!spec.env.contains_key("ANTHROPIC_VERTEX_BASE_URL"));
+
+        let legacy = RuntimeSetupState {
+            env: HashMap::from([(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://legacy.example".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+        assert!(matches!(
+            claude_provider_process_routing(CLAUDE_RUNTIME_ID, &legacy).unwrap(),
+            ClaudeProviderProcessRouting::Inherit
+        ));
+
+        let default = RuntimeSetupState {
+            claude_provider_routing: Some(ClaudeProviderRouting::Default),
+            ..RuntimeSetupState::default()
+        };
+        assert!(matches!(
+            claude_provider_process_routing(CLAUDE_RUNTIME_ID, &default).unwrap(),
+            ClaudeProviderProcessRouting::Default
+        ));
+    }
+
+    #[test]
+    fn provider_lifecycle_legacy_fallback_supports_anthropic_and_bedrock_only() {
+        let headers = HashMap::from([(
+            "authorization".to_string(),
+            "Bearer provider-secret".to_string(),
+        )]);
+        let anthropic = claude_provider_legacy_fallback_env(&ClaudeProviderSnapshot {
+            routing: ClaudeProviderRouting::Anthropic {
+                base_url: "https://anthropic.example".to_string(),
+            },
+            headers: headers.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            anthropic.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://anthropic.example")
+        );
+        assert_eq!(
+            anthropic
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .map(String::as_str),
+            Some("authorization: Bearer provider-secret")
+        );
+        assert_eq!(
+            anthropic.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some(" ")
+        );
+
+        let bedrock = claude_provider_legacy_fallback_env(&ClaudeProviderSnapshot {
+            routing: ClaudeProviderRouting::Bedrock {
+                base_url: "https://bedrock.example".to_string(),
+            },
+            headers: headers.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            bedrock
+                .get("ANTHROPIC_BEDROCK_BASE_URL")
+                .map(String::as_str),
+            Some("https://bedrock.example")
+        );
+        assert_eq!(
+            bedrock.get("CLAUDE_CODE_USE_BEDROCK").map(String::as_str),
+            Some("1")
+        );
+
+        let error = claude_provider_legacy_fallback_env(&ClaudeProviderSnapshot {
+            routing: ClaudeProviderRouting::Vertex {
+                base_url: "https://vertex.example".to_string(),
+                project_id: "private-project".to_string(),
+                region: "us-east5".to_string(),
+            },
+            headers,
+        })
+        .expect_err("Vertex must require ACP provider support");
+        let message = error.to_string();
+        assert!(message.contains("does not support provider configuration"));
+        assert!(!message.contains("private-project"));
+        assert!(!message.contains("provider-secret"));
+    }
+
+    #[test]
+    fn provider_lifecycle_scopes_fallback_env_to_new_and_resumed_sessions() {
+        let fallback_env = HashMap::from([(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "https://fallback.example".to_string(),
+        )]);
+        let meta = claude_provider_fallback_meta(Some(&fallback_env));
+        let new_request = new_session_request(
+            CLAUDE_RUNTIME_ID,
+            PathBuf::from("/vault"),
+            &[],
+            meta.clone(),
+        );
+        let resume_request = resume_session_request(
+            CLAUDE_RUNTIME_ID,
+            "claude-session-1",
+            PathBuf::from("/vault"),
+            &[],
+            meta,
+        );
+
+        for request in [
+            serde_json::to_value(new_request).unwrap(),
+            serde_json::to_value(resume_request).unwrap(),
+        ] {
+            assert_eq!(
+                request
+                    .pointer("/_meta/claudeCode/options/env/ANTHROPIC_BASE_URL")
+                    .and_then(Value::as_str),
+                Some("https://fallback.example")
+            );
+        }
     }
 
     #[test]
@@ -12448,6 +15778,8 @@ mod tests {
                 SessionConfigSelectOption::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
                 SessionConfigSelectOption::new("gpt-5.5/high", "GPT-5.5 (high)"),
                 SessionConfigSelectOption::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
+                SessionConfigSelectOption::new("gpt-5.5/max", "GPT-5.5 (max)"),
+                SessionConfigSelectOption::new("gpt-5.5/ultra", "GPT-5.5 (ultra)"),
             ],
         )
         .category(SessionConfigOptionCategory::Model)];
@@ -12467,7 +15799,9 @@ mod tests {
                 "low".to_string(),
                 "medium".to_string(),
                 "high".to_string(),
-                "xhigh".to_string()
+                "xhigh".to_string(),
+                "max".to_string(),
+                "ultra".to_string()
             ])
         );
 
@@ -12487,8 +15821,17 @@ mod tests {
                 .iter()
                 .map(|option| option.value.as_str())
                 .collect::<Vec<_>>(),
-            vec!["low", "medium", "high", "xhigh"]
+            vec!["low", "medium", "high", "xhigh", "max", "ultra"]
         );
+    }
+
+    #[test]
+    fn extended_and_custom_reasoning_efforts_have_stable_labels() {
+        assert_eq!(reasoning_effort_label("max"), "Maximum");
+        assert_eq!(reasoning_effort_label("ultra"), "Ultra");
+        assert_eq!(reasoning_effort_label("experimental"), "Experimental");
+        assert_eq!(strip_effort_suffix("gpt-5.6-sol/max"), "gpt-5.6-sol");
+        assert_eq!(strip_effort_suffix("gpt-5.6-sol/ultra"), "gpt-5.6-sol");
     }
 
     #[test]
@@ -12549,7 +15892,10 @@ mod tests {
     #[test]
     fn grok_uses_legacy_acp12_protocol() {
         assert_eq!(
-            acp_protocol_flavor(GROK_RUNTIME_ID),
+            RUNTIME_CATALOG
+                .definition(GROK_RUNTIME_ID)
+                .unwrap()
+                .acp_protocol(),
             AcpProtocolFlavor::Legacy12
         );
     }
@@ -12563,7 +15909,13 @@ mod tests {
             KILO_RUNTIME_ID,
             OPENCODE_RUNTIME_ID,
         ] {
-            assert_eq!(acp_protocol_flavor(runtime_id), AcpProtocolFlavor::Current);
+            assert_eq!(
+                RUNTIME_CATALOG
+                    .definition(runtime_id)
+                    .unwrap()
+                    .acp_protocol(),
+                AcpProtocolFlavor::Current
+            );
         }
     }
 
@@ -12613,6 +15965,15 @@ mod tests {
                     "high",
                     vec![SessionConfigSelectOption::new("high", "High")],
                 ),
+                SessionConfigOption::select(
+                    "service_tier",
+                    "Fast Mode",
+                    "off",
+                    vec![
+                        SessionConfigSelectOption::new("off", "Off"),
+                        SessionConfigSelectOption::new("fast", "Fast"),
+                    ],
+                ),
             ],
         );
 
@@ -12621,6 +15982,10 @@ mod tests {
         assert!(matches!(
             options[2].category,
             AiConfigOptionCategory::Reasoning
+        ));
+        assert!(matches!(
+            options[3].category,
+            AiConfigOptionCategory::ServiceTier
         ));
     }
 
@@ -12655,6 +16020,7 @@ mod tests {
     #[test]
     fn acp12_model_state_is_exposed_as_model_config_option() {
         let config_options = acp12_session_config_options(
+            GROK_RUNTIME_ID,
             None,
             Some(acp12::schema::SessionModelState::new(
                 "grok-build",
@@ -13618,6 +16984,46 @@ mod tests {
     }
 
     #[test]
+    fn acp_config_mapping_classifies_only_known_fast_options_as_service_tiers() {
+        let claude = map_session_config_options(
+            CLAUDE_RUNTIME_ID,
+            vec![SessionConfigOption::select(
+                "fast",
+                "Fast mode",
+                "off",
+                vec![
+                    SessionConfigSelectOption::new("off", "Off"),
+                    SessionConfigSelectOption::new("on", "On"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Other(
+                "model_config".to_string(),
+            ))],
+        );
+        let unrelated = map_session_config_options(
+            "custom:example",
+            vec![SessionConfigOption::select(
+                "fast",
+                "Fast mode",
+                "off",
+                vec![
+                    SessionConfigSelectOption::new("off", "Off"),
+                    SessionConfigSelectOption::new("on", "On"),
+                ],
+            )],
+        );
+
+        assert!(matches!(
+            claude[0].category,
+            AiConfigOptionCategory::ServiceTier
+        ));
+        assert!(matches!(
+            unrelated[0].category,
+            AiConfigOptionCategory::Other
+        ));
+    }
+
+    #[test]
     fn grok_config_options_route_model_to_supported_acp_method() {
         let options = map_session_config_options(
             GROK_RUNTIME_ID,
@@ -13720,6 +17126,22 @@ mod tests {
     fn applying_config_options_removes_stale_reasoning_option() {
         let mut session = new_session_with_id(CLAUDE_RUNTIME_ID, "session-1".to_string()).unwrap();
         session.model_id = "claude-sonnet-4-5".to_string();
+        session.modes = vec![
+            AiModeOption {
+                id: "auto".to_string(),
+                runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+                name: "Auto".to_string(),
+                description: String::new(),
+                disabled: false,
+            },
+            AiModeOption {
+                id: "default".to_string(),
+                runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+                name: "Default".to_string(),
+                description: String::new(),
+                disabled: false,
+            },
+        ];
         session.config_options = map_session_config_options(
             CLAUDE_RUNTIME_ID,
             vec![
@@ -13773,6 +17195,14 @@ mod tests {
 
         assert_eq!(session.model_id, "claude-haiku-4-5");
         assert_eq!(session.mode_id, "default");
+        assert_eq!(
+            session
+                .modes
+                .iter()
+                .map(|mode| mode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default"]
+        );
         assert!(session
             .config_options
             .iter()
@@ -13786,6 +17216,22 @@ mod tests {
         let client = test_client_with_state(event_tx, Arc::clone(&session_state));
         let mut session = new_session_with_id(CLAUDE_RUNTIME_ID, "session-1".to_string()).unwrap();
         session.model_id = "claude-sonnet-4-5".to_string();
+        session.modes = vec![
+            AiModeOption {
+                id: "auto".to_string(),
+                runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+                name: "Auto".to_string(),
+                description: String::new(),
+                disabled: false,
+            },
+            AiModeOption {
+                id: "default".to_string(),
+                runtime_id: CLAUDE_RUNTIME_ID.to_string(),
+                name: "Default".to_string(),
+                description: String::new(),
+                disabled: false,
+            },
+        ];
         session.config_options = map_session_config_options(
             CLAUDE_RUNTIME_ID,
             vec![
@@ -13872,6 +17318,14 @@ mod tests {
             .config_options
             .iter()
             .all(|option| !matches!(option.category, AiConfigOptionCategory::Reasoning)));
+        assert_eq!(
+            session
+                .modes
+                .iter()
+                .map(|mode| mode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default"]
+        );
     }
 
     #[test]
@@ -13891,6 +17345,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(outside_file.display().to_string()),
                 mime_type: Some("text/plain".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -13905,6 +17362,49 @@ mod tests {
     }
 
     #[test]
+    fn managed_attachment_ids_resolve_to_verified_bytes_without_exposing_a_path() {
+        let vault = tempfile::tempdir().unwrap();
+        let service = crate::ai_history::AiHistoryStorageService::default();
+        let created = service
+            .invoke(
+                "ai_create_managed_attachment",
+                vault.path(),
+                json!({
+                    "fileName": "pasted-image.png",
+                    "mimeType": "image/png",
+                    "bytes": b"\x89PNG\r\n\x1a\nmanaged-image",
+                }),
+            )
+            .unwrap();
+        let attachment_id = created["attachment_id"].as_str().unwrap().to_string();
+        let mut attachments = vec![AiAttachmentInput {
+            label: "Screenshot".to_string(),
+            path: None,
+            content: None,
+            attachment_type: Some("file".to_string()),
+            note_id: None,
+            file_path: None,
+            mime_type: Some("image/png".to_string()),
+            managed_attachment_id: Some(attachment_id.clone()),
+            file_name: Some("pasted-image.png".to_string()),
+            managed_bytes: None,
+            transcription: None,
+            start_line: None,
+            end_line: None,
+        }];
+
+        resolve_managed_attachment_inputs(&mut attachments, Some(vault.path()), &service).unwrap();
+
+        assert_eq!(
+            attachments[0].managed_bytes.as_deref(),
+            Some(b"\x89PNG\r\n\x1a\nmanaged-image".as_slice())
+        );
+        assert!(attachments[0].file_path.is_none());
+        assert_eq!(attachments[0].mime_type.as_deref(), Some("image/png"));
+        assert!(attachments[0].path.is_none());
+    }
+
+    #[test]
     fn prompt_blocks_embed_selection_context_without_textual_wrapper() {
         let selection_path = "/Users/example/vault/cuento.md";
         let attachments = vec![AiAttachmentInput {
@@ -13915,6 +17415,9 @@ mod tests {
             note_id: None,
             file_path: None,
             mime_type: None,
+            managed_attachment_id: None,
+            file_name: None,
+            managed_bytes: None,
             transcription: None,
             start_line: Some(30),
             end_line: Some(30),
@@ -13969,6 +17472,9 @@ mod tests {
             note_id: None,
             file_path: None,
             mime_type: None,
+            managed_attachment_id: None,
+            file_name: None,
+            managed_bytes: None,
             transcription: None,
             start_line: Some(30),
             end_line: Some(30),
@@ -14014,6 +17520,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -14061,6 +17570,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -14105,6 +17617,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -14140,6 +17655,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -14176,6 +17694,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -14210,6 +17731,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/webp".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -14244,6 +17768,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/svg+xml".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -14278,6 +17805,9 @@ mod tests {
                 note_id: None,
                 file_path: Some(image_path.display().to_string()),
                 mime_type: Some("image/png".to_string()),
+                managed_attachment_id: None,
+                file_name: None,
+                managed_bytes: None,
                 transcription: None,
                 start_line: None,
                 end_line: None,
@@ -14425,6 +17955,72 @@ mod tests {
     }
 
     #[test]
+    fn context_compaction_tool_activity_stays_out_of_review_flow() {
+        let tool_call = ToolCall::new(
+            ToolCallId::from("compact-session-1"),
+            "Compact conversation",
+        )
+        .kind(ToolKind::Think)
+        .status(ToolCallStatus::Completed)
+        .meta(Meta::from_iter([(
+            "contextCompaction".to_string(),
+            json!({
+                "version": 1,
+                "trigger": "automatic",
+                "preTokens": 190_000,
+                "postTokens": 42_000,
+            }),
+        )]));
+
+        let payload = map_tool_call("session-1", &tool_call, None, None, vec![]);
+
+        assert_eq!(payload.title, "Compact conversation");
+        assert_eq!(payload.kind, "think");
+        assert_eq!(payload.status, "completed");
+        assert!(payload.diffs.is_none());
+        assert!(payload.action.is_none());
+    }
+
+    #[test]
+    fn activity_payloads_preserve_restored_runtime_start_times() {
+        let tool_call = ToolCall::new(ToolCallId::from("tool-restored"), "Read README.md")
+            .kind(ToolKind::Read)
+            .status(ToolCallStatus::Completed)
+            .meta(Meta::from_iter([(
+                NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY.to_string(),
+                json!(1_234_567_i64),
+            )]));
+        let tool_payload = map_tool_call("session-1", &tool_call, None, None, vec![]);
+        assert_eq!(tool_payload.started_at_ms, Some(1_234_567));
+
+        let status_call = ToolCall::new(
+            ToolCallId::from("neverwrite:status:item:sleep-restored"),
+            "Waiting",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::Completed)
+        .meta(Meta::from_iter([
+            (ACP_STATUS_EVENT_TYPE_KEY.to_string(), json!("status")),
+            (ACP_STATUS_KIND_KEY.to_string(), json!("item_activity")),
+            (
+                NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY.to_string(),
+                json!(2_345_678_i64),
+            ),
+        ]));
+        let status_payload = map_status_event("session-1", &status_call, None)
+            .expect("status metadata should produce a status payload");
+        assert_eq!(status_payload.started_at_ms, Some(2_345_678));
+
+        assert_eq!(
+            activity_started_at_ms(Some(&Meta::from_iter([(
+                NEVERWRITE_ACTIVITY_STARTED_AT_MS_KEY.to_string(),
+                json!(0),
+            )]))),
+            None
+        );
+    }
+
+    #[test]
     fn failed_tool_activity_prefers_acp_reason_over_terminal_exit_summary() {
         const REJECTION_REASON: &str =
             "rm -f style commands are not permitted. Use a safer approach";
@@ -14474,7 +18070,10 @@ mod tests {
             panic!("expected event");
         };
         assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
-        assert_eq!(payload.get("status").and_then(Value::as_str), Some("failed"));
+        assert_eq!(
+            payload.get("status").and_then(Value::as_str),
+            Some("failed")
+        );
         assert_eq!(
             payload.get("summary").and_then(Value::as_str),
             Some(REJECTION_REASON)
@@ -14916,6 +18515,40 @@ mod tests {
             payload.get("title").and_then(Value::as_str),
             Some("Generated image")
         );
+    }
+
+    #[test]
+    fn matched_ask_rule_permission_decisions_continue_or_cancel() {
+        for (request_id, option_id, expected) in [
+            (
+                "matched-ask-allow",
+                Some("allow".to_string()),
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow")),
+            ),
+            (
+                "matched-ask-cancel",
+                None,
+                RequestPermissionOutcome::Cancelled,
+            ),
+        ] {
+            let permission_waiters = Arc::new(Mutex::new(HashMap::new()));
+            let (sender, mut receiver) = oneshot::channel();
+            permission_waiters
+                .lock()
+                .unwrap()
+                .insert(request_id.to_string(), sender);
+
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            resolve_permission_waiter(&permission_waiters, request_id, option_id)
+                .expect("permission decision should resolve the pending request");
+
+            let outcome = run_client_future(async move { receiver.await.unwrap() });
+            assert_eq!(outcome, expected);
+            assert!(permission_waiters.lock().unwrap().is_empty());
+        }
     }
 
     #[test]
@@ -15809,6 +19442,156 @@ mod tests {
     }
 
     #[test]
+    fn claude_auth_status_parser_uses_the_cli_logged_in_flag() {
+        assert_eq!(
+            parse_claude_auth_status(br#"{"loggedIn":true,"authMethod":"claude.ai"}"#),
+            Some(true)
+        );
+        assert_eq!(
+            parse_claude_auth_status(br#"{"loggedIn":false,"authMethod":"none"}"#),
+            Some(false)
+        );
+        assert_eq!(parse_claude_auth_status(b"not-json"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_auth_probe_uses_the_effective_binary_and_caches_its_result() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("custom-claude-acp");
+        let marker = temp.path().join("probe-count");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf x >> \"$NEVERWRITE_AUTH_PROBE_MARKER\"\nprintf '{\"loggedIn\":%s}' \"$NEVERWRITE_AUTH_PROBE_RESULT\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut setup = RuntimeSetupState {
+            custom_binary_path: Some(executable.display().to_string()),
+            env: HashMap::from([
+                (
+                    "NEVERWRITE_AUTH_PROBE_MARKER".to_string(),
+                    marker.display().to_string(),
+                ),
+                (
+                    "NEVERWRITE_AUTH_PROBE_RESULT".to_string(),
+                    "true".to_string(),
+                ),
+            ]),
+            ..RuntimeSetupState::default()
+        };
+
+        assert_eq!(claude_cli_auth_ready(&setup), Some(true));
+        assert_eq!(claude_cli_auth_ready(&setup), Some(true));
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "x");
+
+        setup.env.insert(
+            "NEVERWRITE_AUTH_PROBE_RESULT".to_string(),
+            "false".to_string(),
+        );
+        assert_eq!(claude_cli_auth_ready(&setup), Some(false));
+        assert_eq!(claude_cli_auth_ready(&setup), Some(false));
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "xx");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_auth_probe_terminates_a_hung_process_group() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("hanging-claude-acp");
+        fs::write(&executable, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(executable.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+        let probe = resolve_claude_auth_probe(&setup).expect("custom probe should resolve");
+        let started_at = Instant::now();
+
+        assert_eq!(
+            execute_claude_auth_probe(&probe, Duration::from_millis(50)),
+            None
+        );
+        assert!(started_at.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn claude_auth_error_detector_matches_expired_oauth() {
+        for error in [
+            "Failed to authenticate: OAuth session expired and could not be refreshed",
+            "authentication_failed",
+            "authentication required",
+            "auth_required",
+            "Claude is not logged in",
+        ] {
+            assert!(is_claude_auth_error(error), "{error:?} should be detected");
+        }
+
+        assert!(!is_claude_auth_error("model does not support that option"));
+    }
+
+    #[test]
+    fn claude_oauth_error_marks_subscription_login_invalidated() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path,
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let setup_at_start = RuntimeSetupState {
+            auth_method: Some("claude-ai-login".to_string()),
+            auth_ready: true,
+            ..RuntimeSetupState::default()
+        };
+        native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .insert(CLAUDE_RUNTIME_ID.to_string(), setup_at_start.clone());
+
+        native_ai
+            .invalidate_auth_after_session_start_error(
+                CLAUDE_RUNTIME_ID,
+                &setup_at_start,
+                "Failed to authenticate: OAuth session expired and could not be refreshed",
+            )
+            .unwrap();
+
+        let setup = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(CLAUDE_RUNTIME_ID)
+            .cloned()
+            .expect("Claude setup should remain");
+        assert_eq!(setup.auth_method.as_deref(), Some("claude-ai-login"));
+        assert!(!setup.auth_ready);
+        assert!(setup.auth_invalidated_at_ms.is_some());
+        assert_eq!(
+            setup.message.as_deref(),
+            Some(CLAUDE_LOGIN_INVALIDATED_MESSAGE)
+        );
+
+        let persisted_setup = native_ai
+            .setup_store
+            .load()
+            .unwrap()
+            .remove(CLAUDE_RUNTIME_ID)
+            .expect("Claude setup should persist invalidated login");
+        assert_eq!(
+            persisted_setup.auth_method.as_deref(),
+            Some("claude-ai-login")
+        );
+        assert!(persisted_setup.auth_invalidated_at_ms.is_some());
+    }
+
+    #[test]
     fn grok_login_auth_error_marks_external_auth_invalidated() {
         let _guard = ENV_TEST_LOCK.lock().unwrap();
         let previous = std::env::var_os("XAI_API_KEY");
@@ -16321,6 +20104,177 @@ mod tests {
     }
 
     #[test]
+    fn claude_provider_routing_persists_non_secrets_and_rehydrates_keyring_headers() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+        let store = RuntimeSetupStore::with_secret_store(store_path.clone(), secrets.clone());
+        let routing = ClaudeProviderRouting::Vertex {
+            base_url: "https://vertex.example".to_string(),
+            project_id: "project-1".to_string(),
+            region: "us-east5".to_string(),
+        };
+        let setup = RuntimeSetupState {
+            claude_provider_routing: Some(routing.clone()),
+            env: HashMap::from([(
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                "authorization: Bearer provider-secret".to_string(),
+            )]),
+            ..RuntimeSetupState::default()
+        };
+
+        store
+            .save(&HashMap::from([(CLAUDE_RUNTIME_ID.to_string(), setup)]))
+            .expect("Claude provider routing should persist");
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("\"type\": \"vertex\""));
+        assert!(encoded.contains("\"base_url\": \"https://vertex.example\""));
+        assert!(encoded.contains("\"project_id\": \"project-1\""));
+        assert!(encoded.contains("\"region\": \"us-east5\""));
+        assert!(encoded.contains("ANTHROPIC_CUSTOM_HEADERS"));
+        assert!(!encoded.contains("provider-secret"));
+        assert_eq!(
+            secrets
+                .get_secret(CLAUDE_RUNTIME_ID, "ANTHROPIC_CUSTOM_HEADERS")
+                .unwrap()
+                .as_deref(),
+            Some("authorization: Bearer provider-secret")
+        );
+
+        let loaded = store
+            .load()
+            .unwrap()
+            .remove(CLAUDE_RUNTIME_ID)
+            .expect("Claude setup should reload");
+        assert_eq!(loaded.claude_provider_routing, Some(routing));
+        assert_eq!(
+            loaded
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .map(String::as_str),
+            Some("authorization: Bearer provider-secret")
+        );
+    }
+
+    #[test]
+    fn claude_provider_routing_loads_legacy_setups_without_rewriting_them() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let _anthropic_base_url = TestEnvVar::unset("ANTHROPIC_BASE_URL");
+        let _bedrock_base_url = TestEnvVar::unset("ANTHROPIC_BEDROCK_BASE_URL");
+        let _vertex_base_url = TestEnvVar::unset("ANTHROPIC_VERTEX_BASE_URL");
+        let _vertex_project_id = TestEnvVar::unset("ANTHROPIC_VERTEX_PROJECT_ID");
+        let _vertex_region = TestEnvVar::unset("CLOUD_ML_REGION");
+        let cases = vec![
+            (
+                "default",
+                json!({
+                    "custom_binary_path": null,
+                    "auth_method": null,
+                    "env": {},
+                    "secret_env_keys": []
+                }),
+                Vec::<(&str, &str)>::new(),
+                ClaudeProviderRouting::Default,
+                None,
+                false,
+            ),
+            (
+                "anthropic-api-key",
+                json!({
+                    "custom_binary_path": null,
+                    "auth_method": "anthropic-api-key",
+                    "env": {},
+                    "secret_env_keys": ["ANTHROPIC_API_KEY"]
+                }),
+                vec![("ANTHROPIC_API_KEY", "api-key-secret")],
+                ClaudeProviderRouting::Default,
+                Some("anthropic-api-key"),
+                true,
+            ),
+            (
+                "custom-gateway",
+                json!({
+                    "custom_binary_path": null,
+                    "auth_method": "gateway",
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://gateway.example"
+                    },
+                    "secret_env_keys": ["ANTHROPIC_AUTH_TOKEN"]
+                }),
+                vec![("ANTHROPIC_AUTH_TOKEN", "gateway-secret")],
+                ClaudeProviderRouting::Anthropic {
+                    base_url: "https://gateway.example".to_string(),
+                },
+                Some("gateway"),
+                true,
+            ),
+            (
+                "bedrock-gateway",
+                json!({
+                    "custom_binary_path": null,
+                    "auth_method": "gateway-bedrock",
+                    "env": {
+                        "ANTHROPIC_BEDROCK_BASE_URL": "https://bedrock.example",
+                        "CLAUDE_CODE_USE_BEDROCK": "1"
+                    },
+                    "secret_env_keys": ["ANTHROPIC_CUSTOM_HEADERS"]
+                }),
+                vec![("ANTHROPIC_CUSTOM_HEADERS", "x-api-key: bedrock-secret")],
+                ClaudeProviderRouting::Bedrock {
+                    base_url: "https://bedrock.example".to_string(),
+                },
+                Some("gateway-bedrock"),
+                true,
+            ),
+        ];
+
+        for (name, persisted_setup, stored_secrets, expected_routing, expected_auth, auth_ready) in
+            cases
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let store_path = temp.path().join(format!("{name}.json"));
+            let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+            for (key, value) in stored_secrets {
+                secrets.set_secret(CLAUDE_RUNTIME_ID, key, value).unwrap();
+            }
+            fs::write(
+                &store_path,
+                serde_json::to_vec_pretty(&json!({
+                    "version": RUNTIME_SETUP_STORE_VERSION,
+                    "runtimes": {
+                        CLAUDE_RUNTIME_ID: persisted_setup
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let original = fs::read_to_string(&store_path).unwrap();
+            let store = RuntimeSetupStore::with_secret_store(store_path.clone(), secrets);
+
+            let loaded = store
+                .load()
+                .unwrap()
+                .remove(CLAUDE_RUNTIME_ID)
+                .expect("legacy Claude setup should load");
+
+            assert_eq!(
+                fs::read_to_string(&store_path).unwrap(),
+                original,
+                "{name} should not be rewritten during load"
+            );
+            assert_eq!(
+                effective_claude_provider_routing(&loaded),
+                expected_routing,
+                "{name} should preserve effective routing"
+            );
+            assert_eq!(loaded.auth_method.as_deref(), expected_auth);
+            assert_eq!(loaded.auth_ready, auth_ready);
+            assert_eq!(loaded.claude_provider_routing, None);
+        }
+    }
+
+    #[test]
     fn legacy_plaintext_runtime_setup_is_migrated_to_secret_store() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -16690,7 +20644,7 @@ mod tests {
             .expect("Grok ACP process spec should resolve");
 
         assert_eq!(
-            inherited_auth_method(GROK_RUNTIME_ID, true, None),
+            inherited_auth_method(GROK_RUNTIME_ID, true, None, &setup),
             Some("xai-api-key".to_string())
         );
         assert_eq!(spec.env.get("XAI_API_KEY"), None);

@@ -1,3 +1,8 @@
+import { useArchivedChatsStore } from "../store/archivedChatsStore";
+import { AIChatPane } from "./AIChatPane";
+import { getDesktopPlatform } from "../../../app/utils/platform";
+import { selectChatForTest } from "../../../test/test-utils";
+import { useChatTabsStore } from "../store/chatTabsStore";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@neverwrite/runtime";
 import type { ReactNode } from "react";
@@ -7,21 +12,35 @@ import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
-import type { AIChatSession } from "../types";
+import type {
+    AIChatSession,
+    DraftAttachmentId,
+} from "../types";
 import {
     MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "../imageAttachments";
-import { AIChatSessionView } from "./AIChatSessionView";
+import { AIChatSessionView as SessionView } from "./AIChatSessionView";
 import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 
 const composerMockState = vi.hoisted(() => ({
     onPasteImage: undefined as ((file: File) => void) | undefined,
+    onSubmit: undefined as (() => void) | undefined,
+}));
+const agentControlsMockState = vi.hoisted(() => ({
+    props: null as null | {
+        runtimeId?: string;
+        providers?: Array<{
+            runtimeId: string;
+            disabledReason: string | null;
+        }>;
+        onProviderModelChange?: (runtimeId: string, modelId: string) => void;
+    },
 }));
 const messageListMockState = vi.hoisted(() => ({
     props: [] as Array<{
-        scrollToMessageId?: string | null;
-        onScrollToMessageComplete?: () => void;
+        bottomInset?: number;
+        sessionId?: string | null;
     }>,
 }));
 
@@ -29,16 +48,12 @@ const invokeMock = vi.mocked(invoke);
 
 vi.mock("./AIChatMessageList", () => ({
     AIChatMessageList: (props: {
-        scrollToMessageId?: string | null;
-        onScrollToMessageComplete?: () => void;
+        bottomInset?: number;
+        sessionId?: string | null;
+        findOpen?: boolean;
     }) => {
         messageListMockState.props.push(props);
-        return (
-            <div
-                data-testid="chat-message-list"
-                data-scroll-to-message-id={props.scrollToMessageId ?? ""}
-            />
-        );
+        return <div data-testid="chat-message-list" data-find-open={String(Boolean(props.findOpen))} />;
     },
 }));
 
@@ -46,19 +61,24 @@ vi.mock("./AIChatComposer", () => ({
     AIChatComposer: ({
         disabled,
         expanded,
+        contextBar,
         footer,
         onToggleExpanded,
         onPasteImage,
+        onSubmit,
         placeholderText,
     }: {
         disabled?: boolean;
         expanded?: boolean;
+        contextBar?: ReactNode;
         footer?: ReactNode;
         onToggleExpanded?: () => void;
         onPasteImage?: (file: File) => void;
+        onSubmit?: () => void;
         placeholderText?: string;
-    }) => (
-        <div>
+    }) => {
+        composerMockState.onSubmit = onSubmit;
+        return <div>
             <button
                 type="button"
                 data-testid="chat-composer"
@@ -68,6 +88,7 @@ vi.mock("./AIChatComposer", () => ({
             >
                 {placeholderText}
             </button>
+            {contextBar}
             <div data-testid="chat-composer-footer">{footer}</div>
             <button
                 type="button"
@@ -76,8 +97,8 @@ vi.mock("./AIChatComposer", () => ({
                     composerMockState.onPasteImage = onPasteImage;
                 }}
             />
-        </div>
-    ),
+        </div>;
+    },
 }));
 
 vi.mock("./AIChatContextBar", () => ({
@@ -85,7 +106,12 @@ vi.mock("./AIChatContextBar", () => ({
 }));
 
 vi.mock("./AIChatAgentControls", () => ({
-    AIChatAgentControls: () => <div data-testid="chat-agent-controls" />,
+    AIChatAgentControls: (
+        props: NonNullable<typeof agentControlsMockState.props>,
+    ) => {
+        agentControlsMockState.props = props;
+        return <div data-testid="chat-agent-controls" />;
+    },
 }));
 
 vi.mock("./EditedFilesBufferPanel", () => ({
@@ -127,6 +153,12 @@ function createSession(sessionId: string, title: string): AIChatSession {
     };
 }
 
+function AIChatSessionView(props: { paneId?: string; tabId?: string; sessionId?: string; focused?: boolean; headerActions?: ReactNode }) {
+    const view = useChatTabsStore(state => state.view);
+    const sessionId = props.sessionId ?? (view.mode === "conversation" ? view.sessionId : "");
+    return <SessionView sessionId={sessionId} focused={props.focused} headerActions={props.headerActions} />;
+}
+
 function setupWorkspaceSession(sessionId = "session-a") {
     useChatStore.setState((state) => ({
         ...state,
@@ -135,7 +167,7 @@ function setupWorkspaceSession(sessionId = "session-a") {
         },
         activeSessionId: sessionId,
     }));
-    useEditorStore.getState().openChat(sessionId, {
+    selectChatForTest(sessionId, {
         title: "Workspace chat",
         paneId: "primary",
     });
@@ -158,8 +190,11 @@ function expectColumnAncestor(testId: string) {
 describe("AIChatSessionView", () => {
     beforeEach(() => {
         resetChatStore();
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
         useSettingsStore.getState().reset();
         composerMockState.onPasteImage = undefined;
+        composerMockState.onSubmit = undefined;
+        agentControlsMockState.props = null;
         messageListMockState.props = [];
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -170,6 +205,196 @@ describe("AIChatSessionView", () => {
             tabs: [],
             activeTabId: null,
         });
+    });
+
+    it("renders an explicit conversation with no editor chat tabs", () => {
+        useChatStore.setState({ sessionsById: { explicit: createSession("explicit", "Explicit conversation") } });
+        useEditorStore.getState().hydrateTabs([], null);
+        renderComponent(<AIChatSessionView sessionId="explicit" focused headerActions={<button type="button">New chat</button>} />);
+        const header = screen.getByTestId("chat-session-header");
+        expect(header).toHaveTextContent("Explicit conversation");
+        expect(header).toContainElement(screen.getByRole("button", { name: "New chat" }));
+        expect(useEditorStore.getState().panes.every(pane => pane.tabs.length === 0)).toBe(true);
+    });
+
+    it("only makes the chat header draggable on macOS without swallowing title renames", () => {
+        useChatStore.setState({
+            sessionsById: {
+                explicit: createSession("explicit", "Draggable conversation"),
+            },
+        });
+
+        renderComponent(<AIChatSessionView sessionId="explicit" focused />);
+
+        expect(
+            screen
+                .getByTestId("chat-session-header")
+                .classList.contains("drag"),
+        ).toBe(getDesktopPlatform() === "macos");
+        expect(screen.getByText("Draggable conversation")).toHaveClass(
+            "no-drag",
+        );
+    });
+
+    it("keeps the composer available in an archived conversation without restoring on open", () => {
+        setupWorkspaceSession();
+        useArchivedChatsStore.getState().archive("session-a");
+        renderComponent(<AIChatPane />);
+        const composer = screen.getByTestId("chat-composer");
+        expect(composer).toHaveAttribute("data-disabled", "false");
+        expect(screen.getAllByText("Workspace chat")).toHaveLength(1);
+        expect(screen.queryByText("Unarchive and continue")).toBeNull();
+        composer.focus();
+        expect(useArchivedChatsStore.getState().isArchived("session-a")).toBe(true);
+    });
+
+    it("locks provider changes after the conversation starts", () => {
+        setupWorkspaceSession();
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B ACP",
+                        description: "Second provider",
+                        capabilities: ["create_session"],
+                    },
+                    models: [
+                        {
+                            id: "model-b",
+                            runtimeId: "provider-b",
+                            name: "Model B",
+                            description: "Provider B model",
+                        },
+                    ],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    runtimeId: "provider-b",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+            },
+        }));
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        expect(
+            agentControlsMockState.props?.providers?.map(
+                (provider) => provider.runtimeId,
+            ),
+        ).toContain("provider-b");
+        expect(
+            agentControlsMockState.props?.providers?.find(
+                (provider) => provider.runtimeId === "provider-b",
+            )?.disabledReason,
+        ).toBe("Start a new chat to use another provider.");
+
+        act(() => {
+            agentControlsMockState.props?.onProviderModelChange?.(
+                "provider-b",
+                "model-b",
+            );
+        });
+
+        expect(
+            useChatStore.getState().conversationsById["session-a"]
+                ?.preferredSelection,
+        ).toMatchObject({
+            runtimeId: "codex-acp",
+            modelId: "test-model",
+        });
+    });
+
+    it("treats the staged provider as active while the first turn is pending", () => {
+        const sessionId = "session-a";
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [sessionId]: {
+                    ...createSession(sessionId, "Workspace chat"),
+                    messages: [],
+                    persistedMessageCount: 0,
+                },
+            },
+            activeSessionId: sessionId,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B ACP",
+                        description: "Second provider",
+                        capabilities: ["create_session"],
+                    },
+                    models: [
+                        {
+                            id: "model-b",
+                            runtimeId: "provider-b",
+                            name: "Model B",
+                            description: "Provider B model",
+                        },
+                    ],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    runtimeId: "provider-b",
+                    binaryReady: true,
+                    binarySource: "bundled",
+                    authReady: true,
+                    authMethods: [],
+                    onboardingRequired: false,
+                },
+            },
+        }));
+        useChatStore.setState((state) => ({
+            conversationsById: {
+                ...state.conversationsById,
+                [sessionId]: {
+                    ...state.conversationsById[sessionId]!,
+                    status: "streaming",
+                    preferredSelection: {
+                        ...state.conversationsById[sessionId]!.preferredSelection,
+                        runtimeId: "provider-b",
+                        modelId: "model-b",
+                    },
+                },
+            },
+            preparedTurnCatalogByConversationId: {
+                ...state.preparedTurnCatalogByConversationId,
+                [sessionId]: {
+                    runtimeId: "provider-b",
+                    modelId: "model-b",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    effortsByModel: {},
+                },
+            },
+        }));
+        selectChatForTest(sessionId, {
+            title: "Workspace chat",
+            paneId: "primary",
+        });
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(agentControlsMockState.props?.runtimeId).toBe("provider-b");
+        expect(
+            agentControlsMockState.props?.providers?.find(
+                (provider) => provider.runtimeId === "provider-b",
+            )?.disabledReason,
+        ).toBeNull();
     });
 
     it("renames the workspace chat from the local header title on double click", async () => {
@@ -208,7 +433,7 @@ describe("AIChatSessionView", () => {
             },
             activeSessionId: sessionId,
         }));
-        useEditorStore.getState().openChat(sessionId, {
+        selectChatForTest(sessionId, {
             title: "Gemini history",
             paneId: "primary",
         });
@@ -239,7 +464,9 @@ describe("AIChatSessionView", () => {
                     {
                         id: "shot-1",
                         type: "screenshot",
-                        filePath: "/vault/assets/chat/old.png",
+                        draftAttachmentId:
+                            "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId,
+                        fileName: "old.png",
                         mimeType: "image/png",
                         label: "Screenshot 10:42 hrs",
                         createdAt: Date.now() - 61_000,
@@ -256,6 +483,14 @@ describe("AIChatSessionView", () => {
                 useChatStore.getState().composerPartsBySessionId["session-a"],
             ).toEqual([{ id: "text-1", type: "text", text: "Review  please" }]);
         });
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                draftAttachmentId:
+                    "da_0123456789abcdef0123456789abcdef",
+            }),
+        );
     });
 
     it("keeps sent timeline image attachments when composer screenshots expire", async () => {
@@ -337,6 +572,183 @@ describe("AIChatSessionView", () => {
         ).toBeNull();
     });
 
+    it("overlays one shared bottom dock above the transcript", () => {
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        const dock = screen.getByTestId("chat-bottom-dock");
+        expect(dock).toHaveClass(
+            "nw-chat-bottom-dock",
+            "absolute",
+            "bottom-0",
+        );
+        expect(dock).toContainElement(
+            screen.getByTestId("queued-messages-panel"),
+        );
+        expect(dock).toContainElement(
+            screen.getByTestId("edited-files-panel"),
+        );
+        expect(dock).toContainElement(screen.getByTestId("chat-composer"));
+        expect(dock).not.toContainElement(
+            screen.getByTestId("chat-message-list"),
+        );
+        const glassSurface = screen.getByTestId("chat-glass-surface");
+        expect(glassSurface).toHaveClass(
+            "nw-chat-translucent-surface",
+            "nw-chat-floating-surface",
+        );
+        expect(glassSurface).toHaveStyle({
+            width: "100%",
+            maxWidth: "600px",
+            marginInline: "auto",
+        });
+
+        const auxiliaryRegion = screen.getByTestId(
+            "chat-bottom-dock-auxiliary-region",
+        );
+        expect(auxiliaryRegion).toHaveClass(
+            "min-h-0",
+            "overflow-y-auto",
+        );
+        expect(auxiliaryRegion).toHaveStyle({ flexShrink: "999" });
+        const composerRegion = screen.getByTestId(
+            "chat-bottom-dock-composer-region",
+        );
+        expect(composerRegion).toHaveClass(
+            "flex",
+            "min-h-16",
+            "shrink",
+            "flex-col",
+        );
+        expect(composerRegion).not.toHaveClass("pt-2");
+    });
+
+    it("does not reserve an empty context strip above the composer", () => {
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(screen.queryByTestId("chat-context-bar")).toBeNull();
+    });
+
+    it("renders the context strip when the session has attachments", () => {
+        setupWorkspaceSession();
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                ...state.sessionsById,
+                "session-a": {
+                    ...state.sessionsById["session-a"]!,
+                    attachments: [
+                        {
+                            id: "attachment-1",
+                            type: "note",
+                            noteId: "notes/context.md",
+                            label: "Context",
+                            path: "/vault/notes/context.md",
+                            status: "ready",
+                        },
+                    ],
+                },
+            },
+        }));
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(screen.getByTestId("chat-context-bar")).toBeInTheDocument();
+    });
+
+    it("passes the measured bottom dock height to the transcript", async () => {
+        const rectSpy = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function (this: HTMLElement) {
+                const height =
+                    this.dataset.testid === "chat-bottom-dock"
+                        ? 184
+                        : 0;
+                return {
+                    bottom: height,
+                    height,
+                    left: 0,
+                    right: 600,
+                    top: 0,
+                    width: 600,
+                    x: 0,
+                    y: 0,
+                    toJSON: () => ({}),
+                };
+            });
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        await waitFor(() => {
+            expect(messageListMockState.props.at(-1)?.bottomInset).toBe(184);
+        });
+        rectSpy.mockRestore();
+    });
+
+    it("does not pass a previous session dock measurement into a new chat", async () => {
+        let measuredHeight = 180;
+        const rectSpy = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function (this: HTMLElement) {
+                const height =
+                    this.dataset.testid === "chat-bottom-dock"
+                        ? measuredHeight
+                        : 0;
+                return {
+                    bottom: height,
+                    height,
+                    left: 0,
+                    right: 600,
+                    top: 0,
+                    width: 600,
+                    x: 0,
+                    y: 0,
+                    toJSON: () => ({}),
+                };
+            });
+        setupWorkspaceSession("session-a");
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        await waitFor(() => {
+            expect(messageListMockState.props.at(-1)?.bottomInset).toBe(180);
+        });
+
+        act(() => {
+            useChatStore.setState((state) => ({
+                ...state,
+                sessionsById: {
+                    ...state.sessionsById,
+                    "session-b": createSession("session-b", "Second chat"),
+                },
+            }));
+        });
+        const propsBeforeSwitch = messageListMockState.props.length;
+        measuredHeight = 48;
+
+        act(() => {
+            selectChatForTest("session-b", {
+                title: "Second chat",
+                paneId: "primary",
+            });
+        });
+
+        await waitFor(() => {
+            expect(messageListMockState.props.at(-1)?.sessionId).toBe(
+                "session-b",
+            );
+            expect(messageListMockState.props.at(-1)?.bottomInset).toBe(48);
+        });
+        const newSessionProps = messageListMockState.props
+            .slice(propsBeforeSwitch)
+            .filter((props) => props.sessionId === "session-b");
+        expect(newSessionProps[0]?.bottomInset).toBe(0);
+        rectSpy.mockRestore();
+    });
+
     it("hides the Edited files panel when AI change review is disabled", () => {
         useSettingsStore.getState().setSetting("aiReviewEnabled", false);
         setupWorkspaceSession();
@@ -359,6 +771,33 @@ describe("AIChatSessionView", () => {
             "data-expanded",
             "true",
         );
+        expect(screen.queryByTestId("chat-bottom-dock")).toBeNull();
+        const expandedRegion = screen.getByTestId(
+            "chat-expanded-composer-region",
+        );
+        expect(expandedRegion).toHaveClass(
+            "absolute",
+            "inset-2",
+        );
+        expect(expandedRegion).not.toHaveClass(
+            "nw-chat-translucent-surface",
+        );
+        expect(screen.getByTestId("chat-glass-surface")).toHaveClass(
+            "nw-chat-translucent-surface",
+            "nw-chat-floating-surface",
+            "flex-1",
+        );
+        expect(screen.getByTestId("chat-message-list")).toBeInTheDocument();
+        expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(
+            "aria-hidden",
+            "true",
+        );
+        expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(
+            "inert",
+        );
+        expect(
+            screen.getByTestId("chat-bottom-dock-composer-region"),
+        ).not.toHaveClass("pt-1.5");
     });
 
     it("closes and disables chat find while the composer is expanded", async () => {
@@ -366,162 +805,39 @@ describe("AIChatSessionView", () => {
 
         renderComponent(<AIChatSessionView paneId="primary" />);
 
-        const findButton = screen.getByRole("button", {
-            name: "Find in chat",
+        const composer = screen.getByTestId("chat-composer");
+        composer.focus();
+        fireEvent.keyDown(composer, {
+            key: "f",
+            ...(getDesktopPlatform() === "macos" ? { metaKey: true } : { ctrlKey: true }),
         });
-        fireEvent.click(findButton);
-        expect(findButton).toHaveAttribute("aria-pressed", "true");
+        const messages = screen.getByTestId("chat-message-list");
+        expect(messages).toHaveAttribute("data-find-open", "true");
+        expect(screen.queryByRole("button", { name: "Find in chat" })).toBeNull();
 
         fireEvent.click(screen.getByTestId("chat-composer"));
 
         await waitFor(() => {
-            expect(findButton).toBeDisabled();
-            expect(findButton).toHaveAttribute("aria-pressed", "false");
+            expect(messages).toHaveAttribute("data-find-open", "false");
         });
+        expect(screen.getByTestId("chat-message-list")).toBeInTheDocument();
+        expect(screen.getByTestId("chat-transcript-region")).toHaveAttribute(
+            "inert",
+        );
+
+        fireEvent.keyDown(composer, {
+            key: "f",
+            ...(getDesktopPlatform() === "macos" ? { metaKey: true } : { ctrlKey: true }),
+        });
+        expect(messages).toHaveAttribute("data-find-open", "false");
+    });
+
+    it("removes the legacy user prompt menu from the local header", () => {
+        setupWorkspaceSession();
+        renderComponent(<AIChatSessionView paneId="primary" />);
         expect(
-            screen.queryByTestId("chat-message-list"),
-        ).not.toBeInTheDocument();
-
-        fireEvent.click(findButton);
-        expect(findButton).toHaveAttribute("aria-pressed", "false");
-    });
-
-    it("opens a user prompt outline from the local header", () => {
-        setupWorkspaceSession();
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                "session-a": {
-                    ...state.sessionsById["session-a"]!,
-                    messages: [
-                        {
-                            id: "user-1",
-                            role: "user",
-                            kind: "text",
-                            content: "First prompt",
-                            timestamp: 10,
-                        },
-                        {
-                            id: "assistant-1",
-                            role: "assistant",
-                            kind: "text",
-                            content: "Assistant answer",
-                            timestamp: 11,
-                        },
-                        {
-                            id: "user-2",
-                            role: "user",
-                            kind: "text",
-                            content: "Second prompt\nwith spacing",
-                            timestamp: 12,
-                        },
-                    ],
-                },
-            },
-        }));
-
-        renderComponent(<AIChatSessionView paneId="primary" />);
-
-        const outlineButton = screen.getByRole("button", {
-            name: "User prompts",
-        });
-        fireEvent.click(outlineButton);
-
-        expect(outlineButton).toHaveAttribute("aria-pressed", "true");
-        expect(
-            screen.getByRole("menuitem", { name: "Go to prompt 1" }),
-        ).toHaveTextContent("First prompt");
-        expect(
-            screen.getByRole("menuitem", { name: "Go to prompt 2" }),
-        ).toHaveTextContent("Second prompt with spacing");
-        expect(screen.queryByText("Assistant answer")).not.toBeInTheDocument();
-    });
-
-    it("shows an empty prompt outline state when the session has no user prompts", () => {
-        setupWorkspaceSession();
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                "session-a": {
-                    ...state.sessionsById["session-a"]!,
-                    messages: [
-                        {
-                            id: "assistant-1",
-                            role: "assistant",
-                            kind: "text",
-                            content: "Assistant answer",
-                            timestamp: 11,
-                        },
-                    ],
-                },
-            },
-        }));
-
-        renderComponent(<AIChatSessionView paneId="primary" />);
-
-        fireEvent.click(screen.getByRole("button", { name: "User prompts" }));
-
-        expect(screen.getByText("No user prompts")).toBeInTheDocument();
-    });
-
-    it("requests message-list navigation when selecting a user prompt", async () => {
-        setupWorkspaceSession();
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                "session-a": {
-                    ...state.sessionsById["session-a"]!,
-                    messages: [
-                        {
-                            id: "user-1",
-                            role: "user",
-                            kind: "text",
-                            content: "First prompt",
-                            timestamp: 10,
-                        },
-                        {
-                            id: "user-2",
-                            role: "user",
-                            kind: "text",
-                            content: "Second prompt",
-                            timestamp: 12,
-                        },
-                    ],
-                },
-            },
-        }));
-
-        renderComponent(<AIChatSessionView paneId="primary" />);
-
-        fireEvent.click(screen.getByRole("button", { name: "User prompts" }));
-        fireEvent.click(screen.getByRole("menuitem", { name: "Go to prompt 2" }));
-
-        await waitFor(() => {
-            expect(screen.getByTestId("chat-message-list")).toHaveAttribute(
-                "data-scroll-to-message-id",
-                "user-2",
-            );
-        });
-        expect(screen.queryByRole("menu", { name: "User prompts" })).toBeNull();
-    });
-
-    it("closes and disables the user prompt outline while the composer is expanded", async () => {
-        setupWorkspaceSession();
-
-        renderComponent(<AIChatSessionView paneId="primary" />);
-
-        const outlineButton = screen.getByRole("button", {
-            name: "User prompts",
-        });
-        fireEvent.click(outlineButton);
-        expect(outlineButton).toHaveAttribute("aria-pressed", "true");
-
-        fireEvent.click(screen.getByTestId("chat-composer"));
-
-        await waitFor(() => {
-            expect(outlineButton).toBeDisabled();
-            expect(outlineButton).toHaveAttribute("aria-pressed", "false");
-        });
+            screen.queryByRole("button", { name: "User prompts" }),
+        ).toBeNull();
         expect(screen.queryByRole("menu", { name: "User prompts" })).toBeNull();
     });
 
@@ -530,11 +846,15 @@ describe("AIChatSessionView", () => {
 
         renderComponent(<AIChatSessionView paneId="primary" />);
 
-        const findButton = screen.getByRole("button", {
-            name: "Find in chat",
+        const composer = screen.getByTestId("chat-composer");
+        composer.focus();
+        fireEvent.keyDown(composer, {
+            key: "f",
+            ...(getDesktopPlatform() === "macos" ? { metaKey: true } : { ctrlKey: true }),
         });
-        fireEvent.click(findButton);
-        expect(findButton).toHaveAttribute("aria-pressed", "true");
+        const messages = screen.getByTestId("chat-message-list");
+        expect(messages).toHaveAttribute("data-find-open", "true");
+        expect(screen.queryByRole("button", { name: "Find in chat" })).toBeNull();
 
         const escapeEvent = new KeyboardEvent("keydown", {
             key: "Escape",
@@ -544,7 +864,7 @@ describe("AIChatSessionView", () => {
         window.dispatchEvent(escapeEvent);
 
         await waitFor(() => {
-            expect(findButton).toHaveAttribute("aria-pressed", "false");
+            expect(messages).toHaveAttribute("data-find-open", "false");
         });
         expect(escapeEvent.defaultPrevented).toBe(true);
     });
@@ -570,7 +890,7 @@ describe("AIChatSessionView", () => {
             "Codex supports images up to 10 MB",
         );
         expect(invokeMock).not.toHaveBeenCalledWith(
-            "save_vault_binary_file",
+            "ai_create_draft_attachment",
             expect.anything(),
         );
     });
@@ -634,10 +954,159 @@ describe("AIChatSessionView", () => {
         );
     });
 
-    it("removes a pasted image file when the final attachment validation loses a race", async () => {
+    it("keeps draft write errors visible and retries the same image", async () => {
+        setupWorkspaceSession();
+        let attempts = 0;
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_create_draft_attachment") {
+                if (++attempts === 1) throw new Error("Permission denied");
+                return { draft_attachment_id: "da_0123456789abcdef0123456789abcdef", file_name: "image.png", mime_type: "image/png" };
+            }
+            return undefined;
+        });
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+        const file = { size: 128, type: "image/png", arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)) } as unknown as File;
+        await act(async () => { await composerMockState.onPasteImage?.(file); });
+        expect(screen.getByRole("status")).toHaveTextContent("Permission denied");
+        fireEvent.click(screen.getByRole("button", { name: "Retry attachment" }));
+        await waitFor(() => expect(attempts).toBe(2));
+        await waitFor(() => expect(screen.queryByText(/Permission denied/)).not.toBeInTheDocument());
+        expect(useChatStore.getState().composerPartsBySessionId["session-a"].filter((part) => part.type === "screenshot")).toHaveLength(1);
+    });
+
+    it("stores pasted images as local drafts without physical paths", async () => {
         setupWorkspaceSession();
         invokeMock.mockImplementation(async (command) => {
-            if (command === "save_vault_binary_file") {
+            if (command === "ai_create_draft_attachment") {
+                return {
+                    draft_attachment_id:
+                        "da_0123456789abcdef0123456789abcdef",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            return undefined;
+        });
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(
+            useChatStore.getState().composerPartsBySessionId["session-a"],
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    type: "screenshot",
+                    draftAttachmentId:
+                        "da_0123456789abcdef0123456789abcdef",
+                    fileName: "pasted-image.png",
+                    mimeType: "image/png",
+                }),
+            ]),
+        );
+        expect(
+            useChatStore.getState().composerPartsBySessionId["session-a"],
+        ).not.toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ filePath: expect.any(String) }),
+            ]),
+        );
+    });
+
+    it.each(["deleted session", "switched vault"])(
+        "releases a pasted draft against its original vault after a %s race",
+        async (race) => {
+            setupWorkspaceSession();
+            let resolveCreate!: (value: {
+                draft_attachment_id: string;
+                file_name: string;
+                mime_type: string;
+            }) => void;
+            const createResult = new Promise<{
+                draft_attachment_id: string;
+                file_name: string;
+                mime_type: string;
+            }>((resolve) => {
+                resolveCreate = resolve;
+            });
+            invokeMock.mockImplementation(async (command) => {
+                if (command === "ai_create_draft_attachment") {
+                    return createResult;
+                }
+                return undefined;
+            });
+            renderComponent(<AIChatSessionView paneId="primary" />);
+            fireEvent.click(screen.getByTestId("paste-image"));
+            const file = {
+                size: 128,
+                type: "image/png",
+                arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+            } as unknown as File;
+
+            const pasting = composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void;
+            await waitFor(() => {
+                expect(invokeMock).toHaveBeenCalledWith(
+                    "ai_create_draft_attachment",
+                    expect.objectContaining({ vaultPath: "/vault" }),
+                );
+            });
+            if (race === "deleted session") {
+                useChatStore.setState((state) => {
+                    const sessionsById = { ...state.sessionsById };
+                    delete sessionsById["session-a"];
+                    return { sessionsById };
+                });
+            } else {
+                useVaultStore.setState({ vaultPath: "/other-vault" });
+            }
+            resolveCreate({
+                draft_attachment_id:
+                    "da_0123456789abcdef0123456789abcdef",
+                file_name: "pasted-image.png",
+                mime_type: "image/png",
+            });
+            await act(async () => {
+                await pasting;
+            });
+
+            expect(invokeMock).toHaveBeenCalledWith(
+                "ai_delete_draft_attachment",
+                expect.objectContaining({
+                    vaultPath: "/vault",
+                    draftAttachmentId:
+                        "da_0123456789abcdef0123456789abcdef",
+                }),
+            );
+            expect(
+                useChatStore.getState().composerPartsBySessionId["session-a"],
+            ).not.toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({
+                        draftAttachmentId:
+                            "da_0123456789abcdef0123456789abcdef",
+                    }),
+                ]),
+            );
+        },
+    );
+
+    it("removes a draft attachment when final validation loses a race", async () => {
+        setupWorkspaceSession();
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_create_draft_attachment") {
                 useChatStore.setState((state) => ({
                     ...state,
                     composerPartsBySessionId: {
@@ -654,13 +1123,15 @@ describe("AIChatSessionView", () => {
                     },
                 }));
                 return {
-                    path: "/vault/assets/chat/pasted-image.png",
-                    relative_path: "assets/chat/pasted-image.png",
+                    draft_attachment_id:
+                        "da_0123456789abcdef0123456789abcdef",
                     file_name: "pasted-image.png",
                     mime_type: "image/png",
                 };
             }
-            if (command === "move_vault_entry_to_trash") {
+            if (
+                command === "ai_delete_draft_attachment"
+            ) {
                 return undefined;
             }
             if (command === "list_vault_entries") {
@@ -684,9 +1155,10 @@ describe("AIChatSessionView", () => {
         });
 
         expect(invokeMock).toHaveBeenCalledWith(
-            "move_vault_entry_to_trash",
+            "ai_delete_draft_attachment",
             expect.objectContaining({
-                relativePath: "assets/chat/pasted-image.png",
+                draftAttachmentId:
+                    "da_0123456789abcdef0123456789abcdef",
             }),
         );
         expect(screen.getByRole("status")).toHaveTextContent(

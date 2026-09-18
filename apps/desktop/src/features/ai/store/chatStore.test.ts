@@ -1,4 +1,7 @@
-import { invoke, openUrl } from "@neverwrite/runtime";
+import { useUnreadChatsStore } from "./unreadChatsStore";
+import { useArchivedChatsStore } from "./archivedChatsStore";
+import { selectChatForTest } from "../../../test/test-utils";
+import { confirm, invoke, listen, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isChatTab,
@@ -10,10 +13,18 @@ import {
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { serializeComposerParts } from "../composerParts";
+import {
+    getConversationSelection,
+    updateConversationBindingsFromLegacySession,
+} from "../conversationModel";
 import type {
     AIChatAttachment,
+    AIChatMessage,
     AIChatSession,
     AIComposerPart,
+    DraftAttachmentId,
+    ManagedAttachmentId,
+    PersistedSessionHistory,
     QueuedChatMessage,
 } from "../types";
 import { deriveReviewItems } from "../diff/editedFilesPresentationModel";
@@ -31,7 +42,6 @@ import {
     setTrackedFilesForWorkCycle,
 } from "./actionLogModel";
 import { resetChatTabsStore, useChatTabsStore } from "./chatTabsStore";
-import { useChatFoldersStore } from "./chatFoldersStore";
 import { usePinnedChatsStore } from "./pinnedChatsStore";
 import {
     disposeChatStoreRuntime,
@@ -52,9 +62,38 @@ import { resetClaudeCodeInstalledCacheForTests } from "../../terminal/claudeCode
 import { CLAUDE_TERMINAL_RUNTIME_ID } from "../utils/runtimeMetadata";
 
 const invokeMock = vi.mocked(invoke);
+const confirmMock = vi.mocked(confirm);
 const openUrlMock = vi.mocked(openUrl);
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
+
+function createDraftScreenshotPart(
+    draftAttachmentId: DraftAttachmentId,
+): AIComposerPart {
+    return {
+        id: `screenshot-${draftAttachmentId}`,
+        type: "screenshot",
+        draftAttachmentId,
+        fileName: "pasted-image.png",
+        mimeType: "image/png",
+        label: "Screenshot 10:32",
+        createdAt: 123,
+    };
+}
+
+function createQueuedDraftMessage(
+    id: string,
+    draftAttachmentId: DraftAttachmentId,
+): QueuedChatMessage {
+    return {
+        ...createQueuedMessage(id, "Inspect screenshot"),
+        composerParts: [
+            { id: `text-${id}`, type: "text", text: "Inspect " },
+            createDraftScreenshotPart(draftAttachmentId),
+        ],
+        attachments: [],
+    };
+}
 
 function getAutoContextKey(vaultPath: string | null) {
     return `${AI_AUTO_CONTEXT_KEY_PREFIX}${vaultPath ?? "__global__"}`;
@@ -463,6 +502,16 @@ async function defaultInvokeImplementation(command: string, args?: unknown) {
         return [];
     }
 
+    if (command === "ai_get_history_storage_status") {
+        return {
+            vaultKey: "vault-key",
+            generation: 1,
+            status: "ready",
+            scope: "device",
+            orphanedDeviceHistories: [],
+        };
+    }
+
     if (command === "ai_load_session_history_page") {
         return {
             session_id: "history-1",
@@ -544,11 +593,6 @@ describe("chatStore", () => {
         resetChatStore();
         resetChatTabsStore();
         usePinnedChatsStore.setState({ entries: {} });
-        useChatFoldersStore.setState({
-            folders: {},
-            sessionFolderIds: {},
-            collapsedFolderIds: [],
-        });
         resetExternalReloadBaselinesForTests();
         vi.clearAllMocks();
         delete (globalThis as Record<string, unknown>)
@@ -577,6 +621,634 @@ describe("chatStore", () => {
     it("uses collapsed tool activity display by default", () => {
         expect(useChatStore.getState().toolActivityDisplayMode).toBe(
             "collapsed",
+        );
+    });
+
+    it("projects session state under its canonical conversation identity", () => {
+        const session = createSessionWithTrackedFiles("local-session", []);
+        session.historySessionId = "conversation-1";
+        session.runtimeSessionId = "native-session";
+        useChatStore.getState().upsertSession(session, true);
+        const bindingId = useChatStore.getState().conversationsById[
+            "conversation-1"
+        ]?.activeBindingId;
+        expect(bindingId).toBeTruthy();
+
+        const queued = createQueuedMessage("queued-1", "Continue");
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [session.sessionId]: createTextParts("Draft"),
+            },
+            queuedMessagesBySessionId: {
+                ...state.queuedMessagesBySessionId,
+                [session.sessionId]: [queued],
+            },
+        }));
+        useChatStore.getState().applyTokenUsage({
+            session_id: bindingId!,
+            used: 12,
+            size: 100,
+        });
+
+        const state = useChatStore.getState();
+        expect(state.activeConversationId).toBe("conversation-1");
+        expect(state.conversationOrder).toEqual(["conversation-1"]);
+        expect(state.conversationsById["conversation-1"]).toMatchObject({
+            conversationId: "conversation-1",
+            actionLog: session.actionLog,
+        });
+        expect(state.composerPartsByConversationId["conversation-1"]).toEqual(
+            createTextParts("Draft"),
+        );
+        expect(state.queuedMessagesByConversationId["conversation-1"]).toEqual(
+            [queued],
+        );
+        expect(state.tokenUsageByConversationId["conversation-1"]).toMatchObject(
+            { used: 12, size: 100 },
+        );
+        expect(state.conversationIdBySessionRef["native-session"]).toBe(
+            "conversation-1",
+        );
+        expect(state.conversationIdBySessionRef[bindingId!]).toBe(
+            "conversation-1",
+        );
+    });
+
+    it("keeps one canonical conversation when the local session id changes", () => {
+        const persisted = createSessionWithTrackedFiles(
+            "persisted:conversation-1",
+            [],
+        );
+        persisted.historySessionId = "conversation-1";
+        persisted.runtimeState = "persisted_only";
+        useChatStore.getState().upsertSession(persisted, true);
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [persisted.sessionId]: createTextParts("Survives resume"),
+            },
+        }));
+
+        const live = cloneSessionForTest(persisted, "local-live", {
+            historySessionId: "conversation-1",
+            runtimeSessionId: "native-live",
+            runtimeState: "live",
+            isPersistedSession: false,
+        });
+        useChatStore.getState().upsertSession(live, true);
+
+        const state = useChatStore.getState();
+        expect(state.conversationOrder).toEqual(["conversation-1"]);
+        expect(state.sessionIdByConversationId["conversation-1"]).toBe(
+            "local-live",
+        );
+        expect(state.composerPartsByConversationId["conversation-1"]).toEqual(
+            createTextParts("Survives resume"),
+        );
+    });
+
+    it("updates only the active canonical conversation for timeline events", () => {
+        const background = createSessionWithTrackedFiles(
+            "background-session",
+            [],
+        );
+        background.historySessionId = "background-conversation";
+        const active = createSessionWithTrackedFiles("active-session", []);
+        active.historySessionId = "active-conversation";
+
+        useChatStore.getState().upsertSession(background, true);
+        useChatStore.getState().upsertSession(active, true);
+
+        const stagedSelection = {
+            ...useChatStore.getState().conversationsById[
+                "active-conversation"
+            ].preferredSelection,
+            modelId: "staged-model",
+        };
+        useChatStore.setState((state) => ({
+            conversationsById: {
+                ...state.conversationsById,
+                "active-conversation": {
+                    ...state.conversationsById["active-conversation"],
+                    preferredSelection: stagedSelection,
+                },
+            },
+        }));
+
+        const before = useChatStore.getState();
+        const backgroundConversation =
+            before.conversationsById["background-conversation"];
+        const bindingsById = before.bindingsById;
+        const conversationOrder = before.conversationOrder;
+        const sessionOrder = before.sessionOrder;
+        const conversationIdBySessionRef =
+            before.conversationIdBySessionRef;
+        const sessionIdByConversationId =
+            before.sessionIdByConversationId;
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: active.sessionId,
+            event_id: "status-1",
+            kind: "progress",
+            status: "in_progress",
+            title: "Working",
+            detail: "Inspecting files",
+            emphasis: "neutral",
+        });
+
+        const after = useChatStore.getState();
+        expect(after.conversationsById["active-conversation"]).not.toBe(
+            before.conversationsById["active-conversation"],
+        );
+        expect(after.conversationsById["background-conversation"]).toBe(
+            backgroundConversation,
+        );
+        expect(
+            after.conversationsById["active-conversation"].preferredSelection,
+        ).toBe(stagedSelection);
+        expect(after.bindingsById).toBe(bindingsById);
+        expect(after.conversationOrder).toBe(conversationOrder);
+        expect(after.sessionOrder).toBe(sessionOrder);
+        expect(after.conversationIdBySessionRef).toBe(
+            conversationIdBySessionRef,
+        );
+        expect(after.sessionIdByConversationId).toBe(
+            sessionIdByConversationId,
+        );
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: active.sessionId,
+            message_id: "assistant-1",
+            delta: "Streaming reply",
+            role: "assistant",
+        });
+        flushDeltasSync();
+
+        const afterDelta = useChatStore.getState();
+        expect(afterDelta.conversationsById["background-conversation"]).toBe(
+            backgroundConversation,
+        );
+        expect(afterDelta.bindingsById).toBe(bindingsById);
+        expect(
+            afterDelta.conversationsById["active-conversation"].messages.at(
+                -1,
+            )?.content,
+        ).toBe("Streaming reply");
+        expect(
+            afterDelta.conversationsById["active-conversation"]
+                .preferredSelection,
+        ).toBe(stagedSelection);
+    });
+
+    it("updates token usage without rebuilding conversations or other maps", () => {
+        const session = createSessionWithTrackedFiles("local-session", []);
+        session.historySessionId = "conversation-1";
+        useChatStore.getState().upsertSession(session, true);
+
+        const before = useChatStore.getState();
+        useChatStore.getState().applyTokenUsage({
+            session_id: session.sessionId,
+            used: 21,
+            size: 100,
+        });
+
+        const after = useChatStore.getState();
+        expect(after.conversationsById).toBe(before.conversationsById);
+        expect(after.bindingsById).toBe(before.bindingsById);
+        expect(after.composerPartsByConversationId).toBe(
+            before.composerPartsByConversationId,
+        );
+        expect(after.queuedMessagesByConversationId).toBe(
+            before.queuedMessagesByConversationId,
+        );
+        expect(after.tokenUsageByConversationId).not.toBe(
+            before.tokenUsageByConversationId,
+        );
+        expect(after.tokenUsageByConversationId["conversation-1"]).toMatchObject(
+            { used: 21, size: 100 },
+        );
+    });
+
+    it("falls back to full reconciliation when session routing changes", () => {
+        const session = createSessionWithTrackedFiles("local-session", []);
+        session.historySessionId = "conversation-1";
+        session.runtimeSessionId = "native-old";
+        useChatStore.getState().upsertSession(session, true);
+
+        const before = useChatStore.getState();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [session.sessionId]: {
+                    ...state.sessionsById[session.sessionId],
+                    runtimeSessionId: "native-new",
+                },
+            },
+        }));
+
+        const after = useChatStore.getState();
+        expect(after.bindingsById).not.toBe(before.bindingsById);
+        expect(after.conversationIdBySessionRef).not.toBe(
+            before.conversationIdBySessionRef,
+        );
+        expect(after.conversationIdBySessionRef["native-old"]).toBeUndefined();
+        expect(after.conversationIdBySessionRef["native-new"]).toBe(
+            "conversation-1",
+        );
+    });
+
+    it("does not let an older storage refresh overwrite a newer snapshot", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 4,
+                status: "ready",
+                scope: "vault",
+                orphanedDeviceHistories: [],
+            },
+        });
+        invokeMock.mockResolvedValueOnce({
+            vaultKey: "vault-key",
+            generation: 3,
+            status: "ready",
+            scope: "device",
+            orphanedDeviceHistories: [],
+        });
+
+        await useChatStore
+            .getState()
+            .refreshAiHistoryStorageStatus("/vault");
+
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 4,
+            scope: "vault",
+        });
+    });
+
+    it("ignores a pending storage refresh after switching vaults", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        const response = createDeferred<unknown>();
+        invokeMock.mockReturnValueOnce(response.promise);
+
+        const refresh = useChatStore
+            .getState()
+            .refreshAiHistoryStorageStatus("/vault");
+        useVaultStore.setState({ vaultPath: "/other" });
+        response.resolve({
+            vaultKey: "vault-key",
+            generation: 2,
+            status: "ready",
+            scope: "device",
+            orphanedDeviceHistories: [],
+        });
+        await refresh;
+
+        expect(useChatStore.getState().historyStorageStatus).toBeNull();
+    });
+
+    it("does not load persisted histories when storage is unavailable", async () => {
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_history_storage_status") {
+                return {
+                    vaultKey: "vault-key",
+                    generation: 1,
+                    status: "error",
+                    message: "Unknown AI history artifact at .DS_Store.",
+                };
+            }
+            return defaultInvokeImplementation(command);
+        });
+        useChatStore.setState({
+            historyStorageVaultPath: null,
+            historyStorageStatus: null,
+        });
+        useVaultStore.setState({ vaultPath: "/vault" });
+
+        await useChatStore.getState().initialize();
+
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_load_session_histories",
+            expect.anything(),
+        );
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            status: "error",
+        });
+    });
+
+    it("refreshes the active vault when a detached window receives an early storage event", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        let onStorageChanged:
+            | ((event: {
+                  payload: {
+                      vaultKey: string;
+                      generation: number;
+                      status: "ready";
+                      scope: "device" | "vault";
+                      orphanedDeviceHistories: [];
+                  };
+              }) => void)
+            | undefined;
+        vi.mocked(listen).mockImplementationOnce(async (_event, callback) => {
+            onStorageChanged = callback as typeof onStorageChanged;
+            return () => undefined;
+        });
+        invokeMock.mockImplementation((command) => {
+            if (command === "ai_get_history_storage_status") {
+                return Promise.resolve({
+                    vaultKey: "active-vault",
+                    generation: 5,
+                    status: "ready",
+                    scope: "vault",
+                    orphanedDeviceHistories: [],
+                });
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        initializeChatStoreRuntime();
+        await Promise.resolve();
+        onStorageChanged?.({
+            payload: {
+                vaultKey: "other-window-vault",
+                generation: 9,
+                status: "ready",
+                scope: "device",
+                orphanedDeviceHistories: [],
+            },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_get_history_storage_status",
+            { vaultPath: "/vault" },
+        );
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            vaultKey: "active-vault",
+            generation: 5,
+            scope: "vault",
+        });
+    });
+
+    it("refreshes the active vault when the window regains focus", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        invokeMock.mockImplementation((command) => {
+            if (command === "ai_get_history_storage_status") {
+                return Promise.resolve({
+                    vaultKey: "vault-key",
+                    generation: 2,
+                    status: "ready",
+                    scope: "device",
+                    orphanedDeviceHistories: [],
+                });
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        initializeChatStoreRuntime();
+
+        window.dispatchEvent(new Event("focus"));
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_get_history_storage_status",
+            { vaultPath: "/vault" },
+        );
+    });
+
+    it("changes the storage projection only after reconcile completes", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 1,
+                status: "ready",
+                scope: "device",
+                orphanedDeviceHistories: [],
+            },
+        });
+        const reconcile = createDeferred<unknown>();
+        invokeMock.mockImplementation((command) => {
+            if (command === "reconcile_ai_history_storage") {
+                return reconcile.promise;
+            }
+            if (command === "ai_load_session_histories") return Promise.resolve([]);
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        const change = useChatStore
+            .getState()
+            .changeAiHistoryStorage("/vault", "vault");
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            scope: "device",
+        });
+
+        reconcile.resolve({
+            completed: true,
+            status: {
+                vaultKey: "vault-key",
+                generation: 2,
+                status: "ready",
+                scope: "vault",
+                orphanedDeviceHistories: [],
+            },
+            historiesMoved: 0,
+            attachmentsMoved: 0,
+            conflicts: [],
+        });
+
+        await expect(change).resolves.toBe(true);
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 2,
+            scope: "vault",
+        });
+    });
+
+    it("applies an adopted identity snapshot before reloading persisted history", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageVaultPath: "/vault",
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 1,
+                status: "recovery_required",
+                details: {
+                    reason: "filesystem_identity_changed",
+                    message: "Identity changed.",
+                    canReconcile: false,
+                    canAdoptIdentity: true,
+                    conflictingSessionIds: [],
+                    conflictingAttachmentIds: [],
+                    renamedDeviceHistory: false,
+                },
+            },
+        });
+        invokeMock.mockImplementation((command) => {
+            if (command === "ai_adopt_history_storage_identity") {
+                return Promise.resolve({
+                    vaultKey: "vault-key",
+                    generation: 2,
+                    status: "ready",
+                    scope: "device",
+                    orphanedDeviceHistories: [],
+                });
+            }
+            if (command === "ai_load_session_histories") {
+                return Promise.resolve([]);
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await expect(
+            useChatStore
+                .getState()
+                .adoptAiHistoryStorageIdentity(
+                    "/vault",
+                    "previous-identity",
+                    "current-identity",
+                ),
+        ).resolves.toBe(true);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_adopt_history_storage_identity",
+            {
+                vaultPath: "/vault",
+                expectedPreviousFilesystemIdentity: "previous-identity",
+                expectedCurrentFilesystemIdentity: "current-identity",
+            },
+        );
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 2,
+            status: "ready",
+            scope: "device",
+        });
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_load_session_histories",
+            { vaultPath: "/vault", includeMessages: false, includeDiagnostics: true },
+        );
+    });
+
+    it("refreshes identity recovery after a stale adoption fails", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageVaultPath: "/vault",
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 1,
+                status: "recovery_required",
+                details: {
+                    reason: "filesystem_identity_changed",
+                    message: "Identity changed.",
+                    canReconcile: false,
+                    canAdoptIdentity: true,
+                    conflictingSessionIds: [],
+                    conflictingAttachmentIds: [],
+                    renamedDeviceHistory: false,
+                },
+            },
+        });
+        invokeMock.mockImplementation((command) => {
+            if (command === "ai_adopt_history_storage_identity") {
+                return Promise.reject(new Error("stale identity"));
+            }
+            if (command === "ai_get_history_storage_status") {
+                return Promise.resolve({
+                    vaultKey: "vault-key",
+                    generation: 2,
+                    status: "recovery_required",
+                    details: {
+                        reason: "filesystem_identity_changed",
+                        message: "Identity changed again.",
+                        canReconcile: false,
+                        canAdoptIdentity: true,
+                        conflictingSessionIds: [],
+                        conflictingAttachmentIds: [],
+                        renamedDeviceHistory: false,
+                    },
+                });
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await expect(
+            useChatStore
+                .getState()
+                .adoptAiHistoryStorageIdentity(
+                    "/vault",
+                    "previous-identity",
+                    "current-identity",
+                ),
+        ).resolves.toBe(false);
+
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 2,
+            status: "recovery_required",
+            details: { message: "Identity changed again." },
+        });
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_load_session_histories",
+            expect.anything(),
+        );
+    });
+
+    it("ignores a completed storage move after switching vaults", async () => {
+        disposeChatStoreRuntime();
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            historyStorageStatus: {
+                vaultKey: "vault-key",
+                generation: 1,
+                status: "ready",
+                scope: "device",
+                orphanedDeviceHistories: [],
+            },
+        });
+        const reconcile = createDeferred<unknown>();
+        invokeMock.mockImplementation((command) => {
+            if (command === "reconcile_ai_history_storage") {
+                return reconcile.promise;
+            }
+            if (command === "ai_load_session_histories") {
+                throw new Error("A stale vault must not reload its history inventory.");
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        const change = useChatStore
+            .getState()
+            .changeAiHistoryStorage("/vault", "vault");
+        useVaultStore.setState({ vaultPath: "/other-vault" });
+        reconcile.resolve({
+            completed: true,
+            status: {
+                vaultKey: "vault-key",
+                generation: 2,
+                status: "ready",
+                scope: "vault",
+                orphanedDeviceHistories: [],
+            },
+            historiesMoved: 0,
+            attachmentsMoved: 0,
+            conflicts: [],
+        });
+
+        await expect(change).resolves.toBe(true);
+        expect(useChatStore.getState().historyStorageStatus).toMatchObject({
+            generation: 1,
+            scope: "device",
+        });
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_load_session_histories",
+            expect.objectContaining({ vaultPath: "/vault" }),
         );
     });
 
@@ -1036,7 +1708,7 @@ describe("chatStore", () => {
         ).toBeUndefined();
     });
 
-    it("respects an explicit Claude Code default preference", async () => {
+    it("migrates a Claude Code default back to the automatic ACP provider", async () => {
         localStorage.setItem(
             AI_PREFS_KEY,
             JSON.stringify({
@@ -1056,15 +1728,13 @@ describe("chatStore", () => {
             .initialize({ createDefaultSession: false });
 
         const state = useChatStore.getState();
-        expect(state.defaultRuntimeId).toBe(CLAUDE_TERMINAL_RUNTIME_ID);
-        expect(state.selectedRuntimeId).toBe(CLAUDE_TERMINAL_RUNTIME_ID);
-        expect(state.getDefaultNewChatRuntimeId()).toBe(
-            CLAUDE_TERMINAL_RUNTIME_ID,
-        );
+        expect(state.defaultRuntimeId).toBeNull();
+        expect(state.selectedRuntimeId).toBe("codex-acp");
+        expect(state.getDefaultNewChatRuntimeId()).toBe("codex-acp");
         expect(
             JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}")
                 .defaultRuntimeId,
-        ).toBe(CLAUDE_TERMINAL_RUNTIME_ID);
+        ).toBeUndefined();
     });
 
     it("keeps Automatic when the default is cleared during initialization", async () => {
@@ -1119,6 +1789,68 @@ describe("chatStore", () => {
         expect(state.getDefaultNewChatRuntimeId()).toBe("codex-acp");
         expect(state.sessionsById["codex-session-1"]?.runtimeId).toBe(
             "codex-acp",
+        );
+    });
+
+    it("replaces a deleted custom default for new chats without touching live custom sessions", async () => {
+        const customRuntimeId =
+            "custom:123e4567-e89b-12d3-a456-426614174000";
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        id: customRuntimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+                {
+                    runtime: {
+                        id: "codex-acp",
+                        name: "Codex ACP",
+                        description: "Codex runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                [customRuntimeId]: {
+                    ...readySetupStatusState,
+                    runtimeId: customRuntimeId,
+                    authMethod: "external",
+                    authMethods: [],
+                },
+                "codex-acp": readySetupStatusState,
+            },
+            defaultRuntimeId: customRuntimeId,
+            selectedRuntimeId: customRuntimeId,
+            sessionsById: {
+                "custom-session-1": {
+                    ...createSessionWithTrackedFiles("custom-session-1", []),
+                    runtimeId: customRuntimeId,
+                    runtimeDisplayName: "Local reviewer",
+                },
+            },
+            sessionOrder: ["custom-session-1"],
+        });
+
+        await useChatStore.getState().refreshRuntimeCatalog();
+
+        const state = useChatStore.getState();
+        expect(state.runtimes.map((runtime) => runtime.runtime.id)).toEqual([
+            "codex-acp",
+        ]);
+        expect(state.defaultRuntimeId).toBe("codex-acp");
+        expect(state.selectedRuntimeId).toBe("codex-acp");
+        expect(state.sessionsById["custom-session-1"]?.runtimeId).toBe(
+            customRuntimeId,
         );
     });
 
@@ -1251,16 +1983,9 @@ describe("chatStore", () => {
         );
     });
 
-    it("keeps sidebar pins and folders when a provisional session becomes live", async () => {
+    it("keeps sidebar pins when a provisional session becomes live", async () => {
         const provisionalSessionId = "pending-session";
         const liveSessionId = sessionPayload.session_id;
-        const folderId = useChatFoldersStore
-            .getState()
-            .createFolder("Research");
-        expect(folderId).toBeTruthy();
-        useChatFoldersStore
-            .getState()
-            .moveSession(provisionalSessionId, folderId);
         usePinnedChatsStore.getState().pin(provisionalSessionId);
         useChatStore.setState((state) => ({
             ...state,
@@ -1292,9 +2017,6 @@ describe("chatStore", () => {
             [liveSessionId]: expect.objectContaining({
                 pinnedAt: expect.any(Number),
             }),
-        });
-        expect(useChatFoldersStore.getState().sessionFolderIds).toEqual({
-            [liveSessionId]: folderId,
         });
     });
 
@@ -1388,6 +2110,99 @@ describe("chatStore", () => {
             status: "error",
             message: "session discovery failed",
         });
+    });
+
+    it.each([false, true])("reactivates an archived chat on send (persisted: %s)", async (persisted) => {
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const original = { ...useChatStore.getState().sessionsById[sessionId]!, historySessionId: sessionId };
+        useChatStore.getState().upsertSession(original, true);
+        const historyId = original.historySessionId!;
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        useArchivedChatsStore.getState().archive(historyId);
+        useArchivedChatsStore.getState().archive("unrelated-archived-chat");
+        const resumedId = persisted ? "resumed-archived-chat" : sessionId;
+        const resumeSession = vi.spyOn(useChatStore.getState(), "resumeSession");
+        if (persisted) {
+            useChatStore.getState().upsertSession({ ...original, runtimeState: "persisted_only" }, true);
+            resumeSession.mockImplementation(async () => {
+                useChatStore.getState().upsertSession({
+                    ...original,
+                    sessionId: resumedId,
+                    runtimeSessionId: resumedId,
+                    runtimeState: "live",
+                }, true);
+                return resumedId;
+            });
+        }
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, session_id: resumedId, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        try {
+            useChatStore.getState().setComposerParts(createTextParts("Continue archived chat"), sessionId);
+            expect(useArchivedChatsStore.getState().isArchived(historyId)).toBe(true);
+            await useChatStore.getState().sendMessage(sessionId);
+            expect(useArchivedChatsStore.getState().isArchived(historyId)).toBe(false);
+            expect(useArchivedChatsStore.getState().isArchived("unrelated-archived-chat")).toBe(true);
+            expect(invokeMock).toHaveBeenCalledWith("ai_send_message", expect.objectContaining({ sessionId: resumedId }));
+            expect(useChatStore.getState().sessionsById[resumedId]?.messages.some(
+                message => message.role === "user" && message.content === "Continue archived chat",
+            )).toBe(true);
+            if (persisted) expect(resumeSession).toHaveBeenCalledWith(sessionId);
+        } finally {
+            resumeSession.mockRestore();
+            useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        }
+    });
+
+    it("keeps an archived chat archived when there is no message to send", async () => {
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const historyId = useChatStore.getState().sessionsById[sessionId]!.historySessionId ?? sessionId;
+        useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        useArchivedChatsStore.getState().archive(historyId);
+        try {
+            useChatStore.getState().setComposerParts(createTextParts("   "), sessionId);
+            await useChatStore.getState().sendMessage(sessionId);
+            expect(useArchivedChatsStore.getState().isArchived(historyId)).toBe(true);
+            expect(invokeMock.mock.calls.some(([command]) => command === "ai_send_message")).toBe(false);
+        } finally {
+            useArchivedChatsStore.setState({ vaultPath: "/vault", entries: {} });
+        }
+    });
+
+    it("moves an existing session only after its turn completes", async () => {
+        useUnreadChatsStore.setState({ entries: {} });
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const other = createSessionWithTrackedFiles("other", []);
+        useChatStore.getState().upsertSession(other, true);
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        await useChatStore.getState().loadSession(sessionId);
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") return { ...sessionPayload, status: "streaming" };
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts(createTextParts("Next turn"), sessionId);
+        await useChatStore.getState().sendMessage(sessionId);
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "partial", turn_complete: false });
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        expect(useUnreadChatsStore.getState().entries[sessionId]).toBeUndefined();
+        useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "final" });
+        expect(useUnreadChatsStore.getState().entries[sessionId]).toBe(true);
+        useUnreadChatsStore.getState().markRead(sessionId);
+        expect(useChatStore.getState().sessionOrder).toEqual([sessionId, "other"]);
+        useChatStore.getState().upsertSession({ ...other, status: "streaming" });
+        useChatStore.getState().applyMessageCompleted({ session_id: "other", message_id: "other-result" });
+        // A repeated final event must not promote it or mark it unread again.
+        useChatStore.getState().applyMessageCompleted({ session_id: sessionId, message_id: "final" });
+        expect(useChatStore.getState().sessionOrder).toEqual(["other", sessionId]);
+        expect(useUnreadChatsStore.getState().entries[sessionId]).toBeUndefined();
     });
 
     it("starts a new local work cycle when sending a message", async () => {
@@ -1522,6 +2337,843 @@ describe("chatStore", () => {
                 mimeType: "image/png",
             }),
         ]);
+    });
+
+    it("keeps managed screenshot IDs through queue payloads without persisting a path", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [],
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                managedAttachmentId:
+                    "ma_0123456789abcdef0123456789abcdef" as ManagedAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const queuedMessage =
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[0];
+        expect(queuedMessage?.attachments).toEqual([
+            expect.objectContaining({
+                managedAttachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+            }),
+        ]);
+        expect(queuedMessage?.attachments[0]).not.toHaveProperty("filePath");
+    });
+
+    it("keeps draft screenshot identity in a queue without treating it as durable", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [],
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId:
+                    "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const queuedMessage =
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[0];
+        expect(queuedMessage?.composerParts).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    draftAttachmentId:
+                        "da_0123456789abcdef0123456789abcdef",
+                }),
+            ]),
+        );
+        expect(queuedMessage?.attachments).toEqual([]);
+    });
+
+    it("releases queue-owned drafts when messages are removed or the queue is cleared", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const removedDraftId =
+            "da_11111111111111111111111111111111" as DraftAttachmentId;
+        const clearedDraftId =
+            "da_22222222222222222222222222222222" as DraftAttachmentId;
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedDraftMessage("remove-draft", removedDraftId),
+            );
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedDraftMessage("clear-draft", clearedDraftId),
+            );
+
+        useChatStore
+            .getState()
+            .removeQueuedMessage(activeSessionId, "remove-draft");
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId: removedDraftId }),
+        );
+
+        useChatStore.getState().clearSessionQueue(activeSessionId);
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId: clearedDraftId }),
+        );
+    });
+
+    it("releases the removed draft when a queued edit is confirmed", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_33333333333333333333333333333333" as DraftAttachmentId;
+        const queuedItem = createQueuedDraftMessage(
+            "edited-draft",
+            draftAttachmentId,
+        );
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+        useChatStore
+            .getState()
+            .setComposerParts([{ id: "text-edited", type: "text", text: "No image" }]);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId }),
+        );
+    });
+
+    it("releases a newly pasted draft when a queued edit is cancelled", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_88888888888888888888888888888888" as DraftAttachmentId;
+        const queuedItem = createQueuedMessage("cancel-new-draft", "Original");
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+        useChatStore.getState().setComposerParts([
+            { id: "text-cancel", type: "text", text: "Changed " },
+            createDraftScreenshotPart(draftAttachmentId),
+        ]);
+
+        useChatStore.getState().cancelQueuedMessageEdit(activeSessionId);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId }),
+        );
+    });
+
+    it("promotes a retained queued-edit draft before releasing its local file", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_66666666666666666666666666666666" as DraftAttachmentId;
+        const queuedItem = createQueuedDraftMessage(
+            "retained-edit-draft",
+            draftAttachmentId,
+        );
+        const lifecycle: string[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                lifecycle.push("promote");
+                return {
+                    attachment_id:
+                        "ma_66666666666666666666666666666666",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "ai_delete_draft_attachment") {
+                lifecycle.push("delete");
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(lifecycle).toEqual(["promote", "delete"]);
+    });
+
+    it("keeps a retained queued-edit draft owned while a stop is pending", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_77777777777777777777777777777777" as DraftAttachmentId;
+        const queuedItem = createQueuedDraftMessage(
+            "pending-stop-draft",
+            draftAttachmentId,
+        );
+        let resolveCancel!: (session: typeof sessionPayload) => void;
+        const cancelResult = new Promise<typeof sessionPayload>((resolve) => {
+            resolveCancel = resolve;
+        });
+        const lifecycle: string[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_cancel_turn") {
+                return cancelResult;
+            }
+            if (command === "ai_promote_draft_attachment") {
+                lifecycle.push("promote");
+                return {
+                    attachment_id:
+                        "ma_77777777777777777777777777777777",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "ai_delete_draft_attachment") {
+                lifecycle.push("delete");
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+        }));
+
+        const stopping = useChatStore
+            .getState()
+            .stopStreaming(activeSessionId);
+        await useChatStore.getState().sendMessage(activeSessionId);
+        expect(lifecycle).toEqual([]);
+
+        resolveCancel({ ...sessionPayload, status: "idle" });
+        await stopping;
+        await vi.waitFor(() => expect(lifecycle).toEqual(["promote", "delete"]));
+    });
+
+    it("preserves organization after failed history deletion and clears it only on success", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        const session = createSessionWithTrackedFiles("delete-organized", []);
+        useChatStore.setState({ sessionsById: { [session.sessionId]: session }, sessionOrder: [session.sessionId] });
+        useArchivedChatsStore.getState().archive(session.historySessionId!);
+        usePinnedChatsStore.getState().pin(session.sessionId);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_delete_session_history") throw new Error("disk unavailable");
+            return defaultInvokeImplementation(command, args);
+        });
+        await expect(useChatStore.getState().deleteSession(session.sessionId)).rejects.toThrow("disk unavailable");
+        expect(useArchivedChatsStore.getState().isArchived(session.historySessionId!)).toBe(true);
+        expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeDefined();
+        expect(useChatStore.getState().sessionsById[session.sessionId]).toBeDefined();
+        invokeMock.mockImplementation(defaultInvokeImplementation);
+        await useChatStore.getState().deleteSession(session.sessionId);
+        expect(useArchivedChatsStore.getState().isArchived(session.historySessionId!)).toBe(false);
+        expect(usePinnedChatsStore.getState().entries[session.sessionId]).toBeUndefined();
+        expect(useChatStore.getState().sessionsById[session.sessionId]).toBeUndefined();
+    });
+
+    it("releases session-owned drafts when deleting one or all sessions", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const firstSessionId = getActiveSessionId();
+        const firstDraftId =
+            "da_44444444444444444444444444444444" as DraftAttachmentId;
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [firstSessionId]: [createDraftScreenshotPart(firstDraftId)],
+            },
+        }));
+
+        await useChatStore.getState().deleteSession(firstSessionId);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId: firstDraftId }),
+        );
+
+        expect(useChatStore.getState().activeSessionId).toBeNull();
+        await useChatStore.getState().newSession();
+        const replacementSessionId = getActiveSessionId();
+        const secondDraftId =
+            "da_55555555555555555555555555555555" as DraftAttachmentId;
+        useChatStore.setState((state) => ({
+            composerPartsBySessionId: {
+                ...state.composerPartsBySessionId,
+                [replacementSessionId]: [
+                    createDraftScreenshotPart(secondDraftId),
+                ],
+            },
+        }));
+
+        await useChatStore.getState().deleteAllSessions();
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_draft_attachment",
+            expect.objectContaining({ draftAttachmentId: secondDraftId }),
+        );
+    });
+
+    it("promotes drafts before optimistic persistence and runtime send", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const commandOrder: string[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            commandOrder.push(command);
+            if (command === "ai_promote_draft_attachment") {
+                return {
+                    attachment_id:
+                        "ma_0123456789abcdef0123456789abcdef",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_delete_draft_attachment"
+            ) {
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId:
+                    "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+        await vi.waitFor(() => {
+            expect(commandOrder).toContain("ai_save_session_history");
+        });
+
+        const promotionIndex = commandOrder.indexOf(
+            "ai_promote_draft_attachment",
+        );
+        expect(promotionIndex).toBeGreaterThanOrEqual(0);
+        expect(promotionIndex).toBeLessThan(
+            commandOrder.indexOf("ai_save_session_history"),
+        );
+        expect(promotionIndex).toBeLessThan(
+            commandOrder.indexOf("ai_send_message"),
+        );
+        const userMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) => message.role === "user",
+            );
+        expect(userMessage?.attachments).toEqual([
+            expect.objectContaining({
+                managedAttachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+            }),
+        ]);
+        expect(userMessage?.attachments?.[0]).not.toHaveProperty(
+            "draftAttachmentId",
+        );
+        expect(userMessage?.attachments?.[0]).not.toHaveProperty("filePath");
+    });
+
+    it("keeps the composer untouched when draft promotion fails", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftParts: AIComposerPart[] = [
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId:
+                    "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                throw new Error("disk full");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts(draftParts);
+
+        await useChatStore.getState().sendMessage();
+
+        expect(
+            useChatStore.getState().composerPartsBySessionId[activeSessionId],
+        ).toEqual(draftParts);
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.some(
+                    (message) => message.role === "user",
+                ),
+        ).toBe(false);
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_send_message",
+            expect.anything(),
+        );
+        const savedHistories = invokeMock.mock.calls
+            .filter(([command]) => command === "ai_save_session_history")
+            .map(([, args]) => JSON.stringify(args));
+        expect(savedHistories).not.toEqual(
+            expect.arrayContaining([
+                expect.stringContaining(
+                    "da_0123456789abcdef0123456789abcdef",
+                ),
+            ]),
+        );
+    });
+
+    it("owns the composer snapshot while promotion is pending", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const sentDraftId =
+            "da_99999999999999999999999999999999" as DraftAttachmentId;
+        const newDraftId =
+            "da_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab" as DraftAttachmentId;
+        let resolvePromotion!: (value: {
+            attachment_id: ManagedAttachmentId;
+            file_name: string;
+            mime_type: string;
+        }) => void;
+        const promotion = new Promise<{
+            attachment_id: ManagedAttachmentId;
+            file_name: string;
+            mime_type: string;
+        }>((resolve) => {
+            resolvePromotion = resolve;
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") return promotion;
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts([
+            { id: "text-preflight", type: "text", text: "Send this " },
+            createDraftScreenshotPart(sentDraftId),
+        ]);
+
+        const firstSend = useChatStore.getState().sendMessage(activeSessionId);
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ] ?? [],
+            ),
+        ).toBe("");
+
+        const duplicateSend = useChatStore
+            .getState()
+            .sendMessage(activeSessionId);
+        useChatStore.getState().setComposerParts([
+            { id: "text-after-preflight", type: "text", text: "Next message " },
+            createDraftScreenshotPart(newDraftId),
+        ]);
+        resolvePromotion({
+            attachment_id:
+                "ma_99999999999999999999999999999999" as ManagedAttachmentId,
+            file_name: "pasted-image.png",
+            mime_type: "image/png",
+        });
+        await Promise.all([firstSend, duplicateSend]);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_promote_draft_attachment",
+            ),
+        ).toHaveLength(1);
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toHaveLength(1);
+        expect(
+            useChatStore.getState().composerPartsBySessionId[activeSessionId],
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ text: "Next message " }),
+                expect.objectContaining({ draftAttachmentId: newDraftId }),
+            ]),
+        );
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.filter(
+                    (message) => message.role === "user",
+                ),
+        ).toHaveLength(1);
+    });
+
+    it("merges edits made while a failed promotion is pending", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as DraftAttachmentId;
+        let rejectPromotion!: (reason: Error) => void;
+        const promotion = new Promise<never>((_, reject) => {
+            rejectPromotion = reject;
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") return promotion;
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts([
+            { id: "text-original", type: "text", text: "Original " },
+            createDraftScreenshotPart(draftAttachmentId),
+        ]);
+
+        const sending = useChatStore.getState().sendMessage(activeSessionId);
+        useChatStore.getState().setComposerParts([
+            { id: "text-new", type: "text", text: "New input" },
+        ]);
+        rejectPromotion(new Error("disk full"));
+        await sending;
+
+        const restored =
+            useChatStore.getState().composerPartsBySessionId[activeSessionId];
+        expect(restored).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ text: "Original " }),
+                expect.objectContaining({ draftAttachmentId }),
+                expect.objectContaining({ text: "New input" }),
+            ]),
+        );
+    });
+
+    it("serializes queued promotion against a concurrent manual send", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_dddddddddddddddddddddddddddddddd" as DraftAttachmentId;
+        let resolvePromotion!: (value: {
+            attachment_id: ManagedAttachmentId;
+            file_name: string;
+            mime_type: string;
+        }) => void;
+        const promotion = new Promise<{
+            attachment_id: ManagedAttachmentId;
+            file_name: string;
+            mime_type: string;
+        }>((resolve) => {
+            resolvePromotion = resolve;
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") return promotion;
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedDraftMessage("queued-preflight", draftAttachmentId),
+            );
+
+        const draining = useChatStore
+            .getState()
+            .tryDrainQueue(activeSessionId);
+        await vi.waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith(
+                "ai_promote_draft_attachment",
+                expect.objectContaining({ draftAttachmentId }),
+            );
+        });
+        useChatStore
+            .getState()
+            .setComposerParts([{ id: "manual", type: "text", text: "Manual" }]);
+        const manualSend = useChatStore
+            .getState()
+            .sendMessage(activeSessionId);
+        resolvePromotion({
+            attachment_id:
+                "ma_dddddddddddddddddddddddddddddddd" as ManagedAttachmentId,
+            file_name: "pasted-image.png",
+            mime_type: "image/png",
+        });
+        await Promise.all([draining, manualSend]);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toHaveLength(1);
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ] ?? [],
+            ),
+        ).toBe("Manual");
+    });
+
+    it("keeps draft identity stable when queued promotion fails and is retried", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+        await useChatStore.getState().sendMessage();
+        const queuedId = useChatStore.getState().queuedMessagesBySessionId[
+            activeSessionId
+        ]?.[0]?.id;
+        expect(queuedId).toBeTruthy();
+
+        let failPromotion = true;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                if (failPromotion) throw new Error("disk full");
+                return {
+                    attachment_id:
+                        "ma_0123456789abcdef0123456789abcdef",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_delete_draft_attachment"
+            ) {
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "idle",
+                },
+            },
+        }));
+
+        await useChatStore
+            .getState()
+            .retryQueuedMessage(activeSessionId, queuedId!);
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId]?.[0],
+        ).toMatchObject({
+            status: "failed",
+            composerParts: expect.arrayContaining([
+                expect.objectContaining({ draftAttachmentId }),
+            ]),
+        });
+
+        failPromotion = false;
+        await useChatStore
+            .getState()
+            .retryQueuedMessage(activeSessionId, queuedId!);
+
+        const promotionCalls = invokeMock.mock.calls.filter(
+            ([command]) => command === "ai_promote_draft_attachment",
+        );
+        expect(promotionCalls).toHaveLength(2);
+        expect(promotionCalls.map(([, args]) => args)).toEqual([
+            expect.objectContaining({ draftAttachmentId }),
+            expect.objectContaining({ draftAttachmentId }),
+        ]);
+        const userMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) => message.role === "user",
+            );
+        expect(userMessage?.attachments).toEqual([
+            expect.objectContaining({
+                managedAttachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+            }),
+        ]);
+    });
+
+    it("restores a send-now queue item when draft promotion fails", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId;
+        const queuedItem: QueuedChatMessage = {
+            ...createQueuedMessage("queued-draft", "Inspect screenshot"),
+            composerParts: [
+                { id: "text-1", type: "text", text: "Inspect " },
+                {
+                    id: "screenshot-1",
+                    type: "screenshot",
+                    draftAttachmentId,
+                    fileName: "pasted-image.png",
+                    mimeType: "image/png",
+                    label: "Screenshot 10:32",
+                    createdAt: 123,
+                },
+            ],
+            attachments: [],
+        };
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                throw new Error("disk full");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .sendQueuedMessageNow(activeSessionId, queuedItem.id);
+
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
+        ).toEqual([
+            expect.objectContaining({
+                id: queuedItem.id,
+                status: "failed",
+                composerParts: expect.arrayContaining([
+                    expect.objectContaining({ draftAttachmentId }),
+                ]),
+            }),
+        ]);
+    });
+
+    it("restores queued edit state when draft promotion fails", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const draftAttachmentId =
+            "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId;
+        const queuedItem: QueuedChatMessage = {
+            ...createQueuedMessage("queued-edit-draft", "Inspect screenshot"),
+            composerParts: [
+                { id: "text-1", type: "text", text: "Inspect " },
+                {
+                    id: "screenshot-1",
+                    type: "screenshot",
+                    draftAttachmentId,
+                    fileName: "pasted-image.png",
+                    mimeType: "image/png",
+                    label: "Screenshot 10:32",
+                    createdAt: 123,
+                },
+            ],
+            attachments: [],
+        };
+        useChatStore.getState().enqueueMessage(activeSessionId, queuedItem);
+        useChatStore.getState().editQueuedMessage(activeSessionId, queuedItem.id);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_promote_draft_attachment") {
+                throw new Error("disk full");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(
+            useChatStore.getState().queuedMessageEditBySessionId[activeSessionId],
+        ).toMatchObject({
+            item: {
+                id: queuedItem.id,
+                composerParts: expect.arrayContaining([
+                    expect.objectContaining({ draftAttachmentId }),
+                ]),
+            },
+        });
+        expect(
+            useChatStore.getState().composerPartsBySessionId[activeSessionId],
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ draftAttachmentId }),
+            ]),
+        );
     });
 
     it("normalizes image file attachment parts into the same file attachment shape", async () => {
@@ -2549,6 +4201,67 @@ describe("chatStore", () => {
         ).toBe(false);
     });
 
+    it("keeps custom runtime authentication errors out of built-in onboarding", () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const setupStatus = {
+            ...readySetupStatusState,
+            runtimeId,
+            authMethod: "external",
+            authMethods: [],
+        };
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+                {
+                    runtime: { ...runtimePayload[0].runtime },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                [runtimeId]: setupStatus,
+                "codex-acp": readySetupStatusState,
+            },
+            sessionsById: {
+                "custom-session-1": {
+                    ...createSessionWithTrackedFiles("custom-session-1", []),
+                    runtimeId,
+                    runtimeState: "live",
+                },
+            },
+            selectedRuntimeId: runtimeId,
+        });
+
+        useChatStore.getState().applySessionError({
+            session_id: "custom-session-1",
+            message: "authentication required by the local runtime",
+        });
+
+        expect(useChatStore.getState().setupStatusByRuntimeId[runtimeId]).toEqual(
+            setupStatus,
+        );
+        expect(
+            useChatStore.getState().setupStatusByRuntimeId["codex-acp"],
+        ).toEqual(readySetupStatusState);
+        expect(
+            useChatStore.getState().runtimeConnectionByRuntimeId[runtimeId],
+        ).toMatchObject({
+            status: "error",
+            message: "authentication required by the local runtime",
+        });
+    });
+
     it("treats the normalized signed-out message as an authentication error", () => {
         useChatStore.setState({
             runtimes: [
@@ -2784,6 +4497,62 @@ describe("chatStore", () => {
             authReady: true,
             onboardingRequired: false,
         });
+    });
+
+    it("retains known chats on partial inventories and clears diagnostics after retry", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        let mode: "ready" | "partial" | "error" = "ready";
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_histories") {
+                if (mode === "error") throw new Error("Disk temporarily unavailable");
+                if (mode === "partial") return { histories: [], issues: [{ relative_path: "sessions/known", message: "Waiting for transcript" }] };
+                return { histories: [{ version: 1, session_id: "known", runtime_id: "codex-acp",
+                    model_id: "test", mode_id: "default", created_at: 1, updated_at: 2,
+                    message_count: 1, messages: [], title: "Known chat" }], issues: [] };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        await useChatStore.getState().retryAiHistoryLoad("/vault");
+        expect(useChatStore.getState().sessionsById["persisted:known"]).toBeDefined();
+        mode = "partial";
+        await useChatStore.getState().retryAiHistoryLoad("/vault");
+        expect(useChatStore.getState().sessionsById["persisted:known"]).toBeDefined();
+        expect(useChatStore.getState().historyLoadIssues).toHaveLength(1);
+        mode = "error";
+        await useChatStore.getState().retryAiHistoryLoad("/vault");
+        expect(useChatStore.getState().sessionsById["persisted:known"]).toBeDefined();
+        expect(useChatStore.getState().historyLoadError).toBe("Disk temporarily unavailable");
+        mode = "ready";
+        await useChatStore.getState().retryAiHistoryLoad("/vault");
+        expect(useChatStore.getState().historyLoadIssues).toEqual([]);
+        expect(useChatStore.getState().historyLoadError).toBeNull();
+        expect(invokeMock.mock.calls.some(([command]) => command === "ai_get_setup_status")).toBe(false);
+    });
+
+    it("publishes saved chat inventory before a slow runtime probe completes", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        let release!: (value: unknown) => void;
+        const probe = new Promise((resolve) => { release = resolve; });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_setup_status") return probe;
+            if (command === "ai_load_session_histories") return [{
+                version: 1, session_id: "early-history", runtime_id: "codex-acp",
+                model_id: "test", mode_id: "default", created_at: 1, updated_at: 2,
+                message_count: 1, messages: [], title: "Saved chat",
+            }];
+            return defaultInvokeImplementation(command, args);
+        });
+        const initialization = useChatStore.getState().initialize({ createDefaultSession: false });
+        await vi.waitFor(() => {
+            expect(useChatStore.getState().sessionInventoryLoaded).toBe(false);
+            expect(Object.values(useChatStore.getState().sessionsById).some(
+                (session) => session.historySessionId === "early-history",
+            )).toBe(true);
+        });
+        expect(useChatStore.getState().isInitializing).toBe(true);
+        release(readySetupStatus);
+        await initialization;
+        expect(useChatStore.getState().sessionInventoryLoaded).toBe(true);
     });
 
     it("hydrates existing backend sessions before creating a new one", async () => {
@@ -4237,7 +6006,7 @@ describe("chatStore", () => {
         ).toHaveLength(0);
     });
 
-    it("moves the updated session to the top of the history order", async () => {
+    it("keeps streaming updates in place until the turn completes", async () => {
         await useChatStore.getState().initialize();
 
         useChatStore.getState().upsertSession(
@@ -4273,6 +6042,14 @@ describe("chatStore", () => {
             message_id: "assistant-1",
         });
 
+        expect(useChatStore.getState().sessionOrder).toEqual([
+            "codex-session-2",
+            "codex-session-1",
+        ]);
+        useChatStore.getState().applyMessageCompleted({
+            session_id: "codex-session-1",
+            message_id: "assistant-1",
+        });
         expect(useChatStore.getState().sessionOrder).toEqual([
             "codex-session-1",
             "codex-session-2",
@@ -5069,6 +6846,243 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("replaces fallback activity timestamps with the first backend timestamp", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        vi.spyOn(Date, "now").mockReturnValue(8_000_000);
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "fallback-tool",
+            title: "Read README.md",
+            kind: "read",
+            status: "in_progress",
+            summary: "Reading README.md",
+            started_at_ms: null,
+        });
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "fallback-tool",
+            title: "Read README.md",
+            kind: "read",
+            status: "completed",
+            summary: "README.md",
+            started_at_ms: 1_234_567,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "fallback-status",
+            kind: "item_activity",
+            status: "in_progress",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 0,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "fallback-status",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 2_345_678,
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(
+            messages.find((message) => message.id === "tool:fallback-tool"),
+        ).toMatchObject({
+            timestamp: 1_234_567,
+            meta: {
+                status: "completed",
+                activity_timestamp_source: "backend",
+            },
+        });
+        expect(
+            messages.find(
+                (message) => message.id === "status:fallback-status",
+            ),
+        ).toMatchObject({
+            timestamp: 2_345_678,
+            meta: {
+                status: "completed",
+                activity_timestamp_source: "backend",
+            },
+        });
+    });
+
+    it("preserves the first fallback timestamp across fallback updates", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const now = vi.spyOn(Date, "now").mockReturnValue(3_456_789);
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "repeated-fallback-status",
+            kind: "item_activity",
+            status: "in_progress",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: null,
+        });
+        now.mockReturnValue(9_999_999);
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "repeated-fallback-status",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 0,
+        });
+
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.find(
+                    (message) =>
+                        message.id === "status:repeated-fallback-status",
+                ),
+        ).toMatchObject({
+            timestamp: 3_456_789,
+            meta: {
+                status: "completed",
+                activity_timestamp_source: "fallback",
+            },
+        });
+    });
+
+    it("uses restored backend activity start times without changing them on updates", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "restored-tool",
+            title: "Read README.md",
+            kind: "read",
+            status: "completed",
+            summary: "README.md",
+            started_at_ms: 1_234_567,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "neverwrite:status:item:sleep-restored",
+            kind: "item_activity",
+            status: "in_progress",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 2_345_678,
+        });
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "neverwrite:status:item:sleep-restored",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 9_999_999,
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(
+            messages.find((message) => message.id === "tool:restored-tool")
+                ?.timestamp,
+        ).toBe(1_234_567);
+        const sleepMessages = messages.filter(
+            (message) =>
+                message.id ===
+                "status:neverwrite:status:item:sleep-restored",
+        );
+        expect(sleepMessages).toHaveLength(1);
+        expect(sleepMessages[0]?.timestamp).toBe(2_345_678);
+        expect(sleepMessages[0]?.meta?.status).toBe("completed");
+        expect(sleepMessages[0]?.meta?.activity_timestamp_source).toBe(
+            "backend",
+        );
+    });
+
+    it("persists timestamp provenance and upgrades a replayed fallback", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        vi.spyOn(Date, "now").mockReturnValue(4_567_890);
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "persisted-fallback-status",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: null,
+        });
+        await Promise.resolve();
+
+        const saveCall = invokeMock.mock.calls.findLast(
+            ([command]) => command === "ai_save_session_history",
+        );
+        const persistedMessages = (
+            saveCall?.[1] as {
+                history?: { messages?: AIChatMessage[] };
+            }
+        )?.history?.messages;
+        const persistedMessage = persistedMessages?.find(
+            (message) => message.id === "status:persisted-fallback-status",
+        );
+        expect(persistedMessage).toMatchObject({
+            timestamp: 4_567_890,
+            meta: {
+                activity_timestamp_source: "fallback",
+            },
+        });
+        if (!persistedMessage) {
+            throw new Error("Expected the fallback activity to be persisted");
+        }
+
+        const replaySessionId = "replayed-activity-session";
+        const replaySession = createSessionWithTrackedFiles(
+            replaySessionId,
+            [],
+        );
+        replaySession.messages = [structuredClone(persistedMessage)];
+        resetChatStore();
+        useChatStore.setState({
+            sessionsById: { [replaySessionId]: replaySession },
+            sessionOrder: [replaySessionId],
+            activeSessionId: replaySessionId,
+        });
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: replaySessionId,
+            event_id: "persisted-fallback-status",
+            kind: "item_activity",
+            status: "completed",
+            title: "Waiting",
+            detail: "500ms",
+            emphasis: "neutral",
+            started_at_ms: 5_678_901,
+        });
+
+        expect(
+            useChatStore.getState().sessionsById[replaySessionId]?.messages[0],
+        ).toMatchObject({
+            timestamp: 5_678_901,
+            meta: {
+                activity_timestamp_source: "backend",
+            },
+        });
+    });
+
     it("keeps assistant text segments around tool activity in runtime order", async () => {
         await useChatStore.getState().initialize();
 
@@ -5320,7 +7334,7 @@ describe("chatStore", () => {
             ],
             activeTabId: "tab-detached",
         });
-        useEditorStore.getState().openChat(detachedSessionId, {
+        selectChatForTest(detachedSessionId, {
             title: "Detached chat",
         });
         useChatStore.setState((state) => ({
@@ -5470,19 +7484,13 @@ describe("chatStore", () => {
         expect(useChatTabsStore.getState().tabs).toEqual([
             {
                 id: "tab-detached",
+                conversationId: "history-42",
                 sessionId: resumedSessionId,
                 historySessionId: "history-42",
                 runtimeId: "codex-acp",
             },
         ]);
-        expect(
-            useEditorStore
-                .getState()
-                .tabs.some(
-                    (tab) =>
-                        isChatTab(tab) && tab.sessionId === resumedSessionId,
-                ),
-        ).toBe(true);
+        expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: resumedSessionId });
         expect(
             useEditorStore
                 .getState()
@@ -5972,15 +7980,12 @@ describe("chatStore", () => {
                 .queuedMessagesBySessionId[
                     activeSessionId
                 ]?.map((item) => item.id),
-        ).toEqual(["queued-2"]);
+        ).toEqual(["queued-1", "queued-2"]);
         expect(
             useChatStore.getState().activeQueuedMessageBySessionId[
                 activeSessionId
-            ]?.item,
-        ).toMatchObject({
-            id: "queued-1",
-            status: "sending",
-        });
+            ],
+        ).toBeUndefined();
         expect(
             useChatStore.getState().pausedQueueBySessionId[activeSessionId],
         ).toBeUndefined();
@@ -6205,6 +8210,79 @@ describe("chatStore", () => {
         ).toHaveLength(1);
     });
 
+    it("restores an interrupted composer when draft promotion fails", async () => {
+        const cancelTurn = createDeferred<typeof sessionPayload>();
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_cancel_turn") {
+                return await cancelTurn.promise;
+            }
+            if (command === "ai_promote_draft_attachment") {
+                throw new Error("disk full");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "streaming",
+                },
+            },
+        }));
+        const draftAttachmentId =
+            "da_0123456789abcdef0123456789abcdef" as DraftAttachmentId;
+        const stopPromise = useChatStore
+            .getState()
+            .stopStreaming(activeSessionId);
+        await Promise.resolve();
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                draftAttachmentId,
+                fileName: "pasted-image.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+        await useChatStore.getState().sendMessage(activeSessionId);
+        expect(
+            useChatStore.getState().composerPartsBySessionId[activeSessionId],
+        ).toMatchObject([{ type: "text", text: "" }]);
+
+        cancelTurn.resolve({
+            ...sessionPayload,
+            session_id: activeSessionId,
+            status: "idle",
+        });
+        await stopPromise;
+        await vi.waitFor(() => {
+            expect(
+                useChatStore.getState().composerPartsBySessionId[
+                    activeSessionId
+                ],
+            ).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({ draftAttachmentId }),
+                ]),
+            );
+        });
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.some(
+                    (message) => message.role === "user",
+                ),
+        ).toBe(false);
+    });
+
     it("drops buffered assistant deltas from a stopped turn before the next turn starts", async () => {
         vi.useFakeTimers();
         try {
@@ -6399,6 +8477,104 @@ describe("chatStore", () => {
             status: "sending",
         });
         expect(sendAttempts).toBe(2);
+    });
+
+    it("retries a failed idle ACP send without reinjecting the unsent prompt", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        let sendAttempts = 0;
+        let persistedMessages: Array<{ content: string }> = [];
+        const sentPrompts: string[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_save_session_history") {
+                const history = (args as { history?: { messages?: unknown } })
+                    .history;
+                persistedMessages = Array.isArray(history?.messages)
+                    ? history.messages.map((message) => ({
+                          content:
+                              typeof message === "object" &&
+                              message !== null &&
+                              "content" in message &&
+                              typeof message.content === "string"
+                                  ? message.content
+                                  : "",
+                      }))
+                    : [];
+                return;
+            }
+            if (command === "ai_load_session_history_page") {
+                const requestedSessionId = (args as { sessionId?: string })
+                    .sessionId;
+                return {
+                    session_id: requestedSessionId ?? "codex-session-1",
+                    total_messages: persistedMessages.length,
+                    start_index: 0,
+                    end_index: persistedMessages.length,
+                    messages: persistedMessages.map((message, index) => ({
+                        id: `persisted-${index}`,
+                        role: "assistant",
+                        kind: "error",
+                        content: message.content,
+                        timestamp: index,
+                    })),
+                };
+            }
+            if (command === "ai_send_message") {
+                sendAttempts += 1;
+                sentPrompts.push(
+                    (args as { content?: string }).content ?? "",
+                );
+                if (sendAttempts === 1) {
+                    throw new Error(
+                        "The AI runtime disconnected while sending. Reconnect the chat and retry the message.",
+                    );
+                }
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().setComposerParts([
+            { id: "text-idle-retry", type: "text", text: "Continue this chat" },
+        ]);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(useChatStore.getState().sessionsById[activeSessionId]).toMatchObject({
+            runtimeState: "detached",
+            status: "error",
+            resumeContextPending: false,
+        });
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[activeSessionId] ?? [],
+            ),
+        ).toContain("Continue this chat");
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.some(
+                    (message) =>
+                        message.role === "user" &&
+                        message.content === "Continue this chat",
+                ),
+        ).toBe(false);
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(
+            persistedMessages.some(
+                (message) => message.content === "Continue this chat",
+            ),
+        ).toBe(false);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(sendAttempts).toBe(2);
+        expect(
+            sentPrompts[1]?.match(/Continue this chat/g),
+        ).toHaveLength(1);
     });
 
     it("interrupts the current turn and sends the queued message immediately when sending it now", async () => {
@@ -7942,6 +10118,147 @@ describe("chatStore", () => {
                 new_text: "new line",
             },
         ]);
+    });
+
+    it("keeps rule-forced bypass permissions pending until the user allows or cancels", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        const permissionResponse = createDeferred<unknown>();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_permission") {
+                return permissionResponse.promise;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyPermissionRequest({
+            session_id: activeSessionId,
+            request_id: "matched-ask-allow",
+            tool_call_id: "tool-matched-ask-allow",
+            title: "Run terraform destroy",
+            target: "terraform destroy",
+            options: [
+                {
+                    option_id: "allow",
+                    name: "Allow",
+                    kind: "allow_once",
+                },
+                {
+                    option_id: "reject",
+                    name: "Reject",
+                    kind: "reject_once",
+                },
+            ],
+            diffs: [],
+        });
+
+        let permissionMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) =>
+                    message.permissionRequestId === "matched-ask-allow",
+            );
+        expect(permissionMessage).toMatchObject({
+            kind: "permission",
+            content: "Run terraform destroy",
+            permissionOptions: [
+                { option_id: "allow", kind: "allow_once" },
+                { option_id: "reject", kind: "reject_once" },
+            ],
+            meta: { status: "pending" },
+        });
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.status,
+        ).toBe("waiting_permission");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_respond_permission",
+            ),
+        ).toBe(false);
+
+        const allowPromise = useChatStore
+            .getState()
+            .respondPermissionForSession(
+                activeSessionId,
+                "matched-ask-allow",
+                "allow",
+            );
+
+        await vi.waitFor(() => {
+            expect(invokeMock).toHaveBeenCalledWith("ai_respond_permission", {
+                input: {
+                    session_id: activeSessionId,
+                    request_id: "matched-ask-allow",
+                    option_id: "allow",
+                },
+            });
+        });
+        permissionMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) =>
+                    message.permissionRequestId === "matched-ask-allow",
+            );
+        expect(permissionMessage?.meta).toMatchObject({
+            status: "responding",
+            resolved_option: "allow",
+        });
+
+        permissionResponse.resolve({ ...sessionPayload, status: "streaming" });
+        await allowPromise;
+        permissionMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) =>
+                    message.permissionRequestId === "matched-ask-allow",
+            );
+        expect(permissionMessage?.meta).toMatchObject({
+            status: "resolved",
+            resolved_option: "allow",
+        });
+
+        useChatStore.getState().applyPermissionRequest({
+            session_id: activeSessionId,
+            request_id: "matched-ask-cancel",
+            tool_call_id: "tool-matched-ask-cancel",
+            title: "Run terraform destroy",
+            target: "terraform destroy",
+            options: [],
+            diffs: [],
+        });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_permission") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .respondPermissionForSession(
+                activeSessionId,
+                "matched-ask-cancel",
+                undefined,
+            );
+
+        expect(invokeMock).toHaveBeenLastCalledWith("ai_respond_permission", {
+            input: {
+                session_id: activeSessionId,
+                request_id: "matched-ask-cancel",
+                option_id: null,
+            },
+        });
+        const cancelledMessage = useChatStore
+            .getState()
+            .sessionsById[activeSessionId]?.messages.find(
+                (message) =>
+                    message.permissionRequestId === "matched-ask-cancel",
+            );
+        expect(cancelledMessage?.meta).toMatchObject({
+            status: "resolved",
+            resolved_option: null,
+        });
     });
 
     it("ignores failed tool diffs when consolidating the edited files buffer", async () => {
@@ -12627,6 +14944,112 @@ describe("chatStore", () => {
         expect(sentContent).toContain("New user message: Continue from there");
     });
 
+    it("loads unloaded saved history before planning same-provider session creation", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        const sourceSessionId = "live-history-shell";
+        const historySessionId = "history-live-shell";
+        const replacementSessionId = "codex-session-replacement";
+        let sentContent = "";
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [sourceSessionId]: {
+                    ...createSessionWithTrackedFiles(sourceSessionId, []),
+                    historySessionId,
+                    runtimeId: "codex-acp",
+                    runtimeState: "live",
+                    runtimeSessionId: null,
+                    continuationStrategy: "new_session_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 2,
+                    loadedPersistedMessageStart: null,
+                    messages: [],
+                },
+            },
+            sessionOrder: [sourceSessionId],
+            activeSessionId: sourceSessionId,
+            selectedRuntimeId: "codex-acp",
+            composerPartsBySessionId: {
+                [sourceSessionId]: [],
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    sessionId: historySessionId,
+                    vaultPath: "/vault",
+                    startIndex: 0,
+                    limit: 2,
+                });
+                return {
+                    session_id: historySessionId,
+                    total_messages: 2,
+                    start_index: 0,
+                    end_index: 2,
+                    messages: [
+                        {
+                            id: "saved-user",
+                            role: "user",
+                            kind: "text",
+                            content: "Keep the saved constraint",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "saved-assistant",
+                            role: "assistant",
+                            kind: "text",
+                            content: "The constraint is retained.",
+                            timestamp: 20,
+                        },
+                    ],
+                };
+            }
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: replacementSessionId,
+                };
+            }
+            if (command === "ai_start_conversation_turn") return null;
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: replacementSessionId,
+                    status: "streaming",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Continue safely"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_load_session_history_page",
+            expect.objectContaining({ sessionId: historySessionId }),
+        );
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain("User: Keep the saved constraint");
+        expect(sentContent).toContain("New user message: Continue safely");
+    });
+
     it("includes saved transcript context for live Codex sessions with pending recovery", async () => {
         await useChatStore.getState().initialize();
 
@@ -12694,6 +15117,1863 @@ describe("chatStore", () => {
                 ([command]) => command === "ai_create_session",
             ),
         ).toBe(false);
+    });
+
+    it("advances the active binding cursor only after a handoff is accepted", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const conversationBindings =
+            updateConversationBindingsFromLegacySession(session);
+        const bindingId = conversationBindings.activeBindingId!;
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    runtimeState: "live",
+                    status: "idle",
+                    resumeContextPending: true,
+                    conversationBindings,
+                    messages: [
+                        {
+                            id: "handoff-user",
+                            role: "user",
+                            kind: "text",
+                            content: "Retain this context",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "handoff-assistant",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Context retained",
+                            timestamp: 20,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                expect((args as { content: string }).content).toContain(
+                    "Assistant: Context retained",
+                );
+                return {
+                    ...sessionPayload,
+                    session_id: activeSessionId,
+                    status: "streaming",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Continue"), activeSessionId);
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        const acceptedBindings =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .conversationBindings!;
+        expect(acceptedBindings.revision).toBe(
+            conversationBindings.revision + 1,
+        );
+        expect(
+            acceptedBindings.providerBindings.find(
+                (binding) => binding.bindingId === bindingId,
+            )?.contextCursor,
+        ).toBe("handoff-assistant");
+    });
+
+    it("allows choosing a provider before the first message", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    ...readySetupStatusState,
+                    runtimeId: "provider-b",
+                },
+            },
+        }));
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        });
+
+        expect(
+            useChatStore.getState().sessionsById[sourceSessionId]
+                ?.conversationBindings?.preferredSelection.runtimeId,
+        ).toBe("provider-b");
+    });
+
+    it("replaces a bootstrap Auto selection with the discovered ACP default", async () => {
+        await useChatStore.getState().initialize();
+
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const bootstrapRuntime = {
+            runtime: {
+                id: "claude-acp",
+                name: "Claude ACP",
+                description: "Claude ACP provider.",
+                capabilities: ["create_session"],
+            },
+            models: [
+                {
+                    id: "auto",
+                    runtimeId: "claude-acp",
+                    name: "Auto",
+                    description: "Use the runtime default model.",
+                },
+            ],
+            modes: [
+                {
+                    id: "default",
+                    runtimeId: "claude-acp",
+                    name: "Default",
+                    description: "Default mode.",
+                    disabled: false,
+                },
+            ],
+            configOptions: [
+                {
+                    id: "model",
+                    runtimeId: "claude-acp",
+                    category: "model" as const,
+                    label: "Model",
+                    type: "select" as const,
+                    value: "auto",
+                    options: [{ value: "auto", label: "Auto" }],
+                },
+            ],
+        };
+        const claudeSession = {
+            session_id: "claude-probe-session",
+            runtime_id: "claude-acp",
+            model_id: "claude-sonnet",
+            mode_id: "default",
+            status: "idle" as const,
+            models: [
+                {
+                    id: "claude-sonnet",
+                    runtime_id: "claude-acp",
+                    name: "Claude Sonnet",
+                    description: "Claude Sonnet model.",
+                },
+            ],
+            modes: [
+                {
+                    id: "default",
+                    runtime_id: "claude-acp",
+                    name: "Default",
+                    description: "Default mode.",
+                    disabled: false,
+                },
+            ],
+            config_options: [
+                {
+                    id: "model",
+                    runtime_id: "claude-acp",
+                    category: "model" as const,
+                    label: "Model",
+                    type: "select" as const,
+                    value: "claude-sonnet",
+                    options: [
+                        {
+                            value: "claude-sonnet",
+                            label: "Claude Sonnet",
+                        },
+                        {
+                            value: "claude-opus",
+                            label: "Claude Opus",
+                        },
+                    ],
+                },
+            ],
+        };
+        useChatStore.setState((state) => ({
+            runtimes: [...state.runtimes, bootstrapRuntime],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "claude-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "claude-acp",
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                const runtimeId = (
+                    args as { input?: { runtime_id?: string } } | undefined
+                )?.input?.runtime_id;
+                return runtimeId === "claude-acp"
+                    ? claudeSession
+                    : sessionPayload;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const bootstrapSelection = {
+            runtimeId: "claude-acp",
+            modelId: "auto",
+            modeId: "default",
+            options: { model: "auto" },
+        };
+        useChatStore
+            .getState()
+            .setConversationTurnSelection(
+                conversationId,
+                bootstrapSelection,
+            );
+        await useChatStore
+            .getState()
+            .prepareConversationTurnCatalog(
+                conversationId,
+                bootstrapSelection,
+            );
+
+        expect(
+            useChatStore.getState().conversationsById[conversationId]
+                ?.preferredSelection,
+        ).toMatchObject({
+            runtimeId: "claude-acp",
+            modelId: "claude-sonnet",
+            options: { model: "claude-sonnet" },
+        });
+        expect(
+            useChatStore.getState().preparedTurnCatalogByConversationId[
+                conversationId
+            ],
+        ).toMatchObject({
+            runtimeId: "claude-acp",
+            modelId: "claude-sonnet",
+            models: [expect.objectContaining({ id: "claude-sonnet" })],
+        });
+        expect(
+            useChatStore
+                .getState()
+                .runtimes.find(
+                    (runtime) => runtime.runtime.id === "claude-acp",
+                )?.models,
+        ).toEqual([
+            expect.objectContaining({ id: "claude-sonnet" }),
+        ]);
+    });
+
+    it("drops catalog options unavailable for the discovered model", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const runtimeId = "provider-with-live-default";
+        const liveSession = {
+            session_id: "provider-live-session",
+            runtime_id: runtimeId,
+            model_id: "live-default-model",
+            mode_id: "",
+            status: "idle" as const,
+            models: [
+                {
+                    id: "live-default-model",
+                    runtime_id: runtimeId,
+                    name: "Live Default Model",
+                    description: "The default reported by the ACP.",
+                },
+            ],
+            modes: [],
+            config_options: [],
+        };
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Live Default Provider",
+                        description: "Provider with a runtime-owned default.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [
+                        {
+                            id: "auto",
+                            runtimeId,
+                            name: "Auto",
+                            description: "Bootstrap default.",
+                        },
+                    ],
+                    modes: [],
+                    configOptions: [
+                        {
+                            id: "effort",
+                            runtimeId,
+                            category: "reasoning",
+                            label: "Effort",
+                            type: "select",
+                            value: "high",
+                            options: [{ value: "high", label: "High" }],
+                        },
+                    ],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                [runtimeId]: {
+                    ...readySetupStatusState,
+                    runtimeId,
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                const requestedRuntimeId = (
+                    args as { input?: { runtime_id?: string } } | undefined
+                )?.input?.runtime_id;
+                return requestedRuntimeId === runtimeId
+                    ? liveSession
+                    : sessionPayload;
+            }
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: runtimeId,
+                        session_id: liveSession.session_id,
+                        selection: {
+                            runtime_id: runtimeId,
+                            model_id: "live-default-model",
+                            mode_id: "",
+                            options: {},
+                        },
+                    },
+                });
+                return null;
+            }
+            if (command === "ai_send_message") {
+                return { ...liveSession, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId,
+            modelId: "auto",
+            modeId: "",
+            options: {
+                effort: "high",
+            },
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Start immediately"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_start_conversation_turn",
+            ),
+        ).toHaveLength(1);
+    });
+
+    it.each(["catalog", "turn"])(
+        "reconciles saved OpenCode effort absent from a fresh session during %s preparation",
+        async (path) => {
+            await useChatStore.getState().initialize();
+            const sourceSessionId = getActiveSessionId();
+            const conversationId =
+                useChatStore.getState().activeConversationId!;
+            const runtimeId = "opencode-acp";
+            const liveSession = {
+                ...sessionPayload,
+                session_id: "opencode-no-effort",
+                runtime_id: runtimeId,
+                model_id: "plain-model",
+                mode_id: "",
+                models: [
+                    {
+                        id: "plain-model",
+                        runtime_id: runtimeId,
+                        name: "Plain",
+                        description: "",
+                    },
+                ],
+                modes: [],
+                config_options: [],
+                efforts_by_model: {},
+            };
+            useChatStore.setState((state) => ({
+                runtimes: [
+                    ...state.runtimes,
+                    {
+                        runtime: {
+                            id: runtimeId,
+                            name: "OpenCode",
+                            description: "",
+                            capabilities: ["create_session"],
+                        },
+                        models: [
+                            {
+                                id: "plain-model",
+                                runtimeId,
+                                name: "Plain",
+                                description: "",
+                            },
+                        ],
+                        modes: [],
+                        configOptions: [
+                            {
+                                id: "effort",
+                                runtimeId,
+                                category: "reasoning",
+                                label: "Effort",
+                                type: "select",
+                                value: "low",
+                                options: [
+                                    { value: "low", label: "Low" },
+                                    { value: "high", label: "High" },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+                setupStatusByRuntimeId: {
+                    ...state.setupStatusByRuntimeId,
+                    [runtimeId]: { ...readySetupStatusState, runtimeId },
+                },
+            }));
+            invokeMock.mockImplementation(async (command, args) => {
+                if (command === "ai_create_session") return liveSession;
+                if (command === "ai_start_conversation_turn") return null;
+                if (command === "ai_send_message")
+                    return { ...liveSession, status: "streaming" };
+                return defaultInvokeImplementation(command, args);
+            });
+            // Different from the runtime default: discovery must preserve this
+            // explicit model selection while reconciling its saved effort.
+            const selection = {
+                runtimeId,
+                modelId: "plain-model",
+                modeId: "",
+                options: { effort: "high" },
+            };
+            useChatStore
+                .getState()
+                .setConversationTurnSelection(conversationId, selection);
+            invokeMock.mockClear();
+            if (path === "catalog") {
+                await useChatStore
+                    .getState()
+                    .prepareConversationTurnCatalog(conversationId, selection);
+                expect(
+                    useChatStore.getState().preparedTurnCatalogByConversationId[
+                        conversationId
+                    ],
+                ).toMatchObject({
+                    runtimeId,
+                    modelId: "plain-model",
+                    configOptions: [],
+                });
+            } else {
+                useChatStore
+                    .getState()
+                    .setComposerParts(
+                        createTextParts("Use OpenCode"),
+                        sourceSessionId,
+                    );
+                await useChatStore.getState().sendMessage(sourceSessionId);
+                expect(invokeMock).toHaveBeenCalledWith(
+                    "ai_start_conversation_turn",
+                    expect.objectContaining({
+                        input: expect.objectContaining({
+                            selection: {
+                                runtime_id: runtimeId,
+                                model_id: "plain-model",
+                                mode_id: "",
+                                options: {},
+                            },
+                        }),
+                    }),
+                );
+                expect(
+                    invokeMock.mock.calls.some(
+                        ([command]) => command === "ai_send_message",
+                    ),
+                ).toBe(true);
+            }
+            expect(
+                invokeMock.mock.calls.some(
+                    ([command]) => command === "ai_set_config_option",
+                ),
+            ).toBe(false);
+            expect(
+                useChatStore.getState().conversationsById[conversationId]
+                    ?.preferredSelection,
+            ).toEqual({
+                runtimeId,
+                modelId: "plain-model",
+                modeId: "",
+                options: {},
+            });
+        },
+    );
+
+    it.each(["removed", "expired", "rejected"])(
+        "uses the conversation catalog when a fresh ACP session has %s effort",
+        async (change) => {
+            await useChatStore.getState().initialize();
+            const sourceSessionId = getActiveSessionId();
+            const conversationId =
+                useChatStore.getState().activeConversationId!;
+            const sourceSession =
+                useChatStore.getState().sessionsById[sourceSessionId]!;
+            const selection = {
+                ...getConversationSelection(sourceSession),
+                options: { model: "test-model", reasoning_effort: "high" },
+            };
+            useChatStore
+                .getState()
+                .setConversationTurnSelection(conversationId, selection);
+            // Remove runtime-wide metadata so only the conversation proves
+            // that the saved effort was previously advertised.
+            useChatStore.setState((state) => ({
+                runtimes: state.runtimes.map((runtime) => ({
+                    ...runtime,
+                    configOptions: [],
+                })),
+            }));
+            const liveSession = {
+                ...sessionPayload,
+                session_id: "probe-with-changed-effort",
+                config_options:
+                    change === "removed"
+                        ? [acpConfigOptions[0]]
+                        : [
+                              acpConfigOptions[0],
+                              {
+                                  ...acpConfigOptions[1],
+                                  value: "medium",
+                                  options:
+                                      change === "expired"
+                                          ? [
+                                                {
+                                                    value: "medium",
+                                                    label: "Medium",
+                                                },
+                                            ]
+                                          : acpConfigOptions[1].options,
+                              },
+                          ],
+            };
+            invokeMock.mockImplementation(async (command, args) => {
+                if (
+                    command === "ai_create_session" ||
+                    command === "ai_set_config_option"
+                )
+                    return liveSession;
+                return defaultInvokeImplementation(command, args);
+            });
+            await useChatStore
+                .getState()
+                .prepareConversationTurnCatalog(conversationId, selection);
+            const prepared =
+                useChatStore.getState().preparedTurnCatalogByConversationId[
+                    conversationId
+                ];
+            if (change === "rejected") {
+                expect(prepared).toBeUndefined();
+                expect(
+                    useChatStore.getState().conversationsById[conversationId]
+                        ?.preferredSelection,
+                ).toEqual(selection);
+            } else {
+                expect(prepared?.configOptions).toHaveLength(
+                    change === "removed" ? 1 : 2,
+                );
+                expect(
+                    useChatStore.getState().conversationsById[conversationId]
+                        ?.preferredSelection.options,
+                ).toEqual(
+                    change === "removed"
+                        ? { model: "test-model" }
+                        : { model: "test-model", reasoning_effort: "medium" },
+                );
+            }
+        },
+    );
+
+    it("reconciles dependent options after each ACP configuration response", async () => {
+        await useChatStore.getState().initialize();
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const serviceTier = {
+            ...acpConfigOptions[1],
+            id: "service_tier",
+            category: "service_tier",
+            value: "standard",
+            options: [
+                { value: "standard", label: "Standard" },
+                { value: "fast", label: "Fast" },
+            ],
+        };
+        const liveSession = {
+            ...sessionPayload,
+            session_id: "dependent-options",
+            config_options: [...acpConfigOptions, serviceTier],
+        };
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") return liveSession;
+            if (command === "ai_set_config_option") {
+                const input = (args as { input: { option_id: string } }).input;
+                expect(input.option_id).toBe("service_tier");
+                // Fast service removes the reasoning control entirely.
+                return {
+                    ...liveSession,
+                    config_options: [
+                        acpConfigOptions[0],
+                        { ...serviceTier, value: "fast" },
+                    ],
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        const selection = {
+            ...getConversationSelection(
+                useChatStore.getState().sessionsById[sourceSessionId]!,
+            ),
+            options: {
+                model: "test-model",
+                service_tier: "fast",
+                reasoning_effort: "high",
+            },
+        };
+        useChatStore
+            .getState()
+            .setConversationTurnSelection(conversationId, selection);
+        await useChatStore
+            .getState()
+            .prepareConversationTurnCatalog(conversationId, selection);
+        expect(
+            useChatStore.getState().conversationsById[conversationId]
+                ?.preferredSelection.options,
+        ).toEqual({
+            model: "test-model",
+            service_tier: "fast",
+        });
+        expect(
+            useChatStore
+                .getState()
+                .preparedTurnCatalogByConversationId[
+                    conversationId
+                ]?.configOptions.map((option) => option.id),
+        ).toEqual(["model", "service_tier"]);
+    });
+
+    it.each(["model", "effort"])(
+        "does not overwrite a newer %s selection when an old ACP probe completes",
+        async (changedField) => {
+            await useChatStore.getState().initialize();
+            const sessionId = getActiveSessionId();
+            const conversationId =
+                useChatStore.getState().activeConversationId!;
+            const selection = {
+                ...getConversationSelection(
+                    useChatStore.getState().sessionsById[sessionId]!,
+                ),
+                options: { model: "test-model", reasoning_effort: "high" },
+            };
+            useChatStore
+                .getState()
+                .setConversationTurnSelection(conversationId, selection);
+            let resolveProbe!: (value: typeof sessionPayload) => void;
+            const probe = new Promise<typeof sessionPayload>((resolve) => {
+                resolveProbe = resolve;
+            });
+            invokeMock.mockImplementation(async (command, args) => {
+                if (command === "ai_create_session") return probe;
+                return defaultInvokeImplementation(command, args);
+            });
+            const preparing = useChatStore
+                .getState()
+                .prepareConversationTurnCatalog(conversationId, selection);
+            const newerSelection =
+                changedField === "model"
+                    ? {
+                          ...selection,
+                          modelId: "wide-model",
+                          options: {
+                              model: "wide-model",
+                              reasoning_effort: "high",
+                          },
+                      }
+                    : {
+                          ...selection,
+                          options: {
+                              model: "test-model",
+                              reasoning_effort: "medium",
+                          },
+                      };
+            useChatStore
+                .getState()
+                .setConversationTurnSelection(conversationId, newerSelection);
+            resolveProbe({
+                ...sessionPayload,
+                session_id: "late-probe",
+                config_options: [acpConfigOptions[0]],
+            });
+            await preparing;
+            expect(
+                useChatStore.getState().conversationsById[conversationId]
+                    ?.preferredSelection,
+            ).toEqual(newerSelection);
+            expect(
+                useChatStore.getState().preparedTurnCatalogByConversationId[
+                    conversationId
+                ],
+            ).toBeUndefined();
+            expect(invokeMock).toHaveBeenCalledWith(
+                "ai_delete_runtime_session",
+                { sessionId: "late-probe" },
+            );
+        },
+    );
+
+    it.each(["latest-first", "oldest-first"])(
+        "publishes only the newest catalog across A -> B -> A effort changes (%s)",
+        async (order) => {
+            await useChatStore.getState().initialize();
+            const sessionId = getActiveSessionId();
+            const conversationId =
+                useChatStore.getState().activeConversationId!;
+            const initial = getConversationSelection(
+                useChatStore.getState().sessionsById[sessionId]!,
+            );
+            const resolvers: Array<(value: typeof sessionPayload) => void> = [];
+            invokeMock.mockImplementation(async (command, args) => {
+                if (command === "ai_create_session") {
+                    return new Promise<typeof sessionPayload>((resolve) =>
+                        resolvers.push(resolve),
+                    );
+                }
+                return defaultInvokeImplementation(command, args);
+            });
+            const preparations = ["high", "medium", "high"].map((effort) => {
+                const selection = {
+                    ...initial,
+                    options: { model: "test-model", reasoning_effort: effort },
+                };
+                useChatStore
+                    .getState()
+                    .setConversationTurnSelection(conversationId, selection);
+                return useChatStore
+                    .getState()
+                    .prepareConversationTurnCatalog(conversationId, selection);
+            });
+            expect(resolvers).toHaveLength(3);
+            for (const index of order === "latest-first"
+                ? [2, 0, 1]
+                : [0, 1, 2]) {
+                resolvers[index]({
+                    ...sessionPayload,
+                    session_id: `concurrent-probe-${index}`,
+                    config_options:
+                        index === 2
+                            ? [
+                                  acpConfigOptions[0],
+                                  { ...acpConfigOptions[1], value: "high" },
+                              ]
+                            : [acpConfigOptions[0]],
+                });
+                await preparations[index];
+                if (order === "oldest-first" && index !== 2) {
+                    expect(
+                        useChatStore.getState()
+                            .preparedTurnCatalogByConversationId[
+                            conversationId
+                        ],
+                    ).toBeUndefined();
+                }
+            }
+            expect(
+                useChatStore.getState().conversationsById[conversationId]
+                    ?.preferredSelection.options,
+            ).toEqual({
+                model: "test-model",
+                reasoning_effort: "high",
+            });
+            expect(
+                useChatStore
+                    .getState()
+                    .preparedTurnCatalogByConversationId[
+                        conversationId
+                    ]?.configOptions.map((option) => option.id),
+            ).toEqual(["model", "reasoning_effort"]);
+            for (const index of [0, 1, 2]) {
+                expect(invokeMock).toHaveBeenCalledWith(
+                    "ai_delete_runtime_session",
+                    { sessionId: `concurrent-probe-${index}` },
+                );
+            }
+        },
+    );
+
+    it("keeps queued and reopened conversations free of effort removed by a model change", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const liveSession = {
+            ...sessionPayload,
+            model_id: "wide-model",
+            efforts_by_model: {},
+            config_options: [{ ...acpConfigOptions[0], value: "wide-model" }],
+        };
+        let savedHistory: PersistedSessionHistory | undefined;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (
+                command === "ai_set_config_option" ||
+                command === "ai_create_session" ||
+                command === "ai_load_session"
+            )
+                return liveSession;
+            if (command === "ai_start_conversation_turn") return null;
+            if (command === "ai_send_message")
+                return { ...liveSession, status: "streaming" };
+            if (command === "ai_save_session_history") {
+                savedHistory = (args as { history: PersistedSessionHistory })
+                    .history;
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        const queued = {
+            ...createQueuedMessage("queue-with-effort", "Use the plain model"),
+            modelId: "wide-model",
+            optionsSnapshot: { model: "wide-model", reasoning_effort: "high" },
+        };
+        useChatStore.getState().enqueueMessage(sessionId, queued);
+        useChatStore
+            .getState()
+            .enqueueMessage(sessionId, { ...queued, id: "second-queued-turn" });
+        useChatStore.getState().enqueueMessage(sessionId, {
+            ...queued,
+            id: "other-model-turn",
+            modelId: "test-model",
+            optionsSnapshot: { model: "test-model", reasoning_effort: "high" },
+        });
+        await useChatStore.getState().tryDrainQueue(sessionId);
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_start_conversation_turn",
+            expect.objectContaining({
+                input: expect.objectContaining({
+                    selection: expect.objectContaining({
+                        model_id: "wide-model",
+                        options: { model: "wide-model" },
+                    }),
+                }),
+            }),
+        );
+        const remaining =
+            useChatStore.getState().queuedMessagesBySessionId[sessionId];
+        expect(
+            remaining?.find((item) => item.id === "second-queued-turn")
+                ?.optionsSnapshot,
+        ).toEqual({ model: "wide-model" });
+        expect(
+            remaining?.find((item) => item.id === "other-model-turn")
+                ?.optionsSnapshot,
+        ).toEqual({ model: "test-model", reasoning_effort: "high" });
+        await vi.waitFor(() => {
+            expect(
+                savedHistory?.conversation_bindings?.preferred_selection
+                    .options,
+            ).toEqual({ model: "wide-model" });
+        });
+        const history = savedHistory!;
+        resetChatStore();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_histories") return [history];
+            if (
+                command === "ai_create_session" ||
+                command === "ai_load_session"
+            )
+                return liveSession;
+            if (command === "ai_load_session_history_page")
+                return {
+                    session_id: history.session_id,
+                    total_messages: history.messages.length,
+                    start_index: 0,
+                    end_index: history.messages.length,
+                    messages: history.messages,
+                };
+            return defaultInvokeImplementation(command, args);
+        });
+        await useChatStore.getState().initialize();
+        expect(
+            useChatStore.getState().conversationsById[conversationId]
+                ?.preferredSelection.options,
+        ).toEqual({ model: "wide-model" });
+    });
+
+    it("drops an ACP option removed after applying the selected model", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const runtimeId = "provider-with-model-specific-options";
+        const modelOption = {
+            id: "model",
+            runtime_id: runtimeId,
+            category: "model" as const,
+            label: "Model",
+            type: "select" as const,
+            value: "sonnet",
+            options: [
+                { value: "sonnet", label: "Sonnet" },
+                { value: "haiku", label: "Haiku" },
+            ],
+        };
+        const effortOption = {
+            id: "effort",
+            runtime_id: runtimeId,
+            category: "reasoning" as const,
+            label: "Effort",
+            type: "select" as const,
+            value: "high",
+            options: [{ value: "high", label: "High" }],
+        };
+        const models = [
+            {
+                id: "sonnet",
+                runtime_id: runtimeId,
+                name: "Sonnet",
+                description: "Supports effort.",
+            },
+            {
+                id: "haiku",
+                runtime_id: runtimeId,
+                name: "Haiku",
+                description: "Does not expose effort.",
+            },
+        ];
+        const liveSession = {
+            session_id: "model-specific-session",
+            runtime_id: runtimeId,
+            model_id: "sonnet",
+            mode_id: "",
+            status: "idle" as const,
+            models,
+            modes: [],
+            config_options: [modelOption, effortOption],
+        };
+        const haikuSession = {
+            ...liveSession,
+            model_id: "haiku",
+            config_options: [{ ...modelOption, value: "haiku" }],
+        };
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Model-specific Provider",
+                        description: "Provider with model-specific options.",
+                        capabilities: ["create_session"],
+                    },
+                    models: models.map((model) => ({
+                        id: model.id,
+                        runtimeId,
+                        name: model.name,
+                        description: model.description,
+                    })),
+                    modes: [],
+                    configOptions: [
+                        {
+                            ...modelOption,
+                            runtimeId,
+                        },
+                        {
+                            ...effortOption,
+                            runtimeId,
+                        },
+                    ],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                [runtimeId]: {
+                    ...readySetupStatusState,
+                    runtimeId,
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") return liveSession;
+            if (command === "ai_set_config_option") {
+                expect(args).toMatchObject({
+                    input: { option_id: "model", value: "haiku" },
+                });
+                return haikuSession;
+            }
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: runtimeId,
+                        session_id: liveSession.session_id,
+                        selection: {
+                            runtime_id: runtimeId,
+                            model_id: "haiku",
+                            mode_id: "",
+                            options: { model: "haiku" },
+                        },
+                    },
+                });
+                return null;
+            }
+            if (command === "ai_send_message") {
+                return { ...haikuSession, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId,
+            modelId: "haiku",
+            modeId: "",
+            options: { model: "haiku", effort: "high" },
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Use Haiku"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_start_conversation_turn",
+            ),
+        ).toHaveLength(1);
+    });
+
+    it("normalizes a queued mode removed after applying the selected model", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const runtimeId = "provider-with-model-specific-modes";
+        const modelOption = {
+            id: "model",
+            runtime_id: runtimeId,
+            category: "model" as const,
+            label: "Model",
+            type: "select" as const,
+            value: "sonnet",
+            options: [
+                { value: "sonnet", label: "Sonnet" },
+                { value: "haiku", label: "Haiku" },
+            ],
+        };
+        const modeOption = {
+            id: "mode",
+            runtime_id: runtimeId,
+            category: "mode" as const,
+            label: "Approval Mode",
+            type: "select" as const,
+            value: "auto",
+            options: [
+                { value: "auto", label: "Auto" },
+                { value: "default", label: "Default" },
+            ],
+        };
+        const models = [
+            {
+                id: "sonnet",
+                runtime_id: runtimeId,
+                name: "Sonnet",
+                description: "Supports auto mode.",
+            },
+            {
+                id: "haiku",
+                runtime_id: runtimeId,
+                name: "Haiku",
+                description: "Supports default mode only.",
+            },
+        ];
+        const modes = [
+            {
+                id: "auto",
+                runtime_id: runtimeId,
+                name: "Auto",
+                description: "Automatic approval.",
+                disabled: false,
+            },
+            {
+                id: "default",
+                runtime_id: runtimeId,
+                name: "Default",
+                description: "Default approval.",
+                disabled: false,
+            },
+        ];
+        const liveSession = {
+            session_id: "model-specific-mode-session",
+            runtime_id: runtimeId,
+            model_id: "sonnet",
+            mode_id: "auto",
+            status: "idle" as const,
+            models,
+            modes,
+            config_options: [modelOption, modeOption],
+        };
+        const haikuSession = {
+            ...liveSession,
+            model_id: "haiku",
+            mode_id: "default",
+            modes: [modes[1]],
+            config_options: [
+                { ...modelOption, value: "haiku" },
+                {
+                    ...modeOption,
+                    value: "default",
+                    options: [{ value: "default", label: "Default" }],
+                },
+            ],
+        };
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Model-specific Mode Provider",
+                        description: "Provider with model-specific modes.",
+                        capabilities: ["create_session"],
+                    },
+                    models: models.map((model) => ({
+                        id: model.id,
+                        runtimeId,
+                        name: model.name,
+                        description: model.description,
+                    })),
+                    modes: modes.map((mode) => ({
+                        id: mode.id,
+                        runtimeId,
+                        name: mode.name,
+                        description: mode.description,
+                        disabled: mode.disabled,
+                    })),
+                    configOptions: [modelOption, modeOption].map((option) => ({
+                        ...option,
+                        runtimeId,
+                    })),
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                [runtimeId]: {
+                    ...readySetupStatusState,
+                    runtimeId,
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") return liveSession;
+            if (command === "ai_set_config_option") {
+                expect(args).toMatchObject({
+                    input: { option_id: "model", value: "haiku" },
+                });
+                return haikuSession;
+            }
+            if (command === "ai_set_mode") {
+                throw new Error("The removed auto mode must not be sent.");
+            }
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: runtimeId,
+                        session_id: liveSession.session_id,
+                        selection: {
+                            runtime_id: runtimeId,
+                            model_id: "haiku",
+                            mode_id: "default",
+                            options: { model: "haiku", mode: "default" },
+                        },
+                    },
+                });
+                return null;
+            }
+            if (command === "ai_send_message") {
+                return { ...haikuSession, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId,
+            modelId: "haiku",
+            modeId: "auto",
+            options: { model: "haiku", mode: "auto" },
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Use Haiku"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_set_mode",
+            ),
+        ).toHaveLength(0);
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_start_conversation_turn",
+            ),
+        ).toHaveLength(1);
+    });
+
+    it("applies an ACP option exposed only after selecting the target model", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const runtimeId = "provider-with-late-model-options";
+        const modelOption = {
+            id: "model",
+            runtime_id: runtimeId,
+            category: "model" as const,
+            label: "Model",
+            type: "select" as const,
+            value: "haiku",
+            options: [
+                { value: "haiku", label: "Haiku" },
+                { value: "opus", label: "Opus" },
+            ],
+        };
+        const effortOption = {
+            id: "effort",
+            runtime_id: runtimeId,
+            category: "reasoning" as const,
+            label: "Effort",
+            type: "select" as const,
+            value: "medium",
+            options: [
+                { value: "medium", label: "Medium" },
+                { value: "high", label: "High" },
+            ],
+        };
+        const models = [
+            {
+                id: "haiku",
+                runtime_id: runtimeId,
+                name: "Haiku",
+                description: "Does not expose effort.",
+            },
+            {
+                id: "opus",
+                runtime_id: runtimeId,
+                name: "Opus",
+                description: "Exposes effort after selection.",
+            },
+        ];
+        const initialSession = {
+            session_id: "late-options-session",
+            runtime_id: runtimeId,
+            model_id: "haiku",
+            mode_id: "",
+            status: "idle" as const,
+            models,
+            modes: [],
+            config_options: [modelOption],
+        };
+        const opusSession = {
+            ...initialSession,
+            model_id: "opus",
+            config_options: [
+                { ...modelOption, value: "opus" },
+                effortOption,
+            ],
+        };
+        const configuredSession = {
+            ...opusSession,
+            config_options: [
+                { ...modelOption, value: "opus" },
+                { ...effortOption, value: "high" },
+            ],
+        };
+        useChatStore.setState((state) => ({
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Late Options Provider",
+                        description: "Provider with model-specific options.",
+                        capabilities: ["create_session"],
+                    },
+                    models: models.map((model) => ({
+                        id: model.id,
+                        runtimeId,
+                        name: model.name,
+                        description: model.description,
+                    })),
+                    modes: [],
+                    configOptions: [{ ...modelOption, runtimeId }],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                [runtimeId]: {
+                    ...readySetupStatusState,
+                    runtimeId,
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") return initialSession;
+            if (command === "ai_set_config_option") {
+                const input = (args as {
+                    input?: { option_id?: string; value?: string };
+                }).input;
+                if (input?.option_id === "model") return opusSession;
+                if (input?.option_id === "effort") return configuredSession;
+            }
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: runtimeId,
+                        session_id: initialSession.session_id,
+                        selection: {
+                            runtime_id: runtimeId,
+                            model_id: "opus",
+                            mode_id: "",
+                            options: { model: "opus", effort: "high" },
+                        },
+                    },
+                });
+                return null;
+            }
+            if (command === "ai_send_message") {
+                return { ...configuredSession, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId,
+            modelId: "opus",
+            modeId: "",
+            options: { model: "opus", effort: "high" },
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Use high effort"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_set_config_option",
+            ),
+        ).toEqual([
+            [
+                "ai_set_config_option",
+                expect.objectContaining({
+                    input: expect.objectContaining({
+                        option_id: "model",
+                        value: "opus",
+                    }),
+                }),
+            ],
+            [
+                "ai_set_config_option",
+                expect.objectContaining({
+                    input: expect.objectContaining({
+                        option_id: "effort",
+                        value: "high",
+                    }),
+                }),
+            ],
+        ]);
+    });
+
+    it("persists the selected provider native session before the first message", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const providerBSession = {
+            ...sessionPayload,
+            session_id: "provider-b-session-1",
+            runtime_id: "provider-b",
+            model_id: "model-b",
+            models: [],
+            modes: [],
+            config_options: [],
+        };
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    ...readySetupStatusState,
+                    runtimeId: "provider-b",
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                const runtimeId = (
+                    args as { input?: { runtime_id?: string } } | undefined
+                )?.input?.runtime_id;
+                return runtimeId === "provider-b"
+                    ? providerBSession
+                    : sessionPayload;
+            }
+            if (command === "ai_send_message") {
+                expect((args as { sessionId?: string }).sessionId).toBe(
+                    "provider-b-session-1",
+                );
+                return { ...providerBSession, status: "streaming" };
+            }
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: "provider-b",
+                        session_id: "provider-b-session-1",
+                        selection: {
+                            runtime_id: "provider-b",
+                            model_id: "model-b",
+                            mode_id: "default",
+                            options: {},
+                        },
+                    },
+                });
+                return null;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(
+                createTextParts("Start with provider B"),
+                sourceSessionId,
+            );
+        await useChatStore.getState().sendMessage(sourceSessionId);
+        await Promise.resolve();
+
+        const acceptedSession =
+            useChatStore.getState().sessionsById["provider-b-session-1"]!;
+        const activeBinding =
+            acceptedSession.conversationBindings?.providerBindings.find(
+                (binding) =>
+                    binding.bindingId ===
+                    acceptedSession.conversationBindings?.activeBindingId,
+            );
+        expect(acceptedSession).toMatchObject({
+            historySessionId: sourceSessionId,
+            runtimeId: "provider-b",
+            runtimeSessionId: "provider-b-session-1",
+        });
+        expect(activeBinding).toMatchObject({
+            runtimeId: "provider-b",
+            runtimeSessionId: "provider-b-session-1",
+        });
+        expect(
+            invokeMock.mock.calls
+                .filter(
+                    ([command]) => command === "ai_delete_runtime_session",
+                )
+                .map(([, args]) =>
+                    (args as { sessionId?: string }).sessionId,
+                ),
+        ).toEqual([sourceSessionId]);
+        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+            vaultPath: "/vault",
+            history: expect.objectContaining({
+                session_id: sourceSessionId,
+                runtime_id: "provider-b",
+                runtime_session_id: "provider-b-session-1",
+                conversation_bindings: expect.objectContaining({
+                    provider_bindings: [
+                        expect.objectContaining({
+                            runtime_id: "provider-b",
+                            runtime_session_id: "provider-b-session-1",
+                        }),
+                    ],
+                }),
+            }),
+        });
+    });
+
+    it("validates the requested selection before every conversation turn", async () => {
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const session = useChatStore.getState().sessionsById[sessionId]!;
+        const requestedSelection = getConversationSelection(session);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_start_conversation_turn") {
+                expect(args).toMatchObject({
+                    input: {
+                        conversation_id: conversationId,
+                        runtime_id: session.runtimeId,
+                        session_id: sessionId,
+                        selection: {
+                            runtime_id: requestedSelection.runtimeId,
+                            model_id: requestedSelection.modelId,
+                            mode_id: requestedSelection.modeId,
+                            options: requestedSelection.options,
+                        },
+                    },
+                });
+                return null;
+            }
+            if (command === "ai_send_message") {
+                return { ...sessionPayload, status: "streaming" };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Continue normally"), sessionId);
+        await useChatStore.getState().sendMessage(sessionId);
+
+        expect(
+            invokeMock.mock.calls.filter(
+                ([command]) => command === "ai_start_conversation_turn",
+            ),
+        ).toHaveLength(1);
+    });
+
+    it("keeps the source runtime session when the initial provider turn fails", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const providerBSessionId = "provider-b-failed-session";
+        const providerBSession = {
+            ...sessionPayload,
+            session_id: providerBSessionId,
+            runtime_id: "provider-b",
+            model_id: "model-b",
+            models: [],
+            modes: [],
+            config_options: [],
+        };
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    ...readySetupStatusState,
+                    runtimeId: "provider-b",
+                },
+            },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                const runtimeId = (
+                    args as { input?: { runtime_id?: string } } | undefined
+                )?.input?.runtime_id;
+                return runtimeId === "provider-b"
+                    ? providerBSession
+                    : sessionPayload;
+            }
+            if (command === "ai_start_conversation_turn") return null;
+            if (command === "ai_send_message") {
+                throw new Error("Provider B rejected the turn");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(
+                createTextParts("Try provider B"),
+                sourceSessionId,
+            );
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(
+            invokeMock.mock.calls
+                .filter(
+                    ([command]) => command === "ai_delete_runtime_session",
+                )
+                .map(([, args]) =>
+                    (args as { sessionId?: string }).sessionId,
+                ),
+        ).toEqual([providerBSessionId]);
+        expect(
+            useChatStore.getState().sessionsById[sourceSessionId],
+        ).toBeDefined();
+    });
+
+    it("rejects an unavailable requested option before sending", async () => {
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const conversationId = useChatStore.getState().activeConversationId!;
+        const session = useChatStore.getState().sessionsById[sessionId]!;
+        const selection = getConversationSelection(session);
+        useChatStore.getState().setConversationTurnSelection(conversationId, {
+            ...selection,
+            options: {
+                ...selection.options,
+                unavailable_option: "requested-value",
+            },
+        });
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Do not send this"), sessionId);
+        invokeMock.mockClear();
+
+        await useChatStore.getState().sendMessage(sessionId);
+
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_start_conversation_turn",
+            ),
+        ).toBe(false);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore.getState().sessionsById[sessionId]?.messages.at(-1),
+        ).toMatchObject({
+            kind: "error",
+            content:
+                "The selected ACP option is unavailable: unavailable_option",
+        });
+    });
+
+    it("keeps a started conversation bound to its active provider", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const conversationId =
+            useChatStore.getState().activeConversationId!;
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                ...state.runtimes,
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                ...state.setupStatusByRuntimeId,
+                "provider-b": {
+                    ...readySetupStatusState,
+                    runtimeId: "provider-b",
+                },
+            },
+            sessionsById: {
+                ...state.sessionsById,
+                [sourceSessionId]: {
+                    ...state.sessionsById[sourceSessionId]!,
+                    status: "idle",
+                    messages: [
+                        {
+                            id: "existing",
+                            role: "user",
+                            kind: "text",
+                            content: "Existing transcript",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+        const targetSelection = {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        };
+
+        useChatStore
+            .getState()
+            .setConversationTurnSelection(conversationId, targetSelection);
+
+        const selectionAfterAttempt =
+            updateConversationBindingsFromLegacySession(
+                useChatStore.getState().sessionsById[sourceSessionId]!,
+            ).preferredSelection;
+        expect(selectionAfterAttempt.runtimeId).toBe("codex-acp");
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Keep this draft"), sourceSessionId);
+        invokeMock.mockClear();
+
+        await useChatStore
+            .getState()
+            .startConversationTurn(conversationId, targetSelection);
+
+        expect(
+            invokeMock.mock.calls.some(([command]) =>
+                [
+                    "ai_create_session",
+                    "ai_start_conversation_turn",
+                    "ai_send_message",
+                ].includes(command),
+            ),
+        ).toBe(false);
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    sourceSessionId
+                ] ?? [],
+            ),
+        ).toContain("Keep this draft");
+        expect(
+            useChatStore.getState().sessionsById[sourceSessionId]?.runtimeId,
+        ).toBe("codex-acp");
+    });
+
+    it("ignores a persisted cross-provider selection when sending", async () => {
+        await useChatStore.getState().initialize();
+
+        const sourceSessionId = getActiveSessionId();
+        const sourceSession = useChatStore.getState().sessionsById[
+            sourceSessionId
+        ]!;
+        const conversationBindings =
+            updateConversationBindingsFromLegacySession(sourceSession);
+        conversationBindings.preferredSelection = {
+            runtimeId: "provider-b",
+            modelId: "model-b",
+            modeId: "default",
+            options: {},
+        };
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [sourceSessionId]: {
+                    ...sourceSession,
+                    status: "idle",
+                    runtimeState: "live",
+                    conversationBindings,
+                    messages: [
+                        {
+                            id: "existing",
+                            role: "user",
+                            kind: "text",
+                            content: "Existing transcript",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+        let sentContent = "";
+        invokeMock.mockClear();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: sourceSessionId,
+                    status: "streaming",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Continue here"), sourceSessionId);
+        await useChatStore.getState().sendMessage(sourceSessionId);
+
+        expect(sentContent).toBe("Continue here");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore.getState().sessionsById[sourceSessionId]?.runtimeId,
+        ).toBe("codex-acp");
     });
 
     it("omits internal runtime user echoes from saved transcript recovery prompts", async () => {
@@ -13079,6 +17359,89 @@ describe("chatStore", () => {
         ).toBe(true);
     });
 
+    it("surfaces runtime configuration errors when a saved chat cannot reconnect", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                "persisted:history-1": {
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 2,
+                    loadedPersistedMessageStart: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["persisted:history-1"],
+            activeSessionId: "persisted:history-1",
+            selectedRuntimeId: "codex-acp",
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                throw new Error(
+                    'Internal error: "The AI runtime process exited with status exit status: 1. The AI runtime configuration is invalid. AWS_SECRET_ACCESS_KEY=private-value"',
+                );
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const nextSessionId = await useChatStore
+            .getState()
+            .resumeSession("persisted:history-1");
+
+        expect(nextSessionId).toBeNull();
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["persisted:history-1"]?.messages.at(-1),
+        ).toMatchObject({
+            kind: "error",
+            content:
+                "Could not reconnect this chat because the AI runtime configuration is invalid. Review its configuration and try again.",
+        });
+        expect(
+            useChatStore.getState().sessionsById["persisted:history-1"]
+                ?.resumeReconnectFailed,
+        ).toBe(true);
+
+        await useChatStore.getState().resumeSession("persisted:history-1");
+        const configurationErrors =
+            useChatStore
+                .getState()
+                .sessionsById["persisted:history-1"]?.messages.filter(
+                    (message) =>
+                        message.kind === "error" &&
+                        message.content.startsWith(
+                            "Could not reconnect this chat because the AI runtime configuration is invalid.",
+                        ),
+                ) ?? [];
+        expect(configurationErrors).toHaveLength(1);
+    });
+
     it("blocks removed Gemini ACP saved chats instead of reconnecting them", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -13264,7 +17627,28 @@ describe("chatStore", () => {
 
         const persistedSessionId = "persisted:history-native-fallback";
         const historySessionId = "history-native-fallback";
+        const previousRuntimeSessionId = "codex-runtime-before-restart";
         const fallbackSessionId = "codex-fallback-live";
+        let sentContent = "";
+        const persistedSession = {
+            ...createSessionWithTrackedFiles(persistedSessionId, []),
+            historySessionId,
+            runtimeId: "codex-acp",
+            runtimeSessionId: previousRuntimeSessionId,
+            runtimeState: "persisted_only" as const,
+            isPersistedSession: true,
+            persistedMessageCount: 2,
+            loadedPersistedMessageStart: null,
+            resumeContextPending: false,
+        };
+        const conversationBindings =
+            updateConversationBindingsFromLegacySession(persistedSession);
+        conversationBindings.providerBindings[0] = {
+            ...conversationBindings.providerBindings[0],
+            runtimeSessionId: previousRuntimeSessionId,
+            contextCursor: "m2",
+            contextGeneration: 3,
+        };
 
         useChatStore.setState((state) => ({
             ...state,
@@ -13284,22 +17668,8 @@ describe("chatStore", () => {
             ],
             sessionsById: {
                 [persistedSessionId]: {
-                    sessionId: persistedSessionId,
-                    historySessionId,
-                    status: "idle",
-                    runtimeId: "codex-acp",
-                    modelId: "test-model",
-                    modeId: "default",
-                    models: [],
-                    modes: [],
-                    configOptions: [],
-                    messages: [],
-                    attachments: [],
-                    runtimeState: "persisted_only",
-                    isPersistedSession: true,
-                    persistedMessageCount: 2,
-                    loadedPersistedMessageStart: null,
-                    resumeContextPending: false,
+                    ...persistedSession,
+                    conversationBindings,
                 },
             },
             sessionOrder: [persistedSessionId],
@@ -13337,12 +17707,22 @@ describe("chatStore", () => {
                 };
             }
             if (command === "ai_resume_runtime_session") {
-                throw new Error("native resume handle missing");
+                throw new Error(
+                    `thread ${previousRuntimeSessionId} already has an active writer`,
+                );
             }
             if (command === "ai_create_session") {
                 return {
                     ...sessionPayload,
                     session_id: fallbackSessionId,
+                };
+            }
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: fallbackSessionId,
+                    status: "streaming",
                 };
             }
             return defaultInvokeImplementation(command, args);
@@ -13359,6 +17739,8 @@ describe("chatStore", () => {
                 isPersistedSession: false,
                 resumeContextPending: true,
                 resumeReconnectFailed: false,
+                status: "idle",
+                activeWorkCycleId: null,
             },
         );
         expect(useChatStore.getState().sessionsById[persistedSessionId]).toBe(
@@ -13379,6 +17761,31 @@ describe("chatStore", () => {
                 ([command]) => command === "ai_create_session",
             ),
         ).toBe(true);
+
+        useChatStore
+            .getState()
+            .setComposerParts(
+                createTextParts("What were we discussing?"),
+                fallbackSessionId,
+            );
+        await useChatStore.getState().sendMessage(fallbackSessionId);
+
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain("User: Original saved request");
+        expect(sentContent).toContain("Assistant: Original saved answer");
+        expect(sentContent).toContain(
+            "New user message: What were we discussing?",
+        );
+        const recoveredBinding = useChatStore
+            .getState()
+            .sessionsById[fallbackSessionId]?.conversationBindings?.providerBindings.at(
+                0,
+            );
+        expect(recoveredBinding).toMatchObject({
+            runtimeSessionId: fallbackSessionId,
+            contextCursor: "m2",
+            contextGeneration: 4,
+        });
     });
 
     it("does not ask the runtime backend to load an unknown persisted-only session id", async () => {
@@ -13512,6 +17919,105 @@ describe("chatStore", () => {
                     command === "ai_resume_runtime_session" &&
                     (args as { input?: { session_id?: string } }).input
                         ?.session_id === "persisted:history-1",
+            ),
+        ).toBe(false);
+    });
+
+    it("resumes a saved chat with the active binding native session id", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        const persistedSessionId = "persisted:history-provider-b";
+        const historySessionId = "history-provider-b";
+        const nativeSessionId = "provider-b-native-session";
+        const persistedSession = {
+            ...createSessionWithTrackedFiles(persistedSessionId, []),
+            historySessionId,
+            runtimeId: "provider-b",
+            runtimeSessionId: null,
+            runtimeState: "persisted_only" as const,
+            isPersistedSession: true,
+            persistedMessageCount: 0,
+            loadedPersistedMessageStart: 0,
+        };
+        const conversationBindings =
+            updateConversationBindingsFromLegacySession(persistedSession);
+        conversationBindings.revision = 7;
+        conversationBindings.contextSummary = "Preserved canonical summary";
+        conversationBindings.transcriptObservation = {
+            messageCount: 12,
+            updatedAt: 345,
+            transcriptFingerprint: "canonical-fingerprint",
+        };
+        conversationBindings.providerBindings[0] = {
+            ...conversationBindings.providerBindings[0],
+            bindingId: "binding-provider-b",
+            runtimeSessionId: nativeSessionId,
+            capabilities: ["resume_session", "permissions"],
+            contextCursor: "message-cursor-9",
+            contextGeneration: 4,
+            createdAt: 100,
+            updatedAt: 345,
+        };
+        conversationBindings.activeBindingId = "binding-provider-b";
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "provider-b",
+                        name: "Provider B",
+                        description: "Second ACP provider.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...persistedSession,
+                    conversationBindings,
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+            selectedRuntimeId: "provider-b",
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_resume_runtime_session") {
+                expect(args).toMatchObject({
+                    input: {
+                        runtime_id: "provider-b",
+                        session_id: nativeSessionId,
+                    },
+                    vaultPath: "/vault",
+                });
+                return {
+                    ...sessionPayload,
+                    session_id: nativeSessionId,
+                    runtime_id: "provider-b",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const resumedSessionId = await useChatStore
+            .getState()
+            .resumeSession(persistedSessionId);
+
+        expect(resumedSessionId).toBe(nativeSessionId);
+        expect(
+            useChatStore.getState().sessionsById[nativeSessionId]
+                ?.conversationBindings,
+        ).toEqual(conversationBindings);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command, args]) =>
+                    command === "ai_resume_runtime_session" &&
+                    (args as { input?: { session_id?: string } }).input
+                        ?.session_id === historySessionId,
             ),
         ).toBe(false);
     });
@@ -13815,15 +18321,32 @@ describe("chatStore", () => {
                     ? claudeSessionPayload
                     : replacementClaudeSessionPayload;
             }
+            if (command === "ai_promote_draft_attachment") {
+                expect(args).toMatchObject({
+                    vaultPath: "/vault",
+                    draftAttachmentId:
+                        "da_cccccccccccccccccccccccccccccccc",
+                });
+                return {
+                    attachment_id:
+                        "ma_cccccccccccccccccccccccccccccccc",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
             if (command === "ai_send_message") {
                 expect(args).toMatchObject({
                     sessionId: "claude-session-2",
-                    attachments: [
+                    attachments: expect.arrayContaining([
                         expect.objectContaining({
                             filePath:
                                 "/home/user/projects/NeverWrite/README.md",
                         }),
-                    ],
+                        expect.objectContaining({
+                            managedAttachmentId:
+                                "ma_cccccccccccccccccccccccccccccccc",
+                        }),
+                    ]),
                 });
                 return {
                     ...replacementClaudeSessionPayload,
@@ -13850,7 +18373,12 @@ describe("chatStore", () => {
             );
         useChatStore
             .getState()
-            .setComposerParts(createTextParts("Review this"));
+            .setComposerParts([
+                { id: "text-replacement", type: "text", text: "Review this " },
+                createDraftScreenshotPart(
+                    "da_cccccccccccccccccccccccccccccccc" as DraftAttachmentId,
+                ),
+            ]);
 
         await useChatStore.getState().sendMessage();
 
@@ -13892,6 +18420,20 @@ describe("chatStore", () => {
                     ),
             ),
         ).toBe(true);
+        const replacementUserMessage = state.sessionsById[
+            "claude-session-2"
+        ]?.messages.find((message) => message.role === "user");
+        expect(replacementUserMessage?.attachments).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    managedAttachmentId:
+                        "ma_cccccccccccccccccccccccccccccccc",
+                }),
+            ]),
+        );
+        expect(JSON.stringify(replacementUserMessage)).not.toContain(
+            "draftAttachmentId",
+        );
     });
 
     it("reuses approved additionalRoots when reconnecting a persisted Claude session", async () => {
@@ -14387,6 +18929,615 @@ describe("chatStore", () => {
         ).toBe(false);
     });
 
+    it("keeps missing custom runtime history autonomous and transcript-only", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState({
+            sessionsById: {},
+            sessionOrder: [],
+            activeSessionId: null,
+        });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") return runtimePayload;
+            if (command === "ai_get_setup_status") return readySetupStatus;
+            if (command === "ai_list_sessions") {
+                return [{ ...sessionPayload, session_id: "live-session" }];
+            }
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "custom-history-1",
+                        runtime_id:
+                            "custom:123e4567-e89b-12d3-a456-426614174000",
+                        runtime_display_name: "Local reviewer",
+                        runtime_revision: 3,
+                        runtime_launch_fingerprint: "fingerprint-v3",
+                        runtime_session_id: "runtime-session-7",
+                        model_id: "negotiated-model",
+                        mode_id: "careful",
+                        created_at: 10,
+                        updated_at: 20,
+                        message_count: 1,
+                        messages: [
+                            {
+                                id: "user-1",
+                                role: "user",
+                                kind: "text",
+                                content: "Review this",
+                                timestamp: 10,
+                            },
+                        ],
+                    },
+                ];
+            }
+            if (
+                command === "ai_create_session" ||
+                command === "ai_resume_runtime_session" ||
+                command === "ai_load_session"
+            ) {
+                throw new Error("missing custom runtime must not be replaced");
+            }
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const restored = Object.values(
+            useChatStore.getState().sessionsById,
+        ).find((session) => session.historySessionId === "custom-history-1");
+        expect(restored).toBeDefined();
+        expect(restored).toMatchObject({
+            runtimeId: "custom:123e4567-e89b-12d3-a456-426614174000",
+            runtimeDisplayName: "Local reviewer",
+            runtimeRevision: 3,
+            runtimeLaunchFingerprint: "fingerprint-v3",
+            runtimeSessionId: "runtime-session-7",
+            runtimeState: "transcript_only",
+            models: [],
+            modes: [],
+            configOptions: [],
+        });
+        expect(restored?.messages).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ content: "Review this" }),
+            ]),
+        );
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) =>
+                    command === "ai_create_session" ||
+                    command === "ai_resume_runtime_session",
+            ),
+        ).toBe(false);
+    });
+
+    it("continues custom history with its persisted ACP strategy and runtime session id", async () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const persistedSessionId = "persisted:custom-history";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...createSessionWithTrackedFiles(persistedSessionId, []),
+                    historySessionId: "custom-history",
+                    runtimeId,
+                    runtimeDisplayName: "Local reviewer",
+                    runtimeLaunchFingerprint: "launch-v1",
+                    runtimeSessionId: "adapter-session-1",
+                    continuationStrategy: "resume",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_continue_custom_runtime_session") {
+                expect(args).toMatchObject({
+                    input: {
+                        runtime_id: runtimeId,
+                        runtime_session_id: "adapter-session-1",
+                        runtime_launch_fingerprint: "launch-v1",
+                        continuation_strategy: "resume",
+                        confirmed_launch_fingerprint: null,
+                    },
+                    vaultPath: "/vault",
+                });
+                return {
+                    status: "connected",
+                    session: {
+                        ...sessionPayload,
+                        session_id: "adapter-session-1",
+                        runtime_session_id: "adapter-session-1",
+                        runtime_id: runtimeId,
+                        runtime_display_name: "Local reviewer",
+                        runtime_revision: 1,
+                        runtime_launch_fingerprint: "launch-v1",
+                        continuation_strategy: "resume",
+                    },
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const resumedSessionId = await useChatStore
+            .getState()
+            .resumeSession(persistedSessionId);
+
+        expect(resumedSessionId).toBe("adapter-session-1");
+        expect(
+            useChatStore.getState().sessionsById["adapter-session-1"],
+        ).toMatchObject({
+            runtimeId,
+            runtimeSessionId: "adapter-session-1",
+            continuationStrategy: "resume",
+            runtimeState: "live",
+        });
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(false);
+    });
+
+    it("confirms the current fingerprint before continuing modified custom history", async () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const persistedSessionId = "persisted:custom-history";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...createSessionWithTrackedFiles(persistedSessionId, []),
+                    historySessionId: "custom-history",
+                    runtimeId,
+                    runtimeLaunchFingerprint: "launch-v1",
+                    runtimeSessionId: "adapter-session-1",
+                    continuationStrategy: "load",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+        }));
+
+        let continuationCalls = 0;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_continue_custom_runtime_session") {
+                continuationCalls += 1;
+                const confirmed = (
+                    args as {
+                        input?: { confirmed_launch_fingerprint?: string | null };
+                    }
+                ).input?.confirmed_launch_fingerprint;
+                if (!confirmed) {
+                    return {
+                        status: "confirmation_required",
+                        runtimeId,
+                        displayName: "Local reviewer",
+                        launchFingerprint: "launch-v2",
+                        message:
+                            "This custom runtime definition changed since the chat was created. Continue with the modified configuration?",
+                    };
+                }
+                expect(confirmed).toBe("launch-v2");
+                return {
+                    status: "connected",
+                    session: {
+                        ...sessionPayload,
+                        session_id: "adapter-session-1",
+                        runtime_session_id: "adapter-session-1",
+                        runtime_id: runtimeId,
+                        runtime_launch_fingerprint: "launch-v2",
+                        continuation_strategy: "load",
+                    },
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        confirmMock.mockResolvedValue(true);
+
+        await useChatStore.getState().resumeSession(persistedSessionId);
+
+        expect(confirmMock).toHaveBeenCalledWith(
+            "This custom runtime definition changed since the chat was created. Continue with the modified configuration?",
+            expect.objectContaining({
+                title: "Custom ACP runtime changed",
+                okLabel: "Continue",
+            }),
+        );
+        expect(continuationCalls).toBe(2);
+        expect(
+            useChatStore.getState().sessionsById["adapter-session-1"],
+        ).toMatchObject({ runtimeLaunchFingerprint: "launch-v2" });
+    });
+
+    it("keeps custom history transcript-only when its persisted strategy is unavailable", async () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const persistedSessionId = "persisted:custom-history";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...createSessionWithTrackedFiles(persistedSessionId, []),
+                    historySessionId: "custom-history",
+                    runtimeId,
+                    runtimeLaunchFingerprint: "launch-v1",
+                    runtimeSessionId: "adapter-session-1",
+                    continuationStrategy: "resume",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_continue_custom_runtime_session") {
+                return {
+                    status: "transcript_only",
+                    message:
+                        "This runtime cannot continue its previous ACP session. The transcript is still available; start a new chat to keep working.",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        expect(
+            await useChatStore.getState().resumeSession(persistedSessionId),
+        ).toBeNull();
+        expect(
+            useChatStore.getState().sessionsById[persistedSessionId],
+        ).toMatchObject({
+            runtimeState: "transcript_only",
+            isResumingSession: false,
+            resumeReconnectFailed: false,
+        });
+        expect(
+            useChatStore.getState().sessionsById[persistedSessionId]?.messages,
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    kind: "status",
+                    content:
+                        "This runtime cannot continue its previous ACP session. The transcript is still available; start a new chat to keep working.",
+                }),
+            ]),
+        );
+    });
+
+    it("starts a fresh ACP session when reopening a built-in runtime fork", async () => {
+        const runtimeId = "codex-acp";
+        const persistedSessionId = "persisted:built-in-fork";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Codex",
+                        description: "Built-in ACP runtime.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...createSessionWithTrackedFiles(persistedSessionId, []),
+                    historySessionId: "built-in-fork",
+                    runtimeId,
+                    runtimeSessionId: null,
+                    continuationStrategy: "new_session_only",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 1,
+                    loadedPersistedMessageStart: 0,
+                    messages: [
+                        {
+                            id: "user:source",
+                            role: "user",
+                            kind: "text",
+                            content: "Inspect this change",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                expect(args).toMatchObject({
+                    input: { runtime_id: runtimeId },
+                    vaultPath: "/vault",
+                });
+                return {
+                    ...sessionPayload,
+                    session_id: "fresh-built-in-runtime-session",
+                    runtime_session_id: "fresh-built-in-runtime-session",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await expect(
+            useChatStore.getState().resumeSession(persistedSessionId),
+        ).resolves.toBe("fresh-built-in-runtime-session");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_resume_runtime_session",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore.getState().sessionsById[
+                "fresh-built-in-runtime-session"
+            ],
+        ).toMatchObject({
+            historySessionId: "built-in-fork",
+            runtimeSessionId: "fresh-built-in-runtime-session",
+            resumeContextPending: true,
+        });
+    });
+
+    it("starts a fresh ACP session when reopening a custom runtime fork", async () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const persistedSessionId = "persisted:custom-fork";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    ...createSessionWithTrackedFiles(persistedSessionId, []),
+                    historySessionId: "custom-fork",
+                    runtimeId,
+                    runtimeLaunchFingerprint: "source-launch-fingerprint",
+                    runtimeSessionId: null,
+                    continuationStrategy: "new_session_only",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 1,
+                    loadedPersistedMessageStart: 0,
+                    messages: [
+                        {
+                            id: "user:source",
+                            role: "user",
+                            kind: "text",
+                            content: "Review this change",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_create_session") {
+                expect(args).toMatchObject({
+                    input: { runtime_id: runtimeId },
+                    vaultPath: "/vault",
+                });
+                return {
+                    ...sessionPayload,
+                    session_id: "fresh-custom-runtime-session",
+                    runtime_id: runtimeId,
+                    runtime_session_id: "fresh-custom-runtime-session",
+                    runtime_launch_fingerprint: "fresh-launch-fingerprint",
+                    continuation_strategy: "resume",
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await expect(
+            useChatStore.getState().resumeSession(persistedSessionId),
+        ).resolves.toBe("fresh-custom-runtime-session");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_continue_custom_runtime_session",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore.getState().sessionsById["fresh-custom-runtime-session"],
+        ).toMatchObject({
+            historySessionId: "custom-fork",
+            runtimeSessionId: "fresh-custom-runtime-session",
+            runtimeLaunchFingerprint: "fresh-launch-fingerprint",
+            continuationStrategy: "resume",
+            resumeContextPending: true,
+        });
+    });
+
+    it("forks custom runtime history without retaining the source ACP session", async () => {
+        const runtimeId = "custom:123e4567-e89b-12d3-a456-426614174000";
+        const sourceSessionId = "source-custom-session";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Local reviewer",
+                        description: "Custom ACP runtime.",
+                        capabilities: ["create_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [sourceSessionId]: {
+                    ...createSessionWithTrackedFiles(sourceSessionId, []),
+                    historySessionId: "source-custom-history",
+                    runtimeId,
+                    runtimeSessionId: "source-runtime-session",
+                    continuationStrategy: "resume",
+                    runtimeState: "live",
+                    persistedMessageCount: 1,
+                },
+            },
+            sessionOrder: [sourceSessionId],
+            activeSessionId: sourceSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_fork_session_history") {
+                expect(args).toEqual({
+                    vaultPath: "/vault",
+                    sourceSessionId: "source-custom-history",
+                });
+                return "forked-custom-history";
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().forkSession(sourceSessionId);
+
+        expect(
+            useChatStore.getState().sessionsById[
+                "persisted:forked-custom-history"
+            ],
+        ).toMatchObject({
+            historySessionId: "forked-custom-history",
+            runtimeSessionId: null,
+            continuationStrategy: "new_session_only",
+            runtimeState: "persisted_only",
+        });
+    });
+
+    it("forks built-in history without retaining the source ACP session", async () => {
+        const runtimeId = "codex-acp";
+        const sourceSessionId = "source-built-in-session";
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: runtimeId,
+                        name: "Codex",
+                        description: "Built-in ACP runtime.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [sourceSessionId]: {
+                    ...createSessionWithTrackedFiles(sourceSessionId, []),
+                    historySessionId: "source-built-in-history",
+                    runtimeId,
+                    runtimeSessionId: "source-runtime-session",
+                    continuationStrategy: "resume",
+                    runtimeState: "live",
+                    persistedMessageCount: 1,
+                },
+            },
+            sessionOrder: [sourceSessionId],
+            activeSessionId: sourceSessionId,
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_fork_session_history") {
+                expect(args).toEqual({
+                    vaultPath: "/vault",
+                    sourceSessionId: "source-built-in-history",
+                });
+                return "forked-built-in-history";
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().forkSession(sourceSessionId);
+
+        expect(
+            useChatStore.getState().sessionsById[
+                "persisted:forked-built-in-history"
+            ],
+        ).toMatchObject({
+            historySessionId: "forked-built-in-history",
+            runtimeSessionId: null,
+            continuationStrategy: "new_session_only",
+            runtimeState: "persisted_only",
+        });
+    });
+
     it("persists tool diffs when saving session history", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -14424,6 +19575,15 @@ describe("chatStore", () => {
                                 status: "completed",
                                 target: "/vault/src/watcher.rs",
                             },
+                            turnProvenance: {
+                                bindingId: "binding-codex",
+                                runtimeId: "codex-acp",
+                                runtimeSessionId: "runtime-session-1",
+                                modelId: "test-model",
+                                modeId: "default",
+                                options: { reasoning_effort: "medium" },
+                                startReason: "normal",
+                            },
                         },
                     ],
                 },
@@ -14456,6 +19616,20 @@ describe("chatStore", () => {
                         value: "medium",
                     }),
                 ]),
+                conversation_bindings: expect.objectContaining({
+                    version: 1,
+                    revision: 0,
+                    conversation_id: activeSessionId,
+                    active_binding_id: expect.any(String),
+                    provider_bindings: [
+                        expect.objectContaining({
+                            conversation_id: activeSessionId,
+                            runtime_id: "codex-acp",
+                            model_id: "test-model",
+                            mode_id: "default",
+                        }),
+                    ],
+                }),
                 messages: expect.arrayContaining([
                     expect.objectContaining({
                         kind: "tool",
@@ -14467,6 +19641,15 @@ describe("chatStore", () => {
                                 new_text: "new line",
                             },
                         ],
+                        turn_provenance: {
+                            binding_id: "binding-codex",
+                            runtime_id: "codex-acp",
+                            runtime_session_id: "runtime-session-1",
+                            model_id: "test-model",
+                            mode_id: "default",
+                            options: { reasoning_effort: "medium" },
+                            start_reason: "normal",
+                        },
                     }),
                 ]),
             }),
@@ -14684,6 +19867,63 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("persists managed attachment identity without its physical path", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    messages: [
+                        {
+                            id: "user-with-managed-screenshot",
+                            role: "user",
+                            kind: "text",
+                            content: "Inspect this screenshot",
+                            timestamp: 10,
+                            attachments: [
+                                {
+                                    id: "attachment-1",
+                                    type: "file",
+                                    noteId: null,
+                                    label: "Screenshot",
+                                    path: null,
+                                    managedAttachmentId:
+                                        "ma_0123456789abcdef0123456789abcdef" as ManagedAttachmentId,
+                                    fileName: "pasted-image.png",
+                                    mimeType: "image/png",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applySessionError({
+            session_id: activeSessionId,
+            message: "Trigger persistence",
+        });
+        await Promise.resolve();
+
+        const historyCall = invokeMock.mock.calls.find(
+            ([command]) => command === "ai_save_session_history",
+        );
+        const history = (historyCall?.[1] as {
+            history?: { messages?: Array<{ attachments?: AIChatAttachment[] }> };
+        })?.history;
+        const attachment = history?.messages?.[0]?.attachments?.[0];
+        expect(attachment).toMatchObject({
+            managedAttachmentId:
+                "ma_0123456789abcdef0123456789abcdef",
+            fileName: "pasted-image.png",
+            mimeType: "image/png",
+        });
+        expect(attachment).not.toHaveProperty("filePath");
+    });
+
     it("coalesces repeated history persistence requests in the same microtask", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -14870,6 +20110,7 @@ describe("chatStore", () => {
         expect(useChatTabsStore.getState().tabs).toEqual([
             {
                 id: "tab-history-1",
+                conversationId: "history-1",
                 sessionId: "codex-session-1",
                 historySessionId: "history-1",
                 runtimeId: "codex-acp",
@@ -15760,7 +21001,7 @@ describe("chatStore", () => {
         ).toEqual([parent.sessionId]);
     });
 
-    it("marks live parent and child sessions as errored when their ACP runtime disconnects", () => {
+    it("marks only the affected live ACP session family as errored when its runtime disconnects", () => {
         const parent = {
             ...createSessionWithTrackedFiles("session-parent", []),
             runtimeId: "codex-acp",
@@ -15780,22 +21021,31 @@ describe("chatStore", () => {
             runtimeState: "live" as const,
             status: "streaming" as const,
         };
+        const otherCodexSession = {
+            ...createSessionWithTrackedFiles("session-other-codex", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+        };
 
         useChatStore.setState({
             sessionsById: {
                 [parent.sessionId]: parent,
                 [child.sessionId]: child,
                 [otherRuntime.sessionId]: otherRuntime,
+                [otherCodexSession.sessionId]: otherCodexSession,
             },
             sessionOrder: [
                 parent.sessionId,
                 child.sessionId,
                 otherRuntime.sessionId,
+                otherCodexSession.sessionId,
             ],
         });
 
         useChatStore.getState().applyRuntimeConnection({
             runtime_id: "codex-acp",
+            session_id: parent.sessionId,
             status: "error",
             message: "The ACP process exited.",
         });
@@ -15836,6 +21086,9 @@ describe("chatStore", () => {
         expect(
             useChatStore.getState().sessionsById[otherRuntime.sessionId],
         ).toBe(otherRuntime);
+        expect(
+            useChatStore.getState().sessionsById[otherCodexSession.sessionId],
+        ).toBe(otherCodexSession);
     });
 
     it("clears virtualized row UI state when deleting a session", async () => {
@@ -17771,17 +23024,19 @@ describe("chatStore", () => {
             ],
             "primary",
         );
-        useEditorStore.getState().openChat("session-fallback", {
+        selectChatForTest("session-fallback", {
             title: "Fallback",
             paneId: "secondary",
             background: true,
         });
-        useEditorStore.getState().openChat("session-last-focused", {
+        selectChatForTest("session-last-focused", {
             title: "Last focused",
             paneId: "tertiary",
             background: true,
         });
 
+        useChatTabsStore.getState().showConversation("session-last-focused");
+        useChatTabsStore.getState().setFocusedSurface("editor");
         useChatStore.getState().attachSelectionFromEditor();
 
         const targetParts =

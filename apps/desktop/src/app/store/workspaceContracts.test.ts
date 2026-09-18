@@ -22,6 +22,9 @@ describe("workspaceContracts Phase 0 inventory", () => {
         expect(inventoryIds.has("detached-window-drop-infrastructure")).toBe(
             true,
         );
+        expect(
+            inventoryIds.has("app-global-shortcuts-and-sidebar-shells"),
+        ).toBe(true);
         expect(inventoryIds.has("ai-chat-panel-sidebar-primary-surface")).toBe(
             true,
         );

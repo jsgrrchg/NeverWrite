@@ -36,7 +36,7 @@ governing our direct and transitive dependencies, grouped by license type.
 | SIL OFL-1.1              | Bundled Fliege Mono font                            |
 | CC0-1.0                  | notify                                              |
 | Unlicense OR MIT         | aho-corasick, memchr, walkdir, byteorder            |
-| Anthropic SDK terms      | @anthropic-ai/claude-agent-sdk vendored runtime SDK |
+| Anthropic SDK terms      | @anthropic-ai/claude-agent-sdk embedded runtime SDK |
 
 No GPL-only runtime code dependencies are used in this project. Spellcheck
 dictionaries are tracked separately because some packs use disjunctive
@@ -99,8 +99,12 @@ dictionary licenses.
 | @xterm/xterm                   | MIT         |
 | @xterm/addon-fit               | MIT         |
 | @xterm/addon-search            | MIT         |
+| @xterm/addon-serialize         | MIT         |
 | @xterm/addon-web-links         | MIT         |
+| @xterm/addon-webgl             | MIT         |
+| @replit/codemirror-vim         | MIT         |
 | katex                          | MIT         |
+| mermaid                        | MIT         |
 | papaparse                      | MIT         |
 | pdfjs-dist                     | Apache-2.0  |
 | react-datasheet-grid           | MIT         |
@@ -112,6 +116,7 @@ dictionary licenses.
 | Package                              | License     |
 | ------------------------------------ | ----------- |
 | eslint                               | MIT         |
+| @eslint/js                           | MIT         |
 | eslint-plugin-react-hooks            | MIT         |
 | eslint-plugin-react-refresh          | MIT         |
 | typescript-eslint                    | MIT         |
@@ -120,22 +125,32 @@ dictionary licenses.
 | @testing-library/react              | MIT         |
 | @testing-library/jest-dom           | MIT         |
 | @testing-library/user-event         | MIT         |
+| @playwright/test                    | Apache-2.0  |
+| @types/node, @types/papaparse       | MIT         |
+| @types/react, @types/react-dom      | MIT         |
+| @types/three                        | MIT         |
+| globals                             | MIT         |
+| rcedit                              | MIT         |
+| yaml                                | ISC         |
 
 ### Embedded Claude ACP Runtime
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.59.0  | Apache-2.0                      |
-| @agentclientprotocol/sdk                | 1.2.1   | Apache-2.0                      |
-| @anthropic-ai/claude-agent-sdk          | 0.3.207 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/claude-agent-sdk-*        | 0.3.207 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/sdk                       | 0.110.0 | MIT                             |
-| @modelcontextprotocol/sdk               | 1.29.0  | MIT                             |
-| zod                                     | 4.4.3   | MIT                             |
+| @agentclientprotocol/claude-agent-acp   | 0.77.0  | Apache-2.0                      |
+| @agentclientprotocol/sdk                | 1.4.0   | Apache-2.0                      |
+| @anthropic-ai/claude-agent-sdk          | 0.3.270 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/claude-agent-sdk-*        | 0.3.270 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/sdk                       | 0.125.0 | MIT                             |
+| @modelcontextprotocol/sdk               | 1.30.0  | MIT                             |
+| zod                                     | 4.6.5   | MIT                             |
 
-The packaged desktop app stages the Claude ACP adapter as vendored JavaScript
-under `native-backend/embedded/claude-agent-acp/` with production dependencies
-installed from the vendored lockfile. Platform-specific
+Zod provides runtime schema validation and parsing for the structured data
+exchanged by the Claude ACP adapter and its protocol SDKs.
+
+The packaged desktop app prepares the exact Claude ACP npm dependency and stages
+it under `native-backend/embedded/claude-agent-acp/` with production dependencies
+installed from its committed runtime lockfile. Platform-specific
 `@anthropic-ai/claude-agent-sdk-*` packages are included only for the target
 being packaged.
 
@@ -147,8 +162,11 @@ being packaged.
 | ----------------------- | ------- |
 | defuddle                | MIT     |
 | dompurify               | MIT     |
-| react-markdown          | MIT     |
-| remark-gfm              | MIT     |
+| react, react-dom        | MIT     |
+| tailwindcss, @tailwindcss/vite | MIT |
+| typescript              | Apache-2.0 |
+| vitest, jsdom           | MIT     |
+| @types/jsdom            | MIT     |
 | @wxt-dev/module-react   | MIT     |
 | wxt                     | MIT     |
 
@@ -172,6 +190,9 @@ The Fliege Mono license text is included at
 | Crate                      | License               |
 | -------------------------- | --------------------- |
 | agent-client-protocol, codex-extension-items | Apache-2.0            |
+| agent-client-protocol-legacy, agent-client-protocol-schema | Apache-2.0 |
+| base64, keyring, libc, tempfile, windows-sys | MIT OR Apache-2.0 |
+| cap-std | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | serde, serde_json          | MIT OR Apache-2.0     |
 | tokio                      | MIT                   |
 | tokio-util                 | MIT                   |
@@ -256,41 +277,38 @@ The bundled dictionary metadata lives in
 
 ---
 
-## Vendored Dependencies
+## Embedded Runtime Dependencies
 
 | Package                          | License     | Source                                  |
 | -------------------------------- | ----------- | --------------------------------------- |
-| codex-acp                        | Apache-2.0  | github.com/zed-industries/codex         |
-| Claude-agent-acp-upstream        | Apache-2.0  | Anthropic                               |
+| codex-acp 0.16.0                 | Apache-2.0  | github.com/zed-industries/codex-acp     |
+| OpenAI Codex runtime rust-v0.153.4 | Apache-2.0 | github.com/openai/codex                 |
+| @agentclientprotocol/claude-agent-acp 0.77.0 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
 
 ---
 
-## Modified Vendored Code
+## Modified Third-Party Code
 
-The following vendored packages have been modified by NeverWrite contributors.
+The following embedded packages have been modified by NeverWrite contributors.
 As required by the Apache-2.0 license, modifications are documented below.
 
 ### `vendor/codex-acp` — Zed Industries (Apache-2.0)
 
-Original source: https://github.com/zed-industries/codex
+Original source: https://github.com/zed-industries/codex-acp (version 0.16.0).
+
+Zed Industries has deprecated Codex ACP. NeverWrite maintains this vendored adapter internally to preserve its Codex integration and compatibility with the application's review and session workflows.
+
+The adapter is built against the OpenAI Codex Rust workspace pinned to `rust-v0.153.4`; its packages are declared as Git dependencies in `vendor/codex-acp/Cargo.toml`.
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
 | `src/thread.rs`       | Extended to support AI review flow, multi-vault sessions, and custom diff streaming |
 | `src/codex_agent.rs`  | Adapted for Agent Client Protocol 0.14 compatibility and session configuration |
-
-### `vendor/Claude-agent-acp-upstream` — Anthropic (Apache-2.0)
-
-| File                  | Nature of changes                                              |
-| --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.59.0` (`30b7c06f7640fb6a0530ba18f85e26fe2bc08882`) with generated `dist/` runtime files required by desktop packaging |
-| `.gitignore`          | Keeps generated `dist/` files visible to Git so new runtime outputs are tracked for packaging |
-
-> All original copyright notices and license headers have been preserved.
-> The full text of the Apache-2.0 license is available at
-> https://www.apache.org/licenses/LICENSE-2.0
+| `src/prompt_args.rs`, `src/subagents.rs` | Added custom-prompt parsing and NeverWrite child-session lifecycle projection |
+| `src/lib.rs`, `src/main.rs` | Adjusted crate wiring and compile limits for the promoted runtime graph |
+| `vendor/codex-utils-pty/` | Maintains the standalone PTY snapshot on the upstream 0.153.4 source, including Unix process-group and Windows ConPTY lifecycle hardening |
 
 ---
 
@@ -309,4 +327,4 @@ Original source: https://github.com/zed-industries/codex
 
 ---
 
-*This file is maintained from project dependency metadata. Last updated: 2026-07-11.*
+*This file is maintained from project dependency metadata. Last updated: 2026-09-14.*

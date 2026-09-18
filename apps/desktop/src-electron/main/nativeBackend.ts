@@ -56,6 +56,13 @@ const SUPPORTED_COMMANDS = new Set([
     "register_window_vault_route",
     "unregister_window_vault_route",
     "ai_list_runtimes",
+    "ai_list_custom_runtimes",
+    "ai_list_deleted_custom_runtimes",
+    "ai_create_custom_runtime",
+    "ai_update_custom_runtime",
+    "ai_delete_custom_runtime",
+    "ai_restore_custom_runtime",
+    "ai_verify_custom_runtime",
     "ai_get_setup_status",
     "ai_get_environment_diagnostics",
     "ai_update_setup",
@@ -65,11 +72,13 @@ const SUPPORTED_COMMANDS = new Set([
     "ai_load_session",
     "ai_load_runtime_session",
     "ai_resume_runtime_session",
+    "ai_continue_custom_runtime_session",
     "ai_fork_runtime_session",
     "ai_create_session",
     "ai_set_model",
     "ai_set_mode",
     "ai_set_config_option",
+    "ai_start_conversation_turn",
     "ai_send_message",
     "ai_cancel_turn",
     "ai_respond_permission",
@@ -85,6 +94,19 @@ const SUPPORTED_COMMANDS = new Set([
     "ai_delete_runtime_session",
     "ai_delete_runtime_sessions_for_vault",
     "ai_prune_session_histories",
+    "ai_create_draft_attachment",
+    "ai_promote_draft_attachment",
+    "ai_delete_draft_attachment",
+    "ai_read_managed_attachment",
+    "ai_delete_managed_attachment_if_unreferenced",
+    "ai_resolve_managed_attachment_path",
+    "ai_get_history_storage_status",
+    "ai_get_history_recovery_diagnostic",
+    "ai_reveal_history_recovery_root",
+    "ai_retry_history_recovery",
+    "ai_adopt_history_storage_identity",
+    "reconcile_ai_history_storage",
+    "forget_ai_history_device_data",
     "ai_register_file_baseline",
     "ai_get_text_file_hash",
     "ai_restore_text_file",
@@ -117,6 +139,10 @@ const SUPPORTED_COMMANDS = new Set([
     "web_clipper_list_tags",
     "web_clipper_save_note",
 ]);
+
+export function supportsNativeBackendCommand(command: string) {
+    return SUPPORTED_COMMANDS.has(command);
+}
 
 const NATIVE_BACKEND_SECRET_JSON_KEY_PATTERN =
     /("(?:codex_api_key|openai_api_key|gemini_api_key|xai_api_key|google_api_key|gateway_headers|anthropic_custom_headers|anthropic_auth_token|anthropic_api_key|api[_-]?key|authorization|token|secret|password|value)"\s*:\s*")([^"]*)(")/giu;
@@ -303,7 +329,7 @@ class UnavailableNativeBackendBridge implements NativeBackendBridge {
     }
 
     supports(command: string) {
-        return SUPPORTED_COMMANDS.has(command);
+        return supportsNativeBackendCommand(command);
     }
 
     invoke() {
@@ -319,6 +345,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
     private readonly child: ChildProcessWithoutNullStreams;
     private readonly emitEvent: (eventName: string, payload: unknown) => void;
     private readonly pending = new Map<number, PendingRequest>();
+    private gracefulShutdownTimer: ReturnType<typeof setTimeout> | null = null;
     private forceKillTimer: ReturnType<typeof setTimeout> | null = null;
     private failure: Error | null = null;
     private nextId = 1;
@@ -389,6 +416,10 @@ class NativeBackendSidecar implements NativeBackendBridge {
         this.child.on("exit", (code, signal) => {
             this.closed = true;
             this.exited = true;
+            if (this.gracefulShutdownTimer) {
+                clearTimeout(this.gracefulShutdownTimer);
+                this.gracefulShutdownTimer = null;
+            }
             if (this.forceKillTimer) {
                 clearTimeout(this.forceKillTimer);
                 this.forceKillTimer = null;
@@ -414,7 +445,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
     }
 
     supports(command: string) {
-        return SUPPORTED_COMMANDS.has(command);
+        return supportsNativeBackendCommand(command);
     }
 
     invoke(command: string, args: Record<string, unknown> = {}) {
@@ -447,16 +478,22 @@ class NativeBackendSidecar implements NativeBackendBridge {
             this.child.stdin.end();
         }
 
-        if (!this.exited) {
-            this.child.kill("SIGTERM");
-            if (!this.forceKillTimer) {
-                this.forceKillTimer = setTimeout(() => {
-                    if (!this.exited) {
-                        this.child.kill("SIGKILL");
-                    }
-                }, 1500);
-                this.forceKillTimer.unref();
-            }
+        if (!this.exited && !this.gracefulShutdownTimer) {
+            this.gracefulShutdownTimer = setTimeout(() => {
+                this.gracefulShutdownTimer = null;
+                if (this.exited) return;
+
+                this.child.kill("SIGTERM");
+                if (!this.forceKillTimer) {
+                    this.forceKillTimer = setTimeout(() => {
+                        if (!this.exited) {
+                            this.child.kill("SIGKILL");
+                        }
+                    }, 1500);
+                    this.forceKillTimer.unref();
+                }
+            }, 1500);
+            this.gracefulShutdownTimer.unref();
         }
     }
 

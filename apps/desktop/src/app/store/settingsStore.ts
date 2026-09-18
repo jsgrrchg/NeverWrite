@@ -12,12 +12,17 @@ export interface Settings {
     // General
     openLastVaultOnLaunch: boolean;
 
+    // Appearance
+    uiFontFamily: EditorFontFamily;
+    glassOpacity: number; // 10–100 (percentage)
+
     // Editor
     editorFontSize: number; // 10–24
     editorFontFamily: EditorFontFamily;
     editorLineHeight: number; // 120–220 (percentage)
     editorAutosaveDelayMs: number; // 50–5000
     editorContentWidth: number; // 600–1200
+    aiChatContentWidth: number; // 480–1200
     lineWrapping: boolean;
     editorActiveLineHighlight: boolean;
     justifyText: boolean;
@@ -46,6 +51,7 @@ export interface Settings {
     // Terminal
     terminalFontFamily: string;
     terminalFontSize: number; // 8–24
+    claudeCodeEnabled: boolean;
     claudeCodeOptimized: boolean;
     claudeCodeSkipPermissions: boolean;
     claudeCodeModel: string; // "" = Claude Code default
@@ -67,11 +73,16 @@ const SETTINGS_KEY_PREFIX = "neverwrite:settings:";
 const SETTINGS_KEY_FALLBACK = "neverwrite:settings";
 const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
 const GLOBAL_SETTING_KEYS = [
+    "glassOpacity",
     "vimModeEnabled",
     "vimRelativeLineNumbers",
     "hoverPreviewEnabled",
     "hoverPreviewDelayMs",
 ] as const;
+
+export const MIN_GLASS_OPACITY = 10;
+export const MAX_GLASS_OPACITY = 100;
+export const DEFAULT_GLASS_OPACITY = 40;
 
 type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
 
@@ -185,13 +196,30 @@ export const EDITOR_FONT_FAMILY_OPTIONS: {
     { value: "typewriter", label: "Typewriter", group: "Mono" },
 ];
 
+export const UI_FONT_FAMILY_OPTIONS: {
+    value: EditorFontFamily;
+    label: string;
+}[] = [
+    { value: "system", label: "System" },
+    { value: "sans", label: "Inter" },
+    { value: "geist", label: "Geist" },
+    { value: "geist-mono", label: "Geist Mono" },
+    { value: "jetbrains", label: "JetBrains Mono" },
+    { value: "ibm-plex-mono", label: "IBM Plex Mono" },
+    { value: "atkinson", label: "Atkinson Hyperlegible" },
+    { value: "rounded", label: "Rounded (SF Pro)" },
+];
+
 const defaults: Settings = {
     openLastVaultOnLaunch: true,
+    uiFontFamily: "system",
+    glassOpacity: DEFAULT_GLASS_OPACITY,
     editorFontSize: 14,
     editorFontFamily: "system",
     editorLineHeight: 175,
     editorAutosaveDelayMs: 300,
     editorContentWidth: 940,
+    aiChatContentWidth: 600,
     lineWrapping: true,
     editorActiveLineHighlight: true,
     justifyText: false,
@@ -216,6 +244,7 @@ const defaults: Settings = {
     tabOpenBehavior: "history",
     terminalFontFamily: "",
     terminalFontSize: 13,
+    claudeCodeEnabled: false,
     claudeCodeOptimized: false,
     claudeCodeSkipPermissions: false,
     claudeCodeModel: "",
@@ -269,6 +298,17 @@ function normalizeIntInRange(
 
     if (!Number.isFinite(parsed)) return fallback;
     return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function normalizeAiChatContentWidth(value: unknown): number {
+    const width = normalizeIntInRange(
+        value,
+        defaults.aiChatContentWidth,
+        480,
+        1200,
+    );
+
+    return Math.round(width / 20) * 20;
 }
 
 function normalizeTabSize(value: unknown): 2 | 4 {
@@ -451,6 +491,13 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             openLastVaultOnLaunch:
                 parsed.state.openLastVaultOnLaunch ??
                 defaults.openLastVaultOnLaunch,
+            uiFontFamily: normalizeEditorFontFamily(parsed.state.uiFontFamily),
+            glassOpacity: normalizeIntInRange(
+                parsed.state.glassOpacity,
+                defaults.glassOpacity,
+                MIN_GLASS_OPACITY,
+                MAX_GLASS_OPACITY,
+            ),
             editorFontSize: normalizeIntInRange(
                 parsed.state.editorFontSize,
                 defaults.editorFontSize,
@@ -477,6 +524,9 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 defaults.editorContentWidth,
                 600,
                 1200,
+            ),
+            aiChatContentWidth: normalizeAiChatContentWidth(
+                parsed.state.aiChatContentWidth,
             ),
             lineWrapping: parsed.state.lineWrapping ?? defaults.lineWrapping,
             editorActiveLineHighlight:
@@ -549,6 +599,8 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 8,
                 24,
             ),
+            claudeCodeEnabled:
+                parsed.state.claudeCodeEnabled ?? defaults.claudeCodeEnabled,
             claudeCodeOptimized:
                 parsed.state.claudeCodeOptimized ??
                 defaults.claudeCodeOptimized,
@@ -616,11 +668,14 @@ function hasStoredSpellcheckSettings(raw: string | null) {
 function pickSettings(state: SettingsStore): Settings {
     return {
         openLastVaultOnLaunch: state.openLastVaultOnLaunch,
+        uiFontFamily: state.uiFontFamily,
+        glassOpacity: state.glassOpacity,
         editorFontSize: state.editorFontSize,
         editorFontFamily: state.editorFontFamily,
         editorLineHeight: state.editorLineHeight,
         editorAutosaveDelayMs: state.editorAutosaveDelayMs,
         editorContentWidth: state.editorContentWidth,
+        aiChatContentWidth: state.aiChatContentWidth,
         lineWrapping: state.lineWrapping,
         editorActiveLineHighlight: state.editorActiveLineHighlight,
         justifyText: state.justifyText,
@@ -645,6 +700,7 @@ function pickSettings(state: SettingsStore): Settings {
         tabOpenBehavior: state.tabOpenBehavior,
         terminalFontFamily: state.terminalFontFamily,
         terminalFontSize: state.terminalFontSize,
+        claudeCodeEnabled: state.claudeCodeEnabled,
         claudeCodeOptimized: state.claudeCodeOptimized,
         claudeCodeSkipPermissions: state.claudeCodeSkipPermissions,
         claudeCodeModel: state.claudeCodeModel,
@@ -668,6 +724,7 @@ function pickGlobalSettings(
     settings: Settings,
 ): Pick<Settings, GlobalSettingKey> {
     return {
+        glassOpacity: settings.glassOpacity,
         vimModeEnabled: settings.vimModeEnabled,
         vimRelativeLineNumbers: settings.vimRelativeLineNumbers,
         hoverPreviewEnabled: settings.hoverPreviewEnabled,
@@ -871,6 +928,23 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
                 return {
                     fileTreeExtensionFilter:
                         normalizeFileTreeExtensionFilter(value),
+                };
+            }
+
+            if (key === "aiChatContentWidth") {
+                return {
+                    aiChatContentWidth: normalizeAiChatContentWidth(value),
+                };
+            }
+
+            if (key === "glassOpacity") {
+                return {
+                    glassOpacity: normalizeIntInRange(
+                        value,
+                        defaults.glassOpacity,
+                        MIN_GLASS_OPACITY,
+                        MAX_GLASS_OPACITY,
+                    ),
                 };
             }
 

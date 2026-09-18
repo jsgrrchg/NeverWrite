@@ -10,6 +10,11 @@ pnpm install
 pnpm dev
 ```
 
+Development uses WXT's manual runner so the browser-launch tooling does not
+reintroduce vulnerable ZIP dependencies. Load the generated extension from
+`.output/chrome-mv3-dev` in Chrome. For Firefox, run `pnpm dev:firefox` and load
+`.output/firefox-mv3-dev/manifest.json` as a temporary add-on.
+
 ## Validation
 
 ```bash

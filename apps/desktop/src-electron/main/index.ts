@@ -100,13 +100,16 @@ if (!hasLock) {
     void app.whenReady().then(() => {
         writeAppLog("main", "info", "Electron app ready");
         installYouTubeEmbedIdentityHeaders(session.defaultSession);
-        protocol.handle("neverwrite-file", registerPreviewProtocolHandler());
-        registerIpcHandlers({
+        const backend = registerIpcHandlers({
             enableProductionDeepLinks:
                 appIdentity.ownsProductionDeepLinks,
             enableWebClipperServer: appIdentity.enablesWebClipperServer,
             runtimeSecretServiceName: appIdentity.secretServiceName,
         });
+        protocol.handle(
+            "neverwrite-file",
+            registerPreviewProtocolHandler(backend),
+        );
         void installNativeMenus();
         createAppWindow("main");
         if (appIdentity.ownsProductionDeepLinks) {

@@ -34,6 +34,197 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.1] - 2026-09-12
+
+### Fixed
+
+- Fixed chat headers on macOS so they can once again be used to drag the application window while keeping conversation titles interactive.
+- Fixed OpenCode chats failing to send after a model or runtime exposed different ACP options by reconciling stale saved effort and configuration choices with the current catalog.
+
+## [0.8.0] - 2026-09-11
+
+### Added
+
+- Added a dedicated, resizable chat pane that can move to either side of the workspace, follow the Agents sidebar, or expand while preserving the editor panes.
+- Added reversible chat archiving with an archived section, an undo action, and automatic reactivation when composing in an archived conversation.
+- Added unread indicators for completed chat turns and keyboard navigation for cycling through sidebar conversations.
+
+### Changed
+
+- Reworked the Agents sidebar into a card-based conversation list with compact timestamps, clearer subagent hierarchy, and a dedicated archived section.
+- Moved conversations out of editor tabs into the dedicated chat pane while preserving navigation, focus, search, and shortcuts across chat and editor surfaces.
+- Simplified chat organization by removing sidebar chat folders and redundant chat header actions.
+
+### Fixed
+
+- Fixed chat ordering, pane splits, divider behavior, and header alignment across workspace surfaces and window restarts.
+
+### Security
+
+- Addressed dependency security alerts in the Desktop and Web Clipper build toolchains, including the Web Clipper browser-launch dependency path.
+
+## [0.7.7] - 2026-09-06
+
+### Added
+
+- Added an advanced Codex model-ID selector for explicitly choosing account-gated or upstream-hidden models without forcing them into the normal model catalog.
+
+### Changed
+
+- Updated the embedded Codex runtime to `0.153.4`, making GPT-6 Astra visible and the default in the bundled fallback catalog while preserving account-provided catalogs and explicit model selections.
+- Updated the embedded Claude ACP runtime to `0.75.1`, surfacing context compaction as tool activity and rendering Claude `/usage` results as structured Markdown.
+
+## [0.7.6] - 2026-09-02
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.73.0`, adding Claude Fable 5.1 compatibility and runtime-generated chat titles while keeping native Claude steering, subagent sessions, and asynchronous task integration disabled in NeverWrite.
+
+---
+
+## [0.7.5] - 2026-08-31
+
+### Fixed
+
+- Fixed assistant message metadata appearing on the wrong message or more than once across tool turns, keeping timestamps and copy actions attached to the final assistant response for each turn.
+
+### Security
+
+- Stopped logging AI session identifiers when an ACP runtime transport disconnects.
+
+---
+
+## [0.7.4] - 2026-08-27
+
+### Added
+
+- Added the Automata theme with dedicated light and dark interface, editor syntax, and terminal palettes.
+- Added a **Copy Path** action to note-tab context menus for copying the note path relative to the current vault.
+- Added hover metadata to assistant messages, matching user messages with a timestamp and one-click copy action while keeping the transcript uncluttered when idle.
+- Added a guarded **Restore access to AI chats** recovery action when cloud sync, a filesystem provider, a restore, or a storage reconnect replaces the vault folder identity without changing the logical vault.
+
+### Changed
+
+- Refreshed the default theme with a neutral monochrome accent, updated editor and Vim cursors to follow the active theme accent, and made chat stop and action controls adapt more reliably to light and dark palettes.
+- Updated the embedded Claude ACP runtime to `0.70.0`, including changed-file auditing for more reliable AI change tracking and improved provider handling for loaded sessions.
+- Updated the embedded Codex runtime to `0.150.0`, with explicit turn acknowledgements, expanded runtime approval and failure reporting, broader collaboration lifecycle support, and model-provided `max` and `ultra` reasoning efforts.
+
+### Fixed
+
+- Fixed AI chat history becoming inaccessible after cloud sync, File Provider rematerialization, restore operations, or storage reconnects replaced the vault root while preserving its path and contents.
+- Fixed unavailable vaults remaining stuck in Recents by allowing their local registration, per-vault settings, snapshots, drafts, and device-local AI history to be removed even when the original folder no longer exists.
+- Fixed restarted Codex conversations appearing to forget earlier messages when an orphaned runtime retained the thread writer lock and native resume fell back to a fresh runtime session.
+- Fixed application shutdown leaving owned ACP runtime processes alive, preventing stale processes from retaining thread locks across restarts.
+- Fixed declined or mistimed runtime submissions steering an active turn or leaving an ACP prompt pending instead of returning a clear failure.
+- Fixed the AI composer drop target losing its visual highlight while files are dragged over it.
+- Fixed low-contrast composer action and stop controls in dark themes.
+
+## [0.7.3] - 2026-08-16
+
+### Added
+
+- Added per-vault interface font selection for app controls and navigation, with support for system, sans, mono, rounded, and accessibility-focused font families.
+- Added configurable glass opacity for translucent interface surfaces, including the composer and menus.
+- Added document status filtering to the file tree, including filters for each known status and documents without a status.
+- Added a prompt history minimap to the chat transcript for quickly locating and navigating between prompts.
+
+### Changed
+
+- Refined chat glass surfaces across the composer, plan banner, menus, scroll controls, and other chat overlays, with clearer translucency, blur, borders, and spacing in compact and expanded layouts.
+- Consolidated compact composer mode, reasoning, service-tier, and other configuration controls into a dedicated options menu to preserve space in narrow chat panes.
+- Updated the embedded Claude ACP runtime to `0.68.0` and aligned its Claude Agent SDK dependencies with the upstream release.
+
+### Fixed
+
+- Fixed ACP mode and configuration synchronization after model changes so stale or unavailable selections are reconciled before a turn is sent.
+- Fixed chat pane minimum-width handling and expanded composer rounded margins so the composer and surrounding glass surfaces retain consistent geometry.
+
+### Security
+
+- Patched the Nano ID zero-size generator vulnerability by updating the Excalidraw-pinned `nanoid` dependency to `3.3.18`.
+
+## [0.7.2] - 2026-08-14
+
+### Added
+
+- Added canonical AI conversations with durable conversation identities and persisted provider bindings, allowing chat state, transcripts, and provider configuration to survive reloads, reconnects, and history migration.
+- Added a unified ACP provider and model picker with provider-specific model catalogs, model-aware reasoning and service-tier controls, staged selections, and setup and availability feedback.
+- Added Claude subscription authentication to AI provider setup.
+- Added bidirectional placement for the Files and Agents sidebar views, with accessible context-menu and command-palette actions, persistent layout preferences, side-aware reveal and drag behavior, and adaptive right-sidebar sizing.
+
+### Changed
+
+- Updated the embedded Codex ACP runtime to `0.147.0`, including the `codex-acp` executable as the default Codex runtime and improved support for subagent lifecycle events.
+- Changed ACP conversation routing to select the appropriate continuation strategy, including bounded transcript handoff when a runtime cannot continue a native session, while preserving canonical conversation and provider state across turns.
+- Locked provider changes after a conversation begins and kept staged model and configuration choices scoped to the active conversation.
+- Refined AI provider and model controls with anchored popovers, clearer model labels, and improved keyboard and focus behavior.
+
+### Fixed
+
+- Fixed restored and migrated AI sessions losing provider bindings, model or configuration selections, and canonical conversation identity.
+- Fixed AI activity and change-review event handling across runtime upgrades, reconnects, persisted sessions, and subagent lifecycle changes.
+- Fixed subagent activity being duplicated or attached to stale child sessions, and preserved authoritative activity timestamps across restored sessions.
+- Fixed Claude subscription authentication status handling when OAuth sessions expire or status probes stall.
+
+## [0.7.1] - 2026-08-09
+
+### Fixed
+
+- Fixed the translucent AI chat composer backdrop blur being omitted from packaged desktop builds, so release builds now match the frosted appearance shown during development.
+
+## [0.7.0] - 2026-08-08
+
+### Added
+
+- Added customizable global keyboard shortcuts under Settings > Shortcuts, with shortcut recording, conflict-aware reassignment, per-action reset, and platform-specific preferences shared across vaults.
+- Added a configurable AI chat content width under Settings > Appearance, covering messages, the composer, and related panels.
+
+### Changed
+
+- Refined AI chat presentation with translucent composer surfaces, clearer plan progress in expanded and collapsed states, and formatted code fences while responses are still streaming.
+- Updated the embedded Claude ACP runtime to `0.66.0`, including visibility into active Claude permission scopes.
+
+### Fixed
+
+- Fixed ACP chats failing after idle runtime disconnects by automatically recovering the session, excluding unsent prompts from recovery context, and surfacing sanitized startup diagnostics when reconnection fails.
+- Fixed chat scroll behavior so the jump-to-bottom control appears reliably and newly opened or previously unvisited chats start at the end of the transcript.
+- Fixed long Markdown location breadcrumbs overflowing the editor header by compacting them while preserving the full path on hover.
+
+### Security
+
+- Patched dependency vulnerabilities affecting HTTP handling, URI parsing, HTML sanitization, YAML parsing, and Nano ID generation.
+
+## [0.6.0] - 2026-07-29
+
+### Added
+
+- Added configurable custom ACP runtimes under Settings > AI Providers, with executable verification, isolated launch environments, capability-driven chat integration, and safe reconnection when a runtime definition changes.
+- Added device-local AI chat history as the default for new vaults, plus a per-vault setting to move history and managed screenshot attachments between device and vault storage with transactional recovery controls.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.63.0` and Claude Agent SDK to `0.3.220`.
+
+### Fixed
+
+- Fixed Claude tool activity attribution for progress heartbeats, Bash terminal metadata, and denied tool calls.
+
+### Security
+
+- Patched dependency vulnerabilities in the desktop updater, PostCSS, Nano ID, and QUIC protocol stack.
+
+## [0.5.2] - 2026-07-24
+
+### Added
+
+- Added Google Vertex AI as a Claude provider, with configurable endpoint, project, region, and Google Application Default Credentials authentication.
+
+### Changed
+
+- Widened Markdown Live Preview code fences for more comfortable reading of long code lines.
+- Updated the embedded Claude ACP runtime to `0.62.0`, including explicit provider routing and improved session configuration support.
+- Updated SDK for Opus 5 support.
+
 ## [0.5.1] - 2026-07-22
 
 ### Added

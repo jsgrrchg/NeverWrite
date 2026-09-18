@@ -69,7 +69,7 @@ const vimStatusBarTheme = EditorView.baseTheme({
     },
     ".cm-vim-panel input": {
         color: "var(--text-primary)",
-        caretColor: "var(--text-primary)",
+        caretColor: "var(--accent)",
     },
     // The block cursor inherits the font-size of the DOM node it sits on. On a
     // live-preview list line that node is the zero-`font-size` hidden marker,
@@ -77,7 +77,12 @@ const vimStatusBarTheme = EditorView.baseTheme({
     // to the editor font size so it stays visible regardless of the underlying
     // node's font-size.
     ".cm-vimMode .cm-fat-cursor": {
+        background: "var(--accent)",
         minWidth: "calc(var(--editor-font-size, 14px) * 0.5)",
+    },
+    "&.cm-vimMode:not(.cm-focused) .cm-fat-cursor": {
+        background: "none",
+        outline: "solid 1px var(--accent)",
     },
 });
 

@@ -1,4 +1,5 @@
 import { defaultTheme } from "./default";
+import { automataTheme } from "./automata";
 import { oceanTheme } from "./ocean";
 import { forestTheme } from "./forest";
 import { roseTheme } from "./rose";
@@ -67,6 +68,7 @@ export interface ThemePalette {
 
 export type ThemeName =
     | "default"
+    | "automata"
     | "ocean"
     | "forest"
     | "rose"
@@ -90,6 +92,7 @@ export type ThemeName =
 
 export const themes: Record<ThemeName, ThemePalette> = {
     default: defaultTheme,
+    automata: automataTheme,
     ocean: oceanTheme,
     forest: forestTheme,
     rose: roseTheme,

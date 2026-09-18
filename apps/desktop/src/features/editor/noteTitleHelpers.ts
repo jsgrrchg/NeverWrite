@@ -93,7 +93,7 @@ export function remapPositionPastLeadingContentCollapse(
 export function getNoteLocation(noteId: string) {
     const parts = noteId.split("/").filter(Boolean);
     return {
-        parent: parts.slice(0, -1).join(" / "),
+        parentSegments: parts.slice(0, -1),
     };
 }
 

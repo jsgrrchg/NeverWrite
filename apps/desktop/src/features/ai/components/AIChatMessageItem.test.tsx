@@ -1,3 +1,4 @@
+import { useChatTabsStore } from "../store/chatTabsStore";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { invoke, openPath, revealItemInDir } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +12,11 @@ import {
     setVaultEntries,
     setVaultNotes,
 } from "../../../test/test-utils";
-import type { AIChatMessage, AIUserInputAction } from "../types";
+import type {
+    AIChatMessage,
+    AIUserInputAction,
+    ManagedAttachmentId,
+} from "../types";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import { AIChatMessageItem } from "./AIChatMessageItem";
 
@@ -168,6 +173,71 @@ describe("AIChatMessageItem assistant references", () => {
             padding: "0px",
         });
         expect(reference.querySelector("svg")).not.toBeNull();
+    });
+});
+
+describe("AIChatMessageItem assistant metadata", () => {
+    it("shows copy before the timestamp after the response completes", async () => {
+        const timestamp = Date.parse("2026-07-11T15:42:00Z");
+        const view = renderMessage({
+            content: "Completed response",
+            id: "assistant:metadata",
+            kind: "text",
+            role: "assistant",
+            timestamp,
+            inProgress: false,
+        });
+
+        expect(
+            view.container.querySelector("[data-assistant-message]"),
+        ).toHaveClass("group");
+        const metadata = view.container.querySelector(
+            "[data-assistant-message-metadata]",
+        );
+        expect(metadata).toHaveClass(
+            "min-h-5",
+            "justify-start",
+            "opacity-0",
+            "group-hover:opacity-[0.72]",
+            "group-has-[:focus-visible]:opacity-[0.72]",
+        );
+        expect(metadata?.children[0]).toHaveAttribute(
+            "aria-label",
+            "Copy message",
+        );
+        expect(metadata?.children[1]).toHaveAttribute(
+            "dateTime",
+            new Date(timestamp).toISOString(),
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+
+        await waitFor(() => {
+            expect(getClipboardMock().writeText).toHaveBeenCalledWith(
+                "Completed response",
+            );
+        });
+    });
+
+    it("reserves metadata space without exposing controls while streaming", () => {
+        const view = renderMessage({
+            content: "Streaming response",
+            id: "assistant:streaming-metadata",
+            kind: "text",
+            role: "assistant",
+            timestamp: Date.now(),
+            inProgress: true,
+        });
+
+        const metadata = view.container.querySelector(
+            "[data-assistant-message-metadata]",
+        );
+        expect(metadata).toHaveClass("min-h-5", "opacity-0");
+        expect(metadata).not.toHaveClass("group-hover:opacity-[0.72]");
+        expect(metadata).toBeEmptyDOMElement();
+        expect(
+            screen.queryByRole("button", { name: "Copy message" }),
+        ).not.toBeInTheDocument();
     });
 });
 
@@ -408,7 +478,7 @@ describe("AIChatMessageItem user image attachments", () => {
         );
     });
 
-    it("shows sent time and copies the user message", async () => {
+    it("reveals reserved user metadata on hover or focus and copies the message", async () => {
         const timestamp = Date.parse("2026-07-11T15:42:00Z");
         const view = renderMessage({
             id: "user:copy",
@@ -418,6 +488,17 @@ describe("AIChatMessageItem user image attachments", () => {
             timestamp,
         });
 
+        expect(view.container.querySelector("[data-user-message]")).toHaveClass(
+            "group",
+        );
+        expect(
+            view.container.querySelector("[data-user-message-metadata]"),
+        ).toHaveClass(
+            "min-h-5",
+            "opacity-0",
+            "group-hover:opacity-[0.72]",
+            "group-has-[:focus-visible]:opacity-[0.72]",
+        );
         expect(
             view.container.querySelector("[data-user-message-metadata] time"),
         ).toHaveAttribute("dateTime", new Date(timestamp).toISOString());
@@ -480,6 +561,49 @@ describe("AIChatMessageItem user image attachments", () => {
             }),
         ]);
         expect(revealItemInDir).toHaveBeenCalledWith(filePath);
+    });
+
+    it("previews and reveals managed images without exposing a physical path", () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        renderMessage({
+            id: "user:managed-image",
+            role: "user",
+            kind: "text",
+            content: "Inspect this",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:managed",
+                    type: "file",
+                    noteId: null,
+                    label: "Screenshot 10:32",
+                    path: null,
+                    managedAttachmentId:
+                        "ma_0123456789abcdef0123456789abcdef" as ManagedAttachmentId,
+                    fileName: "pasted-image.png",
+                    mimeType: "image/png",
+                },
+            ],
+        });
+
+        const image = screen.getByRole("img", { name: "Screenshot 10:32" });
+        expect(image.getAttribute("src")).toContain(
+            "neverwrite-file://localhost/ai-attachment/",
+        );
+        expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Reveal in Finder" }),
+        );
+        expect(invoke).toHaveBeenCalledWith(
+            "ai_reveal_managed_attachment",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                attachmentId:
+                    "ma_0123456789abcdef0123456789abcdef",
+            }),
+        );
+        expect(revealItemInDir).not.toHaveBeenCalled();
     });
 
     it("does not render attachment thumbnails when user text has no attachments", () => {
@@ -549,7 +673,7 @@ describe("AIChatMessageItem user image attachments", () => {
 });
 
 describe("AIChatMessageItem plan message", () => {
-    it("renders the plan as a collapsible panel with done status", () => {
+    it("renders completed plan entries without a status badge", () => {
         renderMessage({
             id: "plan:1",
             role: "assistant",
@@ -573,15 +697,18 @@ describe("AIChatMessageItem plan message", () => {
 
         const button = screen.getByRole("button", { name: /plan/i });
         expect(button).toHaveAttribute("aria-expanded", "true");
-        expect(screen.getByText("All Done")).toBeInTheDocument();
+        expect(screen.queryByText("All Done")).not.toBeInTheDocument();
         expect(screen.getByText("Review state")).toHaveStyle(
             "text-decoration: line-through",
         );
         expect(document.querySelector('[data-plan-surface="true"]')).toHaveClass(
             "chat-plan-frame",
         );
+        expect(document.querySelector('[data-plan-surface="true"]')).toHaveClass(
+            "nw-chat-translucent-surface",
+        );
         expect(
-            document.querySelectorAll('[data-activity-rail-decoration="branch"]'),
+            document.querySelectorAll("[data-plan-entry-status]"),
         ).toHaveLength(2);
     });
 
@@ -611,12 +738,22 @@ describe("AIChatMessageItem plan message", () => {
         const button = screen.getByRole("button", { name: /plan/i });
         expect(screen.getByText("Inspect")).toBeInTheDocument();
         expect(screen.getByText("Summary")).toBeInTheDocument();
+        expect(screen.getByText("1/2")).toHaveAttribute(
+            "data-plan-progress",
+            "true",
+        );
 
         fireEvent.click(button);
 
         expect(button).toHaveAttribute("aria-expanded", "false");
+        expect(button).toHaveAccessibleName("Plan - Implement");
         expect(screen.queryByText("Inspect")).not.toBeInTheDocument();
         expect(screen.queryByText("Summary")).not.toBeInTheDocument();
+        expect(screen.queryByText("In Progress")).not.toBeInTheDocument();
+        expect(screen.getByText("1/2")).toHaveAttribute(
+            "data-plan-progress",
+            "true",
+        );
 
         fireEvent.click(button);
 
@@ -1136,6 +1273,44 @@ describe("AIChatMessageItem tool diffs", () => {
         ).toBeInTheDocument();
         expect(
             screen.queryByRole("button", { name: "Open" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("shows the Always Allow permission scope on the decision button", () => {
+        renderMessage({
+            id: "permission:always-allow",
+            role: "assistant",
+            kind: "permission",
+            title: "Permission request",
+            content: "Run tests",
+            timestamp: Date.now(),
+            permissionRequestId: "req-always-allow",
+            permissionOptions: [
+                {
+                    option_id: "allow_always",
+                    name: "Always Allow",
+                    kind: "allow_always",
+                    permission_scope: ["Bash(pnpm test:*)"],
+                },
+                {
+                    option_id: "plan-auto",
+                    name: 'Yes, and use "auto" mode',
+                    kind: "allow_once",
+                    permission_scope: ["This must not appear on plan options"],
+                },
+            ],
+            meta: {
+                status: "pending",
+            },
+        });
+
+        expect(
+            screen.getByRole("button", {
+                name: "Always Allow Bash(pnpm test:*)",
+            }),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByText("This must not appear on plan options"),
         ).not.toBeInTheDocument();
     });
 
@@ -1820,15 +1995,7 @@ describe("AIChatMessageItem read tool targets", () => {
         fireEvent.click(screen.getByRole("button", { name: "Open Worker" }));
 
         await waitFor(() => {
-            expect(
-                useEditorStore
-                    .getState()
-                    .tabs.some(
-                        (tab) =>
-                            tab.kind === "ai-chat" &&
-                            tab.sessionId === "child-session",
-                    ),
-            ).toBe(true);
+            expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: "child-session" });
         });
     });
 
@@ -1998,15 +2165,7 @@ describe("AIChatMessageItem read tool targets", () => {
         fireEvent.click(screen.getByRole("button", { name: "Open Worker" }));
 
         await waitFor(() => {
-            expect(
-                useEditorStore
-                    .getState()
-                    .tabs.some(
-                        (tab) =>
-                            tab.kind === "ai-chat" &&
-                            tab.sessionId === "persisted:child-history",
-                    ),
-            ).toBe(true);
+            expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: "persisted:child-history" });
         });
     });
 
@@ -2087,15 +2246,7 @@ describe("AIChatMessageItem read tool targets", () => {
         fireEvent.click(screen.getByRole("button", { name: "Open Worker" }));
 
         await waitFor(() => {
-            expect(
-                useEditorStore
-                    .getState()
-                    .tabs.some(
-                        (tab) =>
-                            tab.kind === "ai-chat" &&
-                            tab.sessionId === "live-child",
-                    ),
-            ).toBe(true);
+            expect(useChatTabsStore.getState().view).toEqual({ mode: "conversation", sessionId: "live-child" });
         });
     });
 

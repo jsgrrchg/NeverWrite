@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import type { AIChatMessage } from "../types";
 import { AIChatMessageList } from "./AIChatMessageList";
+import { deriveAssistantMessageMetadataModes } from "./assistantMessageMetadata";
 import { resetChatMessageListViewState } from "./chatMessageListViewState";
 import { resetChatRowUiStore } from "../store/chatRowUiStore";
 import { useChatStore } from "../store/chatStore";
@@ -102,6 +103,161 @@ function expectSharedChatContentColumn(element: HTMLElement) {
         marginInline: "auto",
     });
 }
+
+describe("AIChatMessageList assistant metadata", () => {
+    const completedToolTurn: AIChatMessage[] = [
+        {
+            id: "user:tool-turn",
+            role: "user",
+            kind: "text",
+            content: "Inspect the project",
+            timestamp: 1,
+            workCycleId: "cycle-tool-turn",
+        },
+        {
+            id: "assistant:before-tool",
+            role: "assistant",
+            kind: "text",
+            content: "I will inspect it.",
+            timestamp: 2,
+            workCycleId: "cycle-tool-turn",
+            inProgress: false,
+        },
+        {
+            id: "tool:inspect",
+            role: "assistant",
+            kind: "tool",
+            content: "Inspected the project",
+            timestamp: 3,
+            workCycleId: "cycle-tool-turn",
+            title: "Inspect project",
+            meta: { status: "completed", tool: "read" },
+        },
+        {
+            id: "assistant:after-tool",
+            role: "assistant",
+            kind: "text",
+            content: "The inspection is complete.",
+            timestamp: 4,
+            workCycleId: "cycle-tool-turn",
+            inProgress: false,
+        },
+    ];
+
+    it("shows metadata only on the final assistant text in a completed tool turn", () => {
+        renderComponent(
+            <AIChatMessageList
+                messages={completedToolTurn}
+                status="idle"
+            />,
+        );
+
+        const beforeToolRow = document.querySelector(
+            '[data-chat-message-id="assistant:before-tool"]',
+        );
+        const afterToolRow = document.querySelector(
+            '[data-chat-message-id="assistant:after-tool"]',
+        );
+
+        expect(
+            beforeToolRow?.querySelector(
+                "[data-assistant-message-metadata]",
+            ),
+        ).toBeNull();
+        expect(
+            afterToolRow?.querySelector(
+                '[data-assistant-message-metadata] button[aria-label="Copy message"]',
+            ),
+        ).not.toBeNull();
+    });
+
+    it("reserves metadata only for the currently streaming assistant text", () => {
+        const messages = completedToolTurn.map((message) =>
+            message.id === "assistant:after-tool"
+                ? { ...message, inProgress: true }
+                : message,
+        );
+
+        renderComponent(
+            <AIChatMessageList messages={messages} status="streaming" />,
+        );
+
+        const beforeToolRow = document.querySelector(
+            '[data-chat-message-id="assistant:before-tool"]',
+        );
+        const afterToolMetadata = document.querySelector(
+            '[data-chat-message-id="assistant:after-tool"] [data-assistant-message-metadata]',
+        );
+
+        expect(
+            beforeToolRow?.querySelector(
+                "[data-assistant-message-metadata]",
+            ),
+        ).toBeNull();
+        expect(afterToolMetadata).not.toBeNull();
+        expect(afterToolMetadata).toBeEmptyDOMElement();
+        expect(
+            document.querySelector(
+                '[data-assistant-message-metadata] button[aria-label="Copy message"]',
+            ),
+        ).toBeNull();
+    });
+
+    it("falls back to the last existing text when a completed turn ends on a tool", () => {
+        const messages = completedToolTurn.slice(0, -1);
+
+        expect(
+            deriveAssistantMessageMetadataModes(messages, "idle").get(
+                "assistant:before-tool",
+            ),
+        ).toBe("available");
+    });
+
+    it("keeps one metadata target per legacy turn without work-cycle ids", () => {
+        const messages: AIChatMessage[] = [
+            {
+                id: "user:legacy-1",
+                role: "user",
+                kind: "text",
+                content: "First turn",
+                timestamp: 1,
+            },
+            {
+                id: "assistant:legacy-1a",
+                role: "assistant",
+                kind: "text",
+                content: "First segment",
+                timestamp: 2,
+            },
+            {
+                id: "assistant:legacy-1b",
+                role: "assistant",
+                kind: "text",
+                content: "First final",
+                timestamp: 3,
+            },
+            {
+                id: "user:legacy-2",
+                role: "user",
+                kind: "text",
+                content: "Second turn",
+                timestamp: 4,
+            },
+            {
+                id: "assistant:legacy-2",
+                role: "assistant",
+                kind: "text",
+                content: "Second final",
+                timestamp: 5,
+            },
+        ];
+        const modes = deriveAssistantMessageMetadataModes(messages, "idle");
+
+        expect(modes.get("assistant:legacy-1a")).toBeUndefined();
+        expect(modes.get("assistant:legacy-1b")).toBe("available");
+        expect(modes.get("assistant:legacy-2")).toBe("available");
+    });
+});
 
 describe("AIChatMessageList streaming run indicator", () => {
     afterEach(() => {
@@ -317,6 +473,182 @@ describe("AIChatMessageList streaming run indicator", () => {
 
         expect(scrollContainer).toHaveClass("flex-1");
         expectSharedChatContentColumn(messageColumn);
+    });
+
+    it("reserves the translucent dock inset inside the transcript scroller", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-dock-inset"
+                messages={createMessages()}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+
+        expect(getScrollContainer(view.container)).toHaveStyle({
+            paddingBottom: "192px",
+            scrollPaddingBottom: "192px",
+        });
+    });
+
+    it("keeps a bottom-anchored transcript pinned when the dock height changes", () => {
+        let scrollHeight = 1_000;
+        const messages = createMessages();
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-dock-bottom-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer, 320, {
+            getScrollHeight: () => scrollHeight,
+        });
+
+        act(() => {
+            scrollContainer.scrollTop = 680;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        scrollHeight = 1_180;
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-dock-bottom-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+
+        expect(scrollContainer.scrollTop).toBe(scrollHeight);
+    });
+
+    it("does not move a transcript being read when the dock height changes", () => {
+        let scrollHeight = 1_000;
+        const messages = createMessages();
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-dock-reading-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer, 320, {
+            getScrollHeight: () => scrollHeight,
+        });
+
+        act(() => {
+            scrollContainer.scrollTop = 200;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        scrollHeight = 1_180;
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-dock-reading-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+
+        expect(scrollContainer.scrollTop).toBe(200);
+    });
+
+    it("retains a shrinking dock inset until the reader returns to the bottom", () => {
+        let scrollHeight = 1_180;
+        const messages = createMessages();
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-dock-shrink-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer, 320, {
+            getScrollHeight: () => scrollHeight,
+        });
+
+        act(() => {
+            scrollContainer.scrollTop = 760;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-dock-shrink-anchor"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+
+        expect(scrollContainer).toHaveStyle({ paddingBottom: "192px" });
+        expect(scrollContainer.scrollTop).toBe(760);
+        const scrollButton = screen.getByRole("button", {
+            name: "Scroll to bottom",
+        });
+        expect(scrollButton).toHaveStyle({ bottom: "12px" });
+        expect(scrollButton).toHaveClass("nw-chat-translucent-surface");
+
+        scrollHeight = 1_000;
+        act(() => {
+            scrollContainer.scrollTop = 680;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        expect(scrollContainer).toHaveStyle({ paddingBottom: "12px" });
+        expect(scrollContainer.scrollTop).toBe(scrollHeight);
+    });
+
+    it("resets a retained dock inset when switching session scopes", () => {
+        const messages = createMessages();
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-scope-low"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer);
+
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-scope-high"
+                messages={messages}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+        expect(scrollContainer).toHaveStyle({ paddingBottom: "192px" });
+
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-scope-low"
+                messages={messages}
+                status="idle"
+                bottomInset={0}
+            />,
+        );
+
+        expect(scrollContainer).toHaveStyle({ paddingBottom: "12px" });
     });
 
     it.each([
@@ -597,6 +929,129 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(secondScrollContainer.scrollTop).toBe(4_320);
     });
 
+    it("does not carry the scroll-to-bottom control into a new short chat", () => {
+        let isShortTranscript = false;
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-scrolled"
+                messages={createLongTranscript(140)}
+                status="idle"
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer, 320, {
+            getScrollHeight: () => (isShortTranscript ? 320 : 12_000),
+        });
+
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Scroll to bottom" }),
+        ).toBeInTheDocument();
+
+        isShortTranscript = true;
+        scrollContainer.scrollTop = 0;
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-new"
+                messages={createMessages()}
+                status="idle"
+            />,
+        );
+
+        expect(
+            screen.queryByRole("button", { name: "Scroll to bottom" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("keeps the scroll-to-bottom control clear of the dock stacking context", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-scroll-control-dock"
+                messages={createLongTranscript(140)}
+                status="idle"
+                bottomInset={180}
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer);
+
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        const button = screen.getByRole("button", {
+            name: "Scroll to bottom",
+        });
+        expect(button).not.toHaveClass("z-30");
+        expect(button).toHaveStyle({ bottom: "192px" });
+    });
+
+    it("starts an unvisited long chat at the bottom after switching sessions", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-scrolled"
+                messages={createLongTranscript(140)}
+                status="idle"
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer);
+
+        act(() => {
+            scrollContainer.scrollTop = 1_000;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        view.rerender(
+            <AIChatMessageList
+                sessionId="session-unvisited-long"
+                messages={createLongTranscript(140)}
+                status="idle"
+            />,
+        );
+
+        expect(scrollContainer.scrollTop).toBe(12_000);
+        expect(
+            screen.queryByRole("button", { name: "Scroll to bottom" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("hides the restored scroll-to-bottom control when the transcript no longer overflows", () => {
+        const messages = createLongTranscript(140);
+        const firstMount = renderComponent(
+            <AIChatMessageList
+                sessionId="session-restored-short"
+                messages={messages}
+                status="idle"
+            />,
+        );
+        const firstScrollContainer = getScrollContainer(firstMount.container);
+        configureScrollableViewport(firstScrollContainer);
+
+        act(() => {
+            firstScrollContainer.scrollTop = 0;
+            firstScrollContainer.dispatchEvent(new Event("scroll"));
+        });
+        firstMount.unmount();
+
+        renderComponent(
+            <AIChatMessageList
+                sessionId="session-restored-short"
+                messages={createMessages()}
+                status="idle"
+            />,
+        );
+
+        expect(
+            screen.queryByRole("button", { name: "Scroll to bottom" }),
+        ).not.toBeInTheDocument();
+    });
+
     it("keeps non-visible diff work cycles as rich cards", () => {
         const messages: AIChatMessage[] = [
             {
@@ -770,6 +1225,10 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(screen.getAllByText("Implement")).toHaveLength(1);
         expectSharedChatContentColumn(
             screen.getByTestId("chat-pinned-plan-column"),
+        );
+        expect(screen.getByTestId("chat-pinned-plan-overlay")).toHaveClass(
+            "absolute",
+            "z-[5]",
         );
         expect(
             view.container.querySelector('[aria-label="Dismiss plan banner"]'),

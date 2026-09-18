@@ -44,6 +44,28 @@ function fuzzyScore(query: string, text: string): number {
     return qi === q.length ? score : 0;
 }
 
+export function searchCommands(
+    commands: ReadonlyMap<string, Command>,
+    query: string,
+): Command[] {
+    const visible = Array.from(commands.values()).filter(
+        (command) => !command.when || command.when(),
+    );
+    if (!query.trim()) return visible;
+
+    return visible
+        .map((command) => ({
+            command,
+            score: Math.max(
+                fuzzyScore(query, command.label),
+                fuzzyScore(query, `${command.category} ${command.label}`),
+            ),
+        }))
+        .filter(({ score }) => score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map(({ command }) => command);
+}
+
 export const useCommandStore = create<CommandStore>((set, get) => ({
     commands: new Map(),
     activeModal: null,
@@ -72,21 +94,7 @@ export const useCommandStore = create<CommandStore>((set, get) => ({
     },
 
     search: (query) => {
-        const commands = Array.from(get().commands.values());
-        const visible = commands.filter((c) => !c.when || c.when());
-        if (!query.trim()) return visible;
-
-        return visible
-            .map((cmd) => ({
-                cmd,
-                score: Math.max(
-                    fuzzyScore(query, cmd.label),
-                    fuzzyScore(query, cmd.category + " " + cmd.label),
-                ),
-            }))
-            .filter(({ score }) => score > 0)
-            .sort((a, b) => b.score - a.score)
-            .map(({ cmd }) => cmd);
+        return searchCommands(get().commands, query);
     },
 
     openCommandPalette: () => set({ activeModal: "command-palette" }),

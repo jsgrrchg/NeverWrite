@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../test/test-utils";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import type {
     AIAuthTerminalSessionSnapshot,
     AIRuntimeDescriptor,
@@ -13,6 +14,13 @@ const apiMocks = vi.hoisted(() => ({
     aiGetEnvironmentDiagnostics: vi.fn(),
     aiGetSetupStatus: vi.fn(),
     aiListRuntimes: vi.fn(),
+    aiListCustomRuntimes: vi.fn(),
+    aiListDeletedCustomRuntimes: vi.fn(),
+    aiCreateCustomRuntime: vi.fn(),
+    aiUpdateCustomRuntime: vi.fn(),
+    aiDeleteCustomRuntime: vi.fn(),
+    aiRestoreCustomRuntime: vi.fn(),
+    aiVerifyCustomRuntime: vi.fn(),
     aiLogout: vi.fn(),
     aiStartAuth: vi.fn(),
     aiUpdateSetup: vi.fn(),
@@ -25,8 +33,12 @@ const apiMocks = vi.hoisted(() => ({
     listenToAiAuthTerminalExited: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalError: vi.fn(async () => vi.fn()),
 }));
+const terminalMocks = vi.hoisted(() => ({
+    checkClaudeCodeInstalled: vi.fn(async () => false),
+}));
 
 vi.mock("../ai/api", () => apiMocks);
+vi.mock("../terminal/claudeCodeTerminal", () => terminalMocks);
 
 function createRuntimeDescriptor(
     id: string,
@@ -244,6 +256,14 @@ function mockProviders({
     apiMocks.listenToAiAuthTerminalOutput.mockResolvedValue(vi.fn());
     apiMocks.listenToAiAuthTerminalExited.mockResolvedValue(vi.fn());
     apiMocks.listenToAiAuthTerminalError.mockResolvedValue(vi.fn());
+    apiMocks.aiListCustomRuntimes.mockResolvedValue([]);
+    apiMocks.aiListDeletedCustomRuntimes.mockResolvedValue([]);
+    apiMocks.aiVerifyCustomRuntime.mockResolvedValue({
+        state: "ready",
+        command: "local-acp",
+        executablePath: "/usr/local/bin/local-acp",
+        message: "Executable is ready.",
+    });
 }
 
 function getButtonFromText(text: string) {
@@ -281,7 +301,25 @@ async function openProvider(providerName: string) {
 describe("AIProvidersSettings", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        terminalMocks.checkClaudeCodeInstalled.mockResolvedValue(false);
+        useSettingsStore.setState({ claudeCodeEnabled: false });
         mockProviders(createDefaultProviders());
+    });
+
+    it("enables Claude Code explicitly for the current vault", async () => {
+        terminalMocks.checkClaudeCodeInstalled.mockResolvedValue(true);
+
+        renderComponent(<AIProvidersSettings />);
+
+        const toggle = await screen.findByRole("switch", {
+            name: "Enable Claude Code for this vault",
+        });
+        expect(toggle).toHaveAttribute("aria-checked", "false");
+
+        fireEvent.click(toggle);
+
+        expect(useSettingsStore.getState().claudeCodeEnabled).toBe(true);
+        expect(toggle).toHaveAttribute("aria-checked", "true");
     });
 
     it("does not offer provider installs while runtime inventory is still loading", async () => {
@@ -307,6 +345,30 @@ describe("AIProvidersSettings", () => {
         expect(await screen.findByText("Codex")).toBeInTheDocument();
         expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
         expect(screen.queryByText("Gemini")).not.toBeInTheDocument();
+    });
+
+    it("does not offer a custom runtime with a missing executable as default", async () => {
+        const providers = createDefaultProviders();
+        providers.descriptors.push(
+            createRuntimeDescriptor("custom:missing", "Missing local ACP"),
+        );
+        providers.statuses["custom:missing"] = createSetupStatus({
+            runtimeId: "custom:missing",
+            binaryReady: false,
+            binaryPath: undefined,
+            binarySource: "missing",
+            authReady: true,
+            authMethod: "external",
+            onboardingRequired: true,
+        });
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await screen.findByText("Default provider");
+        expect(
+            screen.queryByRole("option", { name: "Missing local" }),
+        ).not.toBeInTheDocument();
     });
 
     it("validates Claude gateway URLs before saving provider authentication", async () => {
@@ -442,6 +504,155 @@ describe("AIProvidersSettings", () => {
                     anthropicBaseUrl: undefined,
                     anthropicCustomHeaders: { action: "unchanged" },
                     anthropicAuthToken: { action: "unchanged" },
+                }),
+            );
+        });
+        expect(apiMocks.aiStartAuth).toHaveBeenCalledWith(
+            { methodId: "anthropic-api-key", runtimeId: "claude-acp" },
+            null,
+        );
+    });
+
+    it("saves Google Vertex AI routing without starting Claude authentication", async () => {
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Claude");
+        fireEvent.click(getButtonFromText("Google Vertex AI"));
+
+        expect(
+            screen.getByText(
+                "Authentication is provided by Google Application Default Credentials.",
+            ),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByText(
+                "Changes apply to new or reopened sessions. Active chats keep their current provider configuration.",
+            ),
+        ).toBeInTheDocument();
+        expect(screen.queryByPlaceholderText(/Vertex API key/i)).not.toBeInTheDocument();
+
+        fireEvent.change(screen.getByLabelText("Vertex endpoint"), {
+            target: { value: "http://vertex.example" },
+        });
+        expect(
+            screen.getByText("HTTP gateways are only allowed for localhost."),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Save Vertex configuration" }),
+        ).toBeDisabled();
+
+        fireEvent.change(screen.getByLabelText("Vertex endpoint"), {
+            target: { value: "https://vertex.example" },
+        });
+        expect(screen.getByText("Project ID is required.")).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText("Project ID"), {
+            target: { value: "project-1" },
+        });
+        expect(screen.getByText("Region is required.")).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText("Region"), {
+            target: { value: "us-east5" },
+        });
+        fireEvent.change(screen.getByLabelText("Custom headers (optional)"), {
+            target: { value: "x-api-key: gateway-secret" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Save Vertex configuration" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "claude-acp",
+                    claudeProviderRouting: {
+                        type: "vertex",
+                        baseUrl: "https://vertex.example",
+                        projectId: "project-1",
+                        region: "us-east5",
+                    },
+                    anthropicCustomHeaders: {
+                        action: "set",
+                        value: "x-api-key: gateway-secret",
+                    },
+                    anthropicApiKey: { action: "unchanged" },
+                }),
+            );
+        });
+        expect(apiMocks.aiStartAuth).not.toHaveBeenCalled();
+        expect(apiMocks.aiLogout).not.toHaveBeenCalled();
+    });
+
+    it("clears Vertex routing without deleting existing Claude authentication", async () => {
+        const providers = createDefaultProviders();
+        providers.statuses["claude-acp"] = {
+            ...providers.statuses["claude-acp"],
+            authReady: true,
+            authMethod: "anthropic-api-key",
+            onboardingRequired: false,
+            claudeProviderRouting: {
+                type: "vertex",
+                baseUrl: "https://vertex.example",
+                projectId: "project-1",
+                region: "us-east5",
+            },
+        };
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+        await openProvider("Claude");
+
+        expect(screen.getByLabelText("Vertex endpoint")).toHaveValue(
+            "https://vertex.example",
+        );
+        fireEvent.click(
+            screen.getByRole("button", { name: "Clear Vertex settings" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "claude-acp",
+                    claudeProviderRouting: { type: "default" },
+                    anthropicApiKey: { action: "unchanged" },
+                    anthropicCustomHeaders: { action: "unchanged" },
+                    anthropicAuthToken: { action: "unchanged" },
+                }),
+            );
+        });
+        expect(apiMocks.aiLogout).not.toHaveBeenCalled();
+        expect(apiMocks.aiStartAuth).not.toHaveBeenCalled();
+    });
+
+    it("returns from Vertex routing when an Anthropic API key is selected", async () => {
+        const providers = createDefaultProviders();
+        providers.statuses["claude-acp"] = {
+            ...providers.statuses["claude-acp"],
+            claudeProviderRouting: {
+                type: "vertex",
+                baseUrl: "https://vertex.example",
+                projectId: "project-1",
+                region: "us-east5",
+            },
+        };
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+        await openProvider("Claude");
+        fireEvent.click(getButtonFromText("Anthropic API key"));
+        fireEvent.change(screen.getByPlaceholderText("Anthropic API key"), {
+            target: { value: "anthropic-secret" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Save and connect" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    claudeProviderRouting: { type: "default" },
+                    anthropicApiKey: {
+                        action: "set",
+                        value: "anthropic-secret",
+                    },
                 }),
             );
         });
@@ -796,6 +1007,106 @@ describe("AIProvidersSettings", () => {
                 runtimeId: "opencode-acp",
                 vaultPath: null,
             });
+        });
+    });
+
+    it("manages custom ACP definitions without exposing provider authentication", async () => {
+        apiMocks.aiCreateCustomRuntime.mockResolvedValue({
+            id: "custom:123e4567-e89b-12d3-a456-426614174000",
+            revision: 1,
+            launchFingerprint: "a".repeat(64),
+            displayName: "Local reviewer",
+            command: "local-acp",
+            args: ["--stdio", "--safe"],
+            env: { LOG_LEVEL: "debug" },
+            authMode: "external",
+        });
+
+        renderComponent(<AIProvidersSettings />);
+
+        expect(await screen.findByText("Custom ACP runtimes")).toBeInTheDocument();
+        fireEvent.click(
+            screen.getAllByRole("button", { name: "Add runtime" }).at(-1)!,
+        );
+        fireEvent.change(screen.getByLabelText("Runtime name"), {
+            target: { value: "Local reviewer" },
+        });
+        fireEvent.change(screen.getByLabelText("Command"), {
+            target: { value: "local-acp" },
+        });
+        fireEvent.change(screen.getByLabelText("Arguments"), {
+            target: { value: "--stdio\n--safe" },
+        });
+        fireEvent.change(screen.getByLabelText("Environment"), {
+            target: { value: "LOG_LEVEL=debug" },
+        });
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Verify executable" }),
+        );
+        await waitFor(() => {
+            expect(apiMocks.aiVerifyCustomRuntime).toHaveBeenCalledWith({
+                displayName: "Local reviewer",
+                command: "local-acp",
+                args: ["--stdio", "--safe"],
+                env: { LOG_LEVEL: "debug" },
+                authMode: "external",
+            });
+        });
+        expect(screen.getByText("Executable is ready.")).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getAllByRole("button", { name: "Add runtime" }).at(-1)!,
+        );
+        await waitFor(() => {
+            expect(apiMocks.aiCreateCustomRuntime).toHaveBeenCalledWith({
+                displayName: "Local reviewer",
+                command: "local-acp",
+                args: ["--stdio", "--safe"],
+                env: { LOG_LEVEL: "debug" },
+                authMode: "external",
+            });
+        });
+        expect(
+            screen.queryByRole("button", { name: /sign-in terminal|log out/i }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("keeps deleted custom definitions out of active settings and restores their stable ID", async () => {
+        const deletedDefinition = {
+            id: "custom:123e4567-e89b-12d3-a456-426614174001",
+            revision: 2,
+            launchFingerprint: "b".repeat(64),
+            displayName: "Archived reviewer",
+            command: "archived-acp",
+            args: ["--stdio"],
+            env: {},
+            authMode: "external" as const,
+        };
+        apiMocks.aiListDeletedCustomRuntimes.mockResolvedValue([
+            deletedDefinition,
+        ]);
+        apiMocks.aiRestoreCustomRuntime.mockResolvedValue(deletedDefinition);
+
+        renderComponent(
+            <AIProvidersSettings
+                searchQuery={createSettingsSearchQuery("archived-acp")}
+            />,
+        );
+
+        expect(
+            await screen.findByText(
+                "Deleted definitions retained for history",
+            ),
+        ).toBeInTheDocument();
+        expect(screen.getByText("Archived reviewer")).toBeInTheDocument();
+        expect(screen.queryByText("archived-acp")).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+        await waitFor(() => {
+            expect(apiMocks.aiRestoreCustomRuntime).toHaveBeenCalledWith(
+                deletedDefinition.id,
+            );
         });
     });
 });

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { getAllWebviewWindows, listen, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
@@ -7,6 +7,12 @@ import { SettingsPanel } from "./SettingsPanel";
 import { mockInvoke, renderComponent } from "../../test/test-utils";
 import { useAppUpdateStore } from "../updates/store";
 import { APP_ZOOM_STORAGE_KEY } from "../../app/utils/appZoom";
+import { useVaultStore } from "../../app/store/vaultStore";
+import {
+    getShortcutOverride,
+    setShortcutOverride,
+    SHORTCUT_OVERRIDES_STORAGE_KEY,
+} from "../../app/shortcuts/preferences";
 
 const aiApiMocks = vi.hoisted(() => ({
     aiListRuntimes: vi.fn(async () => [
@@ -98,6 +104,14 @@ const aiApiMocks = vi.hoisted(() => ({
     listenToAiAuthTerminalOutput: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalExited: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalError: vi.fn(async () => vi.fn()),
+    getAiHistoryStorageStatus: vi.fn(async () => ({
+        vaultKey: "vault-key",
+        generation: 1,
+        status: "ready" as const,
+        scope: "device" as const,
+    })),
+    reconcileAiHistoryStorage: vi.fn(),
+    listenToAiHistoryStorageChanged: vi.fn(async () => vi.fn()),
 }));
 
 vi.mock("../ai/api", () => aiApiMocks);
@@ -159,14 +173,41 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    window.history.replaceState({}, "", "/");
     setNavigatorIdentity(originalUserAgent, originalPlatform);
     localStorage.clear();
     mockInvoke().mockReset();
     vi.mocked(getAllWebviewWindows).mockResolvedValue([] as never[]);
     useAppUpdateStore.getState().reset();
+    useVaultStore.setState({ vaultPath: null });
 });
 
 describe("SettingsPanel", () => {
+    it("uses the standalone window vault for AI history storage", async () => {
+        window.history.replaceState(
+            {},
+            "",
+            "/?window=settings&section=ai&vault=%2Fvaults%2FProject%20Notes",
+        );
+        useVaultStore.setState({ vaultPath: null });
+        useChatStore.setState({
+            historyStorageVaultPath: null,
+            historyStorageStatus: null,
+        });
+        aiApiMocks.getAiHistoryStorageStatus.mockClear();
+
+        renderComponent(<SettingsPanel onClose={() => {}} standalone />);
+
+        expect(
+            await screen.findByRole("switch", {
+                name: "Store AI chats inside this vault",
+            }),
+        ).toBeInTheDocument();
+        expect(aiApiMocks.getAiHistoryStorageStatus).toHaveBeenCalledWith(
+            "/vaults/Project Notes",
+        );
+    });
+
     it("renders AI providers management inside AI settings", async () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 
@@ -270,6 +311,73 @@ describe("SettingsPanel", () => {
         expect(screen.getByDisplayValue("125")).toBeInTheDocument();
     });
 
+    it("sets the AI chat content width from Appearance", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+        const label = screen.getByText("Chat content width");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        fireEvent.change(within(row as HTMLElement).getByDisplayValue("600"), {
+            target: { value: "800" },
+        });
+
+        expect(useSettingsStore.getState().aiChatContentWidth).toBe(800);
+    });
+
+    it("sets glass opacity from Appearance", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+        const label = screen.getByText("Glass opacity");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        fireEvent.change(within(row as HTMLElement).getByRole("slider"), {
+            target: { value: "55" },
+        });
+
+        expect(useSettingsStore.getState().glassOpacity).toBe(55);
+        expect(within(row as HTMLElement).getByText("55%")).toBeInTheDocument();
+    });
+
+    it("sets the interface font from Appearance", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+        const label = screen.getByText("Interface font");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        fireEvent.click(
+            within(row as HTMLElement).getByRole("button", {
+                name: "System",
+            }),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Geist" }));
+
+        expect(useSettingsStore.getState().uiFontFamily).toBe("geist");
+
+        fireEvent.click(
+            within(row as HTMLElement).getByRole("button", {
+                name: "Geist",
+            }),
+        );
+        expect(
+            screen.getByRole("button", { name: "Geist Mono" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "JetBrains Mono" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "IBM Plex Mono" }),
+        ).toBeInTheDocument();
+    });
+
     it("filters recent vaults in a scrollable list", () => {
         localStorage.setItem(
             "neverwrite:recentVaults",
@@ -314,6 +422,84 @@ describe("SettingsPanel", () => {
         expect(
             screen.getByText("No vaults match your search."),
         ).toBeInTheDocument();
+    });
+
+    it("disables destructive Recent cleanup for the active vault", () => {
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([{ path: "/vault", name: "Current Vault" }]),
+        );
+        useVaultStore.setState({ vaultPath: "/vault" });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Vault" }));
+
+        const removeButton = screen.getByRole("button", {
+            name: "Remove Current Vault from Recents",
+        });
+        expect(removeButton).toBeDisabled();
+        expect(removeButton).toHaveAttribute(
+            "title",
+            "Switch to another vault before removing this one from Recents",
+        );
+    });
+
+    it("removes an unavailable vault after device-local cleanup succeeds", async () => {
+        const invoke = mockInvoke().mockResolvedValue(undefined);
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([
+                { path: "/missing-vault", name: "Missing Vault" },
+            ]),
+        );
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Vault" }));
+        fireEvent.click(
+            screen.getByRole("button", {
+                name: "Remove Missing Vault from Recents",
+            }),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+        await waitFor(() => {
+            expect(screen.queryByText("Missing Vault")).not.toBeInTheDocument();
+        });
+        expect(screen.getByText("No recent vaults.")).toBeInTheDocument();
+        expect(invoke).toHaveBeenCalledWith("forget_ai_history_device_data", {
+            vaultPath: "/missing-vault",
+            activeVaultPath: null,
+        });
+    });
+
+    it("keeps an unavailable vault visible when device-local cleanup fails", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "forget_ai_history_device_data") {
+                throw new Error("cleanup blocked");
+            }
+            return undefined;
+        });
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([
+                { path: "/missing-vault", name: "Missing Vault" },
+            ]),
+        );
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Vault" }));
+        fireEvent.click(
+            screen.getByRole("button", {
+                name: "Remove Missing Vault from Recents",
+            }),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+            "Could not delete device-local data. The vault remains in Recents so you can retry.",
+        );
+        expect(screen.getByText("Missing Vault")).toBeInTheDocument();
+        expect(screen.getByText("1/1")).toBeInTheDocument();
     });
 
     it("searches settings by row content and switches to the matching panel", () => {
@@ -433,6 +619,507 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("Ctrl+L")).toBeInTheDocument();
         expect(screen.getByText("Stop active agent")).toBeInTheDocument();
         expect(screen.getByText("Escape")).toBeInTheDocument();
+    });
+
+    it("updates shortcut references when global preferences change", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        act(() => {
+            setShortcutOverride("quick_switcher", "windows", {
+                key: "Q",
+                modifiers: ["ctrl", "alt"],
+            });
+        });
+
+        expect(screen.getByText("Ctrl+Alt+Q")).toBeInTheDocument();
+        expect(screen.queryByText("Ctrl+O")).not.toBeInTheDocument();
+    });
+
+    it("separates 22 customizable shortcuts from 15 fixed references", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        expect(screen.getByText("Customizable shortcuts")).toBeInTheDocument();
+        expect(screen.getByText("Fixed shortcuts")).toBeInTheDocument();
+        const customizableSection = document.querySelector(
+            "section[aria-labelledby='customizable-shortcuts-heading']",
+        );
+        const fixedSection = document.querySelector(
+            "section[aria-labelledby='fixed-shortcuts-heading']",
+        );
+        expect(customizableSection).toHaveAttribute(
+            "aria-describedby",
+            "customizable-shortcuts-description",
+        );
+        expect(fixedSection).toHaveAttribute(
+            "aria-describedby",
+            "fixed-shortcuts-description",
+        );
+        expect(
+            customizableSection?.querySelectorAll("[data-shortcut-action]"),
+        ).toHaveLength(22);
+        expect(
+            fixedSection?.querySelectorAll("[data-shortcut-action]"),
+        ).toHaveLength(15);
+
+        const fixedRow = document.querySelector(
+            "[data-shortcut-action='stop_active_agent']",
+        );
+        expect(fixedRow).not.toBeNull();
+        expect(
+            within(fixedRow as HTMLElement).queryByRole("button"),
+        ).not.toBeInTheDocument();
+        expect(fixedRow?.querySelector("kbd")).not.toHaveAttribute(
+            "aria-label",
+        );
+    });
+
+    it("records and persists a modified shortcut from the keyboard", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for Quick Switcher",
+        });
+        const status = screen.getByRole("status");
+        expect(status).toBeEmptyDOMElement();
+
+        fireEvent.click(record);
+        expect(record).toHaveAttribute("aria-pressed", "true");
+        fireEvent.keyDown(record, {
+            key: "q",
+            ctrlKey: true,
+            altKey: true,
+        });
+
+        expect(
+            within(row).getByText("Ctrl+Alt+Q", { selector: "kbd" }),
+        ).toBeInTheDocument();
+        expect(status).toHaveTextContent("Quick Switcher shortcut updated.");
+        expect(
+            JSON.parse(
+                localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
+            ).windows.quick_switcher,
+        ).toEqual({ key: "q", modifiers: ["ctrl", "alt"] });
+    });
+
+    it("suspends native macOS menu accelerators while recording", async () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/537.36",
+            "MacIntel",
+        );
+        const invoke = mockInvoke().mockResolvedValue(undefined);
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for Quick Switcher",
+        });
+
+        fireEvent.click(record);
+        await waitFor(() =>
+            expect(invoke).toHaveBeenCalledWith(
+                "set_native_menu_shortcut_capture",
+                { active: true },
+            ),
+        );
+
+        fireEvent.keyDown(record, { key: "Escape" });
+        await waitFor(() =>
+            expect(invoke).toHaveBeenCalledWith(
+                "set_native_menu_shortcut_capture",
+                { active: false },
+            ),
+        );
+    });
+
+    it("cancels recording with Escape and leaves Tab navigation uncaptured", () => {
+        const onClose = vi.fn();
+        renderComponent(<SettingsPanel onClose={onClose} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+
+        act(() => record.focus());
+        fireEvent.click(record);
+        fireEvent.keyDown(record, { key: "Escape" });
+        expect(record).toHaveFocus();
+        expect(record).toHaveAttribute("aria-pressed", "false");
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+        expect(onClose).not.toHaveBeenCalled();
+
+        fireEvent.click(record);
+        expect(fireEvent.keyDown(record, { key: "Tab" })).toBe(true);
+        expect(record).toHaveAttribute("aria-pressed", "false");
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+    });
+
+    it("rejects incomplete and operating-system-reserved combinations", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+        fireEvent.click(record);
+
+        fireEvent.keyDown(record, { key: "n" });
+        expect(
+            screen.getByText("Include at least one modifier key."),
+        ).toBeInTheDocument();
+
+        fireEvent.keyDown(record, { key: "Control", ctrlKey: true });
+        expect(
+            screen.getByText(
+                "Press a non-modifier key to complete the shortcut.",
+            ),
+        ).toBeInTheDocument();
+
+        fireEvent.keyDown(record, { key: "CapsLock", ctrlKey: true });
+        expect(
+            screen.getByText(
+                "Press a non-modifier key to complete the shortcut.",
+            ),
+        ).toBeInTheDocument();
+
+        fireEvent.keyDown(record, { key: "c", ctrlKey: true });
+        expect(
+            screen.getByText(
+                "This shortcut is reserved for Copy and cannot be reassigned.",
+            ),
+        ).toBeInTheDocument();
+        expect(record).toHaveAttribute("aria-pressed", "true");
+
+        fireEvent.keyDown(record, { key: "F4", altKey: true });
+        expect(
+            screen.getByText(
+                "This shortcut is reserved by the operating system.",
+            ),
+        ).toBeInTheDocument();
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+    });
+
+    it("rejects AltGr while preserving physical Ctrl+Alt shortcuts", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const row = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        const record = within(row).getByRole("button", {
+            name: "Record shortcut for Quick Switcher",
+        });
+        fireEvent.click(record);
+        fireEvent.keyDown(record, {
+            key: "AltGraph",
+            code: "AltRight",
+            ctrlKey: true,
+            altKey: true,
+        });
+        fireEvent.keyDown(record, {
+            key: "@",
+            code: "KeyQ",
+            ctrlKey: true,
+            altKey: true,
+        });
+
+        expect(
+            screen.getByText(
+                "AltGr combinations cannot be used as global shortcuts.",
+            ),
+        ).toBeInTheDocument();
+        expect(record).toHaveAttribute("aria-pressed", "true");
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+
+        fireEvent.keyUp(record, {
+            key: "AltGraph",
+            code: "AltRight",
+        });
+        fireEvent.keyDown(record, {
+            key: "q",
+            code: "KeyQ",
+            ctrlKey: true,
+            altKey: true,
+        });
+
+        expect(
+            JSON.parse(
+                localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
+            ).windows.quick_switcher,
+        ).toEqual({ key: "q", modifiers: ["ctrl", "alt"] });
+    });
+
+    it("requires explicit replacement and swaps conflicting bindings atomically", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const newNoteRow = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(newNoteRow).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+
+        fireEvent.click(record);
+        fireEvent.keyDown(record, { key: "o", ctrlKey: true });
+
+        let dialog = screen.getByRole("alertdialog");
+        expect(dialog).toHaveTextContent("Shortcut already in use");
+        expect(dialog).toHaveTextContent("Quick Switcher will move to Ctrl+N");
+        const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+        expect(cancel).toHaveFocus();
+        fireEvent.click(cancel);
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+
+        fireEvent.click(record);
+        fireEvent.keyDown(record, { key: "o", ctrlKey: true });
+        dialog = screen.getByRole("alertdialog");
+        fireEvent.click(
+            within(dialog).getByRole("button", {
+                name: "Replace shortcut",
+            }),
+        );
+
+        const quickSwitcherRow = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        expect(
+            within(newNoteRow).getByText("Ctrl+O", { selector: "kbd" }),
+        ).toBeInTheDocument();
+        expect(
+            within(quickSwitcherRow).getByText("Ctrl+N", {
+                selector: "kbd",
+            }),
+        ).toBeInTheDocument();
+
+        const stored = JSON.parse(
+            localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
+        );
+        expect(stored.windows).toMatchObject({
+            new_note: { key: "o", modifiers: ["ctrl"] },
+            quick_switcher: { key: "n", modifiers: ["ctrl"] },
+        });
+    });
+
+    it("rejects fixed editor bindings while recording", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const newNoteRow = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(newNoteRow).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+
+        const cases = [
+            ["f", { ctrlKey: true }, "Find in Note"],
+            ["s", { ctrlKey: true, shiftKey: true }, "Save Note"],
+            ["1", { ctrlKey: true }, "Heading 1"],
+            ["b", { ctrlKey: true }, "Bold Selection"],
+            ["h", { ctrlKey: true, shiftKey: true }, "Highlight Selection"],
+        ] as const;
+
+        fireEvent.click(record);
+        for (const [key, modifiers, label] of cases) {
+            fireEvent.keyDown(record, { key, ...modifiers });
+            expect(
+                screen.getByText(
+                    `This shortcut is reserved for ${label} and cannot be reassigned.`,
+                ),
+            ).toBeInTheDocument();
+        }
+
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+    });
+
+    it("blocks a conflict swap when a third action owns the moved binding", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const newNoteRow = document.querySelector(
+            "[data-shortcut-action='new_note']",
+        ) as HTMLElement;
+        const record = within(newNoteRow).getByRole("button", {
+            name: "Record shortcut for New Note",
+        });
+        fireEvent.click(record);
+        fireEvent.keyDown(record, { key: "o", ctrlKey: true });
+
+        act(() => {
+            setShortcutOverride("new_tab", "windows", {
+                key: "n",
+                modifiers: ["ctrl"],
+            });
+        });
+        const dialog = screen.getByRole("alertdialog");
+        fireEvent.click(
+            within(dialog).getByRole("button", {
+                name: "Replace shortcut",
+            }),
+        );
+
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "The shortcut swap was not applied because New Tab already uses one of the resulting bindings.",
+        );
+        const stored = JSON.parse(
+            localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY) ?? "",
+        );
+        expect(stored.windows).toEqual({
+            new_tab: { key: "n", modifiers: ["ctrl"] },
+        });
+    });
+
+    it("resets individual shortcuts and confirms reset all", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        setShortcutOverride("quick_switcher", "windows", {
+            key: "q",
+            modifiers: ["ctrl", "alt"],
+        });
+        setShortcutOverride("new_note", "windows", {
+            key: "d",
+            modifiers: ["ctrl", "alt"],
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const quickSwitcherRow = document.querySelector(
+            "[data-shortcut-action='quick_switcher']",
+        ) as HTMLElement;
+        fireEvent.click(
+            within(quickSwitcherRow).getByRole("button", {
+                name: "Reset shortcut for Quick Switcher",
+            }),
+        );
+        expect(
+            within(quickSwitcherRow).getByText("Ctrl+O", {
+                selector: "kbd",
+            }),
+        ).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Reset all" }));
+        const dialog = screen.getByRole("alertdialog");
+        expect(dialog).toHaveTextContent("Reset all shortcuts?");
+        fireEvent.click(
+            within(dialog).getByRole("button", { name: "Reset all" }),
+        );
+
+        expect(localStorage.getItem(SHORTCUT_OVERRIDES_STORAGE_KEY)).toBeNull();
+        expect(screen.getByText("All shortcuts restored to their defaults.")).toBeInTheDocument();
+    });
+
+    it("does not restore aliases that are assigned to another shortcut", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        act(() => {
+            setShortcutOverride("zoom_in", "windows", {
+                key: "i",
+                modifiers: ["ctrl", "alt"],
+            });
+            setShortcutOverride("new_note", "windows", {
+                key: "+",
+                modifiers: ["ctrl", "shift"],
+            });
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        const zoomInRow = document.querySelector(
+            "[data-shortcut-action='zoom_in']",
+        ) as HTMLElement;
+        fireEvent.click(
+            within(zoomInRow).getByRole("button", {
+                name: "Reset shortcut for Zoom In",
+            }),
+        );
+
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "Zoom In cannot be restored because Ctrl+Shift++ is assigned to New Note. Reassign New Note first.",
+        );
+        expect(
+            within(zoomInRow).getByText("Ctrl+Alt+I", {
+                selector: "kbd",
+            }),
+        ).toBeInTheDocument();
+        expect(getShortcutOverride("zoom_in", "windows")).toEqual({
+            key: "i",
+            modifiers: ["ctrl", "alt"],
+        });
+    });
+
+    it("filters customizable and fixed shortcut search results", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+        fireEvent.click(screen.getByRole("button", { name: "Shortcuts" }));
+
+        fireEvent.change(
+            screen.getByRole("textbox", { name: "Search settings" }),
+            { target: { value: "stop active agent" } },
+        );
+
+        expect(screen.getByText("Fixed shortcuts")).toBeInTheDocument();
+        expect(screen.getByText("Stop active agent")).toBeInTheDocument();
+        expect(screen.queryByText("Quick Switcher")).not.toBeInTheDocument();
+
+        fireEvent.change(
+            screen.getByRole("textbox", { name: "Search settings" }),
+            { target: { value: "record shortcut" } },
+        );
+        expect(screen.getByText("Customizable shortcuts")).toBeInTheDocument();
+        expect(screen.getAllByText("Record shortcut")).toHaveLength(22);
+        expect(screen.queryByText("Fixed shortcuts")).not.toBeInTheDocument();
     });
 
     it("hides the inline close button in standalone Windows settings", () => {

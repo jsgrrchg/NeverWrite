@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { getCurrentWebview, invoke } from "@neverwrite/runtime";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
@@ -51,10 +52,13 @@ function renderComposer({
     isStopping = false,
     hasPendingSubmitAfterStop = false,
     expanded = false,
+    contextBar,
     onMentionAttach = vi.fn(),
     onFolderAttach = vi.fn(),
     onToggleExpanded = vi.fn(),
     onImageAttachmentValidationFailure = vi.fn(),
+    onPasteImage,
+    onClipboardError,
     onSubmit = () => {},
     onStop = () => {},
 }: {
@@ -69,6 +73,7 @@ function renderComposer({
     isStopping?: boolean;
     hasPendingSubmitAfterStop?: boolean;
     expanded?: boolean;
+    contextBar?: ReactNode;
     onMentionAttach?: (note: {
         id: string;
         title: string;
@@ -77,6 +82,8 @@ function renderComposer({
     onFolderAttach?: (folderPath: string, name: string) => void;
     onToggleExpanded?: () => void;
     onImageAttachmentValidationFailure?: (reason: string) => void;
+    onPasteImage?: (file: File) => void | Promise<void>;
+    onClipboardError?: (message: string) => void;
     onSubmit?: () => void;
     onStop?: () => void;
 } = {}) {
@@ -103,6 +110,7 @@ function renderComposer({
             isStopping={isStopping}
             hasPendingSubmitAfterStop={hasPendingSubmitAfterStop}
             expanded={expanded}
+            contextBar={contextBar}
             onToggleExpanded={onToggleExpanded}
             onChange={onChange}
             onMentionAttach={onMentionAttach}
@@ -110,6 +118,8 @@ function renderComposer({
             onImageAttachmentValidationFailure={
                 onImageAttachmentValidationFailure
             }
+            onPasteImage={onPasteImage}
+            onClipboardError={onClipboardError}
             onSubmit={onSubmit}
             onStop={onStop}
         />,
@@ -328,6 +338,8 @@ describe("AIChatComposer mention picker", () => {
         );
 
         expect(shell).toContainElement(contentColumn);
+        expect(shell).toHaveClass("min-h-0", "max-h-full");
+        expect(shell).toHaveStyle({ maxHeight: "100%" });
         expect(shell).not.toHaveStyle({
             maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
         });
@@ -338,9 +350,66 @@ describe("AIChatComposer mention picker", () => {
         });
     });
 
+    it("exposes file-tree drag state to the visible composer surface", () => {
+        renderComposer();
+
+        const dropZone = document.querySelector(
+            '[data-ai-composer-drop-zone="true"]',
+        );
+        expect(dropZone).not.toHaveAttribute(
+            "data-ai-composer-drop-active",
+        );
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "start",
+                        x: 0,
+                        y: 0,
+                        notes: [],
+                    },
+                }),
+            );
+        });
+        expect(dropZone).toHaveAttribute(
+            "data-ai-composer-drop-active",
+            "true",
+        );
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "cancel",
+                        x: 0,
+                        y: 0,
+                        notes: [],
+                    },
+                }),
+            );
+        });
+        expect(dropZone).not.toHaveAttribute(
+            "data-ai-composer-drop-active",
+        );
+    });
+
+    it("reserves top spacing only when the context bar is present", () => {
+        renderComposer({
+            contextBar: <div data-testid="test-context-bar">Context</div>,
+        });
+
+        expect(
+            screen.getByTestId("test-context-bar").closest(".pt-2"),
+        ).not.toBeNull();
+    });
+
     it("keeps the capped composer content flexible while expanded", () => {
         renderComposer({ expanded: true });
 
+        expect(
+            screen.getByTestId("chat-composer-shell").getAttribute("style"),
+        ).toContain("background-color: transparent");
         const contentColumn = screen.getByTestId(
             "chat-composer-content-column",
         );
@@ -1207,6 +1276,36 @@ describe("AIChatComposer mention picker", () => {
         expect(
             screen.getByRole("button", { name: "Waiting for stop" }),
         ).toBeDisabled();
+    });
+
+    it("pastes clipboard images from the context menu through the attachment handler", async () => {
+        const onPasteImage = vi.fn();
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+            read: vi.fn().mockResolvedValue([{
+                types: ["image/png"],
+                getType: vi.fn().mockResolvedValue(new Blob(["image"], { type: "image/png" })),
+            }]),
+            readText: vi.fn().mockResolvedValue(""),
+        } });
+        const { composer } = renderComposer({ onPasteImage });
+        Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => composer) });
+        fireEvent.contextMenu(composer);
+        fireEvent.click(screen.getByText("Paste"));
+        await waitFor(() => expect(onPasteImage).toHaveBeenCalledTimes(1));
+        expect(onPasteImage.mock.calls[0][0]).toMatchObject({ type: "image/png", size: 5 });
+        expect(navigator.clipboard.readText).not.toHaveBeenCalled();
+    });
+
+    it("reports clipboard read failures instead of dropping the paste", async () => {
+        const onClipboardError = vi.fn();
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+            read: vi.fn().mockRejectedValue(new Error("Permission denied")),
+        } });
+        const { composer } = renderComposer({ onPasteImage: vi.fn(), onClipboardError });
+        Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => composer) });
+        fireEvent.contextMenu(composer);
+        fireEvent.click(screen.getByText("Paste"));
+        await waitFor(() => expect(onClipboardError).toHaveBeenCalledWith(expect.stringContaining("Ctrl+V")));
     });
 
     it("opens a mention pill in a new tab from the context menu", async () => {

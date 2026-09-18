@@ -15,6 +15,7 @@ import type {
     AIChatAttachment,
     AIChatMessage,
     AIFileDiff,
+    AIPlanEntry,
     AIPermissionOption,
     AIUrlElicitationAction,
     AIUserInputAction,
@@ -51,8 +52,10 @@ import { useVaultStore } from "../../../app/store/vaultStore";
 import { toVaultRelativePath } from "../../../app/utils/vaultPaths";
 import {
     buildCodexGeneratedImagePreviewUrl,
+    buildManagedAttachmentPreviewUrl,
     buildVaultPreviewUrlFromAbsolutePath,
 } from "../../../app/utils/filePreviewUrl";
+import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import { ChangeReviewToolRail } from "./ChangeReviewToolRail";
 import { ResizableDiffContainer } from "./ResizableDiffContainer";
@@ -77,7 +80,7 @@ interface UserMentionContextMenuPayload {
 function isImageFileAttachment(attachment: AIChatAttachment) {
     return (
         attachment.type === "file" &&
-        Boolean(attachment.filePath) &&
+        Boolean(attachment.filePath || attachment.managedAttachmentId) &&
         attachment.mimeType?.startsWith("image/") === true
     );
 }
@@ -96,21 +99,27 @@ function UserMessageAttachmentThumbnail({
     const [loadFailed, setLoadFailed] = useState(false);
     const [copied, setCopied] = useState(false);
     const filePath = attachment.filePath;
-    if (!filePath) return null;
+    const managedAttachmentId = attachment.managedAttachmentId;
+    if (!filePath && !managedAttachmentId) return null;
 
-    const previewUrl = buildVaultPreviewUrlFromAbsolutePath(filePath, vaultPath);
+    const previewUrl = managedAttachmentId
+        ? buildManagedAttachmentPreviewUrl(vaultPath, managedAttachmentId)
+        : buildVaultPreviewUrlFromAbsolutePath(filePath!, vaultPath);
     const unavailable = !previewUrl || loadFailed;
-    const label = attachment.label || fileNameFromPath(filePath);
-    const fileName = fileNameFromPath(filePath);
+    const fileName =
+        attachment.fileName ?? (filePath ? fileNameFromPath(filePath) : "Image");
+    const label = attachment.label || fileName;
+    const displayReference = managedAttachmentId ?? filePath!;
 
-    const copyPath = () => {
-        void navigator.clipboard?.writeText(filePath).then(() => {
+    const copyReference = () => {
+        void navigator.clipboard?.writeText(displayReference).then(() => {
             setCopied(true);
             window.setTimeout(() => setCopied(false), 1200);
         });
     };
 
     const openInApp = () => {
+        if (!filePath) return;
         const relativePath = toVaultRelativePath(filePath, vaultPath);
         if (!relativePath) return;
         useEditorStore.getState().openFile(
@@ -122,6 +131,16 @@ function UserMessageAttachmentThumbnail({
             "image",
             { contentTruncated: false },
         );
+    };
+
+    const reveal = () => {
+        if (managedAttachmentId) {
+            void vaultInvoke("ai_reveal_managed_attachment", {
+                attachmentId: managedAttachmentId,
+            });
+            return;
+        }
+        void revealItemInDir(filePath!);
     };
 
     return (
@@ -155,7 +174,7 @@ function UserMessageAttachmentThumbnail({
                     <img
                         src={previewUrl}
                         alt={label}
-                        title={filePath}
+                        title={fileName}
                         className="block h-full w-full"
                         draggable={false}
                         loading="lazy"
@@ -170,7 +189,7 @@ function UserMessageAttachmentThumbnail({
                 <div className="min-w-0">
                     <div
                         className="truncate font-medium"
-                        title={filePath}
+                        title={fileName}
                         style={{
                             color: "var(--text-primary)",
                             fontSize: "0.82em",
@@ -192,23 +211,26 @@ function UserMessageAttachmentThumbnail({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5">
-                    <ImageActionButton
-                        icon="open"
-                        onClick={openInApp}
-                    >
-                        Open
-                    </ImageActionButton>
+                    {filePath ? (
+                        <ImageActionButton icon="open" onClick={openInApp}>
+                            Open
+                        </ImageActionButton>
+                    ) : null}
                     <ImageActionButton
                         icon="reveal"
-                        onClick={() => void revealItemInDir(filePath)}
+                        onClick={reveal}
                     >
                         Reveal in Finder
                     </ImageActionButton>
                     <ImageActionButton
                         icon={copied ? "check" : "copy"}
-                        onClick={copyPath}
+                        onClick={copyReference}
                     >
-                        {copied ? "Copied" : "Copy Path"}
+                        {copied
+                            ? "Copied"
+                            : managedAttachmentId
+                              ? "Copy ID"
+                              : "Copy Path"}
                     </ImageActionButton>
                 </div>
             </div>
@@ -251,7 +273,8 @@ function renderUserContent(
     const parts: Array<string | ReactElement> = [];
     const unmatchedFileAttachments = attachments.filter(
         (attachment) =>
-            attachment.type === "file" && Boolean(attachment.filePath),
+            attachment.type === "file" &&
+            Boolean(attachment.filePath || attachment.managedAttachmentId),
     );
     const takeFileAttachment = (label: string) => {
         const index = unmatchedFileAttachments.findIndex(
@@ -491,22 +514,10 @@ function UserTextMessage({
 }) {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<UserMentionContextMenuPayload> | null>(null);
-    const [copied, setCopied] = useState(false);
-    const formattedTime = formatUserMessageTime(message.timestamp);
-    const canCopy = message.content.trim().length > 0;
-
-    const copyMessage = () => {
-        if (!canCopy) return;
-
-        void navigator.clipboard.writeText(message.content).then(() => {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
-        });
-    };
 
     return (
         <div
-            className="min-w-0 w-full max-w-full"
+            className="group min-w-0 w-full max-w-full"
             data-user-message="true"
         >
             <div
@@ -537,33 +548,7 @@ function UserTextMessage({
                 )}
                 <UserMessageAttachments attachments={message.attachments} />
             </div>
-            <div
-                className="mt-1 flex min-h-5 items-center justify-end gap-1.5 px-0.5 text-text-secondary"
-                data-user-message-metadata="true"
-                style={{
-                    fontFamily: "var(--font-mono), ui-monospace, monospace",
-                    fontSize: "10px",
-                    opacity: 0.72,
-                }}
-            >
-                {formattedTime ? (
-                    <time dateTime={new Date(message.timestamp).toISOString()}>
-                        {formattedTime}
-                    </time>
-                ) : null}
-                {canCopy ? (
-                    <button
-                        aria-label={copied ? "Message copied" : "Copy message"}
-                        className="flex h-5 w-5 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--accent)]"
-                        onClick={copyMessage}
-                        style={copied ? { color: "var(--diff-add)" } : undefined}
-                        title={copied ? "Copied" : "Copy message"}
-                        type="button"
-                    >
-                        {copied ? <CopySuccessIcon /> : <CopyMessageIcon />}
-                    </button>
-                ) : null}
-            </div>
+            <MessageMetadata message={message} placement="user" />
             {contextMenu ? (
                 <ContextMenu
                     menu={contextMenu}
@@ -616,7 +601,78 @@ function UserTextMessage({
     );
 }
 
-function formatUserMessageTime(timestamp: number) {
+function MessageMetadata({
+    message,
+    placement,
+    available = true,
+}: {
+    message: AIChatMessage;
+    placement: "assistant" | "user";
+    available?: boolean;
+}) {
+    const [copied, setCopied] = useState(false);
+    const formattedTime = formatMessageTime(message.timestamp);
+    const canCopy = available && message.content.trim().length > 0;
+
+    const copyMessage = () => {
+        if (!canCopy) return;
+
+        void navigator.clipboard.writeText(message.content).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+        });
+    };
+
+    const time = formattedTime ? (
+        <time dateTime={new Date(message.timestamp).toISOString()}>
+            {formattedTime}
+        </time>
+    ) : null;
+    const copyButton = canCopy ? (
+        <button
+            aria-label={copied ? "Message copied" : "Copy message"}
+            className="flex h-5 w-5 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--accent)]"
+            onClick={copyMessage}
+            style={copied ? { color: "var(--diff-add)" } : undefined}
+            title={copied ? "Copied" : "Copy message"}
+            type="button"
+        >
+            {copied ? <CopySuccessIcon /> : <CopyMessageIcon />}
+        </button>
+    ) : null;
+
+    return (
+        <div
+            className={`mt-1 flex min-h-5 items-center gap-1.5 px-0.5 text-text-secondary opacity-0 transition-opacity ${placement === "user" ? "justify-end" : "justify-start"} ${available ? "group-hover:opacity-[0.72] group-has-[:focus-visible]:opacity-[0.72]" : ""}`}
+            data-assistant-message-metadata={
+                placement === "assistant" ? "true" : undefined
+            }
+            data-user-message-metadata={
+                placement === "user" ? "true" : undefined
+            }
+            style={{
+                fontFamily: "var(--font-mono), ui-monospace, monospace",
+                fontSize: "10px",
+            }}
+        >
+            {available ? (
+                placement === "assistant" ? (
+                    <>
+                        {copyButton}
+                        {time}
+                    </>
+                ) : (
+                    <>
+                        {time}
+                        {copyButton}
+                    </>
+                )
+            ) : null}
+        </div>
+    );
+}
+
+function formatMessageTime(timestamp: number) {
     if (!Number.isFinite(timestamp)) {
         return null;
     }
@@ -625,6 +681,45 @@ function formatUserMessageTime(timestamp: number) {
         hour: "numeric",
         minute: "2-digit",
     }).format(timestamp);
+}
+
+function AssistantTextMessage({
+    message,
+    pillMetrics,
+    chatFontSize,
+    metadataMode,
+}: {
+    message: AIChatMessage;
+    pillMetrics: ChatPillMetrics;
+    chatFontSize: number;
+    metadataMode: AssistantMessageMetadataMode;
+}) {
+    return (
+        <div
+            className="group min-w-0 max-w-full"
+            data-assistant-message="true"
+            style={{
+                color: "var(--text-primary)",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+            }}
+        >
+            <MarkdownContent
+                content={message.content}
+                live={message.inProgress === true}
+                pillMetrics={pillMetrics}
+                chatFontSize={chatFontSize}
+                fileReferenceAppearance="link"
+            />
+            {metadataMode !== "hidden" ? (
+                <MessageMetadata
+                    available={metadataMode === "available"}
+                    message={message}
+                    placement="assistant"
+                />
+            ) : null}
+        </div>
+    );
 }
 
 function CopyMessageIcon() {
@@ -668,6 +763,7 @@ interface AIChatMessageItemProps {
     message: AIChatMessage;
     sessionId?: string | null;
     readOnly?: boolean;
+    assistantMetadataMode?: AssistantMessageMetadataMode;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
     visibleWorkCycleId?: string | null;
@@ -684,6 +780,11 @@ interface AIChatMessageItemProps {
     ) => void;
     onDismissMessage?: (messageId: string) => void;
 }
+
+export type AssistantMessageMetadataMode =
+    | "available"
+    | "reserved"
+    | "hidden";
 
 function stripMarkdownBold(text: string) {
     return text.replace(/\*\*(.+?)\*\*/g, "$1");
@@ -820,6 +921,14 @@ function ToolMessage({
     return <ToolActivityItem message={message} sessionId={sessionId} />;
 }
 
+const PLAN_DONE_COLOR = "#84cc16";
+
+function getPlanEntryColor(status: AIPlanEntry["status"]) {
+    if (status === "completed") return PLAN_DONE_COLOR;
+    if (status === "in_progress") return "var(--accent)";
+    return "var(--text-secondary)";
+}
+
 export function PlanMessage({
     message,
     sessionId,
@@ -843,82 +952,119 @@ export function PlanMessage({
     const completedCount = entries.filter(
         (entry) => entry.status === "completed",
     ).length;
-    const inProgress = entries.some((entry) => entry.status === "in_progress");
-    const allDone = entries.length > 0 && completedCount === entries.length;
-    const statusLabel = allDone
-        ? "All Done"
-        : inProgress
-          ? "In Progress"
-          : entries.length > 0
-            ? "Planned"
-            : "Draft";
+    const title = message.title ?? "Plan";
+    const currentEntry =
+        entries.find((entry) => entry.status === "in_progress") ??
+        entries.find((entry) => entry.status === "pending");
+    const collapsedTitle = currentEntry
+        ? `${title} - ${currentEntry.content}`
+        : title;
     const canExpand = entries.length > 0 || !!detail;
 
     return (
         <div
-            className="chat-plan-frame min-w-0 max-w-full overflow-hidden"
+            className="nw-chat-translucent-surface chat-plan-frame min-w-0 max-w-full overflow-hidden"
             data-plan-surface="true"
         >
-            <div className="flex items-center gap-1 px-2.5 py-2">
+            <div className="flex items-center gap-1.5 px-2.5 py-2">
                 <button
+                    aria-expanded={expanded}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    data-plan-toggle="true"
                     type="button"
                     onClick={() => {
                         if (canExpand) setExpanded((value) => !value);
                     }}
-                    className="flex min-w-0 flex-1 items-baseline gap-2 rounded-sm text-left"
-                    aria-expanded={expanded}
                     style={{
-                        backgroundColor: "transparent",
+                        background: "none",
                         border: "none",
                         cursor: canExpand ? "pointer" : "default",
+                        padding: 0,
                     }}
                 >
                     <span
-                        className="inline-block w-3 shrink-0 text-center"
-                        style={{
-                            color: "var(--text-secondary)",
-                            fontSize: "0.78em",
-                            fontWeight: 500,
-                            lineHeight: 1.5,
-                        }}
+                        className="inline-grid shrink-0 place-items-center"
+                        style={{ height: 16, width: 16 }}
                     >
-                        {canExpand ? (expanded ? "⌄" : ">") : "·"}
+                        {canExpand ? (
+                            <svg
+                                aria-hidden="true"
+                                fill="none"
+                                height="10"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                    opacity: 0.75,
+                                    transform: expanded
+                                        ? "rotate(0deg)"
+                                        : "rotate(-90deg)",
+                                    transition: "transform 160ms ease",
+                                }}
+                                viewBox="0 0 16 16"
+                                width="10"
+                            >
+                                <path
+                                    d="M4.5 6.5 8 10l3.5-3.5"
+                                    stroke="currentColor"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth="1.6"
+                                />
+                            </svg>
+                        ) : (
+                            <span
+                                style={{
+                                    background: "var(--text-secondary)",
+                                    borderRadius: "50%",
+                                    display: "block",
+                                    height: 4,
+                                    opacity: 0.6,
+                                    width: 4,
+                                }}
+                            />
+                        )}
                     </span>
                     <span
-                        className="min-w-0 flex-1 font-medium"
+                        className="min-w-0 flex-1 truncate"
                         style={{
-                            color: "var(--text-secondary)",
-                            fontSize: "0.78em",
-                            lineHeight: 1.5,
+                            color: "var(--text-primary)",
+                            fontSize: "0.8125rem",
+                            fontWeight: 600,
                         }}
                     >
-                        {message.title ?? "Plan"}
-                    </span>
-                    <span
-                        style={{
-                            color: "var(--text-secondary)",
-                            fontSize: "0.72em",
-                        }}
-                    >
-                        {statusLabel}
+                        {expanded ? title : collapsedTitle}
                     </span>
                 </button>
+                {entries.length > 0 ? (
+                    <span
+                        className="shrink-0"
+                        data-plan-progress="true"
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.7em",
+                            fontVariantNumeric: "tabular-nums",
+                            lineHeight: 1,
+                            opacity: 0.6,
+                        }}
+                    >
+                        {completedCount}/{entries.length}
+                    </span>
+                ) : null}
                 {onDismiss ? (
                     <button
                         type="button"
                         aria-label="Dismiss plan banner"
                         title="Dismiss plan banner"
                         onClick={onDismiss}
-                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
+                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md"
                         style={{
                             border: "none",
                             background: "transparent",
                             color: "var(--text-secondary)",
                             cursor: "pointer",
-                            opacity: 0.72,
+                            opacity: 0.6,
                             transition:
                                 "opacity 140ms ease, background-color 140ms ease",
-                            fontSize: 14,
+                            fontSize: 13,
                             lineHeight: 1,
                         }}
                     >
@@ -928,13 +1074,11 @@ export function PlanMessage({
             </div>
 
             {expanded && detail ? (
-                <div
-                    className="px-7 pb-2"
-                >
+                <div className="pb-2 pr-2.5" style={{ paddingLeft: 36 }}>
                     <div
                         style={{
                             color: "var(--text-secondary)",
-                            fontSize: "0.78em",
+                            fontSize: "12px",
                             lineHeight: 1.45,
                         }}
                     >
@@ -950,61 +1094,51 @@ export function PlanMessage({
 
             {expanded && entries.length > 0 ? (
                 <div
-                    className="activity-tree flex min-w-0 flex-col gap-1.5 px-2.5 pb-2.5"
+                    className="flex min-w-0 flex-col gap-1 px-2.5 pb-2"
                     data-plan-tree="true"
                     role="list"
                 >
                     {entries.map((entry, index) => {
                         const isCompleted = entry.status === "completed";
-                        const isActive = entry.status === "in_progress";
                         return (
                             <div
                                 key={`${entry.content}:${index}`}
-                                className="activity-tree-branch min-w-0 pl-10"
-                                data-activity-rail-decoration="branch"
+                                className="flex min-w-0 items-start gap-2.5 py-0.5"
                                 data-plan-entry-status={entry.status}
                                 role="listitem"
-                                style={{
-                                    color: isCompleted
-                                        ? "var(--text-secondary)"
-                                        : "var(--text-primary)",
-                                    opacity: isCompleted ? 0.74 : 1,
-                                }}
                             >
-                                <div className="flex min-w-0 items-start gap-2 py-0.5">
-                                    <span
-                                        aria-hidden="true"
-                                        className="mt-1 inline-flex h-2 w-2 shrink-0 rounded-full"
-                                        style={{
-                                            backgroundColor: isCompleted
-                                                ? "#84cc16"
-                                                : isActive
-                                                  ? "var(--accent)"
-                                                  : "transparent",
-                                            border: isCompleted || isActive
-                                                ? "none"
-                                                : "1px solid color-mix(in srgb, var(--text-secondary) 58%, transparent)",
-                                            opacity: isCompleted ? 0.9 : 0.8,
-                                        }}
-                                    />
-                                    <div
-                                        className="min-w-0 flex-1"
-                                        style={{
-                                            fontSize: "0.76em",
-                                            lineHeight: 1.5,
-                                            overflowWrap: "anywhere",
-                                            wordBreak: "break-word",
-                                            textDecoration: isCompleted
-                                                ? "line-through"
-                                                : "none",
-                                        }}
-                                    >
-                                        {entry.content}
-                                    </div>
-                                </div>
+                                <span
+                                    aria-hidden="true"
+                                    className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                                    style={{
+                                        backgroundColor: getPlanEntryColor(
+                                            entry.status,
+                                        ),
+                                        opacity: isCompleted ? 0.85 : 0.8,
+                                    }}
+                                />
+                                <span
+                                    className="min-w-0 flex-1"
+                                    style={{
+                                        color: isCompleted
+                                            ? "var(--text-secondary)"
+                                            : "var(--text-primary)",
+                                        fontSize: "12px",
+                                        lineHeight: 1.45,
+                                        opacity: isCompleted ? 0.7 : 1,
+                                        overflowWrap: "anywhere",
+                                        textDecoration: isCompleted
+                                            ? "line-through"
+                                            : undefined,
+                                        wordBreak: "break-word",
+                                    }}
+                                >
+                                    {entry.content}
+                                </span>
                             </div>
                         );
                     })}
+
                 </div>
             ) : expanded && !detail ? (
                 <div
@@ -1018,18 +1152,6 @@ export function PlanMessage({
                 </div>
             ) : null}
 
-            {expanded && entries.length > 0 ? (
-                <div
-                    className="px-2.5 pb-1.5 pt-0.5"
-                    style={{
-                        color: "var(--text-secondary)",
-                        fontSize: "0.74em",
-                        opacity: 0.68,
-                    }}
-                >
-                    {completedCount}/{entries.length}
-                </div>
-            ) : null}
         </div>
     );
 }
@@ -1697,6 +1819,10 @@ function PermissionDecisionButton({
 }) {
     const [hovered, setHovered] = useState(false);
     const isReject = option.kind.startsWith("reject");
+    const permissionScope =
+        option.kind === "allow_always" && option.permission_scope?.length
+            ? option.permission_scope
+            : undefined;
     const interactive = !disabled;
     const hovering = hovered && interactive;
 
@@ -1764,7 +1890,14 @@ function PermissionDecisionButton({
                     <path d="M2.5 6.2L4.9 8.6L9.6 3.6" />
                 )}
             </svg>
-            {option.name}
+            <span className="flex flex-col items-start leading-tight">
+                <span>{option.name}</span>
+                {permissionScope ? (
+                    <span className="max-w-80 break-all text-left text-[0.86em] opacity-85">
+                        {permissionScope.join(", ")}
+                    </span>
+                ) : null}
+            </span>
         </button>
     );
 }
@@ -3251,6 +3384,8 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     message,
     sessionId,
     readOnly = false,
+    assistantMetadataMode =
+        message.inProgress === true ? "reserved" : "available",
     pillMetrics,
     chatFontSize = 14,
     visibleWorkCycleId = null,
@@ -3360,20 +3495,11 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
 
     // Assistant text — flat, no card
     return (
-        <div
-            className="min-w-0 max-w-full"
-            style={{
-                color: "var(--text-primary)",
-                overflowWrap: "anywhere",
-                wordBreak: "break-word",
-            }}
-        >
-            <MarkdownContent
-                content={message.content}
-                pillMetrics={pillMetrics}
-                chatFontSize={chatFontSize}
-                fileReferenceAppearance="link"
-            />
-        </div>
+        <AssistantTextMessage
+            message={message}
+            pillMetrics={pillMetrics}
+            chatFontSize={chatFontSize}
+            metadataMode={assistantMetadataMode}
+        />
     );
 });

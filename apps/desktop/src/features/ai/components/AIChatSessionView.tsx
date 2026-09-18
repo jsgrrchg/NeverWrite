@@ -1,10 +1,10 @@
 /**
- * AIChatSessionView — renders a single chat session inside an editor workspace pane.
+ * AIChatSessionView renders the explicitly selected conversation.
  *
  * Unlike the window-level chat host, this component:
  * - Does NOT bind desktop runtime event listeners itself.
- * - Does NOT manage tabs or history — the workspace pane handles that.
- * - Derives its sessionId from the active ChatTab in the pane via editorStore.
+ * - Navigation and history belong to the dedicated chat pane.
+ * - Its session identity and focus are supplied by the chat pane.
  *
  * All session data is read reactively from chatStore, which is the single
  * source of truth regardless of where the UI renders.
@@ -12,6 +12,7 @@
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -19,25 +20,21 @@ import {
 } from "react";
 import { open as runtimeOpen } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
-import {
-    isChatTab,
-    selectEditorPaneActiveTab,
-    selectEditorWorkspaceTabs,
-    selectFocusedPaneId,
-    selectPaneTab,
-    useEditorStore,
-} from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
+import { getDesktopPlatform } from "../../../app/utils/platform";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 import {
-    isTextLikeVaultEntry,
-    moveVaultEntryToTrash,
-} from "../../../app/utils/vaultEntries";
-import { vaultInvoke } from "../../../app/utils/vaultInvoke";
+    vaultInvoke,
+    vaultInvokeForPath,
+} from "../../../app/utils/vaultInvoke";
 import {
+    type AcpConversationBinding,
     type AIComposerPart,
-    type AIChatMessage,
     type AIRuntimeConnectionState,
+    type AIRuntimeDescriptor,
+    type ConversationSelection,
+    type DraftAttachmentId,
     type QueuedChatMessage,
 } from "../types";
 import {
@@ -52,11 +49,9 @@ import { AIChatContextUsageBar } from "./AIChatContextUsageBar";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
-import { formatShortcutAction } from "../../../app/shortcuts/format";
-import { getDesktopPlatform } from "../../../app/utils/platform";
 import { AIDiscardedRootsBanner } from "./AIDiscardedRootsBanner";
 import { useInlineRename } from "./useInlineRename";
-import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { getAiChatContentColumnStyle } from "./chatContentLayout";
 import { useChatFindShortcut } from "./find/useChatFindShortcut";
 import {
     appendFileAttachmentPart,
@@ -79,44 +74,123 @@ import {
     getSessionTitleText,
 } from "../sessionPresentation";
 import {
-    ChatPromptOutlineMenu,
-    type ChatPromptOutlineItem,
-} from "./ChatPromptOutlineMenu";
+    buildConversationProviderOptions,
+    getConversationTurnCatalog,
+    getDefaultConversationSelection,
+    updateConversationSelection,
+} from "../conversationPickerModel";
+import { getConversationSelection } from "../conversationModel";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
+const EMPTY_CONVERSATION_BINDINGS: AcpConversationBinding[] = [];
+const IS_MACOS = getDesktopPlatform() === "macos";
+
+function runtimeNeedsModelDiscovery(runtime: AIRuntimeDescriptor) {
+    const modelConfig = runtime.configOptions.find(
+        (option) => option.category === "model",
+    );
+    const modelIds = modelConfig
+        ? modelConfig.options.map((option) => option.value)
+        : runtime.models.map((model) => model.id);
+    return (
+        modelIds.length === 0 ||
+        (modelIds.length === 1 && modelIds[0] === "auto")
+    );
+}
+
+function managedAttachmentIds(parts: AIComposerPart[]) {
+    return new Set(
+        parts.flatMap((part) =>
+            part.type === "screenshot" && part.managedAttachmentId
+                ? [part.managedAttachmentId]
+                : [],
+        ),
+    );
+}
+
+function draftAttachmentIds(parts: AIComposerPart[]) {
+    return new Set(
+        parts.flatMap((part) =>
+            part.type === "screenshot" && part.draftAttachmentId
+                ? [part.draftAttachmentId]
+                : [],
+        ),
+    );
+}
+
+function cleanupRemovedScreenshotAttachments(
+    sessionId: string,
+    previousParts: AIComposerPart[],
+    nextParts: AIComposerPart[],
+) {
+    const state = useChatStore.getState();
+    const retainedQueueState = [
+        state.queuedMessagesBySessionId[sessionId],
+        state.queuedMessageEditBySessionId[sessionId],
+        state.activeQueuedMessageBySessionId[sessionId],
+        state.pausedQueueBySessionId[sessionId],
+        state.interruptedTurnStateBySessionId[sessionId],
+    ];
+    const containsId = (value: unknown, attachmentId: string): boolean => {
+        if (!value || typeof value !== "object") return false;
+        if (
+            ("managedAttachmentId" in value &&
+                value.managedAttachmentId === attachmentId) ||
+            ("draftAttachmentId" in value &&
+                value.draftAttachmentId === attachmentId)
+        ) {
+            return true;
+        }
+        return Object.values(value).some((child) =>
+            containsId(child, attachmentId),
+        );
+    };
+    const nextIds = managedAttachmentIds(nextParts);
+    for (const attachmentId of managedAttachmentIds(previousParts)) {
+        if (nextIds.has(attachmentId)) continue;
+        if (retainedQueueState.some((value) => containsId(value, attachmentId))) {
+            continue;
+        }
+        void vaultInvoke("ai_delete_managed_attachment_if_unreferenced", {
+            attachmentId,
+        }).catch((error) => {
+            console.error("[chat] Failed to clean up managed attachment:", error);
+        });
+    }
+    const nextDraftIds = draftAttachmentIds(nextParts);
+    for (const draftAttachmentId of draftAttachmentIds(previousParts)) {
+        if (nextDraftIds.has(draftAttachmentId)) continue;
+        if (
+            retainedQueueState.some((value) =>
+                containsId(value, draftAttachmentId),
+            )
+        ) {
+            continue;
+        }
+        void vaultInvoke("ai_delete_draft_attachment", {
+            draftAttachmentId,
+        }).catch((error) => {
+            console.error("[chat] Failed to clean up draft attachment:", error);
+        });
+    }
+}
 const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
 const IDLE_CONNECTION: AIRuntimeConnectionState = {
     status: "idle",
     message: null,
 };
-const PROMPT_OUTLINE_LABEL_MAX_LENGTH = 96;
-
-function buildPromptOutlineLabel(message: AIChatMessage) {
-    const source = (message.content || message.title || "").trim();
-    const normalized = source.replace(/\s+/g, " ").trim();
-    const fallback =
-        (message.attachments?.length ?? 0) > 0
-            ? "Prompt with attachments"
-            : "Untitled prompt";
-    const label = normalized || fallback;
-
-    if (label.length <= PROMPT_OUTLINE_LABEL_MAX_LENGTH) {
-        return label;
-    }
-
-    return `${label.slice(0, PROMPT_OUTLINE_LABEL_MAX_LENGTH - 1).trimEnd()}…`;
-}
-
 function ChatContentColumn({
     children,
 }: {
     children: ReactNode;
 }) {
+    const aiChatContentWidth = useSettingsStore((s) => s.aiChatContentWidth);
+
     return (
         <div
             className="min-w-0"
             data-testid="chat-content-column"
-            style={AI_CHAT_CONTENT_COLUMN_STYLE}
+            style={getAiChatContentColumnStyle(aiChatContentWidth)}
         >
             {children}
         </div>
@@ -124,40 +198,57 @@ function ChatContentColumn({
 }
 
 interface AIChatSessionViewProps {
-    paneId?: string;
-    tabId?: string;
+    sessionId: string;
+    focused?: boolean;
+    headerActions?: ReactNode;
 }
 
-export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
+export function AIChatSessionView({
+    sessionId,
+    focused = true,
+    headerActions,
+}: AIChatSessionViewProps) {
     const [composerExpanded, setComposerExpanded] = useState(false);
+    const bottomDockRef = useRef<HTMLDivElement>(null);
+    const [bottomDockMeasurement, setBottomDockMeasurement] = useState<{
+        sessionId: string | null;
+        height: number;
+    }>({ sessionId: null, height: 0 });
     const [imageAttachmentNotice, setImageAttachmentNotice] = useState<
         string | null
     >(null);
+    const attachmentVaultPath = useVaultStore((state) => state.vaultPath);
+    const pasteContextRef = useRef(Symbol());
+    const [pendingImageAttachments, setPendingImageAttachments] = useState(0);
+    const [failedPaste, setFailedPaste] = useState<File | null>(null);
+    useEffect(() => {
+        pasteContextRef.current = Symbol();
+        setImageAttachmentNotice(null);
+        setFailedPaste(null);
+        setPendingImageAttachments(0);
+    }, [sessionId, attachmentVaultPath]);
     const [findOpen, setFindOpen] = useState(false);
-    const [promptOutlineOpen, setPromptOutlineOpen] = useState(false);
-    const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(
-        null,
-    );
     const rootRef = useRef<HTMLDivElement>(null);
-    const promptOutlineButtonRef = useRef<HTMLButtonElement>(null);
 
-    // Resolve sessionId from this column's ChatTab (stacked) or the pane's
-    // active ChatTab (normal mode, when no explicit tabId is bound).
-    const sessionId = useEditorStore((state) => {
-        const tab = tabId
-            ? selectPaneTab(state, paneId, tabId)
-            : selectEditorPaneActiveTab(state, paneId);
-        return tab && isChatTab(tab) ? tab.sessionId : null;
-    });
+    const bottomDockHeight =
+        bottomDockMeasurement.sessionId === sessionId
+            ? bottomDockMeasurement.height
+            : 0;
 
     // Actions ref — avoids subscribing to every action
     const chatActions = useRef(useChatStore.getState()).current;
-    const refreshEntries = useVaultStore((state) => state.refreshEntries);
     const aiReviewEnabled = useSettingsStore((state) => state.aiReviewEnabled);
+    const aiChatContentWidth = useSettingsStore(
+        (state) => state.aiChatContentWidth,
+    );
 
     // Session data
     const {
         session,
+        conversationId,
+        conversation,
+        conversationBindings,
+        preparedTurnCatalog,
         parentSession,
         composerParts,
         queuedMessages,
@@ -171,6 +262,14 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 ? (state.sessionsById[sessionId] ?? null)
                 : null;
             const sid = s?.sessionId ?? null;
+            const conversationId = sid
+                ? (state.conversationIdBySessionRef[sid] ??
+                  s?.historySessionId ??
+                  null)
+                : null;
+            const conversation = conversationId
+                ? (state.conversationsById[conversationId] ?? null)
+                : null;
             const parent = s?.parentSessionId
                 ? findSessionForHistorySelection(
                       state.sessionsById,
@@ -179,6 +278,16 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 : null;
             return {
                 session: s,
+                conversationId,
+                conversation,
+                conversationBindings:
+                    s?.conversationBindings?.providerBindings ??
+                    EMPTY_CONVERSATION_BINDINGS,
+                preparedTurnCatalog: conversationId
+                    ? (state.preparedTurnCatalogByConversationId[
+                          conversationId
+                      ] ?? null)
+                    : null,
                 parentSession: parent,
                 composerParts: sid
                     ? (state.composerPartsBySessionId[sid] ??
@@ -204,6 +313,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
 
     // Runtime resolution
     const runtimes = useChatStore((s) => s.runtimes);
+    const setupStatusByRuntimeId = useChatStore(
+        (state) => state.setupStatusByRuntimeId,
+    );
     const activeRuntimeId = session?.runtimeId ?? null;
     const activeRuntime = runtimes.find(
         (d) => d.runtime.id === activeRuntimeId,
@@ -224,21 +336,108 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
           }
         : activeConnection;
 
-    const agentCatalog = useMemo(() => {
-        const models =
-            session && session.models.length > 0
-                ? session.models
-                : (activeRuntime?.models ?? []);
-        const modes =
-            session && session.modes.length > 0
-                ? session.modes
-                : (activeRuntime?.modes ?? []);
-        const configOptions =
-            session && session.configOptions.length > 0
-                ? session.configOptions
-                : (activeRuntime?.configOptions ?? []);
-        return { models, modes, configOptions };
-    }, [session, activeRuntime]);
+    const turnSelection = useMemo<ConversationSelection | null>(() => {
+        if (conversation) {
+            return conversation.preferredSelection;
+        }
+        return session ? getConversationSelection(session) : null;
+    }, [conversation, session]);
+    const selectedRuntime = runtimes.find(
+        (runtime) => runtime.runtime.id === turnSelection?.runtimeId,
+    );
+    const agentCatalog = useMemo(
+        () =>
+            session && turnSelection
+                ? getConversationTurnCatalog({
+                      selection: turnSelection,
+                      session,
+                      runtimes,
+                      bindings: conversationBindings,
+                      preparedCatalog: preparedTurnCatalog,
+                  })
+                : {
+                      models: [],
+                      modes: [],
+                      configOptions: [],
+                      effortsByModel: {},
+                  },
+        [
+            conversationBindings,
+            preparedTurnCatalog,
+            runtimes,
+            session,
+            turnSelection,
+        ],
+    );
+
+    useEffect(() => {
+        if (!conversationId || !session || !turnSelection) return;
+
+        // A staged provider/model switch has no live session yet, so its
+        // dynamic ACP options cannot be projected from the active provider.
+        // Prepare the exact target catalog before the user sends the turn.
+        const preparedMatches =
+            preparedTurnCatalog?.runtimeId === turnSelection.runtimeId &&
+            preparedTurnCatalog.modelId === turnSelection.modelId;
+        if (preparedMatches) return;
+
+        const liveSelection = getConversationSelection(session);
+        const selectionMatchesLiveSession =
+            liveSelection.runtimeId === turnSelection.runtimeId &&
+            liveSelection.modelId === turnSelection.modelId;
+        const runtimeAdvertisesReasoning =
+            selectedRuntime?.runtime.capabilities.includes("reasoning") ??
+            false;
+        const liveCatalogHasReasoning = session.configOptions.some(
+            (option) => option.category === "reasoning",
+        );
+        if (
+            selectionMatchesLiveSession &&
+            session.configOptions.length > 0 &&
+            (!runtimeAdvertisesReasoning || liveCatalogHasReasoning)
+        ) {
+            // Prefer the real live-session catalog when it already represents
+            // the selected provider/model; probing it again would be wasteful.
+            return;
+        }
+
+        void chatActions.prepareConversationTurnCatalog(
+            conversationId,
+            turnSelection,
+        );
+    }, [
+        chatActions,
+        conversationId,
+        preparedTurnCatalog,
+        selectedRuntime,
+        session,
+        turnSelection,
+    ]);
+    const providerOptions = useMemo(
+        () =>
+            conversation && session && turnSelection
+                ? buildConversationProviderOptions({
+                      runtimes,
+                      setupStatusByRuntimeId,
+                      conversation,
+                      bindings: conversationBindings,
+                      activeRuntimeId: turnSelection.runtimeId,
+                      hasQueuedMessages:
+                          queuedMessages.length > 0 ||
+                          queuedMessageEdit != null,
+                  })
+                : [],
+        [
+            conversation,
+            conversationBindings,
+            queuedMessageEdit,
+            queuedMessages.length,
+            runtimes,
+            session,
+            setupStatusByRuntimeId,
+            turnSelection,
+        ],
+    );
 
     // Settings
     const requireCmdEnterToSend = useChatStore((s) => s.requireCmdEnterToSend);
@@ -280,9 +479,40 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 })),
         [entries],
     );
+    const contextBarAttachments = useMemo(
+        () =>
+            (session?.attachments ?? [])
+                .filter(
+                    (attachment) =>
+                        !composerParts.some(
+                            (part) =>
+                                (part.type === "mention" &&
+                                    part.noteId === attachment.noteId) ||
+                                (part.type === "file_mention" &&
+                                    attachment.type === "file" &&
+                                    attachment.path === part.path) ||
+                                (part.type === "folder_mention" &&
+                                    attachment.type === "folder" &&
+                                    part.folderPath === attachment.noteId),
+                        ),
+                )
+                .map((attachment) => ({
+                    id: attachment.id,
+                    noteId: attachment.noteId,
+                    label: attachment.label,
+                    path: attachment.path,
+                    removable: true,
+                    type: attachment.type,
+                    status: attachment.status,
+                    errorMessage: attachment.errorMessage,
+                })),
+        [composerParts, session?.attachments],
+    );
 
     const runtimeLabel =
-        activeRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
+        selectedRuntime?.runtime.name.replace(/ ACP$/, "") ??
+        activeRuntime?.runtime.name.replace(/ ACP$/, "") ??
+        "Assistant";
     const isClosedSubagent = Boolean(session?.parentSessionId && session.closedAt);
     const isRemovedGeminiAcpSession = session?.runtimeId === "gemini-acp";
     const agentControlsDisabled =
@@ -291,10 +521,117 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         isRemovedGeminiAcpSession ||
         isPendingSessionCreation ||
         Boolean(session.isResumingSession);
+    const conversationStarted =
+        (session?.messages.length ?? 0) > 0 ||
+        (session?.persistedMessageCount ?? 0) > 0;
     const lockIncompatibleModelSwitches =
-        session?.runtimeId === "grok-acp" &&
-        (session.messages.length > 0 ||
-            (session.persistedMessageCount ?? 0) > 0);
+        turnSelection?.runtimeId === "grok-acp" &&
+        conversationBindings.some(
+            (binding) => binding.runtimeId === "grok-acp",
+        ) &&
+        conversationStarted;
+    const updateTurnSelection = useCallback(
+        (selection: ConversationSelection) => {
+            if (!conversationId) return;
+            chatActions.setConversationTurnSelection(
+                conversationId,
+                selection,
+            );
+        },
+        [chatActions, conversationId],
+    );
+
+    const handleProviderModelChange = useCallback(
+        (runtimeId: string, modelId: string) => {
+            if (!session || !turnSelection) {
+                return;
+            }
+            if (runtimeId === session.runtimeId) {
+                const currentSelection =
+                    turnSelection.runtimeId === runtimeId
+                        ? turnSelection
+                        : getConversationSelection(session);
+                if (modelId && modelId !== currentSelection.modelId) {
+                    updateTurnSelection(
+                        updateConversationSelection(
+                            currentSelection,
+                            agentCatalog.configOptions,
+                            { kind: "model", value: modelId },
+                        ),
+                    );
+                }
+                return;
+            }
+            const option = providerOptions.find(
+                (candidate) => candidate.runtimeId === runtimeId,
+            );
+            const runtime = runtimes.find(
+                (candidate) => candidate.runtime.id === runtimeId,
+            );
+            if (!option || option.disabledReason || !runtime) return;
+
+            let nextSelection = getDefaultConversationSelection({
+                runtime,
+            });
+            if (modelId && modelId !== nextSelection.modelId) {
+                const targetCatalog = getConversationTurnCatalog({
+                    selection: nextSelection,
+                    session,
+                    runtimes,
+                    bindings: conversationBindings,
+                });
+                nextSelection = updateConversationSelection(
+                    nextSelection,
+                    targetCatalog.configOptions,
+                    { kind: "model", value: modelId },
+                );
+            }
+            updateTurnSelection(nextSelection);
+        },
+        [
+            agentCatalog.configOptions,
+            conversationBindings,
+            providerOptions,
+            runtimes,
+            session,
+            turnSelection,
+            updateTurnSelection,
+        ],
+    );
+    const handleProviderActivate = useCallback(
+        async (runtimeId: string) => {
+            if (!conversationId || !session) return;
+            const option = providerOptions.find(
+                (candidate) => candidate.runtimeId === runtimeId,
+            );
+            const runtime = runtimes.find(
+                (candidate) => candidate.runtime.id === runtimeId,
+            );
+            if (
+                !option ||
+                option.disabledReason ||
+                !runtime ||
+                !runtimeNeedsModelDiscovery(runtime)
+            ) {
+                return;
+            }
+
+            // Provider navigation warms the shared catalog without changing
+            // the conversation selection. The concrete model is committed
+            // only when the user chooses one from the discovered list.
+            await chatActions.prepareConversationTurnCatalog(
+                conversationId,
+                getDefaultConversationSelection({ runtime }),
+            );
+        },
+        [
+            chatActions,
+            conversationId,
+            providerOptions,
+            runtimes,
+            session,
+        ],
+    );
 
     // Handlers
     const handleRemoveAttachment = useCallback(
@@ -365,6 +702,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     const handlePasteImage = useCallback(
         async (file: File) => {
             if (!sessionId) return;
+            const vaultPathAtStart = useVaultStore.getState().vaultPath;
+            const pasteContextAtStart = pasteContextRef.current;
+            const sessionAtStart =
+                useChatStore.getState().sessionsById[sessionId];
+            if (!vaultPathAtStart || !sessionAtStart) return;
             const currentParts =
                 useChatStore.getState().composerPartsBySessionId[sessionId] ??
                 createEmptyComposerParts();
@@ -380,6 +722,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 );
                 return;
             }
+            setFailedPaste(null);
+            setImageAttachmentNotice(null);
+            setPendingImageAttachments((count) => count + 1);
             try {
                 const buffer = await file.arrayBuffer();
                 const bytes = Array.from(new Uint8Array(buffer));
@@ -395,16 +740,43 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                     String(now.getSeconds()).padStart(2, "0"),
                 ].join("");
                 const fileName = `pasted-image-${ts}.${ext}`;
-                const saved = await vaultInvoke<{
-                    path: string;
-                    relative_path: string;
+                const saved = await vaultInvokeForPath<{
+                    draft_attachment_id: DraftAttachmentId;
                     file_name: string;
-                    mime_type: string | null;
-                }>("save_vault_binary_file", {
-                    relativeDir: "assets/chat",
-                    fileName,
-                    bytes,
-                });
+                    mime_type: string;
+                }>(
+                    "ai_create_draft_attachment",
+                    vaultPathAtStart,
+                    {
+                        fileName,
+                        mimeType: file.type,
+                        bytes,
+                    },
+                );
+                const currentSession =
+                    useChatStore.getState().sessionsById[sessionId];
+                // The IPC call can outlive a vault or session change. Do not
+                // attach a draft created for the previous ownership context to
+                // whichever session now happens to have this ID.
+                const stillOwnsDraft =
+                    pasteContextRef.current === pasteContextAtStart &&
+                    useVaultStore.getState().vaultPath === vaultPathAtStart &&
+                    currentSession?.runtimeId === sessionAtStart.runtimeId &&
+                    currentSession?.historySessionId ===
+                        sessionAtStart.historySessionId;
+                if (!stillOwnsDraft) {
+                    await vaultInvokeForPath(
+                        "ai_delete_draft_attachment",
+                        vaultPathAtStart,
+                        { draftAttachmentId: saved.draft_attachment_id },
+                    ).catch((cleanupError) => {
+                        console.error(
+                            "[chat] Failed to remove detached pasted image:",
+                            cleanupError,
+                        );
+                    });
+                    return;
+                }
                 const timeLabel = `Screenshot ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} hrs`;
                 const latestParts =
                     useChatStore.getState().composerPartsBySessionId[
@@ -416,15 +788,16 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                     runtimeId,
                 );
                 if (!latestValidation.ok) {
-                    await moveVaultEntryToTrash(saved.relative_path).catch(
-                        (cleanupError) => {
-                            console.error(
-                                "[chat] Failed to remove rejected pasted image:",
-                                cleanupError,
-                            );
-                        },
-                    );
-                    await refreshEntries();
+                    await vaultInvokeForPath(
+                        "ai_delete_draft_attachment",
+                        vaultPathAtStart,
+                        { draftAttachmentId: saved.draft_attachment_id },
+                    ).catch((cleanupError) => {
+                        console.error(
+                            "[chat] Failed to remove rejected pasted image:",
+                            cleanupError,
+                        );
+                    });
                     setImageAttachmentNotice(
                         imageAttachmentValidationMessage(
                             latestValidation.reason,
@@ -433,11 +806,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                     );
                     return;
                 }
-                await refreshEntries();
                 chatActions.setComposerParts(
                     appendScreenshotPart(latestParts, {
-                        filePath: saved.path,
-                        mimeType: saved.mime_type ?? file.type,
+                        draftAttachmentId: saved.draft_attachment_id,
+                        fileName: saved.file_name,
+                        mimeType: saved.mime_type,
                         label: timeLabel,
                         createdAt: now.getTime(),
                     }),
@@ -446,19 +819,23 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 setImageAttachmentNotice(null);
             } catch (error) {
                 console.error("[chat] Failed to save pasted image:", error);
-                setImageAttachmentNotice("Image could not be attached");
+                if (pasteContextRef.current === pasteContextAtStart &&
+                    useVaultStore.getState().vaultPath === vaultPathAtStart &&
+                    useChatStore.getState().sessionsById[sessionId]?.historySessionId === sessionAtStart.historySessionId) {
+                    const detail = error instanceof Error ? error.message : String(error);
+                    setImageAttachmentNotice(`Image could not be attached: ${detail}`);
+                    setFailedPaste(file);
+                }
+            } finally {
+                if (pasteContextRef.current === pasteContextAtStart) {
+                    setPendingImageAttachments((count) => Math.max(0, count - 1));
+                }
             }
         },
-        [chatActions, refreshEntries, session?.runtimeId, sessionId],
+        [chatActions, session?.runtimeId, sessionId],
     );
 
-    useEffect(() => {
-        if (!imageAttachmentNotice) return;
-        const timer = window.setTimeout(() => {
-            setImageAttachmentNotice(null);
-        }, 3500);
-        return () => window.clearTimeout(timer);
-    }, [imageAttachmentNotice]);
+
 
     useEffect(() => {
         if (!sessionId || screenshotRetentionSeconds <= 0) return;
@@ -475,6 +852,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         );
 
         if (prunedParts !== composerParts) {
+            cleanupRemovedScreenshotAttachments(
+                sessionId,
+                composerParts,
+                prunedParts,
+            );
             chatActions.setComposerParts(prunedParts, sessionId);
             return;
         }
@@ -504,6 +886,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             );
 
             if (nextParts !== currentParts) {
+                cleanupRemovedScreenshotAttachments(
+                    sessionId,
+                    currentParts,
+                    nextParts,
+                );
                 state.setComposerParts(nextParts, sessionId);
             }
         }, nextDelay);
@@ -516,36 +903,17 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         sessionId,
     ]);
 
-    // Title sync: keep the editor tab title in sync with session title
-    useEffect(() => {
-        if (!session || !sessionId) return;
-        const title = getSessionTitle(session);
-        const editorState = useEditorStore.getState();
-        const allTabs = selectEditorWorkspaceTabs(editorState);
-        const chatTabs = allTabs.filter(
-            (t) => isChatTab(t) && t.sessionId === sessionId,
-        );
-        for (const chatTab of chatTabs) {
-            if (chatTab.title !== title) {
-                editorState.updateTabTitle(chatTab.id, title);
-            }
-        }
-    }, [session, sessionId]);
-
     const sessionTitle = session ? getSessionTitleText(session) : "Chat";
     // Close the finder when switching to another session.
     useEffect(() => {
         setFindOpen(false);
-        setPromptOutlineOpen(false);
-        setScrollToMessageId(null);
     }, [sessionId]);
 
-    // The message list owns the finder UI and is unmounted while the composer is
-    // expanded, so keep local message-list overlays aligned with that boundary.
+    // Keep local message-list overlays closed while the expanded composer makes
+    // the transcript visual-only beneath its translucent surface.
     useEffect(() => {
         if (composerExpanded) {
             setFindOpen(false);
-            setPromptOutlineOpen(false);
         }
     }, [composerExpanded]);
 
@@ -560,7 +928,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     useEffect(() => {
         if (!findOpen) return;
         const handleEscape = (event: KeyboardEvent) => {
-            if (event.defaultPrevented || event.key !== "Escape") return;
+            if (!focused || event.defaultPrevented || event.key !== "Escape") return;
             if (
                 event.metaKey ||
                 event.ctrlKey ||
@@ -569,8 +937,6 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             ) {
                 return;
             }
-            const focusedPaneId = selectFocusedPaneId(useEditorStore.getState());
-            if (paneId && focusedPaneId !== paneId) return;
 
             event.preventDefault();
             event.stopPropagation();
@@ -580,27 +946,39 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
 
         window.addEventListener("keydown", handleEscape, true);
         return () => window.removeEventListener("keydown", handleEscape, true);
-    }, [findOpen, paneId]);
+    }, [findOpen, focused]);
+
+    useLayoutEffect(() => {
+        if (composerExpanded) {
+            setBottomDockMeasurement({ sessionId, height: 0 });
+            return;
+        }
+
+        const dock = bottomDockRef.current;
+        if (!dock) return;
+
+        const updateHeight = () => {
+            const nextHeight = Math.max(
+                0,
+                Math.ceil(dock.getBoundingClientRect().height),
+            );
+            setBottomDockMeasurement((currentMeasurement) =>
+                currentMeasurement.sessionId === sessionId &&
+                currentMeasurement.height === nextHeight
+                    ? currentMeasurement
+                    : { sessionId, height: nextHeight },
+            );
+        };
+
+        updateHeight();
+        const observer = new ResizeObserver(updateHeight);
+        observer.observe(dock);
+
+        return () => observer.disconnect();
+    }, [composerExpanded, sessionId]);
 
     const isSubagent = Boolean(session?.parentSessionId?.trim());
     const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
-    const findDisabled = composerExpanded;
-    const promptOutlineDisabled = composerExpanded;
-    const hasEarlierMessages = (session?.loadedPersistedMessageStart ?? 0) > 0;
-    const promptOutlineItems = useMemo<ChatPromptOutlineItem[]>(
-        () =>
-            (session?.messages ?? [])
-                .filter(
-                    (message) =>
-                        message.role === "user" && message.kind === "text",
-                )
-                .map((message, index) => ({
-                    id: message.id,
-                    label: buildPromptOutlineLabel(message),
-                    ordinal: index + 1,
-                })),
-        [session?.messages],
-    );
 
     const startTitleEdit = useCallback(() => {
         if (!session || !sessionId || isSubagent) return;
@@ -631,9 +1009,11 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         >
             {/* Compact local session header for the workspace chat tab */}
             <div
-                className="flex items-center gap-2 px-3 py-1 text-xs shrink-0"
+                data-testid="chat-session-header"
+                className={`flex items-center gap-2 px-3 py-1 text-xs shrink-0 ${IS_MACOS ? "drag" : ""}`}
                 style={{
-                    height: 31,
+                    height: 33,
+                    minHeight: 33,
                     boxSizing: "border-box",
                     borderBottom: "1px solid var(--border)",
                     color: "var(--text-secondary)",
@@ -664,18 +1044,20 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                         onBlur={commitTitleEdit}
                     />
                 ) : (
-                    <span
-                        className="min-w-0 flex-1 overflow-hidden whitespace-nowrap font-medium"
-                        onDoubleClick={startTitleEdit}
-                        title={
-                            isSubagent
-                                ? "Subagents are named by their parent run"
-                                : "Double-click to rename"
-                        }
-                        style={{ color: "var(--text-primary)" }}
-                    >
-                        {sessionTitle}
-                    </span>
+                    <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap">
+                        <span
+                            className="no-drag inline-block max-w-full overflow-hidden whitespace-nowrap align-middle font-medium"
+                            onDoubleClick={startTitleEdit}
+                            title={
+                                isSubagent
+                                    ? "Subagents are named by their parent run"
+                                    : "Double-click to rename"
+                            }
+                            style={{ color: "var(--text-primary)" }}
+                        >
+                            {sessionTitle}
+                        </span>
+                    </div>
                 )}
                 {isSubagent ? (
                     <span
@@ -724,102 +1106,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                         </svg>
                     </button>
                 ) : null}
-                <button
-                    ref={promptOutlineButtonRef}
-                    type="button"
-                    onClick={() => {
-                        if (promptOutlineDisabled) return;
-                        setPromptOutlineOpen((value) => !value);
-                    }}
-                    disabled={promptOutlineDisabled}
-                    aria-label="User prompts"
-                    aria-pressed={promptOutlineOpen}
-                    title={
-                        promptOutlineDisabled
-                            ? "User prompts are unavailable while the composer is expanded"
-                            : "User prompts"
-                    }
-                    className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
-                    style={{
-                        color: promptOutlineOpen
-                            ? "var(--accent)"
-                            : "var(--text-secondary)",
-                        border: "none",
-                        backgroundColor: "transparent",
-                        opacity: promptOutlineDisabled ? 0.45 : 1,
-                    }}
-                >
-                    <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <path d="M3 3.5h8" />
-                        <path d="M3 7h8" />
-                        <path d="M3 10.5h8" />
-                        <path d="M1.5 3.5h.01" />
-                        <path d="M1.5 7h.01" />
-                        <path d="M1.5 10.5h.01" />
-                    </svg>
-                </button>
-                <button
-                    type="button"
-                    onClick={() => {
-                        if (findDisabled) return;
-                        setFindOpen((value) => !value);
-                    }}
-                    disabled={findDisabled}
-                    aria-label="Find in chat"
-                    aria-pressed={findOpen}
-                    title={
-                        findDisabled
-                            ? "Find is unavailable while the composer is expanded"
-                            : `Find in chat (${formatShortcutAction(
-                                  "find_in_note",
-                                  getDesktopPlatform(),
-                              )})`
-                    }
-                    className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
-                    style={{
-                        color: findOpen
-                            ? "var(--accent)"
-                            : "var(--text-secondary)",
-                        border: "none",
-                        backgroundColor: "transparent",
-                        opacity: findDisabled ? 0.45 : 1,
-                    }}
-                >
-                    <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <circle cx="6" cy="6" r="4" />
-                        <path d="M9 9L12.5 12.5" />
-                    </svg>
-                </button>
-                {promptOutlineOpen ? (
-                    <ChatPromptOutlineMenu
-                        anchorRef={promptOutlineButtonRef}
-                        items={promptOutlineItems}
-                        hasEarlierMessages={hasEarlierMessages}
-                        onSelect={(messageId) => {
-                            setPromptOutlineOpen(false);
-                            setScrollToMessageId(messageId);
-                        }}
-                        onClose={() => setPromptOutlineOpen(false)}
-                    />
-                ) : null}
+                {headerActions}
             </div>
 
             <AIChatRuntimeBanner
@@ -837,271 +1124,353 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 />
             ) : null}
 
-            {!composerExpanded && (
-                <AIChatMessageList
-                    sessionId={sessionId}
-                    messages={session?.messages ?? []}
-                    status={session?.status ?? "idle"}
-                    hasOlderMessages={
-                        (session?.loadedPersistedMessageStart ?? 0) > 0
-                    }
-                    isLoadingOlderMessages={
-                        session?.isLoadingPersistedMessages ?? false
-                    }
-                    visibleWorkCycleId={session?.visibleWorkCycleId ?? null}
-                    findOpen={findOpen}
-                    scrollToMessageId={scrollToMessageId}
-                    onScrollToMessageComplete={() => {
-                        setScrollToMessageId(null);
-                    }}
-                    onCloseFind={() => {
-                        setFindOpen(false);
-                        rootRef.current?.focus();
-                    }}
-                    chatFontSize={chatFontSize}
-                    chatFontFamily={chatFontFamily}
-                    onLoadOlderMessages={() => {
-                        void chatActions.loadOlderMessages(sessionId);
-                    }}
-                    onPermissionResponse={(requestId, optionId) => {
-                        void chatActions.respondPermissionForSession(
-                            sessionId,
-                            requestId,
-                            optionId,
-                        );
-                    }}
-                    onUserInputResponse={(requestId, answers, action) => {
-                        void chatActions.respondUserInput(
-                            requestId,
-                            answers,
-                            sessionId,
-                            action,
-                        );
-                    }}
-                    onUrlElicitationOpen={(requestId) => {
-                        void chatActions.openUrlElicitation(
-                            requestId,
-                            sessionId,
-                        );
-                    }}
-                    onUrlElicitationResponse={(requestId, action) => {
-                        void chatActions.respondUrlElicitation(
-                            requestId,
-                            action,
-                            sessionId,
-                        );
-                    }}
-                />
-            )}
+            <div className="relative flex min-h-0 flex-1 flex-col">
+                <div
+                    data-testid="chat-transcript-region"
+                    className="flex min-h-0 flex-1 flex-col"
+                    aria-hidden={composerExpanded || undefined}
+                    inert={composerExpanded || undefined}
+                >
+                    <AIChatMessageList
+                        sessionId={sessionId}
+                        messages={session?.messages ?? []}
+                        status={session?.status ?? "idle"}
+                        bottomInset={bottomDockHeight}
+                        hasOlderMessages={
+                            (session?.loadedPersistedMessageStart ?? 0) > 0
+                        }
+                        isLoadingOlderMessages={
+                            session?.isLoadingPersistedMessages ?? false
+                        }
+                        visibleWorkCycleId={session?.visibleWorkCycleId ?? null}
+                        findOpen={findOpen}
+                        onCloseFind={() => {
+                            setFindOpen(false);
+                            rootRef.current?.focus();
+                        }}
+                        chatFontSize={chatFontSize}
+                        chatFontFamily={chatFontFamily}
+                        onLoadOlderMessages={() => {
+                            void chatActions.loadOlderMessages(sessionId);
+                        }}
+                        onPermissionResponse={(requestId, optionId) => {
+                            void chatActions.respondPermissionForSession(
+                                sessionId,
+                                requestId,
+                                optionId,
+                            );
+                        }}
+                        onUserInputResponse={(requestId, answers, action) => {
+                            void chatActions.respondUserInput(
+                                requestId,
+                                answers,
+                                sessionId,
+                                action,
+                            );
+                        }}
+                        onUrlElicitationOpen={(requestId) => {
+                            void chatActions.openUrlElicitation(
+                                requestId,
+                                sessionId,
+                            );
+                        }}
+                        onUrlElicitationResponse={(requestId, action) => {
+                            void chatActions.respondUrlElicitation(
+                                requestId,
+                                action,
+                                sessionId,
+                            );
+                        }}
+                    />
+                </div>
 
-            <ChatContentColumn>
-                <QueuedMessagesPanel
-                    items={queuedMessages}
-                    editingItem={queuedMessageEdit?.item ?? null}
-                    onCancel={(messageId) => {
-                        chatActions.removeQueuedMessage(sessionId, messageId);
-                    }}
-                    onClearAll={() => {
-                        chatActions.clearSessionQueue(sessionId);
-                    }}
-                    onEdit={(messageId) => {
-                        chatActions.editQueuedMessage(sessionId, messageId);
-                    }}
-                    onSendNow={(messageId) => {
-                        void chatActions.sendQueuedMessageNow(
-                            sessionId,
-                            messageId,
-                        );
-                    }}
-                    onCancelEdit={() => {
-                        chatActions.cancelQueuedMessageEdit(sessionId);
-                    }}
-                />
-            </ChatContentColumn>
-
-            {aiReviewEnabled ? (
-                <ChatContentColumn>
-                    <EditedFilesBufferPanel sessionId={sessionId} />
-                </ChatContentColumn>
-            ) : null}
-
-            <div
-                className={
-                    composerExpanded
-                        ? "flex min-h-0 flex-1 flex-col pt-1.5"
-                        : "pt-2"
-                }
-            >
-                <AIChatComposer
-                    key={sessionId}
-                    sessionId={sessionId}
-                    parts={composerParts}
-                    notes={noteOptions}
-                    files={fileOptions}
-                    status={session?.status ?? "idle"}
-                    runtimeName={runtimeLabel}
-                    runtimeId={session?.runtimeId}
-                    requireCmdEnterToSend={requireCmdEnterToSend}
-                    composerFontSize={composerFontSize}
-                    composerFontFamily={composerFontFamily}
-                    availableCommands={session?.availableCommands}
-                    isStopping={Boolean(interruptedTurnState?.isStopping)}
-                    hasPendingSubmitAfterStop={Boolean(
-                        interruptedTurnState?.pendingManualSend,
-                    )}
-                    expanded={composerExpanded}
-                    onToggleExpanded={() => setComposerExpanded((v) => !v)}
-                    disabled={
-                        !session ||
-                        isClosedSubagent ||
-                        isRemovedGeminiAcpSession ||
-                        isPendingSessionCreation ||
-                        activeConnection.status === "loading" ||
-                        Boolean(session.isResumingSession)
+                <div
+                    ref={composerExpanded ? undefined : bottomDockRef}
+                    data-testid={
+                        composerExpanded
+                            ? "chat-expanded-composer-region"
+                            : "chat-bottom-dock"
                     }
-                    placeholderText={
-                        isClosedSubagent
-                            ? "This subagent was closed by its parent thread."
-                            : isRemovedGeminiAcpSession
-                              ? REMOVED_GEMINI_ACP_COMPOSER_MESSAGE
-                            : isPendingSessionCreation
-                              ? pendingSessionError
-                                  ? "Agent unavailable"
-                                  : "Loading agent"
-                              : undefined
-                    }
-                    contextBar={
-                        <AIChatContextBar
-                            attachments={[
-                                ...(session?.attachments ?? [])
-                                    .filter(
-                                        (a) =>
-                                            !composerParts.some(
-                                                (p) =>
-                                                    (p.type === "mention" &&
-                                                        p.noteId ===
-                                                            a.noteId) ||
-                                                    (p.type ===
-                                                        "file_mention" &&
-                                                        a.type === "file" &&
-                                                        a.path === p.path) ||
-                                                    (p.type ===
-                                                        "folder_mention" &&
-                                                        a.type === "folder" &&
-                                                        p.folderPath ===
-                                                            a.noteId),
-                                            ),
-                                    )
-                                    .map((attachment) => ({
-                                        id: attachment.id,
-                                        noteId: attachment.noteId,
-                                        label: attachment.label,
-                                        path: attachment.path,
-                                        removable: true,
-                                        type: attachment.type,
-                                        status: attachment.status,
-                                        errorMessage: attachment.errorMessage,
-                                    })),
-                            ]}
-                            onRemoveAttachment={handleRemoveAttachment}
-                            onClearAll={handleClearAttachments}
-                        />
-                    }
-                    bottomAccent={
-                        contextUsageBarEnabled ? (
-                            <AIChatContextUsageBar
-                                usage={tokenUsage}
-                                cornerRadius={composerExpanded ? 9 : 11}
+                        className={
+                            composerExpanded
+                                ? "absolute inset-2 z-20 flex min-h-0 flex-col"
+                                : "nw-chat-bottom-dock absolute inset-x-0 bottom-0 z-20 flex max-h-full flex-col px-2 pb-2"
+                        }
+                >
+                    <div
+                        data-testid="chat-glass-surface"
+                        className={
+                            composerExpanded
+                                ? "nw-chat-translucent-surface nw-chat-floating-surface flex min-h-0 flex-1 flex-col"
+                                : "nw-chat-translucent-surface nw-chat-floating-surface flex min-h-0 max-h-full flex-col"
+                        }
+                        style={
+                            composerExpanded
+                                ? undefined
+                                : getAiChatContentColumnStyle(aiChatContentWidth)
+                        }
+                    >
+                    {/* Queue and Edits yield their height before Composer,
+                        then share a scrollable region in short panes. */}
+                    <div
+                        data-testid="chat-bottom-dock-auxiliary-region"
+                        data-scrollbar-active="true"
+                        className="min-h-0 overflow-y-auto"
+                        style={{ flexShrink: 999 }}
+                    >
+                        <ChatContentColumn>
+                            <QueuedMessagesPanel
+                                items={queuedMessages}
+                                editingItem={queuedMessageEdit?.item ?? null}
+                                onCancel={(messageId) => {
+                                    chatActions.removeQueuedMessage(
+                                        sessionId,
+                                        messageId,
+                                    );
+                                }}
+                                onClearAll={() => {
+                                    chatActions.clearSessionQueue(sessionId);
+                                }}
+                                onEdit={(messageId) => {
+                                    chatActions.editQueuedMessage(
+                                        sessionId,
+                                        messageId,
+                                    );
+                                }}
+                                onSendNow={(messageId) => {
+                                    void chatActions.sendQueuedMessageNow(
+                                        sessionId,
+                                        messageId,
+                                    );
+                                }}
+                                onCancelEdit={() => {
+                                    chatActions.cancelQueuedMessageEdit(
+                                        sessionId,
+                                    );
+                                }}
                             />
-                        ) : null
-                    }
-                    footer={
-                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                            {imageAttachmentNotice ? (
-                                <div
-                                    role="status"
-                                    aria-live="polite"
-                                    className="rounded-md px-2 py-1 text-xs font-medium"
-                                    style={{
-                                        color: "#f87171",
-                                        backgroundColor:
-                                            "color-mix(in srgb, #ef4444 8%, transparent)",
-                                        border: "1px solid color-mix(in srgb, #ef4444 24%, var(--border))",
-                                    }}
-                                >
-                                    {imageAttachmentNotice}
-                                </div>
-                            ) : null}
-                            {!isPendingSessionCreation && (
-                                <AIChatAgentControls
-                                    disabled={agentControlsDisabled}
-                                    runtimeId={session?.runtimeId}
-                                    lockIncompatibleModelSwitches={
-                                        lockIncompatibleModelSwitches
-                                    }
-                                    modelId={session?.modelId ?? ""}
-                                    modeId={session?.modeId ?? ""}
-                                    effortsByModel={
-                                        session?.effortsByModel ?? {}
-                                    }
-                                    models={agentCatalog.models}
-                                    modes={agentCatalog.modes}
-                                    configOptions={agentCatalog.configOptions}
-                                    onModelChange={(modelId) => {
-                                        void chatActions.setModel(
-                                            modelId,
-                                            sessionId,
-                                        );
-                                    }}
-                                    onModeChange={(modeId) => {
-                                        void chatActions.setMode(
-                                            modeId,
-                                            sessionId,
-                                        );
-                                    }}
-                                    onConfigOptionChange={(optionId, value) => {
-                                        void chatActions.setConfigOption(
-                                            optionId,
-                                            value,
-                                            sessionId,
-                                        );
-                                    }}
-                                />
+                        </ChatContentColumn>
+
+                        {aiReviewEnabled ? (
+                            <ChatContentColumn>
+                                <EditedFilesBufferPanel sessionId={sessionId} />
+                            </ChatContentColumn>
+                        ) : null}
+                    </div>
+
+                    <div
+                        data-testid="chat-bottom-dock-composer-region"
+                        className={
+                            composerExpanded
+                                ? "flex min-h-0 flex-1 flex-col"
+                                : "flex min-h-16 shrink flex-col"
+                        }
+                    >
+                        <AIChatComposer
+                            key={sessionId}
+                            sessionId={sessionId}
+                            parts={composerParts}
+                            notes={noteOptions}
+                            files={fileOptions}
+                            status={session?.status ?? "idle"}
+                            runtimeName={runtimeLabel}
+                            runtimeId={turnSelection?.runtimeId}
+                            requireCmdEnterToSend={requireCmdEnterToSend}
+                            composerFontSize={composerFontSize}
+                            composerFontFamily={composerFontFamily}
+                            availableCommands={session?.availableCommands}
+                            isStopping={Boolean(interruptedTurnState?.isStopping)}
+                            hasPendingSubmitAfterStop={Boolean(
+                                interruptedTurnState?.pendingManualSend,
                             )}
-                        </div>
-                    }
-                    onChange={(parts) => {
-                        chatActions.setComposerParts(parts, sessionId);
-                    }}
-                    onAttachFile={handleAttachFile}
-                    onPasteImage={handlePasteImage}
-                    onImageAttachmentValidationFailure={(reason) => {
-                        const runtimeId = session?.runtimeId ?? null;
-                        setImageAttachmentNotice(
-                            imageAttachmentValidationMessage(reason, runtimeId),
-                        );
-                    }}
-                    onFocus={() => {
-                        if (!sessionId) return;
-                        chatActions.markSessionFocused(sessionId);
-                    }}
-                    onMentionAttach={(note) => {
-                        chatActions.attachNote(note, sessionId);
-                    }}
-                    onFileMentionAttach={(file) => {
-                        chatActions.attachVaultFile(file, sessionId);
-                    }}
-                    onFolderAttach={(folderPath, name) => {
-                        chatActions.attachFolder(folderPath, name, sessionId);
-                    }}
-                    onSubmit={() => {
-                        setComposerExpanded(false);
-                        void chatActions.sendMessage(sessionId);
-                    }}
-                    onStop={() => {
-                        void chatActions.stopStreaming(sessionId);
-                    }}
-                />
+                            expanded={composerExpanded}
+                            onToggleExpanded={() => setComposerExpanded((v) => !v)}
+                            disabled={
+                                !session ||
+                                isClosedSubagent ||
+                                isRemovedGeminiAcpSession ||
+                                isPendingSessionCreation ||
+                                activeConnection.status === "loading" ||
+                                Boolean(session.isResumingSession)
+                            }
+                            placeholderText={
+                                isClosedSubagent
+                                    ? "This subagent was closed by its parent thread."
+                                    : isRemovedGeminiAcpSession
+                                      ? REMOVED_GEMINI_ACP_COMPOSER_MESSAGE
+                                    : isPendingSessionCreation
+                                      ? pendingSessionError
+                                          ? "Agent unavailable"
+                                          : "Loading agent"
+                                      : undefined
+                            }
+                            contextBar={
+                                contextBarAttachments.length > 0 ? (
+                                    <AIChatContextBar
+                                        attachments={contextBarAttachments}
+                                        onRemoveAttachment={handleRemoveAttachment}
+                                        onClearAll={handleClearAttachments}
+                                    />
+                                ) : null
+                            }
+                            bottomAccent={
+                                contextUsageBarEnabled ? (
+                                    <AIChatContextUsageBar
+                                        usage={tokenUsage}
+                                        cornerRadius={composerExpanded ? 9 : 11}
+                                    />
+                                ) : null
+                            }
+                            footer={
+                                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                                    {pendingImageAttachments > 0 ? (
+                                        <span role="status" className="text-xs">Attaching image…</span>
+                                    ) : null}
+                                    {imageAttachmentNotice ? (
+                                        <div
+                                            role="status"
+                                            aria-live="polite"
+                                            className="rounded-md px-2 py-1 text-xs font-medium"
+                                            style={{
+                                                color: "#f87171",
+                                                backgroundColor:
+                                                    "color-mix(in srgb, #ef4444 8%, transparent)",
+                                                border: "1px solid color-mix(in srgb, #ef4444 24%, var(--border))",
+                                            }}
+                                        >
+                                            {imageAttachmentNotice}
+                                            {failedPaste ? (
+                                                <button type="button" disabled={pendingImageAttachments > 0}
+                                                    className="ml-2 underline"
+                                                    onClick={() => void handlePasteImage(failedPaste)}>Retry attachment</button>
+                                            ) : null}
+                                            <button type="button" className="ml-2 underline" onClick={() => {
+                                                setImageAttachmentNotice(null);
+                                                setFailedPaste(null);
+                                            }}>Dismiss</button>
+                                        </div>
+                                    ) : null}
+                                    {!isPendingSessionCreation && (
+                                        <AIChatAgentControls
+                                            disabled={agentControlsDisabled}
+                                            conversationStarted={conversationStarted}
+                                            runtimeId={turnSelection?.runtimeId}
+                                            lockIncompatibleModelSwitches={
+                                                lockIncompatibleModelSwitches
+                                            }
+                                            modelId={turnSelection?.modelId ?? ""}
+                                            modeId={turnSelection?.modeId ?? ""}
+                                            effortsByModel={
+                                                agentCatalog.effortsByModel
+                                            }
+                                            models={agentCatalog.models}
+                                            modes={agentCatalog.modes}
+                                            configOptions={agentCatalog.configOptions}
+                                            providers={providerOptions}
+                                            onProviderActivate={
+                                                handleProviderActivate
+                                            }
+                                            onProviderModelChange={(
+                                                runtimeId,
+                                                modelId,
+                                            ) => {
+                                                void handleProviderModelChange(
+                                                    runtimeId,
+                                                    modelId,
+                                                );
+                                            }}
+                                            onModelChange={(modelId) => {
+                                                if (!turnSelection) return;
+                                                updateTurnSelection(
+                                                    updateConversationSelection(
+                                                        turnSelection,
+                                                        agentCatalog.configOptions,
+                                                        {
+                                                            kind: "model",
+                                                            value: modelId,
+                                                        },
+                                                    ),
+                                                );
+                                            }}
+                                            onModeChange={(modeId) => {
+                                                if (!turnSelection) return;
+                                                updateTurnSelection(
+                                                    updateConversationSelection(
+                                                        turnSelection,
+                                                        agentCatalog.configOptions,
+                                                        {
+                                                            kind: "mode",
+                                                            value: modeId,
+                                                        },
+                                                    ),
+                                                );
+                                            }}
+                                            onConfigOptionChange={(optionId, value) => {
+                                                if (!turnSelection) return;
+                                                updateTurnSelection(
+                                                    updateConversationSelection(
+                                                        turnSelection,
+                                                        agentCatalog.configOptions,
+                                                        {
+                                                            kind: "option",
+                                                            optionId,
+                                                            value,
+                                                        },
+                                                    ),
+                                                );
+                                            }}
+                                        />
+                                    )}
+                                </div>
+                            }
+                            onChange={(parts) => {
+                                cleanupRemovedScreenshotAttachments(
+                                    sessionId,
+                                    composerParts,
+                                    parts,
+                                );
+                                chatActions.setComposerParts(parts, sessionId);
+                            }}
+                            onAttachFile={handleAttachFile}
+                            onPasteImage={handlePasteImage}
+                            onClipboardError={setImageAttachmentNotice}
+                            onImageAttachmentValidationFailure={(reason) => {
+                                const runtimeId = turnSelection?.runtimeId ?? null;
+                                setImageAttachmentNotice(
+                                    imageAttachmentValidationMessage(reason, runtimeId),
+                                );
+                            }}
+                            onFocus={() => {
+                                if (!sessionId) return;
+                                chatActions.markSessionFocused(sessionId);
+                            }}
+                            onMentionAttach={(note) => {
+                                chatActions.attachNote(note, sessionId);
+                            }}
+                            onFileMentionAttach={(file) => {
+                                chatActions.attachVaultFile(file, sessionId);
+                            }}
+                            onFolderAttach={(folderPath, name) => {
+                                chatActions.attachFolder(folderPath, name, sessionId);
+                            }}
+                            onSubmit={() => {
+                                setComposerExpanded(false);
+                                if (conversationId && turnSelection) {
+                                    void chatActions.startConversationTurn(
+                                        conversationId,
+                                        turnSelection,
+                                    );
+                                } else {
+                                    void chatActions.sendMessage(sessionId);
+                                }
+                            }}
+                            onStop={() => {
+                                void chatActions.stopStreaming(sessionId);
+                            }}
+                        />
+                    </div>
+                    </div>
+                </div>
             </div>
         </div>
     );

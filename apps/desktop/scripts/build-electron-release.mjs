@@ -1,5 +1,11 @@
 import { spawn } from "node:child_process";
 
+import {
+    createCommandExitError,
+    electronBuilderRetryAttempts,
+    runWithRetry,
+} from "./electron-release-retry.mjs";
+
 const DEFAULT_ELECTRON_OUTPUT_DIR = "dist-electron";
 
 function parseArgs(argv) {
@@ -126,13 +132,7 @@ function run(command, args, env = {}) {
                 resolve();
                 return;
             }
-            reject(
-                new Error(
-                    signal
-                        ? `${command} ${args.join(" ")} terminated with ${signal}`
-                        : `${command} ${args.join(" ")} exited with ${code}`,
-                ),
-            );
+            reject(createCommandExitError(command, args, code, signal));
         });
     });
 }
@@ -189,15 +189,19 @@ await run("npm", [
     "--target",
     rustTarget,
 ]);
-await run(
-    "npx",
-    buildElectronBuilderArgs({
-        ...args,
-        platform: normalizedPlatform,
-        arch: normalizedArch,
-    }),
-    builderEnv,
-);
+const electronBuilderArgs = buildElectronBuilderArgs({
+    ...args,
+    platform: normalizedPlatform,
+    arch: normalizedArch,
+});
+await runWithRetry(() => run("npx", electronBuilderArgs, builderEnv), {
+    attempts: electronBuilderRetryAttempts(args.publish),
+    onRetry: ({ attempt, attempts, retryDelayMs }) => {
+        console.warn(
+            `Command failed on attempt ${attempt}/${attempts}; retrying in ${retryDelayMs}ms: npx ${electronBuilderArgs.join(" ")}`,
+        );
+    },
+});
 
 if (normalizedPlatform === "mac" && !args.dir) {
     const postprocessArgs = [

@@ -1,5 +1,5 @@
 import { AIChatWorkspaceHost } from "./AIChatWorkspaceHost";
 
 export function AIChatDetachedWindowHost() {
-    return <AIChatWorkspaceHost initializeWithoutChatTabs />;
+    return <AIChatWorkspaceHost initializeWithoutSelection />;
 }

@@ -41,7 +41,7 @@ const nativeMenuCommands = new Set([
     "editor:heading-6",
     "editor:heading-0",
     "editor:toggle-live-preview",
-    "developer:new-terminal-tab",
+    "workspace:new-terminal-tab",
     "layout:toggle-sidebar",
     "layout:toggle-right-panel",
     "nav:command-palette",
@@ -54,6 +54,35 @@ const nativeMenuCommands = new Set([
     "nav:next-tab",
     "nav:previous-tab",
 ]);
+
+const configurableNativeMenuCommands = new Set([
+    "app:open-settings",
+    "vault:new-note",
+    "editor:new-tab",
+    "workspace:new-terminal-tab",
+    "vault:open",
+    "editor:close-tab",
+    "editor:reopen-closed-tab",
+    "vault:search",
+    "layout:toggle-sidebar",
+    "layout:toggle-right-panel",
+    "nav:command-palette",
+    "nav:quick-switcher",
+    "app:zoom-in",
+    "app:zoom-out",
+    "app:zoom-reset",
+    "nav:back",
+    "nav:forward",
+    "nav:next-tab",
+    "nav:previous-tab",
+]);
+
+let nativeMenuShortcutAccelerators: Record<string, string | null> | null =
+    null;
+const nativeMenuShortcutCaptureWindows = new Map<
+    number,
+    { window: BrowserWindow; release: () => void }
+>();
 
 function sendRuntimeEvent(
     window: BrowserWindow | null,
@@ -75,7 +104,13 @@ function canReceiveMenuAction(window: BrowserWindow | null) {
     if (!window || window.isDestroyed()) return false;
 
     const label = getWindowLabel(window);
-    if (label === "settings" || label.startsWith("ghost")) return false;
+    if (
+        label === "settings" ||
+        label.startsWith("settings-") ||
+        label.startsWith("ghost")
+    ) {
+        return false;
+    }
 
     const route = getWindowVaultRoute(label);
     if (!route) return true;
@@ -144,10 +179,22 @@ function commandItem(
     label: string,
     accelerator?: string,
 ): MenuItemConstructorOptions {
+    const hasSyncedAccelerator =
+        nativeMenuShortcutAccelerators !== null &&
+        Object.prototype.hasOwnProperty.call(
+            nativeMenuShortcutAccelerators,
+            id,
+        );
+    const effectiveAccelerator =
+        accelerator !== undefined &&
+        configurableNativeMenuCommands.has(id) &&
+        hasSyncedAccelerator
+            ? (nativeMenuShortcutAccelerators?.[id] ?? undefined)
+            : accelerator;
     return {
         id,
         label,
-        accelerator,
+        accelerator: effectiveAccelerator,
         click: () => emitMenuAction(id),
     };
 }
@@ -158,6 +205,21 @@ function separator(): MenuItemConstructorOptions {
 
 function platformShortcut(macos: string, other: string) {
     return process.platform === "darwin" ? macos : other;
+}
+
+function suspendMenuAccelerators(items: MenuItemConstructorOptions[]) {
+    for (const item of items) {
+        item.registerAccelerator = false;
+        if (Array.isArray(item.submenu)) {
+            suspendMenuAccelerators(item.submenu);
+        }
+    }
+}
+
+function refreshNativeApplicationMenu() {
+    if (process.platform === "darwin") {
+        Menu.setApplicationMenu(buildApplicationMenu());
+    }
 }
 
 function buildApplicationMenu() {
@@ -182,7 +244,7 @@ function buildApplicationMenu() {
             commandItem("vault:new-note", "New Note", "CommandOrControl+N"),
             commandItem("editor:new-tab", "New Tab", "CommandOrControl+T"),
             commandItem(
-                "developer:new-terminal-tab",
+                "workspace:new-terminal-tab",
                 "New Terminal",
                 "CommandOrControl+R",
             ),
@@ -286,7 +348,7 @@ function buildApplicationMenu() {
         submenu: [commandItem("app:open-settings", "Keyboard Shortcuts")],
     };
 
-    return Menu.buildFromTemplate([
+    const template = [
         appMenu,
         fileMenu,
         editMenu,
@@ -295,7 +357,11 @@ function buildApplicationMenu() {
         goMenu,
         windowMenu,
         helpMenu,
-    ]);
+    ];
+    if (nativeMenuShortcutCaptureWindows.size > 0) {
+        suspendMenuAccelerators(template);
+    }
+    return Menu.buildFromTemplate(template);
 }
 
 function buildDockMenu() {
@@ -326,6 +392,72 @@ export async function refreshDockMenu() {
 export async function syncRecentVaultsForElectron(rawVaults: unknown) {
     await syncRecentVaults(rawVaults);
     await refreshDockMenu();
+}
+
+export function syncNativeMenuShortcutAccelerators(rawValue: unknown) {
+    const value =
+        rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)
+            ? (rawValue as Record<string, unknown>)
+            : {};
+    const nextAccelerators: Record<string, string | null> = {};
+    for (const commandId of configurableNativeMenuCommands) {
+        if (!Object.prototype.hasOwnProperty.call(value, commandId)) {
+            continue;
+        }
+        const accelerator = value[commandId];
+        nextAccelerators[commandId] =
+            typeof accelerator === "string" && accelerator.length > 0
+                ? accelerator
+                : null;
+    }
+
+    nativeMenuShortcutAccelerators = nextAccelerators;
+    refreshNativeApplicationMenu();
+    return true;
+}
+
+function clearNativeMenuShortcutCapture(windowId: number) {
+    const capture = nativeMenuShortcutCaptureWindows.get(windowId);
+    if (!capture) return;
+
+    nativeMenuShortcutCaptureWindows.delete(windowId);
+    capture.window.removeListener("closed", capture.release);
+    capture.window.webContents.removeListener(
+        "render-process-gone",
+        capture.release,
+    );
+    capture.window.webContents.removeListener("destroyed", capture.release);
+    refreshNativeApplicationMenu();
+}
+
+export function setNativeMenuShortcutCaptureActive(
+    sourceWindow: BrowserWindow | null,
+    rawValue: unknown,
+) {
+    if (!sourceWindow || sourceWindow.isDestroyed()) {
+        return false;
+    }
+
+    const windowId = sourceWindow.webContents.id;
+    if (rawValue !== true) {
+        clearNativeMenuShortcutCapture(windowId);
+        return true;
+    }
+
+    if (nativeMenuShortcutCaptureWindows.has(windowId)) {
+        return true;
+    }
+
+    const release = () => clearNativeMenuShortcutCapture(windowId);
+    nativeMenuShortcutCaptureWindows.set(windowId, {
+        window: sourceWindow,
+        release,
+    });
+    sourceWindow.once("closed", release);
+    sourceWindow.webContents.once("render-process-gone", release);
+    sourceWindow.webContents.once("destroyed", release);
+    refreshNativeApplicationMenu();
+    return true;
 }
 
 export async function installNativeMenus() {

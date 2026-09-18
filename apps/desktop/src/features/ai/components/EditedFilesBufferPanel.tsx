@@ -174,8 +174,7 @@ export function EditedFilesBufferPanel({
             <section
                 className="mb-1"
                 style={{
-                    backgroundColor:
-                        "color-mix(in srgb, var(--bg-secondary) 60%, transparent)",
+                    backgroundColor: "transparent",
                     borderTop:
                         "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
                     borderBottom:
@@ -228,8 +227,7 @@ export function EditedFilesBufferPanel({
         <section
             className="mb-1"
             style={{
-                backgroundColor:
-                    "color-mix(in srgb, var(--bg-secondary) 60%, transparent)",
+                backgroundColor: "transparent",
                 borderTop:
                     "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
                 borderBottom:

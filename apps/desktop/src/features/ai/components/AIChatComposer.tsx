@@ -40,6 +40,8 @@ import type {
     AIChatSessionStatus,
     AIComposerPart,
     AIMentionSuggestion,
+    DraftAttachmentId,
+    ManagedAttachmentId,
 } from "../types";
 import type {
     MouseEvent as ReactMouseEvent,
@@ -62,7 +64,7 @@ import {
     shouldIncludeVaultEntryInFileScope,
     isTextLikeVaultEntry,
 } from "../../../app/utils/vaultEntries";
-import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { getAiChatContentColumnStyle } from "./chatContentLayout";
 import { getComposerPrimaryAction } from "./chatComposerPrimaryAction";
 import {
     type ImageAttachmentValidationFailure,
@@ -101,7 +103,8 @@ interface AIChatComposerProps {
     onFolderAttach: (folderPath: string, name: string) => void;
     onToggleExpanded?: () => void;
     onAttachFile?: () => void;
-    onPasteImage?: (file: File) => void;
+    onPasteImage?: (file: File) => void | Promise<void>;
+    onClipboardError?: (message: string) => void;
     onImageAttachmentValidationFailure?: (
         reason: ImageAttachmentValidationFailure,
     ) => void;
@@ -351,7 +354,15 @@ function createScreenshotNode(
 ) {
     const element = document.createElement("span");
     element.dataset.kind = "screenshot";
-    element.dataset.filePath = part.filePath;
+    if (part.draftAttachmentId) {
+        element.dataset.draftAttachmentId = part.draftAttachmentId;
+        element.dataset.fileName = part.fileName;
+    } else if (part.managedAttachmentId) {
+        element.dataset.managedAttachmentId = part.managedAttachmentId;
+        element.dataset.fileName = part.fileName;
+    } else {
+        element.dataset.filePath = part.filePath;
+    }
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
     if (part.createdAt != null) {
@@ -481,20 +492,40 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
 
     if (
         node.dataset.kind === "screenshot" &&
-        node.dataset.filePath &&
         node.dataset.mimeType &&
-        node.dataset.label
+        node.dataset.label &&
+        ((node.dataset.draftAttachmentId && node.dataset.fileName) ||
+            (node.dataset.managedAttachmentId && node.dataset.fileName) ||
+            node.dataset.filePath)
     ) {
-        parts.push({
+        const common = {
             id: crypto.randomUUID(),
-            type: "screenshot",
-            filePath: node.dataset.filePath,
+            type: "screenshot" as const,
             mimeType: node.dataset.mimeType,
             label: node.dataset.label,
             createdAt: node.dataset.createdAt
                 ? Number(node.dataset.createdAt)
                 : undefined,
-        });
+        };
+        parts.push(
+            node.dataset.draftAttachmentId && node.dataset.fileName
+                ? {
+                      ...common,
+                      draftAttachmentId:
+                          node.dataset
+                              .draftAttachmentId as DraftAttachmentId,
+                      fileName: node.dataset.fileName,
+                  }
+                : node.dataset.managedAttachmentId && node.dataset.fileName
+                ? {
+                      ...common,
+                      managedAttachmentId:
+                          node.dataset
+                              .managedAttachmentId as ManagedAttachmentId,
+                      fileName: node.dataset.fileName,
+                  }
+                : { ...common, filePath: node.dataset.filePath! },
+        );
         return;
     }
 
@@ -595,7 +626,10 @@ function getComposerPartsDomSignature(parts: AIComposerPart[]) {
             if (part.type === "screenshot") {
                 return {
                     type: part.type,
-                    filePath: part.filePath,
+                    filePath: part.filePath ?? null,
+                    draftAttachmentId: part.draftAttachmentId ?? null,
+                    managedAttachmentId: part.managedAttachmentId ?? null,
+                    fileName: part.fileName ?? null,
                     mimeType: part.mimeType,
                     label: part.label,
                     createdAt: part.createdAt ?? null,
@@ -946,11 +980,13 @@ export function AIChatComposer({
     onFolderAttach,
     onToggleExpanded,
     onPasteImage,
+    onClipboardError,
     onImageAttachmentValidationFailure,
     onFocus,
     onSubmit,
     onStop,
 }: AIChatComposerProps) {
+    const aiChatContentWidth = useSettingsStore((s) => s.aiChatContentWidth);
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
@@ -1367,14 +1403,30 @@ export function AIChatComposer({
 
     const pasteFromClipboard = async () => {
         const composer = composerRef.current;
-        if (!composer) return;
-
-        const text = await navigator.clipboard.readText();
-        if (!text) return;
-
-        composer.focus();
-        insertPlainTextAtSelection(composer, text);
-        syncFromDom();
+        if (!composer || disabled) return;
+        try {
+            // Both menu paste and keyboard paste send images through the same
+            // attachment validation and local-draft path.
+            if (onPasteImage && navigator.clipboard.read) {
+                const items = await navigator.clipboard.read();
+                for (const item of items) {
+                    const mimeType = item.types.find((type) => type.startsWith("image/"));
+                    if (!mimeType) continue;
+                    const blob = await item.getType(mimeType);
+                    await onPasteImage(new File([blob], "clipboard-image", { type: mimeType }));
+                    return;
+                }
+            }
+            const text = await navigator.clipboard.readText();
+            if (!text || composerRef.current !== composer) return;
+            composer.focus();
+            insertPlainTextAtSelection(composer, text);
+            syncFromDom();
+            updateInlinePickers();
+        } catch (error) {
+            console.error("[chat] Clipboard paste failed:", error);
+            onClipboardError?.("Clipboard could not be read. Try pasting with Ctrl+V or Cmd+V.");
+        }
     };
 
     useEffect(() => {
@@ -1648,24 +1700,31 @@ export function AIChatComposer({
     const contentColumnClassName =
         expanded || customHeight != null
             ? "relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
-            : "relative flex min-w-0 flex-col";
+            : "relative flex min-h-0 max-h-full min-w-0 flex-col";
 
     return (
         <div
             ref={shellRef}
             data-ai-composer-drop-zone="true"
             data-ai-composer-session-id={sessionId}
+            data-ai-composer-drop-active={externalDragActive || undefined}
             className={
                 expanded
                     ? "flex h-full min-h-0 flex-1 flex-col"
-                    : "flex flex-col"
+                    : "flex min-h-0 max-h-full flex-col"
             }
         >
             {contextBar ? (
-                <div className={expanded ? "px-2 pb-1.5" : "px-3 pb-1.5"}>
+                <div
+                    className={
+                        expanded
+                            ? "px-2 pb-1.5 pt-1.5"
+                            : "px-3 pb-1.5 pt-2"
+                    }
+                >
                     <div
                         className="min-w-0"
-                        style={AI_CHAT_CONTENT_COLUMN_STYLE}
+                        style={getAiChatContentColumnStyle(aiChatContentWidth)}
                     >
                         {contextBar}
                     </div>
@@ -1676,17 +1735,14 @@ export function AIChatComposer({
                 className={
                     expanded
                         ? "relative flex h-full min-h-0 flex-1 flex-col"
-                        : "relative flex flex-col"
+                        : "relative flex min-h-0 max-h-full flex-col"
                 }
                 style={{
                     border: "none",
-                    borderTop: "1px solid var(--border)",
+                    borderTop: "none",
                     borderRadius: 0,
-                    backgroundColor: "var(--bg-tertiary)",
-                    boxShadow: externalDragActive
-                        ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
-                        : "none",
-                    transition: "box-shadow 0.15s ease",
+                    backgroundColor: "transparent",
+                    maxHeight: "100%",
                     ...(expanded || customHeight == null
                         ? {}
                         : { height: customHeight }),
@@ -1696,7 +1752,7 @@ export function AIChatComposer({
                     ref={bindContentColumnRef}
                     className={contentColumnClassName}
                     data-testid="chat-composer-content-column"
-                    style={AI_CHAT_CONTENT_COLUMN_STYLE}
+                    style={getAiChatContentColumnStyle(aiChatContentWidth)}
                 >
                     {!expanded && (
                         <div
@@ -1849,6 +1905,7 @@ export function AIChatComposer({
                     }}
                     onPaste={(event) => {
                         event.preventDefault();
+                        if (disabled) return;
                         // Check for pasted images first
                         if (onPasteImage) {
                             const items = event.clipboardData.items;
@@ -1860,7 +1917,9 @@ export function AIChatComposer({
                                 ) {
                                     const file = item.getAsFile();
                                     if (file) {
-                                        onPasteImage(file);
+                                        void Promise.resolve(onPasteImage(file)).catch(() => {
+                                            onClipboardError?.("Image could not be attached. Try pasting again.");
+                                        });
                                         return;
                                     }
                                 }
@@ -2099,12 +2158,14 @@ export function AIChatComposer({
                             width: 28,
                             height: 28,
                             color: canRunPrimaryAction
-                                ? "#fff"
+                                ? primaryAction === "stop"
+                                    ? "#fff"
+                                    : "var(--composer-send-foreground)"
                                 : "var(--text-secondary)",
                             backgroundColor: canRunPrimaryAction
                                 ? primaryAction === "stop"
-                                    ? "#b91c1c"
-                                    : "var(--accent)"
+                                    ? "var(--diff-remove)"
+                                    : "var(--composer-send-background)"
                                 : "transparent",
                             border: "none",
                             opacity: canRunPrimaryAction ? 1 : 0.4,

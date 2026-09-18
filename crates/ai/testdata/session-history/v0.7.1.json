@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "session_id": "fixture-v0.7.1",
+  "parent_session_id": null,
+  "closed_at": null,
+  "runtime_id": "codex-acp",
+  "runtime_display_name": "Codex",
+  "runtime_revision": 1,
+  "runtime_launch_fingerprint": "codex-v1",
+  "runtime_session_id": "runtime-v0.7.1",
+  "continuation_strategy": "resume",
+  "model_id": "gpt-5",
+  "mode_id": "default",
+  "models": [],
+  "modes": [],
+  "config_options": [],
+  "additional_roots": [],
+  "created_at": 100,
+  "updated_at": 200,
+  "start_index": 0,
+  "message_count": 2,
+  "title": "Release fixture",
+  "preview": "Ready",
+  "messages": [
+    {
+      "id": "user:fixture",
+      "role": "user",
+      "kind": "text",
+      "content": "Continue this chat",
+      "timestamp": 100
+    },
+    {
+      "id": "assistant:fixture",
+      "role": "assistant",
+      "kind": "text",
+      "content": "Ready",
+      "timestamp": 200
+    }
+  ]
+}

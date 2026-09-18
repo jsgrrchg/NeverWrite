@@ -1,3 +1,5 @@
+import { openChatSessionInWorkspace, openChatHistoryInWorkspace } from "../ai/chatPaneMovement";
+import { isSessionArchived, useArchivedChatsStore } from "../ai/store/archivedChatsStore";
 import {
     useState,
     useEffect,
@@ -16,14 +18,10 @@ import {
 } from "../../app/store/vaultStore";
 import {
     useEditorStore,
-    isChatTab,
-    isChatHistoryTab,
     isFileTab,
     isPdfTab,
     isNoteTab,
     selectEditorWorkspaceTabs,
-    type ChatTab,
-    type ChatHistoryTab,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useCommandStore } from "../command-palette/store/commandStore";
@@ -132,14 +130,13 @@ type QuickSwitcherItem =
           kind: "chat";
           title: string;
           subtitle: string;
-          tab: ChatTab;
+          sessionId: string;
       }
     | {
           key: string;
           kind: "history";
           title: string;
           subtitle: string;
-          tab: ChatHistoryTab;
       };
 
 function getQuickSwitcherItemKey(item: QuickSwitcherItem) {
@@ -248,41 +245,16 @@ function QuickSwitcherDialog() {
         [showExtensions],
     );
 
-    const buildChatItem = useCallback(
-        (tab: ChatTab): QuickSwitcherItem => {
-            const session = chatSessionsById[tab.sessionId];
-            return {
-                key: `chat:${tab.id}`,
-                kind: "chat",
-                title: session ? getSessionTitle(session) : tab.title,
-                subtitle: tab.sessionId,
-                tab,
-            };
-        },
-        [chatSessionsById],
-    );
-
-    const buildHistoryItem = useCallback(
-        (tab: ChatHistoryTab): QuickSwitcherItem => ({
-            key: `history:${tab.id}`,
-            kind: "history",
-            title: tab.title,
-            subtitle: "Chat history",
-            tab,
-        }),
-        [],
-    );
+    const archiveEntries = useArchivedChatsStore(state => state.entries);
+    const chatItems = useMemo<QuickSwitcherItem[]>(() => [
+        ...Object.values(chatSessionsById).filter(session => session.runtimeId !== "claude-code-terminal").map(session => ({ key: `chat:${session.sessionId}`, kind: "chat" as const, title: getSessionTitle(session), subtitle: isSessionArchived(session, chatSessionsById, archiveEntries) ? "Archived chat" : "Chat", sessionId: session.sessionId })),
+        { key: "chat-history", kind: "history", title: "Chat history", subtitle: "All conversations" },
+    ], [chatSessionsById, archiveEntries]);
 
     const openTabItems = useMemo(
         () =>
             orderedTabs
                 .map((tab) => {
-                    if (isChatTab(tab)) {
-                        return buildChatItem(tab);
-                    }
-                    if (isChatHistoryTab(tab)) {
-                        return buildHistoryItem(tab);
-                    }
                     if (isPdfTab(tab)) {
                         const entry = entryMap.get(tab.path);
                         return entry ? buildEntryItem(entry) : null;
@@ -317,11 +289,10 @@ function QuickSwitcherDialog() {
                     const note = noteMap.get(tab.noteId);
                     return note ? buildNoteItem(note) : null;
                 })
-                .filter((item): item is QuickSwitcherItem => item !== null),
+                .filter((item): item is QuickSwitcherItem => item !== null).concat(chatItems),
         [
-            buildChatItem,
+            chatItems,
             buildEntryItem,
-            buildHistoryItem,
             buildNoteItem,
             entryMap,
             noteMap,
@@ -458,7 +429,8 @@ function QuickSwitcherDialog() {
         async (item: QuickSwitcherItem) => {
             closeModal();
             if (item.kind === "chat" || item.kind === "history") {
-                switchTab(item.tab.id);
+                if (item.kind === "chat") openChatSessionInWorkspace(item.sessionId);
+                else openChatHistoryInWorkspace();
                 return;
             }
             if (item.kind === "pdf") {

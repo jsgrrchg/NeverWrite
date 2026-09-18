@@ -706,7 +706,6 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
     useEffect(() => {
         let cancelled = false;
-        let resolvedPdf: pdfjsLib.PDFDocumentProxy | null = null;
 
         if (!previewUrl) {
             queueMicrotask(() => {
@@ -725,9 +724,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
         loadingTask.promise
             .then((nextPdf: pdfjsLib.PDFDocumentProxy) => {
-                resolvedPdf = nextPdf;
                 if (cancelled) {
-                    void nextPdf.destroy();
                     return;
                 }
                 setLoadedPdf({
@@ -746,9 +743,6 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         return () => {
             cancelled = true;
             void loadingTask.destroy();
-            if (resolvedPdf) {
-                void resolvedPdf.destroy();
-            }
         };
     }, [previewUrl, retryCount, setPdfError, tab.path]);
 

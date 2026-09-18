@@ -7,7 +7,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { confirm, invoke } from "@neverwrite/runtime";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     useEditorStore,
     isFileTab,
@@ -20,7 +20,9 @@ import {
 import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { setShortcutOverride } from "../../app/shortcuts/preferences";
 import { clearFileTreeSelection } from "../../app/utils/navigation";
+import { getDesktopPlatform } from "../../app/utils/platform";
 import { safeStorageSetItem } from "../../app/utils/safeStorage";
 import {
     buildVaultFileEntry as buildFileEntry,
@@ -30,6 +32,24 @@ import {
     setVaultNotes,
 } from "../../test/test-utils";
 import { FileTree } from "./FileTree";
+
+const originalUserAgent = navigator.userAgent;
+const originalPlatform = navigator.platform;
+
+function setNavigatorIdentity(userAgent: string, platform: string) {
+    Object.defineProperty(window.navigator, "userAgent", {
+        configurable: true,
+        value: userAgent,
+    });
+    Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: platform,
+    });
+}
+
+afterEach(() => {
+    setNavigatorIdentity(originalUserAgent, originalPlatform);
+});
 
 function getNoteRow(label: string) {
     const row = screen.getByText(label).closest('[role="button"]');
@@ -1957,6 +1977,85 @@ describe("FileTree", () => {
         expect(document.activeElement).toBe(editor);
     });
 
+    it("ignores AltGr file navigation shortcuts", async () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Win32",
+        );
+        expect(getDesktopPlatform()).toBe("windows");
+        setShortcutOverride("next_file", "windows", {
+            key: "ArrowDown",
+            modifiers: ["ctrl", "alt"],
+        });
+        setVaultNotes([
+            {
+                id: "alpha",
+                path: "/vault/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "beta",
+                path: "/vault/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-alpha",
+        );
+        renderComponent(
+            <>
+                <div
+                    data-testid="mock-editor-focus"
+                    contentEditable
+                    suppressContentEditableWarning
+                    tabIndex={0}
+                >
+                    Editor
+                </div>
+                <FileTree />
+            </>,
+        );
+        await screen.findByText("Alpha");
+
+        const editor = screen.getByTestId("mock-editor-focus");
+        editor.focus();
+
+        const altGraphShortcut = new KeyboardEvent("keydown", {
+            key: "ArrowDown",
+            ctrlKey: true,
+            altKey: true,
+            cancelable: true,
+        });
+        Object.defineProperty(altGraphShortcut, "getModifierState", {
+            configurable: true,
+            value: (modifier: string) => modifier === "AltGraph",
+        });
+        fireEvent(editor, altGraphShortcut);
+
+        expect(useEditorStore.getState().activeTabId).toBe("tab-alpha");
+        expect(altGraphShortcut.defaultPrevented).toBe(false);
+
+        expect(document.activeElement).toBe(editor);
+    });
+
     it("respects the current sort order when using file navigation shortcuts", async () => {
         const user = userEvent.setup();
 
@@ -3774,6 +3873,47 @@ describe("FileTree", () => {
                 ),
         ).toBe(true);
         expect(elementsFromPoint).toHaveBeenCalled();
+    });
+});
+
+describe("FileTree — document status filter", () => {
+    it("filters by the selected status and restores every status", async () => {
+        const user = userEvent.setup();
+        setVaultNotes([
+            {
+                id: "notes/draft",
+                path: "/vault/notes/draft.md",
+                title: "Draft note",
+                modified_at: 1,
+                created_at: 1,
+                status: "draft",
+            },
+            {
+                id: "notes/published",
+                path: "/vault/notes/published.md",
+                title: "Published note",
+                modified_at: 1,
+                created_at: 1,
+                status: "published",
+            },
+        ]);
+        renderComponent(<FileTree />);
+
+        await user.click(
+            screen.getByRole("button", { name: "Filter by document status" }),
+        );
+        await user.click(screen.getByRole("button", { name: "Published" }));
+
+        expect(screen.getByText("Published note")).toBeInTheDocument();
+        expect(screen.queryByText("Draft note")).not.toBeInTheDocument();
+
+        await user.click(
+            screen.getByRole("button", { name: "Filter by document status" }),
+        );
+        await user.click(screen.getByRole("button", { name: "All statuses" }));
+
+        await expandFolder(user, "notes");
+        expect(screen.getByText("Draft note")).toBeInTheDocument();
     });
 });
 

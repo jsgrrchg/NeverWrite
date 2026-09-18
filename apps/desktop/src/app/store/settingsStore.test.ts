@@ -28,8 +28,11 @@ describe("settingsStore", () => {
     });
 
     it("defaults app settings", () => {
+        expect(useSettingsStore.getState().uiFontFamily).toBe("system");
+        expect(useSettingsStore.getState().glassOpacity).toBe(40);
         expect(useSettingsStore.getState().terminalFontFamily).toBe("");
         expect(useSettingsStore.getState().terminalFontSize).toBe(13);
+        expect(useSettingsStore.getState().claudeCodeEnabled).toBe(false);
         expect(useSettingsStore.getState().claudeCodeOptimized).toBe(false);
         expect(useSettingsStore.getState().claudeCodeSkipPermissions).toBe(
             false,
@@ -43,6 +46,7 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().pdfFilter).toBe("none");
         expect(useSettingsStore.getState().pdfDefaultZoom).toBe("fit-width");
         expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
+        expect(useSettingsStore.getState().aiChatContentWidth).toBe(600);
         expect(useSettingsStore.getState().fileTreeScale).toBe(114);
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(100);
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(true);
@@ -64,6 +68,47 @@ describe("settingsStore", () => {
 
         useSettingsStore.getState().setSetting("pdfDefaultZoom", "fit-width");
         expect(resolvePdfInitialZoom()).toEqual({ zoom: 1, fitWidth: true });
+    });
+
+    it("normalizes the AI chat content width", () => {
+        useSettingsStore.getState().setSetting("aiChatContentWidth", 1_600);
+
+        expect(useSettingsStore.getState().aiChatContentWidth).toBe(1_200);
+
+        useSettingsStore.getState().setSetting("aiChatContentWidth", 601);
+
+        expect(useSettingsStore.getState().aiChatContentWidth).toBe(600);
+    });
+
+    it("normalizes glass opacity", () => {
+        useSettingsStore.getState().setSetting("glassOpacity", 1);
+        expect(useSettingsStore.getState().glassOpacity).toBe(10);
+
+        useSettingsStore.getState().setSetting("glassOpacity", 12);
+        expect(useSettingsStore.getState().glassOpacity).toBe(12);
+
+        useSettingsStore.getState().setSetting("glassOpacity", 140);
+        expect(useSettingsStore.getState().glassOpacity).toBe(100);
+    });
+
+    it("persists glass opacity globally across vaults", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/glass-one" });
+
+        useSettingsStore.getState().setSetting("glassOpacity", 55);
+
+        expect(
+            JSON.parse(localStorage.getItem("neverwrite:settings") ?? ""),
+        ).toMatchObject({ state: { glassOpacity: 55 } });
+        expect(
+            JSON.parse(
+                localStorage.getItem("neverwrite:settings:/vaults/glass-one") ??
+                    "",
+            ).state,
+        ).not.toHaveProperty("glassOpacity");
+
+        useVaultStore.setState({ vaultPath: "/vaults/glass-two" });
+
+        expect(useSettingsStore.getState().glassOpacity).toBe(55);
     });
 
     it("persists vim settings globally across vaults", () => {
@@ -136,6 +181,7 @@ describe("settingsStore", () => {
         useSettingsStore.getState().setSetting("fileTreeStickyFolders", false);
         useSettingsStore.getState().setSetting("agentsSidebarScale", 125);
         useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
+        useSettingsStore.getState().setSetting("uiFontFamily", "geist");
 
         expect(useSettingsStore.getState().aiReviewEnabled).toBe(false);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
@@ -143,6 +189,7 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(false);
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(125);
         expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(750);
+        expect(useSettingsStore.getState().uiFontFamily).toBe("geist");
         expect(
             JSON.parse(
                 localStorage.getItem("neverwrite:settings:/vaults/devtools") ?? "",
@@ -155,8 +202,22 @@ describe("settingsStore", () => {
                 fileTreeStickyFolders: false,
                 agentsSidebarScale: 125,
                 editorAutosaveDelayMs: 750,
+                uiFontFamily: "geist",
             },
         });
+    });
+
+    it("keeps the interface font per vault", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/interface-one" });
+        useSettingsStore.getState().setSetting("uiFontFamily", "geist");
+
+        useVaultStore.setState({ vaultPath: "/vaults/interface-two" });
+        expect(useSettingsStore.getState().uiFontFamily).toBe("system");
+
+        useSettingsStore.getState().setSetting("uiFontFamily", "atkinson");
+
+        useVaultStore.setState({ vaultPath: "/vaults/interface-one" });
+        expect(useSettingsStore.getState().uiFontFamily).toBe("geist");
     });
 
     it("keeps AI change review enabled for older vault settings", () => {
@@ -225,6 +286,7 @@ describe("settingsStore", () => {
             .getState()
             .setSetting("terminalFontFamily", "FiraCode Nerd Font");
         useSettingsStore.getState().setSetting("terminalFontSize", 16);
+        useSettingsStore.getState().setSetting("claudeCodeEnabled", true);
         useSettingsStore.getState().setSetting("claudeCodeOptimized", true);
         useSettingsStore
             .getState()
@@ -245,6 +307,7 @@ describe("settingsStore", () => {
             state: {
                 terminalFontFamily: "FiraCode Nerd Font",
                 terminalFontSize: 16,
+                claudeCodeEnabled: true,
                 claudeCodeOptimized: true,
                 claudeCodeSkipPermissions: true,
                 claudeCodeModel: "claude-sonnet-4-6",

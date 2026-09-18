@@ -100,7 +100,7 @@ jobs:
               run: node --check scripts/build-dnf-repository.mjs && node --check scripts/sign-dnf-repository.mjs && node --check scripts/sign-rpm-packages.mjs && node --check scripts/validate-dnf-repository.mjs
 
             - name: Run Electron release helper tests
-              run: node --test apps/desktop/scripts/electron-builder-config.test.mjs apps/desktop/scripts/stage-electron-release-assets.test.mjs
+              run: node --test apps/desktop/scripts/electron-builder-config.test.mjs apps/desktop/scripts/electron-builder-keychain-patch.test.mjs apps/desktop/scripts/stage-electron-release-assets.test.mjs
 
             - name: Check Debian package validation script
               run: node --check apps/desktop/scripts/validate-linux-deb-package.mjs

@@ -209,7 +209,7 @@ describe("AIChatDetachedWindowHost", () => {
     });
 
     it("keeps the main-window event bridge active before any chat tab mounts", () => {
-        renderComponent(<AIChatWorkspaceHost listenWithoutChatTabs />);
+        renderComponent(<AIChatWorkspaceHost />);
 
         expect(eventBridgeMock).toHaveBeenCalledWith(true);
     });
@@ -246,7 +246,7 @@ describe("AIChatDetachedWindowHost", () => {
 
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleReplay);
         try {
-            renderComponent(<AIChatWorkspaceHost listenWithoutChatTabs />);
+            renderComponent(<AIChatWorkspaceHost />);
 
             window.dispatchEvent(
                 new CustomEvent(FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT, {
@@ -303,7 +303,7 @@ describe("AIChatDetachedWindowHost", () => {
 
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleReplay);
         try {
-            renderComponent(<AIChatWorkspaceHost listenWithoutChatTabs />);
+            renderComponent(<AIChatWorkspaceHost />);
 
             window.dispatchEvent(
                 new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
@@ -358,7 +358,7 @@ describe("AIChatDetachedWindowHost", () => {
 
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleReplay);
         try {
-            renderComponent(<AIChatWorkspaceHost listenWithoutChatTabs />);
+            renderComponent(<AIChatWorkspaceHost />);
 
             window.dispatchEvent(
                 new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
@@ -401,9 +401,9 @@ describe("AIChatDetachedWindowHost", () => {
         });
     });
 
-    it("keeps detached windows quiet until they have a chat tab", () => {
+    it("keeps the detached event bridge active without editor chat tabs", () => {
         renderComponent(<AIChatDetachedWindowHost />);
 
-        expect(eventBridgeMock).toHaveBeenCalledWith(false);
+        expect(eventBridgeMock).toHaveBeenCalledWith(true);
     });
 });

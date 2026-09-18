@@ -1,3 +1,19 @@
+export type AcpContinuationStrategy =
+    | "resume"
+    | "load"
+    | "new_session_only";
+
+export type CustomRuntimeContinuationResult =
+    | { status: "connected"; session: AIChatSession }
+    | {
+          status: "confirmation_required";
+          runtimeId: string;
+          displayName: string;
+          launchFingerprint: string;
+          message: string;
+      }
+    | { status: "transcript_only"; message: string };
+
 export type AIChatSessionStatus =
     | "idle"
     | "streaming"
@@ -5,6 +21,49 @@ export type AIChatSessionStatus =
     | "waiting_user_input"
     | "review_required"
     | "error";
+
+export type AIRuntimeSessionState =
+    | "live"
+    | "persisted_only"
+    | "transcript_only"
+    | "detached";
+
+export interface ConversationSelection {
+    runtimeId: string;
+    modelId: string;
+    modeId: string;
+    options: Record<string, string>;
+}
+
+export type ConversationTurnStartReason =
+    | "normal"
+    | "native_resume"
+    | "transcript_handoff";
+
+export interface AcpContextHandoffMetadata {
+    bindingId: string | null;
+    fromCursor: string | null;
+    nextCursor: string | null;
+    cursorFound: boolean;
+    includedMessageIds: string[];
+    omittedTurnCount: number;
+    truncated: boolean;
+    reason: ConversationTurnStartReason;
+}
+
+export interface ConversationTurnProvenance {
+    bindingId: string;
+    runtimeId: string;
+    runtimeSessionId: string | null;
+    modelId: string;
+    modeId: string;
+    options: Record<string, string>;
+    startReason: ConversationTurnStartReason;
+    /** Whether the bounded transcript handoff omitted context for this turn. */
+    handoffTruncated?: boolean;
+    /** Complete turns omitted from the handoff budget. */
+    handoffOmittedTurnCount?: number;
+}
 
 export type AIRuntimeConnectionStatus = "idle" | "loading" | "ready" | "error";
 
@@ -40,6 +99,7 @@ export interface AIRuntimeConnectionState {
 
 export interface AIRuntimeConnectionPayload extends AIRuntimeConnectionState {
     runtime_id: string;
+    session_id?: string | null;
 }
 
 export interface AITokenUsageCost {
@@ -62,6 +122,57 @@ export type AISecretPatch =
     | { action: "unchanged" }
     | { action: "clear" }
     | { action: "set"; value: string };
+
+export type AICustomAcpRuntimeId = `custom:${string}`;
+
+export interface AICustomAcpRuntimeDefinitionInput {
+    displayName: string;
+    command: string;
+    args: string[];
+    env: Record<string, string>;
+    authMode: "external";
+}
+
+export interface AICustomAcpRuntimeDefinition
+    extends AICustomAcpRuntimeDefinitionInput {
+    id: AICustomAcpRuntimeId;
+    revision: number;
+    launchFingerprint: string;
+}
+
+export type AICustomAcpExecutableVerificationState =
+    | "ready"
+    | "missing"
+    | "not_executable";
+
+export interface AICustomAcpExecutableVerification {
+    state: AICustomAcpExecutableVerificationState;
+    command: string;
+    executablePath: string | null;
+    message: string | null;
+}
+
+export type AIClaudeProviderRouting =
+    | { type: "default" }
+    | { type: "anthropic"; baseUrl: string }
+    | { type: "bedrock"; baseUrl: string }
+    | {
+          type: "vertex";
+          baseUrl: string;
+          projectId: string;
+          region: string;
+      };
+
+export type AIBackendClaudeProviderRouting =
+    | { type: "default" }
+    | { type: "anthropic"; base_url: string }
+    | { type: "bedrock"; base_url: string }
+    | {
+          type: "vertex";
+          base_url: string;
+          project_id: string;
+          region: string;
+      };
 
 export type AIAuthTerminalStatus = "starting" | "running" | "exited" | "error";
 
@@ -98,6 +209,7 @@ export interface AIRuntimeSetupStatus {
     authReady: boolean;
     authMethod?: string;
     authMethods: AIAuthMethod[];
+    claudeProviderRouting?: AIClaudeProviderRouting;
     hasGatewayConfig?: boolean;
     hasGatewayUrl?: boolean;
     onboardingRequired: boolean;
@@ -167,7 +279,7 @@ export interface AIConfigSelectOption {
 export interface AIConfigOption {
     id: string;
     runtimeId: string;
-    category: "mode" | "model" | "reasoning" | "other";
+    category: "mode" | "model" | "reasoning" | "service_tier" | "other";
     label: string;
     description?: string;
     type: "select";
@@ -185,6 +297,16 @@ export type AIAttachmentType =
 
 export type AIAttachmentStatus = "pending" | "processing" | "ready" | "error";
 
+declare const managedAttachmentIdBrand: unique symbol;
+export type ManagedAttachmentId = string & {
+    readonly [managedAttachmentIdBrand]: true;
+};
+
+declare const draftAttachmentIdBrand: unique symbol;
+export type DraftAttachmentId = string & {
+    readonly [draftAttachmentIdBrand]: true;
+};
+
 export interface AIChatAttachment {
     id: string;
     type: AIAttachmentType;
@@ -193,6 +315,8 @@ export interface AIChatAttachment {
     path: string | null;
     content?: string;
     filePath?: string;
+    managedAttachmentId?: ManagedAttachmentId;
+    fileName?: string;
     mimeType?: string;
     transcription?: string;
     status?: AIAttachmentStatus;
@@ -224,10 +348,14 @@ export interface QueuedChatMessage {
     attachments: AIChatAttachment[];
     createdAt: number;
     status: QueuedChatMessageStatus;
+    /** Provider selected for this turn. Omitted only by legacy queue entries. */
+    runtimeId?: string | null;
     modelId: string | null;
     modeId: string | null;
     optionsSnapshot: Record<string, string>;
     optimisticMessageId?: string;
+    /** Internal ACP payload metadata. Never rendered as a user message. */
+    contextHandoff?: AcpContextHandoffMetadata;
 }
 
 export type AIChatRole = "user" | "assistant" | "system";
@@ -371,6 +499,76 @@ export interface AIChatMessage {
     planEntries?: AIPlanEntry[];
     planDetail?: string;
     toolAction?: AIToolActivityAction | null;
+    /** Runtime that executed this canonical turn. Persisted in phase A2. */
+    turnProvenance?: ConversationTurnProvenance;
+}
+
+export interface AcpConversationBinding {
+    bindingId: string;
+    conversationId: string;
+    runtimeId: string;
+    runtimeDisplayName: string | null;
+    runtimeRevision: number | null;
+    runtimeLaunchFingerprint: string | null;
+    runtimeSessionId: string | null;
+    continuationStrategy: AcpContinuationStrategy | null;
+    capabilities: string[];
+    modelId: string;
+    modeId: string;
+    options: Record<string, string>;
+    models: AIModelOption[];
+    modes: AIModeOption[];
+    configOptions: AIConfigOption[];
+    availableCommands?: AIAvailableCommand[];
+    effortsByModel: Record<string, string[]>;
+    runtimeState: AIRuntimeSessionState;
+    contextCursor: string | null;
+    contextGeneration: number;
+    createdAt: number | null;
+    updatedAt: number | null;
+}
+
+export interface ConversationTranscriptObservation {
+    messageCount: number;
+    updatedAt: number;
+    transcriptFingerprint: string | null;
+}
+
+export interface ConversationBindingsState {
+    version: number;
+    revision: number;
+    conversationId: string;
+    preferredSelection: ConversationSelection;
+    activeBindingId: string | null;
+    providerBindings: AcpConversationBinding[];
+    contextSummary: string | null;
+    transcriptObservation: ConversationTranscriptObservation;
+}
+
+export interface AIConversation {
+    conversationId: string;
+    parentConversationId: string | null;
+    vaultPath: string | null;
+    closedAt: string | null;
+    status: AIChatSessionStatus;
+    activeWorkCycleId: string | null;
+    visibleWorkCycleId: string | null;
+    actionLog?: import("./diff/actionLogTypes").ActionLogState;
+    messages: AIChatMessage[];
+    attachments: AIChatAttachment[];
+    preferredSelection: ConversationSelection;
+    activeBindingId: string | null;
+    persistedCreatedAt: number | null;
+    persistedUpdatedAt: number | null;
+    persistedTitle: string | null;
+    customTitle: string | null;
+    persistedPreview: string | null;
+    persistedMessageCount?: number;
+    loadedPersistedMessageStart?: number | null;
+    isLoadingPersistedMessages?: boolean;
+    isPersistedSession: boolean;
+    isPendingSessionCreation: boolean;
+    isResumingSession: boolean;
 }
 
 export interface AIChatSession {
@@ -394,6 +592,10 @@ export interface AIChatSession {
     isResumingSession?: boolean;
     effortsByModel?: Record<string, string[]>;
     runtimeId: string;
+    runtimeDisplayName?: string | null;
+    runtimeRevision?: number | null;
+    runtimeLaunchFingerprint?: string | null;
+    continuationStrategy?: AcpContinuationStrategy | null;
     additionalRoots?: string[];
     /**
      * Roots the user previously approved that could not be re-resolved on
@@ -435,7 +637,11 @@ export interface AIChatSession {
     pendingSessionError?: string | null;
     resumeContextPending?: boolean;
     resumeReconnectFailed?: boolean;
-    runtimeState?: "live" | "persisted_only" | "detached";
+    runtimeState?: AIRuntimeSessionState;
+    /** Provenance applied to runtime events until the accepted turn completes. */
+    activeTurnProvenance?: ConversationTurnProvenance | null;
+    /** Canonical provider bindings loaded from the versioned history sidecar. */
+    conversationBindings?: ConversationBindingsState;
 }
 
 export interface AIRuntimeDescriptor {
@@ -452,6 +658,10 @@ export interface AIBackendSessionPayload {
     closed_at?: string | null;
     title?: string | null;
     runtime_id: string;
+    runtime_display_name?: string | null;
+    runtime_revision?: number | null;
+    runtime_launch_fingerprint?: string | null;
+    continuation_strategy?: AcpContinuationStrategy | null;
     model_id: string;
     mode_id: string;
     status: AIChatSessionStatus;
@@ -463,7 +673,12 @@ export interface AIBackendSessionPayload {
     config_options: Array<{
         id: string;
         runtime_id: string;
-        category: "mode" | "model" | "reasoning" | "other";
+        category:
+            | "mode"
+            | "model"
+            | "reasoning"
+            | "service_tier"
+            | "other";
         label: string;
         description?: string | null;
         type: "select";
@@ -510,6 +725,7 @@ export interface AIBackendRuntimeSetupStatusPayload {
     auth_ready: boolean;
     auth_method?: string | null;
     auth_methods: AIAuthMethod[];
+    claude_provider_routing?: AIBackendClaudeProviderRouting | null;
     has_gateway_config?: boolean;
     has_gateway_url?: boolean;
     onboarding_required: boolean;
@@ -547,6 +763,7 @@ export interface AIToolActivityPayload {
     title: string;
     kind: string;
     status: string;
+    started_at_ms?: number | null;
     action?: AIToolActivityAction | null;
     target?: string | null;
     summary?: string | null;
@@ -565,6 +782,7 @@ export interface AIStatusEventPayload {
     kind: string;
     status: string;
     title: string;
+    started_at_ms?: number | null;
     detail?: string | null;
     emphasis: string;
     tool_action?: AIToolActivityAction | null;
@@ -586,6 +804,7 @@ export interface AIPermissionOption {
     option_id: string;
     name: string;
     kind: string;
+    permission_scope?: string[];
 }
 
 export interface AIFileDiffHunkLine {
@@ -685,11 +904,29 @@ export type AIComposerPart =
     | {
           id: string;
           type: "screenshot";
-          filePath: string;
           mimeType: string;
           label: string;
           createdAt?: number;
-      }
+      } & (
+          | {
+                draftAttachmentId: DraftAttachmentId;
+                fileName: string;
+                managedAttachmentId?: never;
+                filePath?: never;
+            }
+          | {
+                managedAttachmentId: ManagedAttachmentId;
+                fileName: string;
+                draftAttachmentId?: never;
+                filePath?: never;
+            }
+          | {
+                filePath: string;
+                draftAttachmentId?: never;
+                managedAttachmentId?: never;
+                fileName?: string;
+            }
+      )
     | {
           id: string;
           type: "file_attachment";
@@ -726,6 +963,59 @@ export interface PersistedMessage {
     plan_entries?: AIPlanEntry[];
     plan_detail?: string;
     tool_action?: AIToolActivityAction | null;
+    turn_provenance?: {
+        binding_id: string;
+        runtime_id: string;
+        runtime_session_id: string | null;
+        model_id: string;
+        mode_id: string;
+        options: Record<string, string>;
+        start_reason: ConversationTurnStartReason;
+        handoff_truncated?: boolean;
+        handoff_omitted_turn_count?: number;
+    };
+}
+
+export interface PersistedConversationBindings {
+    version: number;
+    revision: number;
+    conversation_id: string;
+    preferred_selection: {
+        runtime_id: string;
+        model_id: string;
+        mode_id: string;
+        options: Record<string, string>;
+    };
+    active_binding_id: string | null;
+    provider_bindings: Array<{
+        binding_id: string;
+        conversation_id: string;
+        runtime_id: string;
+        runtime_display_name: string | null;
+        runtime_revision: number | null;
+        runtime_launch_fingerprint: string | null;
+        runtime_session_id: string | null;
+        continuation_strategy: AcpContinuationStrategy | null;
+        capabilities: string[];
+        model_id: string;
+        mode_id: string;
+        options: Record<string, string>;
+        models?: AIBackendRuntimeDescriptorPayload["models"];
+        modes?: AIBackendRuntimeDescriptorPayload["modes"];
+        config_options?: AIBackendSessionPayload["config_options"];
+        efforts_by_model?: Record<string, string[]>;
+        runtime_state: AIRuntimeSessionState;
+        context_cursor: string | null;
+        context_generation: number;
+        created_at: number | null;
+        updated_at: number | null;
+    }>;
+    context_summary: string | null;
+    transcript_observation: {
+        message_count: number;
+        updated_at: number;
+        transcript_fingerprint: string | null;
+    };
 }
 
 export interface PersistedSessionHistory {
@@ -734,6 +1024,11 @@ export interface PersistedSessionHistory {
     parent_session_id?: string | null;
     closed_at?: string | null;
     runtime_id?: string;
+    runtime_display_name?: string;
+    runtime_revision?: number;
+    runtime_launch_fingerprint?: string;
+    runtime_session_id?: string;
+    continuation_strategy?: AcpContinuationStrategy;
     model_id: string;
     mode_id: string;
     models?: AIBackendRuntimeDescriptorPayload["models"];
@@ -748,6 +1043,7 @@ export interface PersistedSessionHistory {
     custom_title?: string | null;
     preview?: string;
     messages: PersistedMessage[];
+    conversation_bindings?: PersistedConversationBindings;
 }
 
 export interface PersistedSessionHistoryPage {

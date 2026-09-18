@@ -1,9 +1,15 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { isWindows } from "./common.mjs";
+import { prepareClaudeRuntime } from "./claude-runtime.mjs";
+import {
+    parseRustcHostTarget,
+    resolveCodexV8CargoEnvironment,
+} from "./codex-v8-artifacts.mjs";
 import {
     signalExitCode,
     terminateChild,
@@ -12,16 +18,22 @@ import {
 
 
 const rootDir = fileURLToPath(new URL("..", import.meta.url));
+const workspaceRoot = path.resolve(rootDir, "../..");
 const rendererUrl = "http://127.0.0.1:5174";
+const execFileAsync = promisify(execFile);
 
 let vite = null;
 let electron = null;
 let shuttingDown = false;
 
 function run(command, args, options = {}) {
+    const env = { ...process.env, ...(options.env ?? {}) };
+    for (const key of options.unsetEnv ?? []) {
+        delete env[key];
+    }
     const child = spawn(command, args, {
-        cwd: rootDir,
-        env: { ...process.env, ...(options.env ?? {}) },
+        cwd: options.cwd ?? rootDir,
+        env,
         stdio: options.stdio ?? "inherit",
         detached: !isWindows && options.detached === true,
         shell: isWindows,
@@ -45,9 +57,9 @@ function shutdown(exitCode = 0) {
     }, FORCED_EXIT_TIMEOUT_MS).unref();
 }
 
-function runOnce(command, args, env = {}) {
+function runOnce(command, args, env = {}, cwd = rootDir) {
     return new Promise((resolve, reject) => {
-        const child = run(command, args, { env });
+        const child = run(command, args, { cwd, env });
         child.on("error", reject);
         child.on("exit", (code) => {
             if (code === 0) {
@@ -95,6 +107,27 @@ process.on("unhandledRejection", (error) => {
 });
 
 async function main() {
+    await prepareClaudeRuntime();
+
+    const { stdout: rustcVersion } = await execFileAsync("rustc", ["-vV"], {
+        cwd: workspaceRoot,
+    });
+    const codexV8Environment = await resolveCodexV8CargoEnvironment({
+        targetTriple: parseRustcHostTarget(rustcVersion),
+    });
+
+    await runOnce(
+        "cargo",
+        [
+            "build",
+            "--locked",
+            "--manifest-path",
+            "../../vendor/codex-acp/Cargo.toml",
+            "--bins",
+        ],
+        codexV8Environment,
+    );
+
     await runOnce(
         "cargo",
         ["build", "-p", "neverwrite-native-backend"],
@@ -138,6 +171,9 @@ async function main() {
         env: {
             ELECTRON_RENDERER_URL: rendererUrl,
         },
+        // Coding environments may use Electron as their Node runtime. The app
+        // process must start in normal Electron mode to expose the main API.
+        unsetEnv: ["ELECTRON_RUN_AS_NODE"],
         stdio: ["ignore", "inherit", "inherit"],
     });
 

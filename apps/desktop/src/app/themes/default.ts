@@ -12,7 +12,7 @@ export const defaultTheme: ThemePalette = {
         textHeading: "#1c1c1c",
         textHeadingMuted: "#737373",
         border: "#e5e5e5",
-        accent: "#6366f1",
+        accent: "#1c1c1c",
         iconMuted: "#737373",
         shadowSoft: "0 18px 48px rgba(15, 23, 42, 0.08)",
         codeAnchors: {
@@ -40,7 +40,7 @@ export const defaultTheme: ThemePalette = {
         textHeading: "#e8e8e8",
         textHeadingMuted: "#8a8a8a",
         border: "#383838",
-        accent: "#818cf8",
+        accent: "#e8e8e8",
         iconMuted: "#9a9a9a",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.28)",
         codeAnchors: {

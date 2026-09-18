@@ -80,6 +80,7 @@ export function AIChatCommandPicker({
 
     return createPortal(
         <div
+            className="nw-chat-glass-menu"
             ref={ref}
             style={{
                 position: "fixed",
@@ -91,11 +92,8 @@ export function AIChatCommandPicker({
                 overflow: "hidden",
                 borderRadius: 10,
                 border: "1px solid color-mix(in srgb, var(--border) 86%, transparent)",
-                background:
-                    "color-mix(in srgb, var(--bg-elevated) 97%, transparent)",
                 boxShadow:
                     "0 12px 32px rgba(15, 23, 42, 0.16), 0 0 0 1px color-mix(in srgb, var(--border) 40%, transparent)",
-                backdropFilter: "blur(10px)",
             }}
         >
             <div

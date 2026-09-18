@@ -38,12 +38,14 @@ test("macOS universal x64ArchFiles covers packaged native binaries", () => {
         ),
         true,
     );
-    assert.equal(
-        config.mac.binaries.includes(
-            "Contents/Resources/native-backend/binaries/codex-code-mode-host",
-        ),
-        true,
-    );
+    for (const binary of ["codex-acp", "codex-code-mode-host"]) {
+        assert.equal(
+            config.mac.binaries.includes(
+                `Contents/Resources/native-backend/binaries/${binary}`,
+            ),
+            true,
+        );
+    }
     assert.equal(
         minimatch(
             "Contents/Resources/app.asar.unpacked/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node",
