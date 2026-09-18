@@ -1963,6 +1963,17 @@ export function createInlineLivePreviewPlugin() {
                     return;
                 }
 
+                // Background parsing advances the syntax tree without changing
+                // the document, selection, or viewport. The initial preview
+                // must catch up without waiting for user interaction.
+                if (syntaxTree(update.startState) !== syntaxTree(update.state)) {
+                    this.decorations = this.build(
+                        update.view,
+                        "syntaxTreeChanged",
+                    );
+                    return;
+                }
+
                 if (!update.selectionSet) return;
                 const nextRevealSignature = getRevealSensitiveSignature(
                     update.state,
@@ -1980,6 +1991,7 @@ export function createInlineLivePreviewPlugin() {
                     | "initial"
                     | "docChanged"
                     | "viewportChanged"
+                    | "syntaxTreeChanged"
                     | "selectionSet",
             ): DecorationSet {
                 const { from, to } = view.viewport;

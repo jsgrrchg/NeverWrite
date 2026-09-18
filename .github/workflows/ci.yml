@@ -120,6 +120,48 @@ jobs:
         working-directory: apps/desktop
         run: npm run electron:ai-runtime:smoke
 
+  editor-browser:
+    name: Editor browser regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: apps/desktop
+        run: npx playwright install --with-deps chromium
+
+      - name: Check browser harness types
+        working-directory: apps/desktop
+        run: npx tsc --noEmit -p e2e/tsconfig.json
+
+      - name: Run browser regressions
+        working-directory: apps/desktop
+        run: npm run test:e2e -- e2e/tests/editorTabRendering.spec.ts e2e/tests/livePreviewLists.spec.ts
+
+      - name: Upload browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: editor-browser-diagnostics
+          path: apps/desktop/test-results/
+          retention-days: 7
+
   web-clipper:
     name: Web Clipper
     runs-on: ubuntu-latest
