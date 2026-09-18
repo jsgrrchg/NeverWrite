@@ -26,6 +26,51 @@ test("runtime JavaScript matches the published dependency baseline", async () =>
     }
 });
 
+test("shell permission titles preserve the exact command", async () => {
+    const { buildClaudePermissionPresentation } = await import(
+        pathToFileURL(path.join(runtimeRoot, "dist/permissions/presentation.js")).href
+    );
+    for (const [toolName, command] of [
+        ["Bash", "  printf '%s\\n' \"a  b\" # keep spacing\\nprintf done  "],
+        ["PowerShell", "  Write-Output \"a  b\" # keep spacing\\nWrite-Output done  "],
+    ]) {
+        const presentation = buildClaudePermissionPresentation({
+            toolName,
+            input: { command, description: "Model-authored summary" },
+            toolUseID: `tool-${toolName}`,
+        });
+        assert.equal(presentation.toolCall.title, command);
+        assert.equal(presentation._meta.permission.title, command);
+        assert.notEqual(presentation._meta.permission.title, "Model-authored summary");
+    }
+});
+
+test("compaction remains tool activity without the experimental client capability", async () => {
+    const { ContextCompactionLifecycle, clientSupportsCompactionUpdates } = await import(
+        pathToFileURL(path.join(runtimeRoot, "dist/context-compaction.js")).href
+    );
+    const capabilities = { fs: {}, elicitation: { form: {}, url: {} } };
+    assert.equal(clientSupportsCompactionUpdates(capabilities), false);
+    const notifications = [];
+    const lifecycle = new ContextCompactionLifecycle(async (notification) => {
+        notifications.push(notification);
+    }, { sessionId: "legacy-session" });
+
+    await lifecycle.start("compact-1");
+    await lifecycle.heartbeat("compact-1", "Summary text");
+    await lifecycle.finish("compact-1", "completed");
+    await lifecycle.reset();
+
+    assert.deepEqual(notifications.map(({ sessionId, update }) => ({
+        sessionId, type: update.sessionUpdate, id: update.toolCallId, status: update.status,
+    })), [
+        { sessionId: "legacy-session", type: "tool_call", id: "compact-1", status: "in_progress" },
+        { sessionId: "legacy-session", type: "tool_call_update", id: "compact-1", status: "in_progress" },
+        { sessionId: "legacy-session", type: "tool_call_update", id: "compact-1", status: "completed" },
+    ]);
+    assert.equal(notifications[0].update.title, "Compact conversation");
+});
+
 test("TaskList contracts execute an isolated runtime with an external timeout", async (t) => {
     const isolated = await fs.mkdtemp(path.join(os.tmpdir(), "claude contracts "));
     t.after(() => fs.rm(isolated, { recursive: true, force: true }));
