@@ -26,6 +26,25 @@ test("runtime JavaScript matches the published dependency baseline", async () =>
     }
 });
 
+test("shell permission titles preserve the exact command", async () => {
+    const { buildClaudePermissionPresentation } = await import(
+        pathToFileURL(path.join(runtimeRoot, "dist/permissions/presentation.js")).href
+    );
+    for (const [toolName, command] of [
+        ["Bash", "  printf '%s\\n' \"a  b\" # keep spacing\\nprintf done  "],
+        ["PowerShell", "  Write-Output \"a  b\" # keep spacing\\nWrite-Output done  "],
+    ]) {
+        const presentation = buildClaudePermissionPresentation({
+            toolName,
+            input: { command, description: "Model-authored summary" },
+            toolUseID: `tool-${toolName}`,
+        });
+        assert.equal(presentation.toolCall.title, command);
+        assert.equal(presentation._meta.permission.title, command);
+        assert.notEqual(presentation._meta.permission.title, "Model-authored summary");
+    }
+});
+
 test("compaction remains tool activity without the experimental client capability", async () => {
     const { ContextCompactionLifecycle, clientSupportsCompactionUpdates } = await import(
         pathToFileURL(path.join(runtimeRoot, "dist/context-compaction.js")).href
