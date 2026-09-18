@@ -21,7 +21,7 @@ use agent_client_protocol::schema::v1::{
     PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
+    SessionConfigOptionCategory, SessionConfigSelectOptions, SessionId,
     SessionInfoUpdate, SessionModeState, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, SetSessionModeRequest, TextResourceContents, ToolCall,
     ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -1162,11 +1162,6 @@ enum AcpCommand {
         mode_id: String,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
-    SetModel {
-        session_id: String,
-        model_id: String,
-        response_tx: mpsc::Sender<Result<(), String>>,
-    },
     SetConfigOption {
         session_id: String,
         option_id: String,
@@ -1190,7 +1185,6 @@ enum AcpCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AcpConfigOptionRemoteCommand {
     SetConfigOption,
-    SetModel,
     LocalOnly,
 }
 
@@ -2075,15 +2069,18 @@ impl NativeAi {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         let model_id = required_string(args, &["modelId", "model_id"])?;
         let model_config_option_id = self.session_model_config_option_id(&session_id)?;
+        if self.session_runtime_id(&session_id)? == GROK_RUNTIME_ID && model_config_option_id.is_none()
+        {
+            return Err(
+                "The model is managed by Grok CLI; this session exposes no model config option."
+                    .to_string(),
+            );
+        }
         let config_options = match (self.session_handle(&session_id)?, model_config_option_id) {
             (Some(handle), Some(option_id)) => {
                 match self.session_config_option_remote_command(&session_id, &option_id)? {
                     AcpConfigOptionRemoteCommand::SetConfigOption => {
                         Some(handle.set_config_option(&session_id, &option_id, &model_id)?)
-                    }
-                    AcpConfigOptionRemoteCommand::SetModel => {
-                        handle.set_model(&session_id, &model_id)?;
-                        None
                     }
                     AcpConfigOptionRemoteCommand::LocalOnly => None,
                 }
@@ -2124,10 +2121,6 @@ impl NativeAi {
         let config_options = match (self.session_handle(&input.session_id)?, remote_command) {
             (Some(handle), AcpConfigOptionRemoteCommand::SetConfigOption) => {
                 Some(handle.set_config_option(&input.session_id, &input.option_id, &input.value)?)
-            }
-            (Some(handle), AcpConfigOptionRemoteCommand::SetModel) => {
-                handle.set_model(&input.session_id, &input.value)?;
-                None
             }
             (_, AcpConfigOptionRemoteCommand::LocalOnly) | (None, _) => None,
         };
@@ -3069,14 +3062,6 @@ impl AcpSessionHandle {
         .map_err(AcpRequestError::into_message)
     }
 
-    fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), String> {
-        self.request(|response_tx| AcpCommand::SetModel {
-            session_id: session_id.to_string(),
-            model_id: model_id.to_string(),
-            response_tx,
-        })
-        .map_err(AcpRequestError::into_message)
-    }
 
     fn set_config_option(
         &self,
@@ -5169,12 +5154,10 @@ async fn run_acp12_actor_inner(
                             message: None,
                         }),
                     );
-                    let initialize_model_state = acp12_initialize_model_state(&initialize_response);
                     start_acp12_runtime_session(
                         &connection,
                         &spec,
                         &start_mode,
-                        initialize_model_state,
                     )
                     .await
                 } => match response {
@@ -5828,7 +5811,6 @@ async fn start_acp12_runtime_session(
     connection: &acp12::ConnectionTo<acp12::Agent>,
     spec: &AcpProcessSpec,
     start_mode: &AcpSessionStartMode,
-    initialize_model_state: Option<acp12::schema::SessionModelState>,
 ) -> Result<AcpSessionStartResponse, acp12::Error> {
     let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
     match start_mode {
@@ -5846,12 +5828,7 @@ async fn start_acp12_runtime_session(
             Ok(AcpSessionStartResponse {
                 session_id: response.session_id.0.to_string(),
                 modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
-                config_options: acp12_session_config_options(
-                    &spec.runtime_id,
-                    response.config_options,
-                    response.models.or_else(|| initialize_model_state.clone()),
-                )
-                .map_err(acp12_internal_error)?,
+                config_options: acp12_to_current(response.config_options).map_err(acp12_internal_error)?,
                 continuation_strategy: None,
             })
         }
@@ -5878,85 +5855,13 @@ async fn start_acp12_runtime_session(
             Ok(AcpSessionStartResponse {
                 session_id: session_id.clone(),
                 modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
-                config_options: acp12_session_config_options(
-                    &spec.runtime_id,
-                    response.config_options,
-                    response.models.or_else(|| initialize_model_state.clone()),
-                )
-                .map_err(acp12_internal_error)?,
+                config_options: acp12_to_current(response.config_options).map_err(acp12_internal_error)?,
                 continuation_strategy: None,
             })
         }
     }
 }
 
-fn acp12_initialize_model_state(
-    response: &acp12::schema::InitializeResponse,
-) -> Option<acp12::schema::SessionModelState> {
-    response
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.get("modelState").cloned())
-        .and_then(|value| serde_json::from_value(value).ok())
-}
-
-fn acp12_session_config_options(
-    runtime_id: &str,
-    legacy_options: Option<Vec<acp12::schema::SessionConfigOption>>,
-    legacy_models: Option<acp12::schema::SessionModelState>,
-) -> Result<Option<Vec<SessionConfigOption>>, String> {
-    let mut options: Option<Vec<SessionConfigOption>> = acp12_to_current(legacy_options)?;
-    let Some(model_option) = acp12_model_state_to_config_option(legacy_models) else {
-        return Ok(options);
-    };
-
-    let options = options.get_or_insert_with(Vec::new);
-    if !options.iter().any(|option| {
-        matches!(
-            map_config_option_category(runtime_id, &option.id.0, option.category.as_ref()),
-            AiConfigOptionCategory::Model
-        )
-    }) {
-        options.insert(0, model_option);
-    }
-
-    Ok(Some(options.clone()))
-}
-
-fn acp12_model_state_to_config_option(
-    state: Option<acp12::schema::SessionModelState>,
-) -> Option<SessionConfigOption> {
-    let state = state?;
-    if state.available_models.is_empty() {
-        return None;
-    }
-
-    let options: Vec<SessionConfigSelectOption> = state
-        .available_models
-        .into_iter()
-        .map(|model| {
-            let mut option =
-                SessionConfigSelectOption::new(model.model_id.0.to_string(), model.name);
-            if let Some(description) = model.description {
-                option = option.description(description);
-            }
-            if let Some(meta) = model.meta {
-                option = option.meta(meta);
-            }
-            option
-        })
-        .collect();
-
-    Some(
-        SessionConfigOption::select(
-            "model",
-            "Model",
-            state.current_model_id.0.to_string(),
-            options,
-        )
-        .category(SessionConfigOptionCategory::Model),
-    )
-}
 
 fn config_select_option_agent_type(meta: Option<&Meta>) -> Option<String> {
     meta.and_then(|meta| meta.get("agentType"))
@@ -6088,15 +5993,6 @@ async fn handle_acp_command(
                 .map_err(|error| normalize_grok_model_switch_error(&error.to_string()));
             let _ = response_tx.send(result);
         }
-        AcpCommand::SetModel {
-            session_id: _,
-            model_id: _,
-            response_tx,
-        } => {
-            let _ = response_tx.send(Err(
-                "ACP 0.14 model changes must use session config options.".to_string(),
-            ));
-        }
         AcpCommand::SetConfigOption {
             session_id,
             option_id,
@@ -6194,22 +6090,6 @@ async fn handle_acp12_command(
                 .send_request(acp12::schema::SetSessionModeRequest::new(
                     acp12::schema::SessionId::new(session_id),
                     mode_id,
-                ))
-                .block_task()
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string());
-            let _ = response_tx.send(result);
-        }
-        AcpCommand::SetModel {
-            session_id,
-            model_id,
-            response_tx,
-        } => {
-            let result = connection
-                .send_request(acp12::schema::SetSessionModelRequest::new(
-                    acp12::schema::SessionId::new(session_id),
-                    model_id,
                 ))
                 .block_task()
                 .await
@@ -6727,16 +6607,13 @@ fn acp_config_option_remote_command(
     option_id: &str,
 ) -> AcpConfigOptionRemoteCommand {
     if runtime_id == GROK_RUNTIME_ID {
-        let category = config_options
+        let advertised = config_options
             .iter()
-            .find(|option| option.id == option_id)
-            .map(|option| &option.category);
-        return match category {
-            Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
-            Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::LocalOnly,
-            Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
-            None if option_id == "model" => AcpConfigOptionRemoteCommand::LocalOnly,
-            None => AcpConfigOptionRemoteCommand::LocalOnly,
+            .any(|option| option.id == option_id);
+        return if advertised {
+            AcpConfigOptionRemoteCommand::SetConfigOption
+        } else {
+            AcpConfigOptionRemoteCommand::LocalOnly
         };
     }
 
@@ -15721,7 +15598,7 @@ mod tests {
                 &session.config_options,
                 &model_config.id
             ),
-            AcpConfigOptionRemoteCommand::SetModel
+            AcpConfigOptionRemoteCommand::SetConfigOption
         );
     }
 
@@ -15772,6 +15649,30 @@ mod tests {
                 .all(|option| !matches!(option.category, AiConfigOptionCategory::Model)),
             "Grok must not receive a synthetic Auto model when ACP exposes no model option"
         );
+    }
+
+    #[test]
+    fn grok_rejects_stale_model_selection_when_cli_manages_model() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        insert_test_managed_session(&ai.inner, GROK_RUNTIME_ID, "grok-session");
+        ai.inner
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut("grok-session")
+            .unwrap()
+            .session =
+            session_from_acp_response(GROK_RUNTIME_ID, "grok-session".to_string(), None, None);
+        let error = ai
+            .set_model(&json!({
+                "sessionId": "grok-session",
+                "modelId": "previously-saved-model"
+            }))
+            .expect_err("a saved preference must not override the CLI model");
+        assert!(error.contains("managed by Grok CLI"));
+        let state = ai.inner.lock().unwrap();
+        assert!(state.sessions["grok-session"].session.model_id.is_empty());
     }
 
     #[test]
@@ -15852,97 +15753,6 @@ mod tests {
         assert_eq!(session.mode_id, "yolo");
     }
 
-    #[test]
-    fn acp12_model_state_is_exposed_as_model_config_option() {
-        let config_options = acp12_session_config_options(
-            GROK_RUNTIME_ID,
-            None,
-            Some(acp12::schema::SessionModelState::new(
-                "grok-build",
-                vec![
-                    acp12::schema::ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5").meta(
-                        acp12::schema::Meta::from_iter([(
-                            "agentType".to_string(),
-                            serde_json::json!("composer-agent"),
-                        )]),
-                    ),
-                    acp12::schema::ModelInfo::new("grok-build", "Grok Build").meta(
-                        acp12::schema::Meta::from_iter([(
-                            "agentType".to_string(),
-                            serde_json::json!("build-agent"),
-                        )]),
-                    ),
-                ],
-            )),
-        )
-        .expect("legacy model state should map")
-        .expect("model option should be synthesized");
-
-        let mapped = map_session_config_options(GROK_RUNTIME_ID, config_options);
-
-        assert_eq!(mapped.len(), 1);
-        assert!(matches!(mapped[0].category, AiConfigOptionCategory::Model));
-        assert_eq!(mapped[0].value, "grok-build");
-        assert_eq!(
-            mapped[0]
-                .options
-                .iter()
-                .map(|option| option.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Composer 2.5", "Grok Build"]
-        );
-        assert_eq!(
-            mapped[0]
-                .options
-                .iter()
-                .map(|option| option.agent_type.as_deref())
-                .collect::<Vec<_>>(),
-            vec![Some("composer-agent"), Some("build-agent")]
-        );
-    }
-
-    #[test]
-    fn acp12_initialize_meta_model_state_is_parsed() {
-        let model_state = acp12::schema::SessionModelState::new(
-            "grok-build",
-            vec![
-                acp12::schema::ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5"),
-                acp12::schema::ModelInfo::new("grok-build", "Grok Build"),
-            ],
-        );
-        let response = acp12::schema::InitializeResponse::new(
-            acp12::schema::ProtocolVersion::LATEST,
-        )
-        .meta(acp12::schema::Meta::from_iter([(
-            "modelState".to_string(),
-            serde_json::to_value(model_state).expect("model state should serialize"),
-        )]));
-
-        let parsed = acp12_initialize_model_state(&response).expect("modelState should be present");
-
-        assert_eq!(parsed.current_model_id.0.as_ref(), "grok-build");
-        assert_eq!(
-            parsed
-                .available_models
-                .iter()
-                .map(|model| model.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Composer 2.5", "Grok Build"]
-        );
-    }
-
-    #[test]
-    fn acp12_initialize_meta_model_state_ignores_unknown_shapes() {
-        let response = acp12::schema::InitializeResponse::new(
-            acp12::schema::ProtocolVersion::LATEST,
-        )
-        .meta(acp12::schema::Meta::from_iter([(
-            "modelState".to_string(),
-            serde_json::json!({ "unexpected": true }),
-        )]));
-
-        assert!(acp12_initialize_model_state(&response).is_none());
-    }
 
     #[test]
     fn internal_mode_update_text_chunks_are_suppressed() {
@@ -16885,11 +16695,11 @@ mod tests {
 
         assert_eq!(
             acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "model"),
-            AcpConfigOptionRemoteCommand::SetModel
+            AcpConfigOptionRemoteCommand::SetConfigOption
         );
         assert_eq!(
             acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "mode"),
-            AcpConfigOptionRemoteCommand::LocalOnly
+            AcpConfigOptionRemoteCommand::SetConfigOption
         );
         assert_eq!(
             acp_config_option_remote_command(GROK_RUNTIME_ID, &[], "model"),

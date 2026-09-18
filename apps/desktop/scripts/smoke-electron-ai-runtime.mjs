@@ -1477,8 +1477,8 @@ async function main() {
     });
     assert(grokSession.status === "idle", "Grok session should start idle");
     assert(
-      grokSession.model_id === "grok-build",
-      "Grok session should use ACP model state",
+      grokSession.model_id === "" && grokSession.models.length === 0,
+      "Grok should inherit its CLI model when only legacy model state is advertised",
     );
     await client.waitEventAfter(
       cursor,

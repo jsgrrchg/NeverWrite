@@ -21498,7 +21498,48 @@ describe("chatStore", () => {
         ).toEqual(["low", "medium", "high", "xhigh"]);
     });
 
-    it("preserves legacy ACP model config value when modelId is empty", () => {
+    it("does not restore saved Grok model preferences without advertised config options", async () => {
+        await useChatStore.getState().initialize();
+        const runtime = useChatStore.getState().runtimes[0]!;
+        useChatStore.setState((state) => ({
+            runtimes: [...state.runtimes, {
+                ...runtime,
+                runtime: { ...runtime.runtime, id: "grok-acp", name: "Grok" },
+                models: [],
+                configOptions: [],
+            }],
+        }));
+        localStorage.setItem(AI_PREFS_KEY, JSON.stringify({
+            modelId: "grok-build",
+            configOptions: { model: "grok-build" },
+        }));
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_setup_status") {
+                return { ...readySetupStatus, runtime_id: "grok-acp" };
+            }
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: "grok-cli-default",
+                    runtime_id: "grok-acp",
+                    model_id: "",
+                    models: [],
+                    modes: [],
+                    config_options: [],
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+        invokeMock.mockClear();
+
+        expect(await useChatStore.getState().newSession("grok-acp")).toBe("grok-cli-default");
+        expect(invokeMock.mock.calls.filter(([command]) =>
+            command === "ai_set_model" || command === "ai_set_config_option",
+        )).toHaveLength(0);
+        expect(useChatStore.getState().sessionsById["grok-cli-default"]?.modelId).toBe("");
+    });
+
+    it("preserves ACP model config value when modelId is empty", () => {
         const session = createSessionWithTrackedFiles("grok-session-1", [], "wc-grok");
 
         useChatStore.getState().upsertSession(
