@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { forceParsing, syntaxTree } from "@codemirror/language";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView, type Decoration } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -145,6 +146,39 @@ afterEach(() => {
 });
 
 describe("createInlineLivePreviewPlugin", () => {
+    it("refreshes inline formatting when background parsing finishes without a click", () => {
+        const filler = "plain text ".repeat(420);
+        const doc = `${filler}\n\nA **bold** word`;
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(0),
+        );
+        try {
+            const viewport = { ...view.viewport };
+            const selection = view.state.selection;
+            expect(syntaxTree(view.state).length).toBeLessThan(doc.length);
+            expect(
+                collectDecorations(view, plugin).some(
+                    (deco) => deco.className === "cm-lp-bold",
+                ),
+            ).toBe(false);
+
+            expect(forceParsing(view, doc.length, 100)).toBe(true);
+
+            expect(view.viewport).toEqual(viewport);
+            expect(view.state.selection).toBe(selection);
+            expect(
+                collectDecorations(view, plugin).some(
+                    (deco) => deco.className === "cm-lp-bold",
+                ),
+            ).toBe(true);
+            expect(view.hasFocus).toBe(false);
+        } finally {
+            view.destroy();
+            parent.remove();
+        }
+    });
+
     it("hides list markers when the selection is on another line", () => {
         const { plugin, parent, view } = createView(
             "- item\nnext",
