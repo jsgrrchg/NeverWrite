@@ -17,6 +17,12 @@ async function snapshot(page: Page) {
     return page.evaluate(() => window.editorFixture.snapshot());
 }
 
+async function settleFrames(page: Page) {
+    await page.evaluate(() => new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    }));
+}
+
 async function expectRenderedWithoutClick(page: Page, testInfo: TestInfo) {
     try {
         // Read DOM rectangles, not CodeMirror's coordinate helpers: those
@@ -81,5 +87,44 @@ for (const [name, body] of Object.entries({ paragraphs, tables })) {
             }
         }
         expect(errors).toEqual([]);
+    });
+}
+
+for (const preview of [true, false]) {
+    test(`keeps the reading position across repeated ${preview ? "preview" : "source"} tab visits`, async ({ page }, testInfo) => {
+        await page.evaluate(({ content, preview }) => window.editorFixture.mount([
+            { id: "alpha", noteId: "alpha", title: "Alpha", content: `# Alpha\n\n${content}` },
+            { id: "beta", noteId: "beta", title: "Beta", content: "# Beta\n\nOther document." },
+        ], preview), { content: paragraphs, preview });
+        await expectRenderedWithoutClick(page, testInfo);
+        await expect.poll(async () => {
+            const state = await snapshot(page);
+            return state.parsedLength === state.docLength;
+        }).toBe(true);
+
+        for (const top of [0, 8800]) {
+            await page.evaluate((top) => {
+                window.editorFixture.getView().scrollDOM.scrollTop = top;
+            }, top);
+            // Let native scroll events and CodeMirror measurements settle.
+            await settleFrames(page);
+            const before = await snapshot(page);
+            const firstText = before.visible.find((element) => element.text?.trim())?.text;
+            expect(firstText).toBeTruthy();
+
+            for (let round = 0; round < 4; round++) {
+                await page.getByRole("button", { name: "Beta", exact: true }).click();
+                await expectRenderedWithoutClick(page, testInfo);
+                await page.getByRole("button", { name: "Alpha", exact: true }).click();
+                await settleFrames(page);
+                await expectRenderedWithoutClick(page, testInfo);
+                await expect.poll(async () => {
+                    const after = await snapshot(page);
+                    return Math.abs(after.scrollTop - before.scrollTop);
+                }).toBeLessThan(2);
+                const after = await snapshot(page);
+                expect(after.visible.find((element) => element.text?.trim())?.text).toBe(firstText);
+            }
+        }
     });
 }

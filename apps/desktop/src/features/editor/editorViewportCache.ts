@@ -1,8 +1,16 @@
+import type { Text } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
+
 export type TabScrollPosition = {
     top: number;
     left: number;
     anchorPos: number | null;
     anchorOffsetTop: number;
+    snapshot?: {
+        doc: Text;
+        mode: "source" | "preview";
+        effect: ReturnType<EditorView["scrollSnapshot"]>;
+    };
 };
 
 const editorViewportPositions = new Map<string, TabScrollPosition>();

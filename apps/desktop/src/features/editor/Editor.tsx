@@ -1398,11 +1398,16 @@ export function Editor({
             pos = view.viewport.from;
         }
 
+        const coords =
+            safeCoordsAtPos(view, Math.min(pos, view.state.doc.length), 1) ??
+            safeCoordsAtPos(view, Math.min(pos, view.state.doc.length), -1);
         return {
             pos,
-            offsetTop: y - scrollRect.top,
+            // The probe can land between lines or partway down a glyph.
+            // Restore the actual anchor offset, not the probe's offset.
+            offsetTop: (coords?.top ?? y) - scrollRect.top,
         };
-    }, []);
+    }, [safeCoordsAtPos]);
 
     const restoreScrollAnchor = useCallback(
         (
@@ -1413,6 +1418,19 @@ export function Editor({
             if (!position) {
                 view.scrollDOM.scrollTop = 0;
                 view.scrollDOM.scrollLeft = 0;
+                return;
+            }
+
+            if (
+                position.snapshot?.mode === mode &&
+                position.snapshot.doc.eq(view.state.doc)
+            ) {
+                // Native snapshots preserve the visible block and its offset
+                // while a recreated view measures its initially estimated
+                // heights. Restoring only pixels accumulates drift each visit.
+                view.scrollDOM.scrollTop = position.top;
+                view.scrollDOM.scrollLeft = position.left;
+                view.dispatch({ effects: position.snapshot.effect });
                 return;
             }
 
@@ -1458,17 +1476,16 @@ export function Editor({
         (tabId: string, view: EditorView | null) => {
             if (!view) return;
             const anchor = captureViewportAnchor(view);
-            tabScrollPositionsRef.current.set(tabId, {
-                top: view.scrollDOM.scrollTop,
-                left: view.scrollDOM.scrollLeft,
-                anchorPos: anchor.pos,
-                anchorOffsetTop: anchor.offsetTop,
-            });
             setEditorViewportPosition(tabId, {
                 top: view.scrollDOM.scrollTop,
                 left: view.scrollDOM.scrollLeft,
                 anchorPos: anchor.pos,
                 anchorOffsetTop: anchor.offsetTop,
+                snapshot: {
+                    doc: view.state.doc,
+                    mode: livePreviewModeRef.current,
+                    effect: view.scrollSnapshot(),
+                },
             });
         },
         [captureViewportAnchor],
