@@ -822,7 +822,11 @@ fn detect_okf_version_non_string() {
 #[test]
 fn detect_okf_version_no_frontmatter() {
     let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("index.md"), "# Plain index, no frontmatter\n").unwrap();
+    fs::write(
+        dir.path().join("index.md"),
+        "# Plain index, no frontmatter\n",
+    )
+    .unwrap();
     let vault = Vault::open(dir.path().to_path_buf()).unwrap();
     assert_eq!(vault.detect_okf_version(), None);
 }

@@ -24,6 +24,11 @@ describe("runtimeMetadata", () => {
                     name: "Grok",
                     company: "xAI",
                 }),
+                expect.objectContaining({
+                    id: "copilot-acp",
+                    name: "GitHub Copilot",
+                    company: "GitHub",
+                }),
             ]),
         );
     });
@@ -60,6 +65,12 @@ describe("runtimeMetadata", () => {
                         ]),
                     }),
                 }),
+                expect.objectContaining({
+                    runtime: expect.objectContaining({
+                        id: "copilot-acp",
+                        name: "GitHub Copilot ACP",
+                    }),
+                }),
             ]),
         );
     });
@@ -80,6 +91,7 @@ describe("runtimeMetadata", () => {
         expect(getRuntimeDisplayName("kilo-acp")).toBe("Kilo");
         expect(getRuntimeDisplayName("grok-acp")).toBe("Grok");
         expect(getRuntimeDisplayName("opencode-acp")).toBe("OpenCode");
+        expect(getRuntimeDisplayName("copilot-acp")).toBe("GitHub Copilot");
         expect(getRuntimeDisplayName(undefined, undefined)).toBe("Assistant");
     });
 });
