@@ -23,10 +23,16 @@ const editorFixture = {
         useVaultStore.setState({ vaultPath: "/fixture", notes: [], entries: [] });
         useEditorStore.getState().hydrateTabs(tabs, tabs[0]?.id ?? null);
         root.render(
-            <div key={++mountId} style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+            <div
+                key={++mountId}
+                style={{ height: "100vh", display: "flex", flexDirection: "column" }}
+            >
                 <nav>
                     {tabs.map((tab) => (
-                        <button key={tab.id} onClick={() => useEditorStore.getState().switchTab(tab.id!)}>
+                        <button
+                            key={tab.id}
+                            onClick={() => useEditorStore.getState().switchTab(tab.id!)}
+                        >
                             {tab.title}
                         </button>
                     ))}
@@ -41,7 +47,11 @@ const editorFixture = {
         const bounds = view.scrollDOM.getBoundingClientRect();
         const visible = Array.from(view.contentDOM.children).filter((element) => {
             const rect = element.getBoundingClientRect();
-            return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
+            return (
+                rect.height > 0 &&
+                rect.bottom > bounds.top &&
+                rect.top < bounds.bottom
+            );
         });
         return {
             docLength: view.state.doc.length,

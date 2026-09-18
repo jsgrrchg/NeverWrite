@@ -15,6 +15,9 @@ viewport, scroll, selection, and DOM snapshots before and after clicking the bla
 area. CodeMirror coordinate helpers are deliberately avoided in the assertions:
 they can force a measure and hide the regression.
 
+The editor tab and live-preview list suites run in CI's **Editor browser
+regressions** job. It uploads Playwright traces and failure snapshots as artifacts.
+
 Run the dedicated chat pane smoke tests from `apps/desktop`:
 
 ```sh
