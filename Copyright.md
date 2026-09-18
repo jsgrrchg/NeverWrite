@@ -137,7 +137,7 @@ dictionary licenses.
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.77.0  | Apache-2.0                      |
+| @agentclientprotocol/claude-agent-acp   | 0.78.0  | Apache-2.0                      |
 | @agentclientprotocol/sdk                | 1.4.0   | Apache-2.0                      |
 | @anthropic-ai/claude-agent-sdk          | 0.3.270 | Anthropic SDK terms in LICENSE.md |
 | @anthropic-ai/claude-agent-sdk-*        | 0.3.270 | Anthropic SDK terms in LICENSE.md |
@@ -283,7 +283,7 @@ The bundled dictionary metadata lives in
 | -------------------------------- | ----------- | --------------------------------------- |
 | codex-acp 0.16.0                 | Apache-2.0  | github.com/zed-industries/codex-acp     |
 | OpenAI Codex runtime rust-v0.153.4 | Apache-2.0 | github.com/openai/codex                 |
-| @agentclientprotocol/claude-agent-acp 0.77.0 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
+| @agentclientprotocol/claude-agent-acp 0.78.0 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
 

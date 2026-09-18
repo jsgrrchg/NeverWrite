@@ -26,6 +26,32 @@ test("runtime JavaScript matches the published dependency baseline", async () =>
     }
 });
 
+test("compaction remains tool activity without the experimental client capability", async () => {
+    const { ContextCompactionLifecycle, clientSupportsCompactionUpdates } = await import(
+        pathToFileURL(path.join(runtimeRoot, "dist/context-compaction.js")).href
+    );
+    const capabilities = { fs: {}, elicitation: { form: {}, url: {} } };
+    assert.equal(clientSupportsCompactionUpdates(capabilities), false);
+    const notifications = [];
+    const lifecycle = new ContextCompactionLifecycle(async (notification) => {
+        notifications.push(notification);
+    }, { sessionId: "legacy-session" });
+
+    await lifecycle.start("compact-1");
+    await lifecycle.heartbeat("compact-1", "Summary text");
+    await lifecycle.finish("compact-1", "completed");
+    await lifecycle.reset();
+
+    assert.deepEqual(notifications.map(({ sessionId, update }) => ({
+        sessionId, type: update.sessionUpdate, id: update.toolCallId, status: update.status,
+    })), [
+        { sessionId: "legacy-session", type: "tool_call", id: "compact-1", status: "in_progress" },
+        { sessionId: "legacy-session", type: "tool_call_update", id: "compact-1", status: "in_progress" },
+        { sessionId: "legacy-session", type: "tool_call_update", id: "compact-1", status: "completed" },
+    ]);
+    assert.equal(notifications[0].update.title, "Compact conversation");
+});
+
 test("TaskList contracts execute an isolated runtime with an external timeout", async (t) => {
     const isolated = await fs.mkdtemp(path.join(os.tmpdir(), "claude contracts "));
     t.after(() => fs.rm(isolated, { recursive: true, force: true }));
