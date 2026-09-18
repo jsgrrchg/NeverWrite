@@ -211,7 +211,7 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         default_executable: "grok",
         bin_env_var: "NEVERWRITE_GROK_ACP_BIN",
         acp_args: GROK_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Legacy12,
+        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
     BuiltInRuntimeDefinition {
@@ -285,11 +285,7 @@ mod tests {
     #[test]
     fn built_in_protocols_are_explicit() {
         for definition in RUNTIME_CATALOG.definitions() {
-            let expected = if definition.id() == GROK_RUNTIME_ID {
-                AcpProtocolFlavor::Legacy12
-            } else {
-                AcpProtocolFlavor::Current
-            };
+            let expected = AcpProtocolFlavor::Current;
             assert_eq!(definition.acp_protocol(), expected, "{}", definition.id());
         }
     }

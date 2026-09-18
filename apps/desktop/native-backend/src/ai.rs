@@ -124,18 +124,21 @@ const CODEX_ACP_TURN_COMPLETE_EVENT_TYPE: &str = "turn_complete";
 const CODEX_ACP_TURN_ABORTED_EVENT_TYPE: &str = "turn_aborted";
 const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE: &str = "shutdown_complete";
 
-fn neverwrite_acp_client_capabilities(_runtime_id: &str) -> ClientCapabilities {
+fn neverwrite_acp_client_capabilities(runtime_id: &str) -> ClientCapabilities {
+    let capabilities = ClientCapabilities::new().fs(FileSystemCapabilities::new());
+    // Keep Grok's advertised surface unchanged when moving to the shared actor.
+    if runtime_id == GROK_RUNTIME_ID {
+        return capabilities;
+    }
     // Capability matrix for this integration stage:
     // - fs: supported and advertised.
     // - elicitation.form: supported by NeverWrite's user-input bridge.
     // - elicitation.url: supported by NeverWrite's URL completion bridge.
-    ClientCapabilities::new()
-        .fs(FileSystemCapabilities::new())
-        .elicitation(
-            ElicitationCapabilities::new()
-                .form(ElicitationFormCapabilities::new())
-                .url(ElicitationUrlCapabilities::new()),
-        )
+    capabilities.elicitation(
+        ElicitationCapabilities::new()
+            .form(ElicitationFormCapabilities::new())
+            .url(ElicitationUrlCapabilities::new()),
+    )
 }
 const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE: &str = "close_end";
 const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE: &str = "interaction_end";
@@ -12688,7 +12691,7 @@ mod tests {
             Some(grok_bin_display.as_str())
         );
         assert_eq!(spec.program, grok_bin);
-        assert_eq!(spec.acp_protocol, AcpProtocolFlavor::Legacy12);
+        assert_eq!(spec.acp_protocol, AcpProtocolFlavor::Current);
         assert_eq!(spec.environment_policy, ProcessEnvironmentPolicy::Inherited);
         assert_eq!(
             spec.args,
@@ -15603,14 +15606,18 @@ mod tests {
     }
 
     #[test]
-    fn grok_uses_legacy_acp12_protocol() {
+    fn grok_uses_shared_acp_v1_with_existing_capabilities() {
         assert_eq!(
             RUNTIME_CATALOG
                 .definition(GROK_RUNTIME_ID)
                 .unwrap()
                 .acp_protocol(),
-            AcpProtocolFlavor::Legacy12
+            AcpProtocolFlavor::Current
         );
+        assert_eq!(ProtocolVersion::LATEST, ProtocolVersion::V1);
+        let capabilities = serde_json::to_value(neverwrite_acp_client_capabilities(GROK_RUNTIME_ID))
+            .expect("client capabilities should serialize");
+        assert!(capabilities.get("elicitation").is_none());
     }
 
     #[test]
@@ -15618,6 +15625,7 @@ mod tests {
         for runtime_id in [
             CLAUDE_RUNTIME_ID,
             CODEX_RUNTIME_ID,
+            GROK_RUNTIME_ID,
             KILO_RUNTIME_ID,
             OPENCODE_RUNTIME_ID,
         ] {
