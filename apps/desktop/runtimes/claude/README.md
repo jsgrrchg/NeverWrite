@@ -1,7 +1,7 @@
 # Claude runtime
 
 This private installation manifest pins the published Claude ACP adapter to
-`0.77.0`. `baseline.json` records the complete production graph and published
+`0.78.0`. `baseline.json` records the complete production graph and published
 runtime hashes without retaining upstream source. The only additional runtime
 package is the adapter itself.
 
@@ -56,9 +56,9 @@ provides native runtime execution coverage. These jobs must run remotely before
 claiming platform-wide release validation.
 
 Version updates must use an exact stable pin, regenerate the isolated lockfile and
-full baseline, and rerun contracts and packaged smokes. The `0.77.0` update bumps
-`@anthropic-ai/claude-agent-sdk` to `0.3.270`, pins `zod` to `4.6.5`, and consumes
-the TaskList fix directly from upstream.
+full baseline, and rerun contracts and packaged smokes. The `0.78.0` update keeps
+the existing production dependency graph, including
+`@anthropic-ai/claude-agent-sdk` at `0.3.270` and `zod` at `4.6.5`.
 
 ## Product compatibility
 
@@ -70,6 +70,9 @@ Claude native resume remains disabled; forks use NeverWrite's persisted history.
 
 The client consumes session titles while preserving explicit manual renames,
 generic model/effort/mode options, compaction tool activity and usage Markdown.
+NeverWrite does not advertise `clientCapabilities.session.compaction`, so
+`0.78.0` retains the existing compaction tool-call presentation. The experimental
+compaction updates and summary chunks remain outside the client integration.
 NeverWrite does not advertise the AIR `recommendedValue` capability, so the
 upstream metadata addition does not alter the selected configuration. NeverWrite
 does not pass the removed `claudeCode.options.agent` value, so that `0.77.0`
