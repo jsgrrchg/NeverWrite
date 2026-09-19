@@ -1839,7 +1839,6 @@ dependencies = [
  "codex-features",
  "codex-http-client",
  "codex-login",
- "codex-mcp-server",
  "codex-models-manager",
  "codex-protocol",
  "codex-rollout",
@@ -2053,34 +2052,6 @@ dependencies = [
  "bytes",
  "http 1.5.0",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "codex-backend-client"
-version = "0.153.4"
-source = "git+https://github.com/openai/codex?tag=rust-v0.153.4#3d2ee51ca2d5db578f328aa75e20aa22c0197c9a"
-dependencies = [
- "anyhow",
- "codex-api",
- "codex-backend-openapi-models",
- "codex-http-client",
- "codex-login",
- "codex-model-provider",
- "codex-protocol",
- "http 1.5.0",
- "serde",
- "serde_json",
- "url",
-]
-
-[[package]]
-name = "codex-backend-openapi-models"
-version = "0.153.4"
-source = "git+https://github.com/openai/codex?tag=rust-v0.153.4#3d2ee51ca2d5db578f328aa75e20aa22c0197c9a"
-dependencies = [
- "serde",
- "serde_json",
- "serde_with",
 ]
 
 [[package]]
@@ -2609,19 +2580,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-git-attribution"
-version = "0.153.4"
-source = "git+https://github.com/openai/codex?tag=rust-v0.153.4#3d2ee51ca2d5db578f328aa75e20aa22c0197c9a"
-dependencies = [
- "codex-backend-client",
- "codex-extension-api",
- "codex-http-client",
- "codex-login",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "codex-git-utils"
 version = "0.153.4"
 source = "git+https://github.com/openai/codex?tag=rust-v0.153.4#3d2ee51ca2d5db578f328aa75e20aa22c0197c9a"
@@ -2664,16 +2622,6 @@ dependencies = [
  "codex-protocol",
  "schemars 0.8.22",
  "serde",
-]
-
-[[package]]
-name = "codex-home"
-version = "0.153.4"
-source = "git+https://github.com/openai/codex?tag=rust-v0.153.4#3d2ee51ca2d5db578f328aa75e20aa22c0197c9a"
-dependencies = [
- "codex-extension-api",
- "codex-utils-absolute-path",
- "tokio",
 ]
 
 [[package]]
@@ -2726,32 +2674,6 @@ dependencies = [
  "tracing-opentelemetry",
  "windows-sys 0.52.0",
  "zstd",
-]
-
-[[package]]
-name = "codex-image-generation-extension"
-version = "0.153.4"
-source = "git+https://github.com/openai/codex?tag=rust-v0.153.4#3d2ee51ca2d5db578f328aa75e20aa22c0197c9a"
-dependencies = [
- "base64 0.22.1",
- "codex-api",
- "codex-core",
- "codex-exec-server",
- "codex-extension-api",
- "codex-extension-items",
- "codex-login",
- "codex-model-provider",
- "codex-model-provider-info",
- "codex-protocol",
- "codex-tools",
- "codex-utils-absolute-path",
- "codex-utils-image",
- "codex-utils-path-uri",
- "http 1.5.0",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -2865,37 +2787,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "codex-mcp-server"
-version = "0.153.4"
-source = "git+https://github.com/openai/codex?tag=rust-v0.153.4#3d2ee51ca2d5db578f328aa75e20aa22c0197c9a"
-dependencies = [
- "anyhow",
- "codex-arg0",
- "codex-config",
- "codex-core",
- "codex-exec-server",
- "codex-extension-api",
- "codex-features",
- "codex-git-attribution",
- "codex-home",
- "codex-image-generation-extension",
- "codex-login",
- "codex-otel",
- "codex-protocol",
- "codex-skills-extension",
- "codex-utils-cli",
- "codex-utils-json-to-toml",
- "rmcp",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "shlex 1.3.0",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3515,15 +3406,6 @@ dependencies = [
  "mime_guess",
  "thiserror 2.0.20",
  "tokio",
-]
-
-[[package]]
-name = "codex-utils-json-to-toml"
-version = "0.153.4"
-source = "git+https://github.com/openai/codex?tag=rust-v0.153.4#3d2ee51ca2d5db578f328aa75e20aa22c0197c9a"
-dependencies = [
- "serde_json",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
