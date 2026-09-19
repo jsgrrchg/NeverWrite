@@ -6994,6 +6994,39 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn user_verification_declines_without_exposing_a_permission_or_challenge()
+    -> anyhow::Result<()> {
+        let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
+        let runtime = Arc::new(StubCodexThread::new());
+        state.thread = runtime.clone();
+        state
+            .mcp_elicitation(
+                &session_client,
+                ElicitationRequestEvent {
+                    server_name: "verification-server".into(),
+                    id: codex_protocol::mcp::RequestId::String("verification-1".into()),
+                    turn_id: None,
+                    request: ElicitationRequest::UserVerification {
+                        title: "Verify identity".into(),
+                        description: "Native verification required".into(),
+                        challenge: "opaque-verification-challenge".into(),
+                    },
+                },
+            )
+            .await?;
+        assert_eq!(
+            runtime.ops.lock().unwrap().as_slice(),
+            &[RecordedOp::ResolveElicitation {
+                decision: ElicitationAction::Decline,
+                content: None,
+                meta: None,
+            }]
+        );
+        assert!(client.notifications.lock().unwrap().is_empty());
+        Ok(())
+    }
+
     #[test]
     fn guardian_patch_summary_preserves_executor_native_paths() -> anyhow::Result<()> {
         for path in ["/workspace/file.txt", r"C:\workspace\file.txt"] {
@@ -7410,36 +7443,40 @@ mod tests {
     #[tokio::test]
     async fn busy_runtime_declines_prompt_without_leaving_a_pending_response() -> anyhow::Result<()>
     {
-        let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
-        thread.set_next_turn_submission(TurnInputSubmission::NotSubmitted {
-            reason: codex_protocol::turn_input::NotSubmittedReason::NotIdle,
-        });
-        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+        for reason in [
+            codex_protocol::turn_input::NotSubmittedReason::NotIdle,
+            codex_protocol::turn_input::NotSubmittedReason::ServerDraining,
+        ] {
+            let expected_reason = format!("{reason:?}");
+            let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
+            thread.set_next_turn_submission(TurnInputSubmission::NotSubmitted { reason });
+            let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
 
-        message_tx.send(ThreadMessage::Prompt {
-            request: PromptRequest::new(session_id, vec!["queued too early".into()]),
-            response_tx: prompt_response_tx,
-        })?;
+            message_tx.send(ThreadMessage::Prompt {
+                request: PromptRequest::new(session_id, vec!["queued too early".into()]),
+                response_tx: prompt_response_tx,
+            })?;
 
-        let result = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx).await??;
-        let error = match result {
-            Ok(_) => anyhow::bail!("busy runtime unexpectedly accepted the prompt"),
-            Err(error) => error,
-        };
-        assert!(
-            format!("{error:?}").contains("NotIdle"),
-            "unexpected submission error: {error:?}"
-        );
-        assert!(matches!(
-            thread.ops.lock().unwrap().as_slice(),
-            [RecordedOp::TurnInput {
-                mode: TurnInputMode::StartIfIdle,
-                ..
-            }]
-        ));
+            let result = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx).await??;
+            let error = match result {
+                Ok(_) => anyhow::bail!("busy runtime unexpectedly accepted the prompt"),
+                Err(error) => error,
+            };
+            assert!(
+                format!("{error:?}").contains(&expected_reason),
+                "unexpected submission error: {error:?}"
+            );
+            assert!(matches!(
+                thread.ops.lock().unwrap().as_slice(),
+                [RecordedOp::TurnInput {
+                    mode: TurnInputMode::StartIfIdle,
+                    ..
+                }]
+            ));
 
-        drop(message_tx);
-        drop(local_set.await);
+            drop(message_tx);
+            drop(local_set.await);
+        }
         Ok(())
     }
 
@@ -11318,6 +11355,11 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     enum RecordedOp {
+        ResolveElicitation {
+            decision: ElicitationAction,
+            content: Option<serde_json::Value>,
+            meta: Option<serde_json::Value>,
+        },
         TurnInput {
             items: Vec<UserInput>,
             mode: TurnInputMode,
@@ -11373,6 +11415,16 @@ mod tests {
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
                 let recorded_op = match &op {
+                    Op::ResolveElicitation {
+                        decision,
+                        content,
+                        meta,
+                        ..
+                    } => RecordedOp::ResolveElicitation {
+                        decision: decision.clone(),
+                        content: content.clone(),
+                        meta: meta.clone(),
+                    },
                     Op::TurnInput { request, mode, .. } => match &request.input {
                         TurnInput::UserInput { content, .. } => RecordedOp::TurnInput {
                             items: content.clone(),
@@ -11653,6 +11705,7 @@ mod tests {
                             .unwrap();
                     }
                     Op::ThreadSettings { .. } | Op::ExecApproval { .. } => {}
+                    Op::ResolveElicitation { .. } => {}
                     _ => {
                         unimplemented!()
                     }

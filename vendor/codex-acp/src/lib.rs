@@ -15,6 +15,9 @@ mod prompt_args;
 mod subagents;
 mod thread;
 
+#[cfg(test)]
+mod model_catalog_tests;
+
 /// Run the Codex ACP agent.
 ///
 /// This sets up an ACP agent that communicates over stdio, bridging
