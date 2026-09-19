@@ -23,6 +23,9 @@ const outputRoot =
 const distArch =
     process.env.NEVERWRITE_ELECTRON_DIST_ARCH?.trim() || process.arch;
 const DEFAULT_SMOKE_TIMEOUT_MS = 15000;
+// A valid one-pixel PNG exercises the runtime's inline image store without
+// external files, credentials, or image services.
+const SMOKE_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 const configuredSmokeTimeoutMs = Number(
     process.env.NEVERWRITE_PACKAGED_SIDECAR_SMOKE_TIMEOUT_MS,
 );
@@ -238,6 +241,13 @@ async function startResponsesMock({ marker, expectedToolOutput, allowContinuatio
                     throw new Error(
                         "Initial Responses request did not use the smoke configuration",
                     );
+                }
+                const hasInlineImage = body.input?.some((item) =>
+                    item.content?.some((content) =>
+                        content.type === "input_image" &&
+                        /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(content.image_url)));
+                if (!hasInlineImage) {
+                    throw new Error("ACP image did not reach Responses through the inline image store");
                 }
                 events = [
                     responseCreated("neverwrite-smoke-response-1"),
@@ -588,6 +598,7 @@ export async function runCodeModeTurn({
             sessionId,
             prompt: [
                 { type: "text", text: "Run the packaging code-mode smoke." },
+                { type: "image", mimeType: "image/png", data: SMOKE_IMAGE_BASE64 },
             ],
         });
         if (prompt?.stopReason !== "end_turn") {
@@ -769,6 +780,7 @@ async function main() {
     });
 
     console.log(`Packaged Codex ACP completed a code-mode turn: ${codexAcpPath}`);
+    console.log("Packaged Codex ACP preserved the inline image in its Responses request.");
     console.log(`Packaged Codex code-mode host executed JavaScript: ${codeModeHostPath}`);
     console.log("Packaged Codex ACP failed closed with a missing code-mode host.");
     console.log(`Packaged native backend sidecar responded to ping: ${sidecarPath}`);
