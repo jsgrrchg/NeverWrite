@@ -34,6 +34,12 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- Updated the bundled Codex runtime to `0.155.1`, preserving NeverWrite's conversation history, permissions, subagent activity and inline review integration.
+
 ## [0.8.2] - 2026-09-18
 
 ### Changed

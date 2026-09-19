@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { smokeClaudeRuntime } from "./smoke-claude-runtime.mjs";
 
 import {
@@ -23,6 +23,9 @@ const outputRoot =
 const distArch =
     process.env.NEVERWRITE_ELECTRON_DIST_ARCH?.trim() || process.arch;
 const DEFAULT_SMOKE_TIMEOUT_MS = 15000;
+// A valid one-pixel PNG exercises the runtime's inline image store without
+// external files, credentials, or image services.
+const SMOKE_IMAGE_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 const configuredSmokeTimeoutMs = Number(
     process.env.NEVERWRITE_PACKAGED_SIDECAR_SMOKE_TIMEOUT_MS,
 );
@@ -209,7 +212,7 @@ function collectStringValues(value) {
     return [];
 }
 
-async function startResponsesMock({ marker, expectedToolOutput }) {
+async function startResponsesMock({ marker, expectedToolOutput, allowContinuation = false }) {
     const requests = [];
     const server = http.createServer(async (request, response) => {
         try {
@@ -238,6 +241,13 @@ async function startResponsesMock({ marker, expectedToolOutput }) {
                     throw new Error(
                         "Initial Responses request did not use the smoke configuration",
                     );
+                }
+                const hasInlineImage = body.input?.some((item) =>
+                    item.content?.some((content) =>
+                        content.type === "input_image" &&
+                        /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(content.image_url)));
+                if (!hasInlineImage) {
+                    throw new Error("ACP image did not reach Responses through the inline image store");
                 }
                 events = [
                     responseCreated("neverwrite-smoke-response-1"),
@@ -279,6 +289,23 @@ async function startResponsesMock({ marker, expectedToolOutput }) {
                     },
                     responseCompleted("neverwrite-smoke-response-2"),
                 ];
+            } else if (allowContinuation) {
+                if (!collectStringValues(body.input).includes(marker)) {
+                    throw new Error("Restored turn did not retain the earlier assistant response");
+                }
+                events = [
+                    responseCreated(`neverwrite-smoke-response-${requests.length}`),
+                    {
+                        type: "response.output_item.done",
+                        item: {
+                            type: "message",
+                            role: "assistant",
+                            id: `neverwrite-smoke-message-${requests.length}`,
+                            content: [{ type: "output_text", text: marker }],
+                        },
+                    },
+                    responseCompleted(`neverwrite-smoke-response-${requests.length}`),
+                ];
             } else {
                 throw new Error(`Unexpected Responses request ${requests.length}`);
             }
@@ -318,7 +345,7 @@ async function startResponsesMock({ marker, expectedToolOutput }) {
     };
 }
 
-class AcpClient {
+export class AcpClient {
     constructor(executablePath, env) {
         this.child = spawn(executablePath, [], {
             stdio: ["pipe", "pipe", "pipe"],
@@ -501,12 +528,13 @@ async function assertStandaloneHostProcess(parentPid, hostPath) {
     );
 }
 
-async function runCodeModeTurn({
+export async function runCodeModeTurn({
     acpPath,
     hostPath,
     marker,
     expectedToolOutput,
     requireStandaloneHost,
+    afterTurn,
 }) {
     const codexHome = await fs.mkdtemp(
         path.join(os.tmpdir(), "neverwrite-codex-acp-smoke-"),
@@ -518,7 +546,7 @@ async function runCodeModeTurn({
     let client;
 
     try {
-        mock = await startResponsesMock({ marker, expectedToolOutput });
+        mock = await startResponsesMock({ marker, expectedToolOutput, allowContinuation: Boolean(afterTurn) });
         await fs.writeFile(
             path.join(codexHome, "config.toml"),
             `model = "test-gpt-5.1-codex"\nmodel_provider = "neverwrite-packaging-smoke"\nsuppress_unstable_features_warning = true\n\n[features.code_mode]\nenabled = true\n\n[features.code_mode_host]\nenabled = true\ndisable_in_process_fallback = true\n\n[model_providers.neverwrite-packaging-smoke]\nname = "NeverWrite packaging smoke"\nbase_url = "${mock.baseUrl}"\nenv_key = "NEVERWRITE_PACKAGING_SMOKE_API_KEY"\nwire_api = "responses"\n`,
@@ -570,6 +598,7 @@ async function runCodeModeTurn({
             sessionId,
             prompt: [
                 { type: "text", text: "Run the packaging code-mode smoke." },
+                { type: "image", mimeType: "image/png", data: SMOKE_IMAGE_BASE64 },
             ],
         });
         if (prompt?.stopReason !== "end_turn") {
@@ -591,6 +620,12 @@ async function runCodeModeTurn({
         }
         if (requireStandaloneHost) {
             await assertStandaloneHostProcess(client.pid, hostPath);
+        }
+        if (afterTurn) {
+            await client.request("session/close", { sessionId });
+            await client.close();
+            client = null;
+            await afterTurn({ codexHome, workspace, sessionId, marker, mock });
         }
     } finally {
         await client?.close();
@@ -723,27 +758,34 @@ function formatStderr(chunks) {
     return stderr ? `\nStderr:\n${stderr}` : "";
 }
 
-const sidecarPath = await findSidecarPath();
-const stats = await fs.stat(sidecarPath);
+async function main() {
+    const sidecarPath = await findSidecarPath();
+    const stats = await fs.stat(sidecarPath);
 
-if (!stats.isFile()) {
-    throw new Error(`Packaged sidecar path is not a file: ${sidecarPath}`);
+    if (!stats.isFile()) {
+        throw new Error(`Packaged sidecar path is not a file: ${sidecarPath}`);
+    }
+
+    assertExecutableMode(stats, sidecarPath, "sidecar");
+    const codexAcpPath = await findCodexAcpPath(sidecarPath);
+    const codeModeHostPath = await findCodeModeHostPath(sidecarPath);
+    await smokeCodexAcpCodeMode(codexAcpPath, codeModeHostPath);
+    await smokeMissingCodeModeHostFailsClosed(codexAcpPath, codeModeHostPath);
+    await smokePing(sidecarPath);
+    await smokeClaudeRuntime({
+        runtimeRoot: path.join(path.dirname(sidecarPath), "embedded", "claude-agent-acp"),
+        nodeBinary: path.join(path.dirname(sidecarPath), "embedded", "node", "bin",
+            process.platform === "win32" ? "node.exe" : "node"),
+        ...(distArch === "universal" ? { target: "universal-apple-darwin" } : {}),
+    });
+
+    console.log(`Packaged Codex ACP completed a code-mode turn: ${codexAcpPath}`);
+    console.log("Packaged Codex ACP preserved the inline image in its Responses request.");
+    console.log(`Packaged Codex code-mode host executed JavaScript: ${codeModeHostPath}`);
+    console.log("Packaged Codex ACP failed closed with a missing code-mode host.");
+    console.log(`Packaged native backend sidecar responded to ping: ${sidecarPath}`);
 }
 
-assertExecutableMode(stats, sidecarPath, "sidecar");
-const codexAcpPath = await findCodexAcpPath(sidecarPath);
-const codeModeHostPath = await findCodeModeHostPath(sidecarPath);
-await smokeCodexAcpCodeMode(codexAcpPath, codeModeHostPath);
-await smokeMissingCodeModeHostFailsClosed(codexAcpPath, codeModeHostPath);
-await smokePing(sidecarPath);
-await smokeClaudeRuntime({
-    runtimeRoot: path.join(path.dirname(sidecarPath), "embedded", "claude-agent-acp"),
-    nodeBinary: path.join(path.dirname(sidecarPath), "embedded", "node", "bin",
-        process.platform === "win32" ? "node.exe" : "node"),
-    ...(distArch === "universal" ? { target: "universal-apple-darwin" } : {}),
-});
-
-console.log(`Packaged Codex ACP completed a code-mode turn: ${codexAcpPath}`);
-console.log(`Packaged Codex code-mode host executed JavaScript: ${codeModeHostPath}`);
-console.log("Packaged Codex ACP failed closed with a missing code-mode host.");
-console.log(`Packaged native backend sidecar responded to ping: ${sidecarPath}`);
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+    await main();
+}
