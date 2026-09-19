@@ -132,6 +132,11 @@ under `native-backend/binaries/`. NeverWrite launches `codex-acp`; the companion
 is required for Codex code-mode features. In development, build or point to a
 local runtime pair if the vendor fallback is not present.
 
+The vendored adapter currently embeds Codex `0.155.1` and retains NeverWrite's
+ACP v1 product contracts. Updating a global Codex CLI does not update this pair.
+The runtime's source pins, compatibility tests and rollback procedure are in
+[`vendor/README.md`](../vendor/README.md#codex-01551-compatibility-baseline).
+
 ### Claude
 
 Use one of:
@@ -353,7 +358,7 @@ Current packaging expectations:
 - Kilo is integrated but not bundled by default.
 - OpenCode is integrated but not bundled by default.
 
-The packaged sidecar smoke sends ACP `initialize`, `session/new`, and `session/prompt` requests to `codex-acp` using an isolated temporary `CODEX_HOME` and deterministic local Responses mock. It keeps the packaged host beside the ACP executable as required by the current install context, verifies the code-mode tool output and final assistant response, and inspects the ACP process tree to prove the standalone `codex-code-mode-host` process was launched.
+The packaged sidecar smoke sends ACP `initialize`, `session/new`, and `session/prompt` requests to `codex-acp` using an isolated temporary `CODEX_HOME` and deterministic local Responses mock. It verifies that an inline image reaches the Responses request, keeps the packaged host beside the ACP executable as required by the current install context, verifies the code-mode tool output and final assistant response, and inspects the ACP process tree to prove the standalone `codex-code-mode-host` process was launched.
 
 The smoke also runs a fail-closed case from an isolated ACP directory without a sibling host and requires an actionable missing-host diagnostic before checking that the native backend responds to ping. This catches missing, non-executable, wrong-architecture, or silently bypassed companion binaries before release assets are staged.
 
