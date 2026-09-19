@@ -11221,7 +11221,10 @@ mod tests {
     #[tokio::test]
     async fn thread_settings_distinguish_unknown_and_cleared_workspace_roots() -> anyhow::Result<()>
     {
-        let (mut actor, _, _) = setup_actor(|_| {}).await?;
+        let (mut actor, _, _) = setup_actor(|config| {
+            config.model = Some("test-model".to_string());
+        })
+        .await?;
         let EventMsg::ThreadSettingsApplied(mut event) =
             thread_settings_applied_event(&actor.config, None)
         else {
