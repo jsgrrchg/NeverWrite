@@ -200,7 +200,7 @@ fn semantic_session_mode_id_for_permission_profile(config: &Config) -> Option<&'
             let cwd = config.cwd.as_path();
             if file_system.has_full_disk_read_access()
                 && !file_system.has_full_disk_write_access()
-                && file_system.can_write_path_with_cwd(cwd, cwd)
+                && file_system.can_write_local_path_with_cwd(cwd, cwd)
             {
                 Some("auto")
             } else {
@@ -697,6 +697,7 @@ const ACP_COMMAND_REJECTION_REASON: &str =
 
 fn elicitation_request_message(request: &ElicitationRequest) -> &str {
     match request {
+        ElicitationRequest::UserVerification { description, .. } => description,
         ElicitationRequest::Form { message, .. }
         | ElicitationRequest::OpenAiForm { message, .. }
         | ElicitationRequest::OpenAiElicitationForm { message, .. }
@@ -3313,6 +3314,7 @@ impl PromptState {
         }
 
         let request_kind = match &request {
+            ElicitationRequest::UserVerification { .. } => "user_verification",
             ElicitationRequest::Form { .. } => "form",
             ElicitationRequest::Url { .. } => "url",
             ElicitationRequest::OpenAiForm { .. } => "openai_form",
@@ -6138,6 +6140,13 @@ impl<A: Auth> ThreadActor<A> {
         settings: &ThreadSettingsSnapshot,
     ) -> Result<(), Error> {
         self.config.cwd = settings.cwd.clone();
+        // Older histories omit roots (unknown); an explicit empty list clears
+        // them. Keep the runtime-owned selection when refreshing ACP options.
+        if let Some(roots) = &settings.runtime_workspace_roots {
+            self.config.workspace_roots.clone_from(roots);
+            self.config.workspace_roots_explicit = true;
+            self.config.permissions.set_workspace_roots(roots.clone());
+        }
         self.config.model = Some(settings.model.clone());
         self.config.model_provider_id = settings.model_provider_id.clone();
         self.config.model_reasoning_effort = settings.reasoning_effort.clone();
@@ -6838,7 +6847,7 @@ fn guardian_action_summary(
         )),
         codex_protocol::approvals::GuardianAssessmentAction::ApplyPatch { files, .. } => {
             Some(if files.len() == 1 {
-                format!("apply_patch touching {}", files[0].display())
+                format!("apply_patch touching {}", files[0].as_str())
             } else {
                 format!("apply_patch touching {} files", files.len())
             })
@@ -6964,6 +6973,43 @@ mod tests {
     }
 
     #[test]
+    fn user_verification_is_not_an_acp_tool_approval() {
+        let request = ElicitationRequest::UserVerification {
+            title: "Verify identity".into(),
+            description: "Native verification required".into(),
+            challenge: "opaque-verification-challenge".into(),
+        };
+        assert_eq!(
+            elicitation_request_message(&request),
+            "Native verification required"
+        );
+        assert!(
+            build_supported_mcp_elicitation_permission_request(
+                "test-server",
+                &codex_protocol::mcp::RequestId::String("verification-1".into()),
+                &request,
+                serde_json::json!(&request),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn guardian_patch_summary_preserves_executor_native_paths() -> anyhow::Result<()> {
+        for path in ["/workspace/file.txt", r"C:\workspace\file.txt"] {
+            let action =
+                serde_json::from_value::<codex_protocol::approvals::GuardianAssessmentAction>(
+                    json!({ "type": "apply_patch", "cwd": path, "files": [path] }),
+                )?;
+            assert_eq!(
+                guardian_action_summary(&action),
+                Some(format!("apply_patch touching {path}"))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn mcp_policy_approval_is_only_projected_when_the_runtime_offers_it() {
         let without_policy = build_exec_permission_options(
             &[
@@ -7041,6 +7087,7 @@ mod tests {
         let thread_id = ThreadId::new();
         let (mut state, session_client, client) = prompt_state_for_projection(thread_id);
         let event = GuardianAssessmentEvent {
+            review_reason: None,
             id: "guardian-stdin-1".to_string(),
             target_item_id: Some("exec-1".to_string()),
             plugin_id: None,
@@ -11058,6 +11105,8 @@ mod tests {
                 permission_profile: config.permissions.permission_profile().clone(),
                 active_permission_profile: config.permissions.active_permission_profile().clone(),
                 cwd: config.cwd.clone(),
+                runtime_workspace_roots: None,
+                disabled_plugin_ids: Vec::new(),
                 reasoning_effort: reasoning_effort.clone(),
                 reasoning_summary: config.model_reasoning_summary,
                 personality: config.personality,
@@ -11129,6 +11178,29 @@ mod tests {
             "a repeated snapshot must not re-emit options"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_settings_distinguish_unknown_and_cleared_workspace_roots() -> anyhow::Result<()>
+    {
+        let (mut actor, _, _) = setup_actor(|_| {}).await?;
+        let EventMsg::ThreadSettingsApplied(mut event) =
+            thread_settings_applied_event(&actor.config, None)
+        else {
+            unreachable!();
+        };
+        let roots = vec![actor.config.cwd.clone()];
+        event.thread_settings.runtime_workspace_roots = Some(roots.clone());
+        actor.sync_config_with_thread_settings(&event.thread_settings)?;
+        assert_eq!(actor.config.workspace_roots, roots);
+        event.thread_settings.runtime_workspace_roots = None;
+        actor.sync_config_with_thread_settings(&event.thread_settings)?;
+        assert_eq!(actor.config.workspace_roots, roots);
+        event.thread_settings.runtime_workspace_roots = Some(Vec::new());
+        actor.sync_config_with_thread_settings(&event.thread_settings)?;
+        assert!(actor.config.workspace_roots.is_empty());
+        assert!(actor.config.permissions.workspace_roots().is_empty());
         Ok(())
     }
 

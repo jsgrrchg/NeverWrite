@@ -19,7 +19,7 @@ use codex_core::{
     ThreadConfigSnapshot, ThreadManager, build_models_manager,
     config::{Config, PermissionProfileSnapshot},
     find_thread_path_by_id_str, init_state_db, local_agent_graph_store_from_state_db,
-    resolve_installation_id, thread_store_from_config,
+    passthrough_image_store, resolve_installation_id, thread_store_from_config,
 };
 use codex_exec_server::{EnvironmentManager, ExecServerRuntimePaths};
 use codex_extension_api::{
@@ -121,14 +121,14 @@ fn start_thread_options(config: Config) -> StartThreadOptions {
 }
 
 fn apply_runtime_feature_contracts(config: &mut Config) -> std::io::Result<()> {
-    config
-        .features
-        .disable(Feature::Mcp20260728)
-        .map_err(|error| {
+    for feature in [Feature::Mcp20260728, Feature::CodexAppsMcp20260728] {
+        config.features.disable(feature).map_err(|error| {
             std::io::Error::other(format!(
                 "MCP protocol 2026-07-28 must remain disabled for ACP 0.14: {error}"
             ))
-        })
+        })?;
+    }
+    Ok(())
 }
 
 impl CodexAgent {
@@ -170,6 +170,7 @@ impl CodexAgent {
             empty_extension_registry(),
             Arc::new(EmptyUserInstructionsProvider),
             None,
+            passthrough_image_store(),
             thread_store.clone(),
             local_agent_graph_store_from_state_db(state_db.as_ref()),
             installation_id,
@@ -1391,6 +1392,7 @@ mod tests {
         config.service_tier = Some("fast".to_string());
         config.approvals_reviewer = ApprovalsReviewer::AutoReview;
         config.features.enable(Feature::Mcp20260728)?;
+        config.features.enable(Feature::CodexAppsMcp20260728)?;
         apply_runtime_feature_contracts(&mut config)?;
 
         let options = start_thread_options(config.clone());
@@ -1417,6 +1419,12 @@ mod tests {
         );
         assert!(options.environments.is_none());
         assert!(!options.config.features.enabled(Feature::Mcp20260728));
+        assert!(
+            !options
+                .config
+                .features
+                .enabled(Feature::CodexAppsMcp20260728)
+        );
         Ok(())
     }
 
@@ -1463,7 +1471,7 @@ mod tests {
                 .permissions
                 .permission_profile()
                 .file_system_sandbox_policy()
-                .can_write_path_with_cwd(cwd.as_path(), cwd.as_path())
+                .can_write_local_path_with_cwd(cwd.as_path(), cwd.as_path())
         );
 
         let cleared_snapshot: SessionConfiguredEvent = serde_json::from_value(json!({
