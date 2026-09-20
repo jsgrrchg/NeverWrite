@@ -45,6 +45,13 @@ const RUNTIME_METADATA: RuntimeMetadata[] = [
         ],
     },
     {
+        id: "copilot-acp",
+        name: "GitHub Copilot",
+        company: "GitHub",
+        description: "GitHub Copilot CLI running as a native ACP agent.",
+        capabilities: ["attachments", "permissions", "plans", "terminal_output", "create_session", "prompt_queueing", "user_input"],
+    },
+    {
         id: "grok-acp",
         name: "Grok",
         company: "xAI",

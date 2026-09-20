@@ -883,7 +883,10 @@ fn reindex_updates_status() {
         "Note A",
         serde_json::json!({ "status": "draft", "type": "article" }),
     )]);
-    assert_eq!(index.metadata[&NoteId("a".into())].status.as_deref(), Some("draft"));
+    assert_eq!(
+        index.metadata[&NoteId("a".into())].status.as_deref(),
+        Some("draft")
+    );
 
     index.reindex_note(make_note_with_frontmatter(
         "a",
@@ -903,7 +906,10 @@ fn reindex_clears_removed_status() {
         "Note A",
         serde_json::json!({ "status": "draft" }),
     )]);
-    assert_eq!(index.metadata[&NoteId("a".into())].status.as_deref(), Some("draft"));
+    assert_eq!(
+        index.metadata[&NoteId("a".into())].status.as_deref(),
+        Some("draft")
+    );
 
     index.reindex_note(make_note_with_frontmatter(
         "a",

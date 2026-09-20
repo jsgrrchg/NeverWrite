@@ -2038,6 +2038,7 @@ function isAuthenticationErrorMessage(
 
     const normalized = message.trim().toLowerCase();
     const isOpenCodeRuntime = runtimeId === "opencode-acp";
+    const isCopilotRuntime = runtimeId === "copilot-acp";
     const isOpenCodeAuthGuidance =
         normalized.includes("run opencode auth login") ||
         normalized.includes("use /connect") ||
@@ -2046,12 +2047,21 @@ function isAuthenticationErrorMessage(
                 normalized.includes("no provider configured") ||
                 normalized.includes("unauthorized") ||
                 normalized.includes("401")));
+    const isCopilotAuthGuidance =
+        normalized.includes("run copilot login") ||
+        normalized.includes("copilot login") ||
+        (isCopilotRuntime &&
+            (normalized.includes("login required") ||
+                normalized.includes("not authenticated") ||
+                normalized.includes("unauthorized") ||
+                normalized.includes("401")));
 
     return (
         normalized.includes("auth_required") ||
         normalized.includes("authentication required") ||
         normalized.includes("auth required") ||
         isOpenCodeAuthGuidance ||
+        isCopilotAuthGuidance ||
         normalized.includes("you were signed out") ||
         normalized.includes("reconnect in ai setup") ||
         normalized.includes("reconnect codex") ||

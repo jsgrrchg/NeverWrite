@@ -1,6 +1,6 @@
 use neverwrite_ai::{
     custom_runtimes::CustomAcpRuntimeDefinition, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
-    GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    COPILOT_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +180,7 @@ impl<'a> RuntimeCatalogView<'a> {
 }
 
 const NO_ACP_ARGS: &[&str] = &[];
+const COPILOT_ACP_ARGS: &[&str] = &["--acp"];
 const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
 const SHELL_ACP_ARGS: &[&str] = &["acp"];
 
@@ -201,6 +202,16 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         default_executable: "claude-agent-acp",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current,
+        supports_native_resume: false,
+    },
+    BuiltInRuntimeDefinition {
+        id: COPILOT_RUNTIME_ID,
+        name: "GitHub Copilot",
+        description: "GitHub Copilot CLI running as a native ACP agent.",
+        default_executable: "copilot",
+        bin_env_var: "NEVERWRITE_COPILOT_ACP_BIN",
+        acp_args: COPILOT_ACP_ARGS,
         acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
@@ -275,6 +286,7 @@ mod tests {
             [
                 CODEX_RUNTIME_ID,
                 CLAUDE_RUNTIME_ID,
+                COPILOT_RUNTIME_ID,
                 GROK_RUNTIME_ID,
                 KILO_RUNTIME_ID,
                 OPENCODE_RUNTIME_ID,
@@ -322,6 +334,12 @@ mod tests {
                 Vec::new(),
             ),
             (
+                COPILOT_RUNTIME_ID,
+                "copilot",
+                Some("NEVERWRITE_COPILOT_ACP_BIN"),
+                vec!["--acp".to_string()],
+            ),
+            (
                 GROK_RUNTIME_ID,
                 "grok",
                 Some("NEVERWRITE_GROK_ACP_BIN"),
@@ -353,7 +371,7 @@ mod tests {
         let catalog = RUNTIME_CATALOG.with_custom(&custom);
         let definitions = catalog.definitions().collect::<Vec<_>>();
 
-        assert_eq!(definitions.len(), 6);
+        assert_eq!(definitions.len(), 7);
         let custom = catalog.definition(&custom[0].id).unwrap();
         assert!(custom.is_custom());
         assert_eq!(custom.name(), "Local agent");
