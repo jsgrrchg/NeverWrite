@@ -200,7 +200,7 @@ fn semantic_session_mode_id_for_permission_profile(config: &Config) -> Option<&'
             let cwd = config.cwd.as_path();
             if file_system.has_full_disk_read_access()
                 && !file_system.has_full_disk_write_access()
-                && file_system.can_write_path_with_cwd(cwd, cwd)
+                && file_system.can_write_local_path_with_cwd(cwd, cwd)
             {
                 Some("auto")
             } else {
@@ -697,6 +697,7 @@ const ACP_COMMAND_REJECTION_REASON: &str =
 
 fn elicitation_request_message(request: &ElicitationRequest) -> &str {
     match request {
+        ElicitationRequest::UserVerification { description, .. } => description,
         ElicitationRequest::Form { message, .. }
         | ElicitationRequest::OpenAiForm { message, .. }
         | ElicitationRequest::OpenAiElicitationForm { message, .. }
@@ -3313,6 +3314,7 @@ impl PromptState {
         }
 
         let request_kind = match &request {
+            ElicitationRequest::UserVerification { .. } => "user_verification",
             ElicitationRequest::Form { .. } => "form",
             ElicitationRequest::Url { .. } => "url",
             ElicitationRequest::OpenAiForm { .. } => "openai_form",
@@ -6138,6 +6140,13 @@ impl<A: Auth> ThreadActor<A> {
         settings: &ThreadSettingsSnapshot,
     ) -> Result<(), Error> {
         self.config.cwd = settings.cwd.clone();
+        // Older histories omit roots (unknown); an explicit empty list clears
+        // them. Keep the runtime-owned selection when refreshing ACP options.
+        if let Some(roots) = &settings.runtime_workspace_roots {
+            self.config.workspace_roots.clone_from(roots);
+            self.config.workspace_roots_explicit = true;
+            self.config.permissions.set_workspace_roots(roots.clone());
+        }
         self.config.model = Some(settings.model.clone());
         self.config.model_provider_id = settings.model_provider_id.clone();
         self.config.model_reasoning_effort = settings.reasoning_effort.clone();
@@ -6838,7 +6847,7 @@ fn guardian_action_summary(
         )),
         codex_protocol::approvals::GuardianAssessmentAction::ApplyPatch { files, .. } => {
             Some(if files.len() == 1 {
-                format!("apply_patch touching {}", files[0].display())
+                format!("apply_patch touching {}", files[0].as_str())
             } else {
                 format!("apply_patch touching {} files", files.len())
             })
@@ -6964,6 +6973,76 @@ mod tests {
     }
 
     #[test]
+    fn user_verification_is_not_an_acp_tool_approval() {
+        let request = ElicitationRequest::UserVerification {
+            title: "Verify identity".into(),
+            description: "Native verification required".into(),
+            challenge: "opaque-verification-challenge".into(),
+        };
+        assert_eq!(
+            elicitation_request_message(&request),
+            "Native verification required"
+        );
+        assert!(
+            build_supported_mcp_elicitation_permission_request(
+                "test-server",
+                &codex_protocol::mcp::RequestId::String("verification-1".into()),
+                &request,
+                serde_json::json!(&request),
+            )
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn user_verification_declines_without_exposing_a_permission_or_challenge()
+    -> anyhow::Result<()> {
+        let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
+        let runtime = Arc::new(StubCodexThread::new());
+        state.thread = runtime.clone();
+        state
+            .mcp_elicitation(
+                &session_client,
+                ElicitationRequestEvent {
+                    server_name: "verification-server".into(),
+                    id: codex_protocol::mcp::RequestId::String("verification-1".into()),
+                    turn_id: None,
+                    request: ElicitationRequest::UserVerification {
+                        title: "Verify identity".into(),
+                        description: "Native verification required".into(),
+                        challenge: "opaque-verification-challenge".into(),
+                    },
+                },
+            )
+            .await?;
+        assert_eq!(
+            runtime.ops.lock().unwrap().as_slice(),
+            &[RecordedOp::ResolveElicitation {
+                decision: ElicitationAction::Decline,
+                content: None,
+                meta: None,
+            }]
+        );
+        assert!(client.notifications.lock().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn guardian_patch_summary_preserves_executor_native_paths() -> anyhow::Result<()> {
+        for path in ["/workspace/file.txt", r"C:\workspace\file.txt"] {
+            let action =
+                serde_json::from_value::<codex_protocol::approvals::GuardianAssessmentAction>(
+                    json!({ "type": "apply_patch", "cwd": path, "files": [path] }),
+                )?;
+            assert_eq!(
+                guardian_action_summary(&action),
+                Some(format!("apply_patch touching {path}"))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn mcp_policy_approval_is_only_projected_when_the_runtime_offers_it() {
         let without_policy = build_exec_permission_options(
             &[
@@ -7041,6 +7120,7 @@ mod tests {
         let thread_id = ThreadId::new();
         let (mut state, session_client, client) = prompt_state_for_projection(thread_id);
         let event = GuardianAssessmentEvent {
+            review_reason: None,
             id: "guardian-stdin-1".to_string(),
             target_item_id: Some("exec-1".to_string()),
             plugin_id: None,
@@ -7363,36 +7443,40 @@ mod tests {
     #[tokio::test]
     async fn busy_runtime_declines_prompt_without_leaving_a_pending_response() -> anyhow::Result<()>
     {
-        let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
-        thread.set_next_turn_submission(TurnInputSubmission::NotSubmitted {
-            reason: codex_protocol::turn_input::NotSubmittedReason::NotIdle,
-        });
-        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+        for reason in [
+            codex_protocol::turn_input::NotSubmittedReason::NotIdle,
+            codex_protocol::turn_input::NotSubmittedReason::ServerDraining,
+        ] {
+            let expected_reason = format!("{reason:?}");
+            let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
+            thread.set_next_turn_submission(TurnInputSubmission::NotSubmitted { reason });
+            let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
 
-        message_tx.send(ThreadMessage::Prompt {
-            request: PromptRequest::new(session_id, vec!["queued too early".into()]),
-            response_tx: prompt_response_tx,
-        })?;
+            message_tx.send(ThreadMessage::Prompt {
+                request: PromptRequest::new(session_id, vec!["queued too early".into()]),
+                response_tx: prompt_response_tx,
+            })?;
 
-        let result = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx).await??;
-        let error = match result {
-            Ok(_) => anyhow::bail!("busy runtime unexpectedly accepted the prompt"),
-            Err(error) => error,
-        };
-        assert!(
-            format!("{error:?}").contains("NotIdle"),
-            "unexpected submission error: {error:?}"
-        );
-        assert!(matches!(
-            thread.ops.lock().unwrap().as_slice(),
-            [RecordedOp::TurnInput {
-                mode: TurnInputMode::StartIfIdle,
-                ..
-            }]
-        ));
+            let result = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx).await??;
+            let error = match result {
+                Ok(_) => anyhow::bail!("busy runtime unexpectedly accepted the prompt"),
+                Err(error) => error,
+            };
+            assert!(
+                format!("{error:?}").contains(&expected_reason),
+                "unexpected submission error: {error:?}"
+            );
+            assert!(matches!(
+                thread.ops.lock().unwrap().as_slice(),
+                [RecordedOp::TurnInput {
+                    mode: TurnInputMode::StartIfIdle,
+                    ..
+                }]
+            ));
 
-        drop(message_tx);
-        drop(local_set.await);
+            drop(message_tx);
+            drop(local_set.await);
+        }
         Ok(())
     }
 
@@ -11058,6 +11142,8 @@ mod tests {
                 permission_profile: config.permissions.permission_profile().clone(),
                 active_permission_profile: config.permissions.active_permission_profile().clone(),
                 cwd: config.cwd.clone(),
+                runtime_workspace_roots: None,
+                disabled_plugin_ids: Vec::new(),
                 reasoning_effort: reasoning_effort.clone(),
                 reasoning_summary: config.model_reasoning_summary,
                 personality: config.personality,
@@ -11129,6 +11215,32 @@ mod tests {
             "a repeated snapshot must not re-emit options"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_settings_distinguish_unknown_and_cleared_workspace_roots() -> anyhow::Result<()>
+    {
+        let (mut actor, _, _) = setup_actor(|config| {
+            config.model = Some("test-model".to_string());
+        })
+        .await?;
+        let EventMsg::ThreadSettingsApplied(mut event) =
+            thread_settings_applied_event(&actor.config, None)
+        else {
+            unreachable!();
+        };
+        let roots = vec![actor.config.cwd.clone()];
+        event.thread_settings.runtime_workspace_roots = Some(roots.clone());
+        actor.sync_config_with_thread_settings(&event.thread_settings)?;
+        assert_eq!(actor.config.workspace_roots, roots);
+        event.thread_settings.runtime_workspace_roots = None;
+        actor.sync_config_with_thread_settings(&event.thread_settings)?;
+        assert_eq!(actor.config.workspace_roots, roots);
+        event.thread_settings.runtime_workspace_roots = Some(Vec::new());
+        actor.sync_config_with_thread_settings(&event.thread_settings)?;
+        assert!(actor.config.workspace_roots.is_empty());
+        assert!(actor.config.permissions.workspace_roots().is_empty());
         Ok(())
     }
 
@@ -11246,6 +11358,11 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     enum RecordedOp {
+        ResolveElicitation {
+            decision: ElicitationAction,
+            content: Option<serde_json::Value>,
+            meta: Option<serde_json::Value>,
+        },
         TurnInput {
             items: Vec<UserInput>,
             mode: TurnInputMode,
@@ -11301,6 +11418,16 @@ mod tests {
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
                 let recorded_op = match &op {
+                    Op::ResolveElicitation {
+                        decision,
+                        content,
+                        meta,
+                        ..
+                    } => RecordedOp::ResolveElicitation {
+                        decision: decision.clone(),
+                        content: content.clone(),
+                        meta: meta.clone(),
+                    },
                     Op::TurnInput { request, mode, .. } => match &request.input {
                         TurnInput::UserInput { content, .. } => RecordedOp::TurnInput {
                             items: content.clone(),
@@ -11581,6 +11708,7 @@ mod tests {
                             .unwrap();
                     }
                     Op::ThreadSettings { .. } | Op::ExecApproval { .. } => {}
+                    Op::ResolveElicitation { .. } => {}
                     _ => {
                         unimplemented!()
                     }
