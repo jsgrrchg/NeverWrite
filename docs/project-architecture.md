@@ -57,8 +57,6 @@ crates/
 
 vendor/
   codex-acp/            Vendored Codex ACP adapter used for release builds
-  acp12/                Vendored legacy ACP crates used by the native backend
-                        for Grok compatibility
 
 scripts/                Root release, appcast, version, and validation utilities
 release/appcast/        Appcast and release topology documentation
@@ -207,15 +205,12 @@ The backend combines built-in descriptors for Codex, Claude, Grok, Kilo, and Ope
 
 The native backend owns custom definition validation, isolated launch snapshots, process ownership, and tombstones retained for history. The renderer refreshes the dynamic catalog atomically after a definition changes, while existing sessions preserve their recorded runtime identity and launch fingerprint.
 
-ACP runtime handling is split by provider compatibility:
-
-- Claude, Codex, Kilo, and OpenCode use the current ACP session-config path.
-- Grok uses the legacy ACP model/mode path, backed by the vendored
-  `vendor/acp12/` Rust crates in the native backend.
-
-`vendor/acp12/` is not a packaged provider runtime. It is a backend
-compatibility dependency that lets NeverWrite talk to the external Grok CLI
-while the rest of the ACP stack can continue using the current protocol path.
+All built-in and custom runtimes share one ACP v1 actor, including session
+startup, authentication transport, notifications, permissions, and cancellation.
+Provider-specific launch arguments, credentials, capabilities, and continuation
+policies remain in the runtime integration. Grok uses advertised session config
+options for model selection, or delegates it to the CLI when none are exposed;
+there is no vendored legacy protocol path or `session/set_model` fallback.
 
 ACP session notifications are normalized into renderer events for assistant
 message deltas, thinking deltas, tool activity, file diffs, permission requests,
@@ -292,7 +287,7 @@ Release builds stage more than the renderer bundle:
   release asset staging, bundle verification, and smoke tests.
 - Root release/appcast utilities live in [`scripts`](../scripts), with appcast
   details in [`release/appcast/README.md`](../release/appcast/README.md).
-- Vendored Codex and legacy ACP components are documented in
+- Vendored Codex components are documented in
   [`vendor/README.md`](../vendor/README.md).
 - The packaged Claude npm runtime is documented in
   [`apps/desktop/runtimes/claude/README.md`](../apps/desktop/runtimes/claude/README.md).

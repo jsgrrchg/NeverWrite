@@ -25,18 +25,17 @@ and terminal-auth routing helpers are in
 | `kilo-acp` | `kilo acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
 | `opencode-acp` | `opencode acp` | No. Must be available from PATH or a configured binary override. | OpenCode terminal login |
 
-NeverWrite currently supports two ACP compatibility paths:
+All built-in and custom runtimes use the native backend's shared ACP actor and
+ACP wire protocol v1. There is no separate Grok protocol implementation or
+vendored legacy ACP SDK. The backend uses `agent-client-protocol` 1.2.0 with
+schema 1.4.0; these SDK package versions are not the wire protocol version.
 
-- `Current14`: Claude, Codex, Kilo, and OpenCode use the current ACP session
-  config path.
-- `Legacy12`: Grok uses the legacy ACP model/mode path.
-
-For current ACP runtimes, model, mode, and reasoning selectors are derived from
-ACP `config_options` and updated through `session/set_config_option` when the
-runtime supports it. For Grok, NeverWrite keeps using legacy `models` /
-`modes` descriptors plus `session/set_model` / `session/set_mode` instead.
-Grok does not receive a synthetic `Auto` model when its runtime does not expose
-real model options; in that case the model selector is hidden.
+Model, mode, and reasoning selectors use advertised ACP `configOptions` and
+`session/set_config_option`. Grok's old `models` and `_meta.modelState` fields
+are ignored, even if present alongside modern options. Without an advertised
+model config option, Grok CLI manages the model: the selector is hidden, saved
+model preferences are not applied, and NeverWrite does not invent an `Auto`
+model or send `session/set_model`.
 
 Providers only show modes and slash commands that are either declared by ACP or
 kept as provider-owned fallback behavior. Grok does not receive synthetic
@@ -203,16 +202,32 @@ selected and ready is passed to the Grok ACP process explicitly, so it can
 recover from an inherited `XAI_API_KEY` that NeverWrite has marked invalid.
 NeverWrite does not delete or overwrite the inherited environment variable.
 
-Grok uses the legacy ACP compatibility path for model and mode changes:
-NeverWrite reads legacy `models` / `modes` descriptors and sends
-`session/set_model` / `session/set_mode` instead of
-`session/set_config_option`. If the Grok runtime does not expose real model
-options, NeverWrite does not synthesize an `Auto` model.
+Grok uses the same ACP v1 session and authentication actor as the other runtimes,
+while keeping its launch arguments (`--no-auto-update agent stdio`), credential
+selection, headless authentication metadata, and existing client capabilities.
+Advertised model config options use `session/set_config_option`; otherwise the
+CLI owns model selection. Grok mode changes use that RPC only when a mode
+config option is advertised; the legacy `session/set_mode` RPC is not sent.
+This migration does not enable native Grok session resume. Saved chats continue
+through the existing transcript-based recovery flow.
 
 Some Grok models map to different provider-side `agentType` values. Once a chat
 has started, switching to a model that requires a different `agentType` is
 blocked because the Grok ACP runtime requires a fresh session for that change.
 Start a new chat with the desired model instead.
+
+The sidecar smoke test (`npm run electron:ai-runtime:smoke` in `apps/desktop`,
+after building the backend) exercises Grok using a local ACP subprocess fixture:
+API-key and cached-token authentication, unsupported/rejected auth, legacy-only
+and modern model catalogs, config changes, streaming, reversible diffs,
+permissions, and cancellation. It does not contact xAI or validate a particular
+installed Grok CLI release. Before release, also check a real configured Grok
+CLI with login/API-key auth, a prompt, permission approval, cancellation, and
+saved-chat recovery; check model selection only if the CLI advertises it.
+
+Removing the old SDK also removes its `rmcp` dependency from the root Cargo
+workspace and lockfile. The separately built `vendor/codex-acp` workspace and
+external runtime dependencies are outside this removal.
 
 Disconnecting Grok in NeverWrite clears local NeverWrite setup state. For stored
 xAI API keys, it also deletes the local keyring secret. For Grok CLI login, it
