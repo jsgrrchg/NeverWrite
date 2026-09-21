@@ -196,10 +196,11 @@ NeverWrite launches custom commands without a shell and with an isolated environ
 
 If a saved custom chat cannot reconnect, distinguish the message: restore a missing definition, confirm an expected changed fingerprint, or use the retained transcript when the adapter only supports new sessions. Deleting a definition does not close an active chat; deleting the chat explicitly closes the process NeverWrite launched. See [Configurable Custom ACP Runtimes](custom-acp-runtimes.md) for the complete contract.
 
-Grok uses NeverWrite's legacy ACP compatibility path. If the runtime does not
-expose real model options during session startup, the chat composer
-intentionally hides the model selector instead of showing a synthetic `Auto`
-model.
+Grok uses NeverWrite's shared ACP v1 actor. If the runtime does not advertise a
+model `configOptions` entry, the CLI controls the model and the composer hides
+the model selector. Legacy `models` / `_meta.modelState` fields and old saved
+model preferences do not override this behavior. With modern options, model
+changes use `session/set_config_option`, never `session/set_model`.
 
 Grok can reject model switches after a chat has started when the target model
 requires a different provider-side `agentType`. Start a new Grok chat with the

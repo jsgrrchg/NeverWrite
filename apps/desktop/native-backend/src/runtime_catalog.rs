@@ -4,12 +4,6 @@ use neverwrite_ai::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AcpProtocolFlavor {
-    Current,
-    Legacy12,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProcessEnvironmentPolicy {
     Inherited,
     Isolated,
@@ -29,7 +23,6 @@ pub(crate) struct BuiltInRuntimeDefinition {
     default_executable: &'static str,
     bin_env_var: &'static str,
     acp_args: &'static [&'static str],
-    acp_protocol: AcpProtocolFlavor,
     supports_native_resume: bool,
 }
 
@@ -83,13 +76,6 @@ impl<'a> RuntimeDefinition<'a> {
                 .map(|argument| (*argument).to_string())
                 .collect(),
             Self::Custom(definition) => definition.args.clone(),
-        }
-    }
-
-    pub(crate) fn acp_protocol(self) -> AcpProtocolFlavor {
-        match self {
-            Self::BuiltIn(definition) => definition.acp_protocol,
-            Self::Custom(_) => AcpProtocolFlavor::Current,
         }
     }
 
@@ -191,7 +177,6 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         default_executable: "codex-acp",
         bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
         acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: true,
     },
     BuiltInRuntimeDefinition {
@@ -201,7 +186,6 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         default_executable: "claude-agent-acp",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
     BuiltInRuntimeDefinition {
@@ -211,7 +195,6 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         default_executable: "grok",
         bin_env_var: "NEVERWRITE_GROK_ACP_BIN",
         acp_args: GROK_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Legacy12,
         supports_native_resume: false,
     },
     BuiltInRuntimeDefinition {
@@ -221,7 +204,6 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         default_executable: "kilo",
         bin_env_var: "NEVERWRITE_KILO_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
     BuiltInRuntimeDefinition {
@@ -231,7 +213,6 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         default_executable: "opencode",
         bin_env_var: "NEVERWRITE_OPENCODE_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
     BuiltInRuntimeDefinition {
@@ -241,7 +222,6 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         default_executable: "pi-acp",
         bin_env_var: "NEVERWRITE_PI_ACP_BIN",
         acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current,
         // Pi persists sessions and exposes them through ACP session/load.
         supports_native_resume: true,
     },
@@ -292,18 +272,6 @@ mod tests {
                 PI_RUNTIME_ID,
             ]
         );
-    }
-
-    #[test]
-    fn built_in_protocols_are_explicit() {
-        for definition in RUNTIME_CATALOG.definitions() {
-            let expected = if definition.id() == GROK_RUNTIME_ID {
-                AcpProtocolFlavor::Legacy12
-            } else {
-                AcpProtocolFlavor::Current
-            };
-            assert_eq!(definition.acp_protocol(), expected, "{}", definition.id());
-        }
     }
 
     #[test]
@@ -377,7 +345,6 @@ mod tests {
         assert_eq!(custom.name(), "Local agent");
         assert_eq!(custom.default_executable(), "/opt/local/agent-acp");
         assert_eq!(custom.acp_args(), vec!["--stdio".to_string()]);
-        assert_eq!(custom.acp_protocol(), AcpProtocolFlavor::Current);
         assert_eq!(
             custom.process_environment_policy(),
             ProcessEnvironmentPolicy::Isolated
