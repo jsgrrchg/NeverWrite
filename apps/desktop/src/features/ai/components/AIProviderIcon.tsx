@@ -118,17 +118,14 @@ export function AIProviderIcon({
         return (
             <svg
                 className={className}
-                fill="none"
                 height={size}
-                viewBox="0 0 24 24"
+                viewBox="0 0 800 800"
                 width={size}
             >
-                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" />
                 <path
-                    d="M7 8.5h10M9.5 8.5V16m5-7.5V16"
-                    stroke="currentColor"
-                    strokeLinecap="round"
-                    strokeWidth="1.7"
+                    d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65ZM517.36 400H634.72V634.72H517.36Z"
+                    fill="currentColor"
+                    fillRule="evenodd"
                 />
             </svg>
         );
