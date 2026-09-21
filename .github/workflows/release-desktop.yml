@@ -139,6 +139,7 @@ jobs:
                   cache-dependency-path: |
                       apps/desktop/package-lock.json
                       apps/desktop/runtimes/claude/package-lock.json
+                      apps/desktop/runtimes/pi/package-lock.json
 
             - name: Setup Rust toolchain
               uses: ./.github/actions/setup-rust
@@ -188,6 +189,10 @@ jobs:
             - name: Prepare target-specific Claude runtime
               working-directory: apps/desktop
               run: npm run claude:prepare -- --target ${{ matrix.target }}
+
+            - name: Prepare and verify Pi ACP runtime
+              working-directory: apps/desktop
+              run: npm run test:pi-runtime
 
             - name: Build target-specific Codex sidecar
               shell: bash

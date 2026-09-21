@@ -114,6 +114,23 @@ export function AIProviderIcon({
         );
     }
 
+    if (runtimeId.includes("pi-acp")) {
+        return (
+            <svg
+                className={className}
+                height={size}
+                viewBox="0 0 800 800"
+                width={size}
+            >
+                <path
+                    d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65ZM517.36 400H634.72V634.72H517.36Z"
+                    fill="currentColor"
+                    fillRule="evenodd"
+                />
+            </svg>
+        );
+    }
+
     return (
         <svg
             className={className}

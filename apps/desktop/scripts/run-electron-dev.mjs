@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { isWindows } from "./common.mjs";
 import { prepareClaudeRuntime } from "./claude-runtime.mjs";
+import { preparePiRuntime } from "./pi-runtime.mjs";
 import {
     parseRustcHostTarget,
     resolveCodexV8CargoEnvironment,
@@ -107,7 +108,7 @@ process.on("unhandledRejection", (error) => {
 });
 
 async function main() {
-    await prepareClaudeRuntime();
+    await Promise.all([prepareClaudeRuntime(), preparePiRuntime()]);
 
     const { stdout: rustcVersion } = await execFileAsync("rustc", ["-vV"], {
         cwd: workspaceRoot,

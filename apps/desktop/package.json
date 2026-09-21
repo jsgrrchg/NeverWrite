@@ -38,7 +38,9 @@
         "test:claude-runtime": "node --test scripts/claude-runtime-contracts.test.mjs",
         "claude:prepare": "node scripts/prepare-claude-runtime.mjs",
         "test:claude-preparation": "node --test scripts/claude-runtime.test.mjs scripts/claude-upstream-watch.test.mjs",
-        "claude:smoke": "node scripts/smoke-claude-runtime.mjs"
+        "claude:smoke": "node scripts/smoke-claude-runtime.mjs",
+        "pi:prepare": "node scripts/prepare-pi-runtime.mjs",
+        "test:pi-runtime": "node --test scripts/pi-runtime.test.mjs"
     },
     "dependencies": {
         "@codemirror/commands": "^6.10.3",

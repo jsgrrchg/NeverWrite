@@ -72,7 +72,7 @@ describe("runtimeMetadata", () => {
             )
             .map((descriptor) => descriptor.runtime.id);
 
-        expect(resumeRuntimeIds).toEqual(["codex-acp"]);
+        expect(resumeRuntimeIds).toEqual(["codex-acp", "pi-acp"]);
     });
 
     it("normalizes runtime display names for the UI", () => {

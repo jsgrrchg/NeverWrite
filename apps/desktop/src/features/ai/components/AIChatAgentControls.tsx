@@ -69,7 +69,7 @@ interface TraitMenuSection {
   defaultValues: string[];
 }
 
-const SEARCHABLE_MODEL_RUNTIME_IDS = new Set(["kilo-acp", "opencode-acp"]);
+const SEARCHABLE_MODEL_RUNTIME_IDS = new Set(["kilo-acp", "opencode-acp", "pi-acp"]);
 const GROK_RUNTIME_ID = "grok-acp";
 const CODEX_FULL_ACCESS_MODE_ID = "full-access";
 const COMPOSER_MODE_OPTION_ID = "composer-mode";

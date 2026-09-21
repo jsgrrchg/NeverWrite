@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { rcedit } from "rcedit";
 import { claudeHostTarget, validateClaudeRuntime } from "./claude-runtime.mjs";
+import { validatePiRuntime } from "./pi-runtime.mjs";
 
 export const REQUIRED_RESOURCE_PATHS = {
     darwin: [
@@ -15,6 +16,10 @@ export const REQUIRED_RESOURCE_PATHS = {
         "native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json",
         "native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
         "native-backend/embedded/claude-agent-acp/node_modules/zod/package.json",
+        "native-backend/embedded/pi-acp/dist/index.js",
+        "native-backend/embedded/pi-acp/LICENSE",
+        "native-backend/embedded/pi-acp/node_modules/@agentclientprotocol/sdk/package.json",
+        "native-backend/embedded/pi-acp/node_modules/zod/package.json",
     ],
     win32: [
         "icons/icon.ico",
@@ -26,6 +31,10 @@ export const REQUIRED_RESOURCE_PATHS = {
         "native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json",
         "native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
         "native-backend/embedded/claude-agent-acp/node_modules/zod/package.json",
+        "native-backend/embedded/pi-acp/dist/index.js",
+        "native-backend/embedded/pi-acp/LICENSE",
+        "native-backend/embedded/pi-acp/node_modules/@agentclientprotocol/sdk/package.json",
+        "native-backend/embedded/pi-acp/node_modules/zod/package.json",
     ],
     linux: [
         "icons/icon.png",
@@ -37,6 +46,10 @@ export const REQUIRED_RESOURCE_PATHS = {
         "native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json",
         "native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
         "native-backend/embedded/claude-agent-acp/node_modules/zod/package.json",
+        "native-backend/embedded/pi-acp/dist/index.js",
+        "native-backend/embedded/pi-acp/LICENSE",
+        "native-backend/embedded/pi-acp/node_modules/@agentclientprotocol/sdk/package.json",
+        "native-backend/embedded/pi-acp/node_modules/zod/package.json",
     ],
 };
 const DEFAULT_PRODUCT_NAME = "NeverWrite";
@@ -229,4 +242,5 @@ export default async function verifyElectronBundle(packContext) {
     const target = packContext.electronPlatformName === "darwin" && arch === "universal"
         ? "universal-apple-darwin" : claudeHostTarget(packContext.electronPlatformName, arch);
     await validateClaudeRuntime(path.join(resourcesDir, "native-backend", "embedded", "claude-agent-acp"), target);
+    await validatePiRuntime(path.join(resourcesDir, "native-backend", "embedded", "pi-acp"));
 }

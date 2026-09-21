@@ -87,6 +87,22 @@ const RUNTIME_METADATA: RuntimeMetadata[] = [
             "user_input",
         ],
     },
+    {
+        id: "pi-acp",
+        name: "Pi",
+        company: "Pi",
+        description: "Pi coding agent through NeverWrite's bundled ACP adapter.",
+        capabilities: [
+            "attachments",
+            "permissions",
+            "reasoning",
+            "terminal_output",
+            "create_session",
+            "resume_session",
+            "prompt_queueing",
+            "user_input",
+        ],
+    },
 ];
 
 export const PROVIDER_CATALOG = [

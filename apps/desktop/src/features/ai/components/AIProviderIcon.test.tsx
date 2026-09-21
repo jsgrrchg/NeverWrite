@@ -3,6 +3,24 @@ import { describe, expect, it } from "vitest";
 import { AIProviderIcon } from "./AIProviderIcon";
 
 describe("AIProviderIcon", () => {
+    it("uses the official Pi mark for the Pi ACP runtime", () => {
+        const { container } = render(<AIProviderIcon runtimeId="pi-acp" />);
+
+        expect(container.querySelector("svg")).toHaveAttribute(
+            "viewBox",
+            "0 0 800 800",
+        );
+        expect(container.querySelectorAll("path")).toHaveLength(1);
+        expect(container.querySelector("path")).toHaveAttribute(
+            "fill",
+            "currentColor",
+        );
+        expect(container.querySelector("path")).toHaveAttribute(
+            "fill-rule",
+            "evenodd",
+        );
+    });
+
     it("keeps the Kilo mark for Kilo runtimes", () => {
         const { container } = render(<AIProviderIcon runtimeId="kilo-acp" />);
 

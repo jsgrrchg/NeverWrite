@@ -1,0 +1,7 @@
+{
+  "name": "neverwrite-pi-runtime",
+  "private": true,
+  "dependencies": {
+    "pi-acp": "0.0.33"
+  }
+}

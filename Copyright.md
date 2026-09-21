@@ -161,6 +161,18 @@ installed from its committed runtime lockfile. Platform-specific
 `@anthropic-ai/claude-agent-sdk-*` packages are included only for the target
 being packaged.
 
+### Embedded Pi ACP Runtime
+
+| Package                       | Version | License    |
+| ----------------------------- | ------- | ---------- |
+| pi-acp                        | 0.0.33  | MIT        |
+| @agentclientprotocol/sdk      | 0.26.0  | Apache-2.0 |
+| zod                           | 3.25.76 | MIT        |
+
+The packaged desktop app stages this exact locked dependency graph under
+`native-backend/embedded/pi-acp/`. The Pi coding agent is not redistributed;
+users install and configure its `pi` executable separately.
+
 ---
 
 ## Web Clipper Dependencies (npm)
@@ -293,6 +305,7 @@ The bundled dictionary metadata lives in
 | @agentclientprotocol/claude-agent-acp 0.79.0 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
+| pi-acp 0.0.33                    | MIT         | github.com/svkozak/pi-acp               |
 
 ---
 
