@@ -1,6 +1,6 @@
-import { createCatppuccinIconElement } from "../../../components/icons/catppuccinIconPresentation";
-import { resolveCatppuccinFileIcon } from "../../../components/icons/fileTypeIcons";
-import { resolveCatppuccinFolderIcon } from "../../../components/icons/folderTypeIcons";
+import { createSymbolsIconElement } from "../../../components/icons/symbolsIconPresentation";
+import { resolveSymbolsFileIcon } from "../../../components/icons/fileTypeIcons";
+import { resolveSymbolsFolderIcon } from "../../../components/icons/folderTypeIcons";
 import type { ChatVaultReferenceKind } from "./ChatVaultReference";
 import {
     getChatInlineLeadingVisualStyle,
@@ -57,17 +57,17 @@ export function presentComposerVaultReference(
         }),
     );
 
-    const iconName =
+    const iconPath =
         kind === "folder"
-            ? resolveCatppuccinFolderIcon(target.path, false).iconName
-            : resolveCatppuccinFileIcon(
+            ? resolveSymbolsFolderIcon(target.path, false).iconPath
+            : resolveSymbolsFileIcon(
                   kind === "note" && !/\.md$/i.test(target.path)
                       ? `${target.path}.md`
                       : target.path,
                   { kind: kind === "note" ? "note" : undefined, mimeType },
-              ).iconName;
-    const icon = createCatppuccinIconElement({
-        iconName,
+              ).iconPath;
+    const icon = createSymbolsIconElement({
+        iconPath,
         opacity: 1,
         size: referenceIconSize(metrics),
     });

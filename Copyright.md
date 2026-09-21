@@ -93,7 +93,6 @@ dictionary licenses.
 | Package                        | License     |
 | ------------------------------ | ----------- |
 | @excalidraw/excalidraw         | MIT         |
-| @iconify-json/catppuccin       | MIT         |
 | @lezer/common                 | MIT         |
 | @lezer/highlight              | MIT         |
 | @xterm/xterm                   | MIT         |
@@ -110,6 +109,14 @@ dictionary licenses.
 | react-datasheet-grid           | MIT         |
 | react-force-graph-2d           | MIT         |
 | react-force-graph-3d           | MIT         |
+
+### Bundled file icons
+
+NeverWrite bundles the SVG icons and filename/folder associations from
+[Symbols](https://github.com/miguelsolorio/vscode-symbols/tree/296ef1b62287fb2315cb5651e552e09e8c8e1de8),
+copyright © 2020–22 Miguel Solorio. Symbols is MIT licensed; the complete
+upstream license is retained at
+`apps/desktop/src/assets/file-icons/LICENSE.symbols`.
 
 ### Dev Dependencies
 

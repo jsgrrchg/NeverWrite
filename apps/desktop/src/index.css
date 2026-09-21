@@ -388,6 +388,15 @@
     --catppuccin-icon-overlay1: #8087a2;
     --catppuccin-icon-wally-blue: #8aadf4;
     --catppuccin-icon-wally-gold: #eed49f;
+    /* Zeron's Symbols palette lifts only the shared dark accents. Brand
+       artwork, gradients, white/black details, and other colors stay intact. */
+    --symbols-icon-slate: #cbd5e1;
+    --symbols-icon-zinc: #d4d4d8;
+    --symbols-icon-blue: #60a5fa;
+    --symbols-icon-orange: #fb923c;
+    --symbols-icon-green: #4ade80;
+    --symbols-icon-violet: #a78bfa;
+    --symbols-icon-purple: #c084fc;
 }
 
 * {
