@@ -50,7 +50,7 @@ use neverwrite_ai::{
     AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
     AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, AI_URL_ELICITATION_REQUEST_EVENT,
     AI_USER_INPUT_REQUEST_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GROK_RUNTIME_ID,
-    KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID, PI_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -1865,14 +1865,18 @@ impl NativeAi {
                 .unwrap_or_default()
         };
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
-        let created = match start_acp_session(
-            spec,
+        let start_mode = if input.runtime_id == PI_RUNTIME_ID {
+            AcpSessionStartMode::Load {
+                session_id: input.session_id,
+                additional_directories: normalized.kept.clone(),
+            }
+        } else {
             AcpSessionStartMode::Resume {
                 session_id: input.session_id,
                 additional_directories: normalized.kept.clone(),
-            },
-            self.acp_actor_context(),
-        ) {
+            }
+        };
+        let created = match start_acp_session(spec, start_mode, self.acp_actor_context()) {
             Ok(created) => created,
             Err(error) => {
                 if let Err(update_error) = self.invalidate_auth_after_session_start_error(
@@ -2166,6 +2170,14 @@ impl NativeAi {
                 .sessions
                 .get_mut(&session_id)
                 .ok_or_else(|| format!("AI session not found: {session_id}"))?;
+            if managed.session.runtime_id == PI_RUNTIME_ID
+                && managed.session.status == AiSessionStatus::Streaming
+            {
+                return Err(
+                    "Pi is still processing the previous prompt. Wait for it to finish or cancel the turn."
+                        .to_string(),
+                );
+            }
             if managed.session.parent_session_id.is_some() && managed.session.closed_at.is_some() {
                 return Err(
                     "This subagent was closed by its parent thread and can't receive new messages."
@@ -3452,6 +3464,23 @@ impl NativeAcpClient {
                 MessageRole::Assistant,
                 true,
             );
+        }
+    }
+
+    fn mark_pi_prompt_complete(&self, session_id: &str) {
+        let is_pi = self
+            .session_state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .sessions
+                    .get(session_id)
+                    .map(|managed| managed.session.runtime_id == PI_RUNTIME_ID)
+            })
+            .unwrap_or(false);
+        if is_pi {
+            self.mark_session_idle(session_id);
         }
     }
 
@@ -6060,6 +6089,7 @@ async fn handle_acp_command(
                 client.end_thinking(&session_id);
                 client.end_user_message(&session_id);
                 client.complete_assistant_turn(&session_id, &message_id);
+                client.mark_pi_prompt_complete(&session_id);
                 if let Err(error) = &result {
                     client.emit(
                         AI_SESSION_ERROR_EVENT,
@@ -6173,6 +6203,7 @@ async fn handle_acp12_command(
                 client.end_thinking(&session_id);
                 client.end_user_message(&session_id);
                 client.complete_assistant_turn(&session_id, &message_id);
+                client.mark_pi_prompt_complete(&session_id);
                 if let Err(error) = &result {
                     client.emit(
                         AI_SESSION_ERROR_EVENT,
@@ -8034,7 +8065,9 @@ fn setup_status_for_with_inherited_auth(
         .and_then(normalize_optional_string);
     let resolved = resolve_acp_command(runtime_id, &setup);
     let binary_path = resolved.display;
-    let binary_ready = resolved.program.is_some();
+    let adapter_ready = resolved.program.is_some();
+    let pi_ready = runtime_id != PI_RUNTIME_ID || resolve_pi_cli_command().is_some();
+    let binary_ready = adapter_ready && pi_ready;
     let binary_source = if binary_ready {
         resolved.source
     } else {
@@ -8050,7 +8083,9 @@ fn setup_status_for_with_inherited_auth(
     let auth_ready = binary_ready
         && (setup.auth_ready || inherited_auth_method.is_some() || provider_auth_ready);
     let auth_method = setup.auth_method.or(inherited_auth_method);
-    let message = if !binary_ready {
+    let message = if runtime_id == PI_RUNTIME_ID && adapter_ready && !pi_ready {
+        Some("Install Pi with `npm install -g --ignore-scripts @earendil-works/pi-coding-agent` and ensure `pi` is available on PATH. NeverWrite bundles pi-acp, but Pi itself is user-managed.".to_string())
+    } else if !binary_ready {
         setup.message
     } else if auth_ready {
         None
@@ -8184,6 +8219,13 @@ fn acp_process_spec(
     })?;
     let claude_provider_routing = claude_provider_process_routing(runtime_id, setup)?;
     let mut env = setup.env.clone();
+    if runtime_id == PI_RUNTIME_ID && !env.contains_key("PI_ACP_PI_COMMAND") {
+        let pi = resolve_pi_cli_command().ok_or_else(|| {
+            "Pi is not installed. Run `npm install -g --ignore-scripts @earendil-works/pi-coding-agent` and ensure `pi` is available on PATH."
+                .to_string()
+        })?;
+        env.insert("PI_ACP_PI_COMMAND".to_string(), pi.display().to_string());
+    }
     for key in secret_env_keys_for_runtime(runtime_id) {
         let inherited_secret_should_win = env_secret_present(key)
             && !setup_secret_env_overrides_inherited(runtime_id, setup, key);
@@ -8336,6 +8378,19 @@ fn resolve_base_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> Reso
         }
     }
 
+    if runtime_id == PI_RUNTIME_ID {
+        if let Some(entry) = pi_dependency_entry_path()
+            .filter(|entry| entry.is_file() && pi_runtime_dependencies_ready(entry))
+        {
+            return ResolvedAcpCommand {
+                display: Some(entry.display().to_string()),
+                program: Some(PathBuf::from("node")),
+                args: vec![entry.display().to_string()],
+                source: AiRuntimeBinarySource::Vendor,
+            };
+        }
+    }
+
     if let Some(path) = find_program_on_path(default_executable_name(runtime_id)) {
         return ResolvedAcpCommand {
             display: Some(path.display().to_string()),
@@ -8409,6 +8464,26 @@ fn resolve_packaged_acp_command(runtime_id: &str) -> Option<ResolvedAcpCommand> 
                 source: AiRuntimeBinarySource::Bundled,
             })
         }
+        PI_RUNTIME_ID => {
+            let node = resource_dir
+                .join("embedded")
+                .join("node")
+                .join("bin")
+                .join(runtime_binary_name("node"));
+            let entry = resource_dir
+                .join("embedded")
+                .join("pi-acp")
+                .join("dist")
+                .join("index.js");
+            (node.is_file() && entry.is_file() && pi_runtime_dependencies_ready(&entry)).then(
+                || ResolvedAcpCommand {
+                    display: Some(entry.display().to_string()),
+                    program: Some(node),
+                    args: vec![entry.display().to_string()],
+                    source: AiRuntimeBinarySource::Bundled,
+                },
+            )
+        }
         _ => None,
     }
 }
@@ -8430,6 +8505,25 @@ fn runtime_binary_name(base: &str) -> String {
 fn resolve_known_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
     resolve_grok_official_runtime_fallback(runtime_id)
         .or_else(|| resolve_macos_homebrew_runtime_fallback(runtime_id))
+}
+
+fn resolve_pi_cli_command() -> Option<PathBuf> {
+    std::env::var_os("PI_ACP_PI_COMMAND")
+        .and_then(|value| find_program_on_path(&value.to_string_lossy()))
+        .or_else(|| find_program_on_path("pi"))
+        .or_else(|| {
+            let home = home_dir()?;
+            [
+                home.join(".local/bin/pi"),
+                home.join(".npm-global/bin/pi"),
+                home.join(".volta/bin/pi"),
+                home.join(".bun/bin/pi"),
+            ]
+            .into_iter()
+            .find_map(|candidate| {
+                find_executable_candidate(candidate, &executable_extensions_for_path_lookup())
+            })
+        })
 }
 
 fn resolve_grok_official_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
@@ -8760,6 +8854,7 @@ fn inherited_auth_method(
                     setup,
                 )
             }),
+        PI_RUNTIME_ID => resolve_pi_cli_command().map(|_| "pi-cli".to_string()),
         _ => None,
     }
 }
@@ -9523,6 +9618,25 @@ fn claude_runtime_dependencies_ready(entry: &Path) -> bool {
     })
 }
 
+fn pi_dependency_entry_path() -> Option<PathBuf> {
+    Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.cache/pi-runtime/dist/index.js"))
+}
+
+fn pi_runtime_dependencies_ready(entry: &Path) -> bool {
+    let Some(runtime_root) = entry.parent().and_then(Path::parent) else {
+        return false;
+    };
+    ["@agentclientprotocol/sdk", "zod"]
+        .iter()
+        .all(|dependency| {
+            runtime_root
+                .join("node_modules")
+                .join(dependency)
+                .join("package.json")
+                .is_file()
+        })
+}
+
 fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
     match runtime_id {
         CODEX_RUNTIME_ID => vec![
@@ -9575,6 +9689,8 @@ fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
             description: "Open the OpenCode CLI sign-in flow in an integrated terminal."
                 .to_string(),
         }],
+        // Authentication and provider configuration stay owned by the user's Pi CLI.
+        PI_RUNTIME_ID => vec![],
         _ => vec![],
     }
 }
@@ -9586,6 +9702,7 @@ fn auth_method_ids(runtime_id: &str) -> Vec<&'static str> {
         GROK_RUNTIME_ID => vec!["grok-login", "xai-api-key"],
         KILO_RUNTIME_ID => vec!["kilo-login", "kilo-api-key"],
         OPENCODE_RUNTIME_ID => vec!["opencode-login"],
+        PI_RUNTIME_ID => vec![],
         _ => vec![],
     }
 }
@@ -12171,12 +12288,13 @@ mod tests {
     }
 
     #[test]
-    fn native_resume_is_currently_limited_to_codex() {
+    fn native_continuation_is_limited_to_codex_and_pi() {
         assert!(runtime_supports_native_resume(CODEX_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(CLAUDE_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(GROK_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(KILO_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(OPENCODE_RUNTIME_ID));
+        assert!(runtime_supports_native_resume(PI_RUNTIME_ID));
     }
 
     #[test]

@@ -24,10 +24,11 @@ and terminal-auth routing helpers are in
 | `grok-acp` | `grok --no-auto-update agent stdio` | No. Must be available from PATH or a configured binary override. | Grok terminal login, xAI API key |
 | `kilo-acp` | `kilo acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
 | `opencode-acp` | `opencode acp` | No. Must be available from PATH or a configured binary override. | OpenCode terminal login |
+| `pi-acp` | Bundled `pi-acp` adapter launching the user's `pi` CLI | Yes. Staged as a prepared npm runtime plus embedded Node; the Pi CLI is not bundled. | Managed externally by Pi |
 
 NeverWrite currently supports two ACP compatibility paths:
 
-- `Current14`: Claude, Codex, Kilo, and OpenCode use the current ACP session
+- `Current14`: Claude, Codex, Kilo, OpenCode, and Pi use the current ACP session
   config path.
 - `Legacy12`: Grok uses the legacy ACP model/mode path.
 
@@ -59,7 +60,7 @@ For every provider, the backend resolves the runtime command in this order:
 1. Provider-specific `NEVERWRITE_*_ACP_BIN` environment override.
 2. Custom binary path saved through the backend setup payload.
 3. Packaged release resources, when available.
-4. Development vendor fallback for Codex or the prepared host-target cache for Claude.
+4. Development vendor fallback for Codex or the prepared runtime caches for Claude and Pi.
 5. A command found on the app process `PATH`.
 6. macOS Homebrew fallback paths for Grok and OpenCode.
 
@@ -72,6 +73,7 @@ The provider-specific runtime binary overrides are:
 | `NEVERWRITE_GROK_ACP_BIN` | Grok |
 | `NEVERWRITE_KILO_ACP_BIN` | Kilo |
 | `NEVERWRITE_OPENCODE_ACP_BIN` | OpenCode |
+| `NEVERWRITE_PI_ACP_BIN` | Pi ACP adapter |
 
 The values may be absolute paths or command names resolvable on `PATH`. For
 Grok, Kilo, and OpenCode, NeverWrite appends the ACP arguments automatically:
@@ -99,6 +101,21 @@ The backend also detects existing CLI auth files and environment secrets:
 | Grok | `XAI_API_KEY` or active non-empty Grok CLI auth under `~/.grok/`, currently `~/.grok/auth.json` |
 | Kilo | Non-empty Kilo auth file, including `~/.local/share/kilo/auth.json` on Unix-like systems |
 | OpenCode | `OPENCODE_API_KEY`, provider keys inherited by OpenCode, or active `opencode/auth.json` in the platform data directory |
+| Pi | Existing Pi installation and provider configuration; NeverWrite does not copy or store Pi credentials |
+
+### Pi
+
+NeverWrite owns and pins `pi-acp`; the user owns the Pi CLI and its provider
+configuration. Install it with
+`npm install -g --ignore-scripts @earendil-works/pi-coding-agent` so the `pi`
+executable is available on `PATH`, then
+configure models and credentials with Pi itself. NeverWrite locates that executable,
+passes its absolute path to the bundled adapter through `PI_ACP_PI_COMMAND`, and
+derives model and thinking-level selectors from ACP session configuration.
+
+Pi session continuation uses ACP `session/load`. Only one prompt may be active per
+Pi session; NeverWrite queues normal UI follow-ups and rejects accidental overlapping
+backend requests instead of treating adapter silence as turn completion.
 
 Codex ChatGPT auth is implemented through the ACP `authenticate` request and
 requires a resolved Codex runtime binary before NeverWrite marks it connected.

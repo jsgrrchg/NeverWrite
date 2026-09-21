@@ -1,6 +1,6 @@
 use neverwrite_ai::{
     custom_runtimes::CustomAcpRuntimeDefinition, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
-    GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID, PI_RUNTIME_ID,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +234,17 @@ const BUILT_IN_RUNTIME_DEFINITIONS: &[BuiltInRuntimeDefinition] = &[
         acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
+    BuiltInRuntimeDefinition {
+        id: PI_RUNTIME_ID,
+        name: "Pi",
+        description: "Pi coding agent exposed through the bundled ACP adapter.",
+        default_executable: "pi-acp",
+        bin_env_var: "NEVERWRITE_PI_ACP_BIN",
+        acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current,
+        // Pi persists sessions and exposes them through ACP session/load.
+        supports_native_resume: true,
+    },
 ];
 
 pub(crate) const RUNTIME_CATALOG: RuntimeCatalog =
@@ -278,6 +289,7 @@ mod tests {
                 GROK_RUNTIME_ID,
                 KILO_RUNTIME_ID,
                 OPENCODE_RUNTIME_ID,
+                PI_RUNTIME_ID,
             ]
         );
     }
@@ -343,6 +355,12 @@ mod tests {
                 Some("NEVERWRITE_OPENCODE_ACP_BIN"),
                 vec!["acp".to_string()],
             ),
+            (
+                PI_RUNTIME_ID,
+                "pi-acp",
+                Some("NEVERWRITE_PI_ACP_BIN"),
+                Vec::new(),
+            ),
         ];
         assert_eq!(contracts, expected);
     }
@@ -353,7 +371,7 @@ mod tests {
         let catalog = RUNTIME_CATALOG.with_custom(&custom);
         let definitions = catalog.definitions().collect::<Vec<_>>();
 
-        assert_eq!(definitions.len(), 6);
+        assert_eq!(definitions.len(), 7);
         let custom = catalog.definition(&custom[0].id).unwrap();
         assert!(custom.is_custom());
         assert_eq!(custom.name(), "Local agent");

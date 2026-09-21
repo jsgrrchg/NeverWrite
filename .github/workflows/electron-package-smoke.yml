@@ -56,6 +56,7 @@ jobs:
                   cache-dependency-path: |
                       apps/desktop/package-lock.json
                       apps/desktop/runtimes/claude/package-lock.json
+                      apps/desktop/runtimes/pi/package-lock.json
             - name: Install preparation tools
               working-directory: apps/desktop
               run: npm ci
@@ -68,6 +69,7 @@ jobs:
               run: |
                   npm run test:claude-preparation
                   NEVERWRITE_CLAUDE_CONTRACT_RUNTIME="$PWD/.cache/claude-runtime/${{ matrix.target }}" npm run test:claude-runtime
+                  npm run test:pi-runtime
             - name: Exercise the real runtime on the native architecture
               working-directory: apps/desktop
               run: npm run claude:smoke -- --runtime .cache/claude-runtime/${{ matrix.target }} --target ${{ matrix.target }}
@@ -89,6 +91,7 @@ jobs:
                   cache-dependency-path: |
                       apps/desktop/package-lock.json
                       apps/desktop/runtimes/claude/package-lock.json
+                      apps/desktop/runtimes/pi/package-lock.json
 
             - name: Setup Rust toolchain
               uses: ./.github/actions/setup-rust
@@ -248,6 +251,7 @@ jobs:
                   cache-dependency-path: |
                       apps/desktop/package-lock.json
                       apps/desktop/runtimes/claude/package-lock.json
+                      apps/desktop/runtimes/pi/package-lock.json
 
             - name: Setup Rust toolchain
               uses: ./.github/actions/setup-rust
@@ -340,6 +344,7 @@ jobs:
                   cache-dependency-path: |
                       apps/desktop/package-lock.json
                       apps/desktop/runtimes/claude/package-lock.json
+                      apps/desktop/runtimes/pi/package-lock.json
 
             - name: Setup Rust toolchain
               uses: ./.github/actions/setup-rust

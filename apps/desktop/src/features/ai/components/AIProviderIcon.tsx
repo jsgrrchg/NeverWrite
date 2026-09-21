@@ -114,6 +114,26 @@ export function AIProviderIcon({
         );
     }
 
+    if (runtimeId.includes("pi-acp")) {
+        return (
+            <svg
+                className={className}
+                fill="none"
+                height={size}
+                viewBox="0 0 24 24"
+                width={size}
+            >
+                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" />
+                <path
+                    d="M7 8.5h10M9.5 8.5V16m5-7.5V16"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeWidth="1.7"
+                />
+            </svg>
+        );
+    }
+
     return (
         <svg
             className={className}

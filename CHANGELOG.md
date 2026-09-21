@@ -36,6 +36,10 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ## [Unreleased]
 
+### Added
+
+- Added first-class Pi support through a bundled, reproducibly pinned `pi-acp` adapter while keeping the Pi CLI, providers, and credentials user-managed.
+
 ### Changed
 
 - Updated the bundled Codex runtime to `0.155.1`, preserving NeverWrite's conversation history, permissions, subagent activity and inline review integration.

@@ -17,6 +17,7 @@ import {
 } from "./stage-electron-sidecar-helpers.mjs";
 import { resolveCodexV8CargoEnvironment } from "./codex-v8-artifacts.mjs";
 import { resolveClaudeRuntimeSource } from "./claude-runtime.mjs";
+import { resolvePiRuntimeSource } from "./pi-runtime.mjs";
 
 const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const workspaceRoot = path.resolve(appRoot, "..", "..");
@@ -628,6 +629,10 @@ const claudeEmbeddedSource = await resolveClaudeRuntimeSource(targetTriple, {
     configuredSource: process.env.NEVERWRITE_CLAUDE_EMBEDDED_DIR?.trim(),
     embeddedSource: path.join(embeddedAssetsDir, "claude-agent-acp"),
 });
+const piEmbeddedSource = await resolvePiRuntimeSource({
+    configuredSource: process.env.NEVERWRITE_PI_EMBEDDED_DIR?.trim(),
+    embeddedSource: path.join(embeddedAssetsDir, "pi-acp"),
+});
 
 // Electron release jobs must stage binaries for the requested target explicitly.
 // Reusing host binaries here would silently create a mismatched bundle.
@@ -663,6 +668,10 @@ if (nodeSource.kind === "universal-directory") {
     await stageEmbeddedNodeRuntime(nodeSource);
 }
 await fs.cp(claudeEmbeddedSource, path.join(embeddedDir, "claude-agent-acp"), {
+    recursive: true,
+    dereference: true,
+});
+await fs.cp(piEmbeddedSource, path.join(embeddedDir, "pi-acp"), {
     recursive: true,
     dereference: true,
 });

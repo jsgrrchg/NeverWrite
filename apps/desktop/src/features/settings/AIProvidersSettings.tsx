@@ -49,6 +49,7 @@ const OPENCODE_RUNTIME_ID = "opencode-acp";
 const OPENCODE_AUTH_METHOD_ID = "opencode-login";
 const GROK_RUNTIME_ID = "grok-acp";
 const CLAUDE_ACP_RUNTIME_ID = "claude-acp";
+const PI_RUNTIME_ID = "pi-acp";
 const GOOGLE_VERTEX_METHOD_ID = "google-vertex";
 const GOOGLE_VERTEX_METHOD = {
     id: GOOGLE_VERTEX_METHOD_ID,
@@ -653,6 +654,7 @@ function ProviderExpandedPanel({
     const runtimeBinaryOverrideSupported = supportsRuntimeBinaryOverride(
         setupStatus.runtimeId,
     );
+    const externallyManagedByPi = setupStatus.runtimeId === PI_RUNTIME_ID;
     const pendingCustomBinaryPath = runtimeBinaryOverrideSupported
         ? getPendingCustomBinaryPath(setupStatus, customBinaryPath)
         : undefined;
@@ -789,6 +791,22 @@ function ProviderExpandedPanel({
                             </button>
                         );
                     })}
+                </div>
+            )}
+
+            {externallyManagedByPi && (
+                <div
+                    style={{
+                        padding: "10px 12px",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        backgroundColor: "var(--bg-primary)",
+                        color: "var(--text-secondary)",
+                    }}
+                >
+                    {setupStatus.message ??
+                        "Pi is installed and ready. Provider credentials, models, and login state are managed by the Pi CLI."}
                 </div>
             )}
 
@@ -1176,7 +1194,7 @@ function ProviderExpandedPanel({
             )}
 
             {/* Action row */}
-            <div
+            {!externallyManagedByPi && <div
                 style={{
                     display: "flex",
                     justifyContent: "space-between",
@@ -1227,7 +1245,7 @@ function ProviderExpandedPanel({
                             : "Connecting…"
                         : getActionLabel(selectedMethodId, setupStatus)}
                 </button>
-            </div>
+            </div>}
         </div>
     );
 }
