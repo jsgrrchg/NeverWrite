@@ -1,5 +1,5 @@
-import { CatppuccinIcon } from "./CatppuccinIcon";
-import { resolveCatppuccinFolderIcon } from "./folderTypeIcons";
+import { SymbolsIcon } from "./SymbolsIcon";
+import { resolveSymbolsFolderIcon } from "./folderTypeIcons";
 
 export function FolderTypeIcon({
     className,
@@ -16,12 +16,12 @@ export function FolderTypeIcon({
     readonly scaled?: boolean;
     readonly size?: number | string;
 }) {
-    const { iconName } = resolveCatppuccinFolderIcon(folderName, open);
+    const { iconPath } = resolveSymbolsFolderIcon(folderName, open);
 
     return (
-        <CatppuccinIcon
+        <SymbolsIcon
             className={className}
-            iconName={iconName}
+            iconPath={iconPath}
             opacity={opacity}
             scaled={scaled}
             size={size}

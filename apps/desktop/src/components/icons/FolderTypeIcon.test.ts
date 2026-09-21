@@ -1,40 +1,45 @@
 import { describe, expect, it } from "vitest";
 
-import { hasCatppuccinIcon } from "./catppuccin-icons";
-import { resolveCatppuccinFolderIcon } from "./folderTypeIcons";
+import { hasSymbolsIcon } from "./symbols-icons";
+import { resolveSymbolsFolderIcon } from "./folderTypeIcons";
 
-describe("resolveCatppuccinFolderIcon", () => {
+describe("resolveSymbolsFolderIcon", () => {
     it.each([
-        ["src", false, "folder-src"],
-        ["src", true, "folder-src-open"],
-        ["tests", false, "folder-tests"],
-        ["__tests__", true, "folder-tests-open"],
-        [".github", false, "folder-github"],
-        [".github", true, "folder-github-open"],
-        [".PERSONAL", false, "folder-private"],
-        [".PERSONAL", true, "folder-private-open"],
-        ["assets", false, "folder-assets"],
-        ["Excalidraw", true, "folder-images-open"],
-        ["docs", true, "folder-docs-open"],
-        ["scripts", false, "folder-scripts"],
-        ["components", true, "folder-components-open"],
-        ["types", false, "folder-types"],
-        ["typings", true, "folder-types-open"],
-        ["vendor", false, "folder-packages"],
-        ["crates", true, "folder-packages-open"],
-    ])("maps folder %s open=%s to %s", (folderName, open, iconName) => {
-        const resolved = resolveCatppuccinFolderIcon(folderName, open);
+        ["src", "folders/folder-orange-code.svg"],
+        ["tests", "folders/folder-red-code.svg"],
+        [".github", "folders/folder-github.svg"],
+        ["assets", "folders/folder-assets.svg"],
+        ["docs", "folders/folder-documents.svg"],
+        ["scripts", "folders/folder-red-code.svg"],
+        ["components", "folders/folder-green-code.svg"],
+        ["types", "folders/folder-blue-code.svg"],
+        ["node_modules", "folders/folder-node-modules.svg"],
+        ["target", "folders/folder-target.svg"],
+    ])("maps folder %s to %s", (folderName, iconPath) => {
+        const resolved = resolveSymbolsFolderIcon(folderName, false);
 
-        expect(resolved.iconName).toBe(iconName);
-        expect(hasCatppuccinIcon(resolved.iconName)).toBe(true);
+        expect(resolved.iconPath).toBe(iconPath);
+        expect(hasSymbolsIcon(resolved.iconPath)).toBe(true);
     });
 
-    it("uses default folder icons for unknown folder names", () => {
-        expect(resolveCatppuccinFolderIcon("feature-lab", false).iconName).toBe(
-            "folder",
+    it("matches folder names case-insensitively and ignores parent paths", () => {
+        expect(
+            resolveSymbolsFolderIcon("project/SRC", false).iconPath,
+        ).toBe("folders/folder-orange-code.svg");
+    });
+
+    it("uses the same artwork for open and closed folders like Zeron", () => {
+        expect(resolveSymbolsFolderIcon("src", true).iconPath).toBe(
+            resolveSymbolsFolderIcon("src", false).iconPath,
         );
-        expect(resolveCatppuccinFolderIcon("feature-lab", true).iconName).toBe(
-            "folder-open",
+    });
+
+    it("uses the generic folder icon for unknown names", () => {
+        expect(
+            resolveSymbolsFolderIcon("feature-lab", false).iconPath,
+        ).toBe("folders/folder.svg");
+        expect(resolveSymbolsFolderIcon("feature-lab", true).iconPath).toBe(
+            "folders/folder.svg",
         );
     });
 });

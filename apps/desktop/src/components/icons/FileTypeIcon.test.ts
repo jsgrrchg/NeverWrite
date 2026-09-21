@@ -1,114 +1,110 @@
 import { describe, expect, it } from "vitest";
 
-import { hasCatppuccinIcon } from "./catppuccin-icons";
-import { resolveCatppuccinFileIcon } from "./fileTypeIcons";
+import { hasSymbolsIcon } from "./symbols-icons";
+import { resolveSymbolsFileIcon } from "./fileTypeIcons";
 
-describe("resolveCatppuccinFileIcon", () => {
+describe("resolveSymbolsFileIcon", () => {
     it.each([
-        ["package.json", "package-json"],
-        ["package-lock.json", "npm-lock"],
-        ["pnpm-lock.yaml", "pnpm-lock"],
-        ["yarn.lock", "yarn-lock"],
-        ["bun.lockb", "bun-lock"],
-        ["Cargo.lock", "cargo-lock"],
-        ["Cargo.toml", "cargo"],
-        ["poetry.lock", "poetry-lock"],
-        ["uv.lock", "uv"],
-        ["flake.lock", "nix-lock"],
-        ["Gemfile.lock", "ruby-gem-lock"],
-        [".gitignore", "git"],
-        [".gitattributes", "git"],
-        [".editorconfig", "editorconfig"],
-        [".npmignore", "npm-ignore"],
-        [".prettierignore", "prettier-ignore"],
-        ["docker-compose.yml", "docker-compose"],
-    ])("maps special file %s to %s", (fileName, iconName) => {
-        const resolved = resolveCatppuccinFileIcon(fileName);
+        ["package.json", "files/node.svg"],
+        ["package-lock.json", "files/node.svg"],
+        ["pnpm-lock.yaml", "files/pnpm.svg"],
+        ["yarn.lock", "files/yarn.svg"],
+        ["bun.lockb", "files/bun.svg"],
+        ["uv.lock", "files/uv.svg"],
+        [".gitignore", "files/git.svg"],
+        [".gitattributes", "files/git.svg"],
+        [".editorconfig", "files/editorconfig.svg"],
+        [".npmignore", "files/npm.svg"],
+        [".prettierignore", "files/prettier.svg"],
+        ["docker-compose.yml", "files/docker-pink.svg"],
+        [".env.local", "files/gear.svg"],
+        ["tsconfig.app.json", "files/tsconfig.svg"],
+        ["astro.config.mjs", "files/astro.svg"],
+        ["vite.config.ts", "files/vite.svg"],
+        ["vitest.config.ts", "files/vitest.svg"],
+        ["eslint.config.mjs", "files/eslint.svg"],
+        [".prettierrc.json", "files/prettier.svg"],
+        ["tailwind.config.ts", "files/tailwind.svg"],
+        ["postcss.config.cjs", "files/postcss.svg"],
+        ["webpack.config.js", "files/webpack.svg"],
+        ["Dockerfile.dev", "files/docker.svg"],
+    ])("maps exact file %s to %s", (fileName, iconPath) => {
+        const resolved = resolveSymbolsFileIcon(fileName);
 
-        expect(resolved.iconName).toBe(iconName);
-        expect(hasCatppuccinIcon(resolved.iconName)).toBe(true);
-    });
-
-    it.each([
-        [".env.local", "env"],
-        [".envrc", "envrc"],
-        ["tsconfig.app.json", "typescript-config"],
-        ["jsconfig.json", "javascript-config"],
-        ["astro.config.mjs", "astro-config"],
-        ["vite.config.ts", "vite"],
-        ["vitest.config.ts", "vitest"],
-        ["eslint.config.mjs", "eslint"],
-        [".prettierrc.json", "prettier"],
-        ["prettier.config.cjs", "prettier"],
-        ["tailwind.config.ts", "tailwind"],
-        ["postcss.config.cjs", "postcss"],
-        ["webpack.config.js", "webpack"],
-        ["rollup.config.mjs", "rollup"],
-        ["Dockerfile.dev", "docker"],
-    ])("maps patterned file %s to %s", (fileName, iconName) => {
-        const resolved = resolveCatppuccinFileIcon(fileName);
-
-        expect(resolved.iconName).toBe(iconName);
-        expect(hasCatppuccinIcon(resolved.iconName)).toBe(true);
+        expect(resolved.iconPath).toBe(iconPath);
+        expect(hasSymbolsIcon(resolved.iconPath)).toBe(true);
     });
 
     it.each([
-        ["notes/draft.md", "markdown"],
-        ["docs/intro.mdx", "markdown-mdx"],
-        ["diagrams/flow.mmd", "mermaid"],
-        ["diagrams/flow.mermaid", "mermaid"],
-        ["src/App.tsx", "typescript-react"],
-        ["src/App.jsx", "javascript-react"],
-        ["src/index.ts", "typescript"],
-        ["src/index.js", "javascript"],
-        ["styles/app.css", "css"],
-        ["styles/app.scss", "sass"],
-        ["scripts/build.sh", "bash"],
-        ["src/main.py", "python"],
-        ["src/main.rs", "rust"],
-        ["src/main.go", "go"],
-        ["data/query.sql", "database"],
-        ["schema.proto", "proto"],
-        ["config/settings.ini", "config"],
-        ["formula.tex", "latex"],
-        ["module.wast", "web-assembly"],
-        ["image.png", "image"],
-        ["diagram.svg", "image"],
-        ["board.excalidraw", "drawio"],
-        ["document.pdf", "pdf"],
-        ["table.csv", "csv"],
-        ["budget.xlsx", "ms-excel"],
-        ["song.mp3", "audio"],
-        ["clip.mp4", "video"],
-    ])("maps file %s to %s", (fileName, iconName) => {
-        const resolved = resolveCatppuccinFileIcon(fileName);
+        ["notes/draft.md", "files/markdown.svg"],
+        ["docs/intro.mdx", "files/mdx.svg"],
+        ["src/App.tsx", "files/react-ts.svg"],
+        ["src/App.jsx", "files/react.svg"],
+        ["src/index.ts", "files/ts.svg"],
+        ["src/index.js", "files/js.svg"],
+        ["styles/app.css", "files/brackets-purple.svg"],
+        ["styles/app.scss", "files/sass.svg"],
+        ["scripts/build.sh", "files/shell.svg"],
+        ["src/main.py", "files/python.svg"],
+        ["src/main.rs", "files/rust.svg"],
+        ["src/main.go", "files/go.svg"],
+        ["data/query.sql", "files/database.svg"],
+        ["schema.proto", "files/proto.svg"],
+        ["formula.tex", "files/tex.svg"],
+        ["image.png", "files/image.svg"],
+        ["diagram.svg", "files/svg.svg"],
+        ["document.pdf", "files/pdf.svg"],
+        ["table.csv", "files/csv.svg"],
+        ["budget.xlsx", "files/csv.svg"],
+        ["song.mp3", "files/audio.svg"],
+        ["clip.mp4", "files/video.svg"],
+    ])("maps extension %s to %s", (fileName, iconPath) => {
+        const resolved = resolveSymbolsFileIcon(fileName);
 
-        expect(resolved.iconName).toBe(iconName);
-        expect(hasCatppuccinIcon(resolved.iconName)).toBe(true);
+        expect(resolved.iconPath).toBe(iconPath);
+        expect(hasSymbolsIcon(resolved.iconPath)).toBe(true);
     });
 
-    it("forces internal notes to markdown", () => {
+    it("prefers the longest matching compound extension", () => {
         expect(
-            resolveCatppuccinFileIcon("daily-note", { kind: "note" }).iconName,
-        ).toBe("markdown");
+            resolveSymbolsFileIcon("component.test.tsx").iconPath,
+        ).toBe("files/react-test.svg");
+        expect(resolveSymbolsFileIcon("model.schema.json").iconPath).toBe(
+            "files/brackets-yellow.svg",
+        );
     });
 
-    it("uses mime types when the filename has no useful extension", () => {
-        expect(
-            resolveCatppuccinFileIcon("cover", {
-                mimeType: "image/png",
-            }).iconName,
-        ).toBe("image");
-        expect(
-            resolveCatppuccinFileIcon("movie", {
-                mimeType: "video/mp4",
-            }).iconName,
-        ).toBe("video");
+    it("matches exact basenames case-insensitively", () => {
+        expect(resolveSymbolsFileIcon("C:\\project\\PACKAGE.JSON").iconPath).toBe(
+            "files/node.svg",
+        );
     });
 
-    it("falls back to the generic file icon for unknown files", () => {
-        expect(resolveCatppuccinFileIcon("unknown.customthing").iconName).toBe(
-            "file",
+    it("forces internal notes and PDFs to their semantic icons", () => {
+        expect(
+            resolveSymbolsFileIcon("daily-note", { kind: "note" }).iconPath,
+        ).toBe("files/markdown.svg");
+        expect(
+            resolveSymbolsFileIcon("document", { kind: "pdf" }).iconPath,
+        ).toBe("files/pdf.svg");
+    });
+
+    it("uses MIME types when the filename has no useful extension", () => {
+        expect(
+            resolveSymbolsFileIcon("cover", {
+                mimeType: "image/png; charset=binary",
+            }).iconPath,
+        ).toBe("files/image.svg");
+        expect(
+            resolveSymbolsFileIcon("archive", {
+                mimeType: "application/zip",
+            }).iconPath,
+        ).toBe("files/compressed.svg");
+    });
+
+    it("falls back to the generic document icon", () => {
+        expect(resolveSymbolsFileIcon("unknown.customthing").iconPath).toBe(
+            "files/document.svg",
         );
     });
 });

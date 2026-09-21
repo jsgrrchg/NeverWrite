@@ -1,6 +1,6 @@
-import { CatppuccinIcon } from "./CatppuccinIcon";
+import { SymbolsIcon } from "./SymbolsIcon";
 import {
-    resolveCatppuccinFileIcon,
+    resolveSymbolsFileIcon,
     type FileTypeIconKind,
 } from "./fileTypeIcons";
 
@@ -21,15 +21,15 @@ export function FileTypeIcon({
     readonly scaled?: boolean;
     readonly size?: number | string;
 }) {
-    const { iconName } = resolveCatppuccinFileIcon(fileName, {
+    const { iconPath } = resolveSymbolsFileIcon(fileName, {
         kind,
         mimeType,
     });
 
     return (
-        <CatppuccinIcon
+        <SymbolsIcon
             className={className}
-            iconName={iconName}
+            iconPath={iconPath}
             opacity={opacity}
             scaled={scaled}
             size={size}
