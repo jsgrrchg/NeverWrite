@@ -34,15 +34,18 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [Unreleased]
+## [0.8.3] - 2026-09-21
 
 ### Added
 
-- Added first-class Pi support through a bundled, reproducibly pinned `pi-acp` adapter while keeping the Pi CLI, providers, and credentials user-managed.
+- Added Pi as a first-class AI provider through a bundled, reproducibly pinned `pi-acp` adapter. NeverWrite now discovers the separately installed Pi CLI, exposes its models and thinking levels, and supports attachments, permissions, terminal output, session continuation, queued prompts, and interactive user input while leaving provider configuration and credentials under Pi's control.
 
 ### Changed
 
+- Replaced the desktop's file and folder artwork with the Symbols icon set, expanding recognition across languages, frameworks, configuration files, and common project directories while preserving theme-aware presentation and open-folder states.
+- Updated the bundled Claude ACP runtime to `0.79.0`, including clearer shell permission prompts that show the exact Bash or PowerShell command being approved.
 - Updated the bundled Codex runtime to `0.155.1`, preserving NeverWrite's conversation history, permissions, subagent activity and inline review integration.
+- Updated Grok to use NeverWrite's shared ACP v1 integration for authentication, permissions, cancellation, and configuration. Model and mode selectors now follow the options advertised by the installed Grok CLI, falling back to its defaults when no selector is available while preserving saved-chat recovery.
 
 ## [0.8.2] - 2026-09-18
 
