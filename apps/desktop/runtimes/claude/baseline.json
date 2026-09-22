@@ -1,16 +1,16 @@
 {
-  "version": "0.79.0",
-  "upstreamCommit": "d421f56a6c43cde16d9a7531d08a750a5ef2f04a",
+  "version": "0.80.0",
+  "upstreamCommit": "16c9d1a3af6bd81e5a8b07420b4bb17bfda22ffb",
   "normalization": "Trim trailing whitespace on each line and terminate with one newline.",
   "runtimeFiles": {
-    "dist/acp-agent.js": "145edd75d905f19359e8e50f3b534e072faf7121969d6abdadd79066f9b55253",
+    "dist/acp-agent.js": "200d13098b576f05687dde942c4754ed059737053febcda0a530431ed8dd9a92",
     "dist/acp-subagents.js": "aeb9fca26d4118bd20bb4661fb8311259b62ce332b131fa47e54f745cab09156",
     "dist/air-extension.js": "c1813709b2d9b59039c11572610144cd89f7270f4428255f24a15f78c3c57e2e",
     "dist/async-tasks.js": "158fb734a99d460c301ac8235ddd0a81e45ec7592b61b7d2c4ee857e44bf8524",
     "dist/auth-status.js": "0cc5054336b3849cf5987f01e296dece1ecaeb023f236d6698780f6a42cbb24a",
     "dist/clear-context-coordinator.js": "05b2975cb34869dfff18f26d728aef9f43e681af50600bd46bc0de0939450b7b",
     "dist/context-compaction-meta.js": "81188ee5b5cfa84a2c5c04ead44bae2dcfcbdc525c67e169e28379936629173b",
-    "dist/context-compaction.js": "1325fe9faf9175c7d340f82f8a46db9c62d3d4a3312727ad74ef4372a846004f",
+    "dist/context-compaction.js": "582bbae8eb13847a43722ae77a37227fc6d09a9039c3bafd56c4c793b15c1d62",
     "dist/diff.js": "90ad2917566a9d50e1817fb4f0799b1289c5cf54c8b89f1da7469f138e5c5857",
     "dist/elicitation.js": "99897e1fdc6f89f671b5b14adc972d04beceaf5cb9f15e571fd01d36bf720822",
     "dist/exit-plan.js": "f1b5b74057bddc1196e9761f656dacdba0cfe84ae9dff51afda08ee68d788b81",
@@ -41,62 +41,62 @@
     "dist/session-titles.js": "a78f6ed7e85193fbb0ebc97b37c0adde70d1000eac94e70e310e75dd580e079a",
     "dist/settings.js": "629348525ddd007ace9c06a16a19af6877af2a090b58255dd7f5974a6bdf2932",
     "dist/tool-result-meta.js": "2c3301104d4b4066244631a0c52cdd0f7e99b5d3189d2318762ee88110f6c0a9",
-    "dist/tools.js": "288a94af62f9e9e04a6a0e88b711e2e16f8edaf5fa82d3b6ea393045581b19d0",
+    "dist/tools.js": "67ed56eb8c353911e4ff40a67b5fd93fedb00b6ebb142e6fcb55b438dcc44890",
     "dist/usage-markdown.js": "d312bc826aaf24252b86dcac6a39e7d24c62536672e4469d23c8bb4d690a8beb",
     "dist/utils.js": "e99a776cda7f84f00884fc6be8d754f545cd21346ba9a4d326aeea1dc422d8f2"
   },
   "productionPackages": {
     "node_modules/@agentclientprotocol/sdk": {
-      "version": "1.4.0",
-      "integrity": "sha512-/eufudw+aFY1LKLolT6yFE6UMmYRl7fMJ/DEONSIyR6wI3slHWITBsANRGqXEY8FRzqUxwh7QEaGiZHcJPVThg=="
+      "version": "1.5.0",
+      "integrity": "sha512-524jwbB2iYWA+kWWyv9fhKbhU89dH/lu9u5EXwVNmfYzopV8BujCDxByBDZhxRUkB7RWIJzISCnwivdDk+bdVg=="
     },
     "node_modules/@anthropic-ai/claude-agent-sdk": {
-      "version": "0.3.274",
-      "integrity": "sha512-kFmWMsh/BEd4jKkOxUeihr0xMkaMdOxONhNNkZ2pGmP0ElHkArvFvuZxqJTPvREnhCsPZByv5f0EzyAb/hkRZw=="
+      "version": "0.3.278",
+      "integrity": "sha512-hXfjyiGraqYul6gq7R7+WmktxJfy9S29Yrx1WK6jQpsYcipf1CYIoYSh22SpGOR3FGiEmeuzXg5U9ncOk19Fww=="
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64": {
-      "version": "0.3.274",
-      "integrity": "sha512-B0uAdUIbUhWuybOT5FkhbdsALGNduyaHYo+bEggKBSQS3RFRjgNbX/ah1+IwkmTn4UKDN7AX86DkTEjpj6TSWQ==",
+      "version": "0.3.278",
+      "integrity": "sha512-lwkbWfYucsgiFo6mWF3Dw7ImohlWXEkkh+4e93EpeVPCxwN4IJuLztFkl28qEwY17sZ9SYQw1mRksKauqKccqg==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64": {
-      "version": "0.3.274",
-      "integrity": "sha512-l5pp3Z+z2mti0H3y1O0MRbTg/r+MDm0hly4WpoKmZyIZSOrDQR7jhCqS6Ihj3Vvd7CMP9NZ8t6F0oXVBDCM6YQ==",
+      "version": "0.3.278",
+      "integrity": "sha512-IYTWl9mVeXe1GnHPkpw04p+fZ23zgTBuxNXv06h7xgjSZ7zhudL05d6NpkY5T13m/zL5b+fyYkXxGciTXVhiUg==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64": {
-      "version": "0.3.274",
-      "integrity": "sha512-kYsmSN6zieDwVS3QZBBay9fxNp+h4t4OXleuk6xWhrUDEQRfRQEFlD7JVWWWjJIiHILnniycOxarwo4VpqTf1Q==",
+      "version": "0.3.278",
+      "integrity": "sha512-gt03vjRLsfnT3NyOaCVZFdM6V6p0NNGxhUr6e0Yfd9a28LlIeUtNB/kMtFJDibDtsjVi4Mp+Wj9R7dsXPLOFfw==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl": {
-      "version": "0.3.274",
-      "integrity": "sha512-pNjZQRF3f1O5JwnoifuAD7tSRfk9LSwwBzEPiUHB4sJgatF6hzqyDgTN05hcDx28xg44j0jpKpyVwsjveI/s4g==",
+      "version": "0.3.278",
+      "integrity": "sha512-xbNx5TXiAr9REDh7znPnkvR8GoBe8A653hYXaVq+fNNLjXidOIvOhICMyUUrBC+wgZV1FenC46oSPIMH4n+EOQ==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64": {
-      "version": "0.3.274",
-      "integrity": "sha512-QLeK9LzTtTdCjCDRYUVRHj1I3U6AfMvpXYI4Ur1s+vrUcad/C20kShS5/kgug+rERU5CNxNA9v0A052rt47ZXQ==",
+      "version": "0.3.278",
+      "integrity": "sha512-xbW4MkKyPMKdWzdA499WnAP9H7p8YlMsQCVEVyz6CemePZPSLwBP9GBeUTnSS57+MievEqj8knckJPVv5I3+yw==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl": {
-      "version": "0.3.274",
-      "integrity": "sha512-a9eIkmgJ5sSywHwWJcComogjIMsfHsurckQ85ljPNTUSFguzl/ZvbTXGiWNRK5rHsoNd3amwQf2fVC/vFyv3eg==",
+      "version": "0.3.278",
+      "integrity": "sha512-OJ103bvIglKrp7LLS3Bpiy9ISnFIvUikcg5kJVqovA+uU/ElP96v3kCUli7nUL75TnguSL0PwdAb/rYujycLqQ==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-win32-arm64": {
-      "version": "0.3.274",
-      "integrity": "sha512-A5wvZAXL3nhuabIXUcRuoYhuPPdEIt3LoA3jUkVLT3c0H+7SH0rv5bylpM9n+apf7lwLCm2TdMZ6x1Ze1Vzekg==",
+      "version": "0.3.278",
+      "integrity": "sha512-r75c3+Ymw4bn+If8LCoYLaYu5xXH8tWtP1xsd6KNtwda0KjFJA6/wmgicwCi3W+Vcdw6AfoFtYCQ0Sl1YwePwg==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64": {
-      "version": "0.3.274",
-      "integrity": "sha512-dGcaLfEpV4kwcSijPAIJru+iEiVhHvbBdkyixPyhhf8pniV9B62nUMFFsjNtYL37xIPHxixh2Gsx9/A+Yk4oww==",
+      "version": "0.3.278",
+      "integrity": "sha512-+7nMK4AYzeNFdqxYP80v2ialF6t29Z46rXeV6NF77xXc1+kqCm6hwOMFXhJkP8EEEclFatyjdU/Dij5vM5YSNA==",
       "optional": true
     },
     "node_modules/@anthropic-ai/sdk": {
-      "version": "0.127.0",
-      "integrity": "sha512-OKiVbG9LHCxjn4fBJZJFy/Bz3hqE1RYpwaeSEDNheQnvz0XNKmGT/Lhkz2Sf1a27Ldt3vVv+BkU81I0U/8EpoQ=="
+      "version": "0.128.0",
+      "integrity": "sha512-tl5cBFZC1jVFrTuQyvQObA4WmuNgcYVeXfriqOumgtLAHUm4gPUj18YnszBW60v0PrjDB8nBDOC6wd9CmHQFlA=="
     },
     "node_modules/@babel/runtime": {
       "version": "7.29.7",

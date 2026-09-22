@@ -71,6 +71,22 @@ test("compaction remains tool activity without the experimental client capabilit
     assert.equal(notifications[0].update.title, "Compact conversation");
 });
 
+test("shell output keeps the content fallback without terminal delta support", async () => {
+    const { toolUpdateFromToolResult } = await import(
+        pathToFileURL(path.join(runtimeRoot, "dist/tools.js")).href
+    );
+    const toolUse = { id: "shell-1", name: "Bash", input: { command: "printf hello" } };
+    const toolResult = { tool_use_id: "shell-1", content: "hello\n" };
+    assert.deepEqual(toolUpdateFromToolResult(toolResult, toolUse), {
+        content: [{ type: "content", content: { type: "text", text: "```console\nhello\n```" } }],
+    });
+    const withTerminal = toolUpdateFromToolResult(toolResult, toolUse, true);
+    assert.deepEqual(withTerminal._meta.terminal_output, {
+        terminal_id: "shell-1", data: "hello\n",
+    });
+    assert.equal(withTerminal._meta.terminal_output_delta, undefined);
+});
+
 test("TaskList contracts execute an isolated runtime with an external timeout", async (t) => {
     const isolated = await fs.mkdtemp(path.join(os.tmpdir(), "claude contracts "));
     t.after(() => fs.rm(isolated, { recursive: true, force: true }));

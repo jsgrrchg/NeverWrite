@@ -1,7 +1,7 @@
 # Claude runtime
 
 This private installation manifest pins the published Claude ACP adapter to
-`0.79.0`. `baseline.json` records the complete production graph and published
+`0.80.0`. `baseline.json` records the complete production graph and published
 runtime hashes without retaining upstream source. The only additional runtime
 package is the adapter itself.
 
@@ -56,10 +56,10 @@ provides native runtime execution coverage. These jobs must run remotely before
 claiming platform-wide release validation.
 
 Version updates must use an exact stable pin, regenerate the isolated lockfile and
-full baseline, and rerun contracts and packaged smokes. The `0.79.0` update moves
-`@anthropic-ai/claude-agent-sdk` to `0.3.274`, resolves its
-`@anthropic-ai/sdk` peer to `0.127.0`, and keeps `@agentclientprotocol/sdk` at
-`1.4.0` and `zod` at `4.6.5`.
+full baseline, and rerun contracts and packaged smokes. The `0.80.0` update moves
+`@anthropic-ai/claude-agent-sdk` to `0.3.278`, `@agentclientprotocol/sdk` to
+`1.5.0`, and the resolved `@anthropic-ai/sdk` peer to `0.128.0`; `zod` remains
+at `4.6.5`.
 
 ## Product compatibility
 
@@ -72,8 +72,9 @@ Claude native resume remains disabled; forks use NeverWrite's persisted history.
 The client consumes session titles while preserving explicit manual renames,
 generic model/effort/mode options, compaction tool activity and usage Markdown.
 NeverWrite does not advertise `clientCapabilities.session.compaction`, so
-`0.79.0` retains the existing compaction tool-call presentation. The experimental
-compaction updates and summary chunks remain outside the client integration.
+`0.80.0` retains the existing compaction tool-call presentation. The experimental
+compaction updates and summary chunks, including upstream's interrupted-compaction
+cleanup, remain outside the client integration.
 Claude ACP `0.79.0` uses the canonical Bash and PowerShell tool-call title for
 permission requests, preserving the exact command instead of a model-authored
 description. NeverWrite's backend already forwards that ACP title and the UI
@@ -82,6 +83,9 @@ NeverWrite does not advertise the AIR `recommendedValue` capability, so the
 upstream metadata addition does not alter the selected configuration. NeverWrite
 does not pass the removed `claudeCode.options.agent` value, so that `0.77.0`
 breaking change does not affect its session creation flow.
+NeverWrite does not advertise the `terminal_output_delta` extension. Claude ACP
+`0.80.0` therefore keeps its existing terminal output fallback for NeverWrite;
+the upstream delta preference does not change the client metadata contract.
 The push-only authStatus, goal, AIR session-failure and JetBrains file-audit
 extensions remain outside the current client integration. NeverWrite's own
 filesystem/diff tracking remains authoritative for inline review and accept/reject.
