@@ -87,6 +87,21 @@ test("shell output keeps the content fallback without terminal delta support", a
     assert.equal(withTerminal._meta.terminal_output_delta, undefined);
 });
 
+test("session advisories remain transcript messages without the notices capability", async () => {
+    const { clientSupportsNotices, noticeOrTranscriptUpdate } = await import(
+        pathToFileURL(path.join(runtimeRoot, "dist/session-notices.js")).href
+    );
+    const capabilities = { fs: {}, elicitation: { form: {}, url: {} } };
+    const supportsNotices = clientSupportsNotices(capabilities);
+    assert.equal(supportsNotices, false);
+    assert.deepEqual(noticeOrTranscriptUpdate({
+        severity: "warning", title: "Model fallback", description: "Using another model",
+    }, supportsNotices), {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "**Model fallback:** Using another model" },
+    });
+});
+
 test("TaskList contracts execute an isolated runtime with an external timeout", async (t) => {
     const isolated = await fs.mkdtemp(path.join(os.tmpdir(), "claude contracts "));
     t.after(() => fs.rm(isolated, { recursive: true, force: true }));

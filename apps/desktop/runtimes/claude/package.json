@@ -2,6 +2,6 @@
   "name": "neverwrite-claude-runtime",
   "private": true,
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.80.0"
+    "@agentclientprotocol/claude-agent-acp": "0.81.0"
   }
 }
