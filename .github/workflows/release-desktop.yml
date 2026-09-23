@@ -24,7 +24,7 @@ env:
 jobs:
     prepare:
         name: Prepare Release
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-26.04
         outputs:
             version: ${{ steps.meta.outputs.version }}
             tag: ${{ steps.meta.outputs.tag }}
@@ -113,6 +113,8 @@ jobs:
                       target: x86_64-pc-windows-msvc
                       rust_targets: x86_64-pc-windows-msvc
                       node_dist: win-x64
+                    # Build release binaries against Jammy libraries until
+                    # compatibility with older Linux distributions is verified.
                     - runner: ubuntu-22.04
                       platform: linux
                       arch: x64
@@ -479,7 +481,7 @@ jobs:
     build-web-clipper:
         name: Build Browser Extensions
         needs: prepare
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-26.04
 
         steps:
             - uses: actions/checkout@v6
@@ -596,7 +598,7 @@ jobs:
     apt-repository-preflight:
         name: Validate APT Repository Secrets
         needs: prepare
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-26.04
 
         steps:
             - name: Validate APT signing configuration
@@ -628,7 +630,7 @@ jobs:
             - build-target
             - build-web-clipper
             - apt-repository-preflight
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-26.04
 
         steps:
             - uses: actions/checkout@v6
@@ -700,7 +702,7 @@ jobs:
             - prepare
             - build-target
             - publish-release
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-26.04
 
         steps:
             - uses: actions/checkout@v6
