@@ -34,6 +34,18 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.4] - 2026-09-23
+
+### Changed
+
+- Updated the bundled Claude ACP runtime to `0.81.1`.
+
+### Fixed
+
+- Fixed Claude permission mode updates after plan approval and honored the setting that disables permission bypass.
+- Fixed Claude file edits when the `Write` tool uses alternate path and content fields, and refreshed sessions when model options or configured skills change.
+- Preserved usage and context information when quota is exhausted, and kept Claude sessions starting when managed-policy settings cannot be read.
+
 ## [0.8.3] - 2026-09-21
 
 ### Added
