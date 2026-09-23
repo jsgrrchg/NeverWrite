@@ -5,12 +5,13 @@ import { readPinnedClaudeVersion, parseSemver, compareSemver } from "../../../sc
 
 test("watcher reads the dependency version, not the private package version", async () => {
     const manifest = JSON.parse(await fs.readFile(new URL("../runtimes/claude/package.json", import.meta.url), "utf8"));
-    assert.equal(readPinnedClaudeVersion({ ...manifest, version: "9.0.0" }), "0.81.0");
-    assert.equal(compareSemver(parseSemver("v0.81.1"), parseSemver(readPinnedClaudeVersion(manifest))), 1);
+    assert.equal(readPinnedClaudeVersion({ ...manifest, version: "9.0.0" }), "0.81.1");
+    assert.equal(compareSemver(parseSemver("v0.81.1"), parseSemver(readPinnedClaudeVersion(manifest))), 0);
+    assert.equal(compareSemver(parseSemver("v0.81.2"), parseSemver(readPinnedClaudeVersion(manifest))), 1);
 });
 
 test("watcher rejects floating, preview and missing runtime pins", () => {
-    for (const version of [undefined, "latest", "^0.81.0", "~0.81.0", "0.81.0-preview.1", "v0.81.0"]) {
+    for (const version of [undefined, "latest", "^0.81.1", "~0.81.1", "0.81.1-preview.1", "v0.81.1"]) {
         assert.throws(() => readPinnedClaudeVersion({ dependencies: {
             "@agentclientprotocol/claude-agent-acp": version,
         } }), /exact stable/);
