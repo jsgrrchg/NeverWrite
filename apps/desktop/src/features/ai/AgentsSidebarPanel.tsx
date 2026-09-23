@@ -21,6 +21,7 @@ import {
     selectFocusedEditorTab,
     useEditorStore,
 } from "../../app/store/editorStore";
+import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
@@ -242,6 +243,9 @@ export function AgentsSidebarPanel() {
     const reconcilePinned = usePinnedChatsStore((state) => state.reconcile);
     // Terminal agents retain editor tabs; conversations use dedicated metadata.
     const focusedWorkspaceChatSessionId = useChatTabsStore(state => state.view.mode === "conversation" ? state.view.sessionId : null);
+    const chatPaneVisible = useLayoutStore(state => state.chatPaneVisible);
+    const hasEditorTabs = useEditorStore(state => state.panes.some(pane => pane.tabs.length > 0));
+    const isChatPaneShown = chatPaneVisible || !hasEditorTabs;
 
     // When a Claude Code terminal tab is focused, mark its agent entry as
     // selected (the entry has no chat tab of its own).
@@ -436,7 +440,7 @@ export function AgentsSidebarPanel() {
     );
 
     const activeSidebarId =
-        focusedWorkspaceChatSessionId ??
+        (isChatPaneShown ? focusedWorkspaceChatSessionId : null) ??
         (focusedTerminalAgentSessionId &&
         sessionsById[focusedTerminalAgentSessionId]
             ? focusedTerminalAgentSessionId

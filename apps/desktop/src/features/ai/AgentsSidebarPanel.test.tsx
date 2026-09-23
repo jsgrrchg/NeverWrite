@@ -6,6 +6,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { confirm } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { renderComponent } from "../../test/test-utils";
@@ -183,6 +184,39 @@ describe("AgentsSidebarPanel", () => {
         expect(screen.getByRole("img", { name: "Turn completed, unread" }).style.backgroundColor).toBe("var(--accent)");
         act(() => useUnreadChatsStore.getState().markRead("unread"));
         expect(screen.queryByRole("img", { name: "Turn completed, unread" })).toBeNull();
+    });
+
+    it("clears the selected chat when its pane is hidden and restores it when shown", () => {
+        const session = createSession("session-alpha", "Alpha task");
+        useChatStore.setState({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        });
+        useEditorStore.getState().openNote("note-1", "Note", "# Note");
+        selectChatForTest(session.sessionId);
+        renderComponent(<AgentsSidebarPanel />);
+
+        const row = screen.getByTestId("agent-sidebar-item");
+        expect(row).toHaveAttribute("aria-current", "true");
+
+        act(() => useLayoutStore.getState().setChatPaneVisible(false));
+        expect(row).not.toHaveAttribute("aria-current");
+
+        act(() => useLayoutStore.getState().setChatPaneVisible(true));
+        expect(row).toHaveAttribute("aria-current", "true");
+    });
+
+    it("keeps the chat selected when it remains visible without editor tabs", () => {
+        const session = createSession("session-alpha", "Alpha task");
+        useChatStore.setState({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+        });
+        selectChatForTest(session.sessionId);
+        renderComponent(<AgentsSidebarPanel />);
+
+        act(() => useLayoutStore.getState().setChatPaneVisible(false));
+        expect(screen.getByTestId("agent-sidebar-item")).toHaveAttribute("aria-current", "true");
     });
 
     it("archives a working root with its child and supports Undo", () => {
