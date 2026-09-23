@@ -319,21 +319,30 @@ jobs:
 
     linux:
         name: ${{ matrix.name }}
-        # Keep package builds on Jammy until older Linux compatibility is verified.
-        runs-on: ubuntu-22.04
+        runs-on: ${{ matrix.runner }}
+        # The hosted runner is 26.04; the container preserves the 22.04 binary ABI.
+        container: ubuntu:22.04
         timeout-minutes: 120
         strategy:
             fail-fast: false
             matrix:
                 include:
                     - name: Linux x64
+                      runner: ubuntu-26.04
                       arch: x64
                       target: x86_64-unknown-linux-gnu
                     - name: Linux ARM64
+                      runner: ubuntu-26.04-arm
                       arch: arm64
                       target: aarch64-unknown-linux-gnu
 
         steps:
+            - name: Bootstrap Linux build container
+              shell: bash
+              run: |
+                  apt-get update
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git sudo
+
             - name: Checkout repository
               uses: actions/checkout@v6
 
@@ -358,37 +367,12 @@ jobs:
             - name: Install Linux build dependencies
               shell: bash
               run: |
-                  if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-                    # GitHub's amd64 Ubuntu runners may use mirrorlist or
-                    # deb822 sources. Replace only Ubuntu's default sources so
-                    # apt never requests arm64 indexes from non-ports mirrors.
-                    while IFS= read -r source_file; do
-                      if sudo grep -Eq 'ubuntu\.com|apt-mirrors' "$source_file"; then
-                        sudo mv "$source_file" "${source_file}.disabled"
-                      fi
-                    done < <(sudo find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \))
-                    sudo dpkg --add-architecture arm64
-                    sudo tee /etc/apt/sources.list.d/ubuntu-amd64.list >/dev/null <<'EOF'
-                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
-                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
-                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
-                  deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
-                  EOF
-                    sudo tee /etc/apt/sources.list.d/ubuntu-ports-arm64.list >/dev/null <<'EOF'
-                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
-                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
-                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
-                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
-                  EOF
-                  fi
                   sudo apt-get update
-                  sudo apt-get install -y pkg-config libcap-dev rpm
-                  if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-                    sudo apt-get install -y gcc-aarch64-linux-gnu libcap-dev:arm64 libssl-dev:arm64
-                    echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-                    echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
-                    echo "PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
-                  fi
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                    build-essential file libcap-dev libssl-dev pkg-config rpm wget \
+                    libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 \
+                    libdrm2 libgbm1 libgtk-3-0 libnss3 libxcomposite1 \
+                    libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 libxss1
 
             - name: Install desktop dependencies
               working-directory: apps/desktop
@@ -401,7 +385,6 @@ jobs:
                   node apps/desktop/scripts/run-with-codex-v8.mjs --target ${{ matrix.target }} --require-verified-artifacts -- cargo build --quiet --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --bins
 
             - name: Test vendored Codex product contracts
-              if: matrix.arch == 'x64'
               shell: bash
               run: |
                   node apps/desktop/scripts/run-with-codex-v8.mjs --target ${{ matrix.target }} --require-verified-artifacts -- cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }} --lib --test code_mode_host_smoke
@@ -424,7 +407,6 @@ jobs:
               run: npm run electron:release:local -- --platform linux --arch ${{ matrix.arch }} --unsigned
 
             - name: Smoke packaged sidecar
-              if: matrix.arch == 'x64'
               working-directory: apps/desktop
               env:
                   NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
@@ -432,7 +414,6 @@ jobs:
               run: npm run electron:sidecar:smoke:packaged
 
             - name: Smoke packaged app executable
-              if: matrix.arch == 'x64'
               working-directory: apps/desktop
               env:
                   NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
@@ -489,3 +470,68 @@ jobs:
                     --staged-assets-dir "$RUNNER_TEMP/release-assets" \
                     --target ${{ matrix.target }} \
                     --version "$VERSION"
+
+            - name: Smoke Linux AppImage on Ubuntu 22.04
+              shell: bash
+              run: |
+                  VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+                  appimage="$RUNNER_TEMP/release-assets/NeverWrite-${VERSION}-${{ matrix.arch }}.AppImage"
+                  test -f "$appimage"
+                  chmod +x "$appimage"
+                  APPIMAGE_EXTRACT_AND_RUN=1 ELECTRON_RUN_AS_NODE=1 \
+                    "$appimage" -e 'process.exit(0)'
+
+            - name: Upload Linux package artifacts for Fedora smoke
+              uses: actions/upload-artifact@v7
+              with:
+                  name: linux-package-assets-${{ matrix.arch }}
+                  path: |
+                      ${{ runner.temp }}/release-assets/*.rpm
+                      ${{ runner.temp }}/release-assets/*.AppImage
+                  if-no-files-found: error
+
+    linux-fedora-compat:
+        name: Fedora 43 package smoke (${{ matrix.arch }})
+        needs: linux
+        runs-on: ${{ matrix.runner }}
+        container: fedora:43
+        timeout-minutes: 20
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - arch: x64
+                      runner: ubuntu-26.04
+                    - arch: arm64
+                      runner: ubuntu-26.04-arm
+        steps:
+            - uses: actions/download-artifact@v8
+              with:
+                  name: linux-package-assets-${{ matrix.arch }}
+                  path: ${{ runner.temp }}/linux-packages
+
+            - name: Install and smoke RPM on Fedora 43
+              shell: bash
+              run: |
+                  shopt -s nullglob
+                  packages=("$RUNNER_TEMP"/linux-packages/*.rpm)
+                  if [[ "${#packages[@]}" -ne 1 ]]; then
+                    echo "Expected one RPM package, found ${#packages[@]}." >&2
+                    exit 1
+                  fi
+                  dnf install -y "${packages[0]}"
+                  rpm -q neverwrite
+                  ELECTRON_RUN_AS_NODE=1 neverwrite -e 'process.exit(0)'
+
+            - name: Smoke AppImage on Fedora 43
+              shell: bash
+              run: |
+                  shopt -s nullglob
+                  images=("$RUNNER_TEMP"/linux-packages/*.AppImage)
+                  if [[ "${#images[@]}" -ne 1 ]]; then
+                    echo "Expected one AppImage, found ${#images[@]}." >&2
+                    exit 1
+                  fi
+                  chmod +x "${images[0]}"
+                  APPIMAGE_EXTRACT_AND_RUN=1 ELECTRON_RUN_AS_NODE=1 \
+                    "${images[0]}" -e 'process.exit(0)'

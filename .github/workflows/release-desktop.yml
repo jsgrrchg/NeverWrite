@@ -90,6 +90,9 @@ jobs:
             - prepare
             - apt-repository-preflight
         runs-on: ${{ matrix.runner }}
+        # Keep the Linux binary ABI at Ubuntu 22.04 while moving the hosted
+        # runners to 26.04. Empty container means a native macOS/Windows job.
+        container: ${{ matrix.platform == 'linux' && 'ubuntu:22.04' || '' }}
         strategy:
             fail-fast: false
             matrix:
@@ -113,15 +116,13 @@ jobs:
                       target: x86_64-pc-windows-msvc
                       rust_targets: x86_64-pc-windows-msvc
                       node_dist: win-x64
-                    # Build release binaries against Jammy libraries until
-                    # compatibility with older Linux distributions is verified.
-                    - runner: ubuntu-22.04
+                    - runner: ubuntu-26.04
                       platform: linux
                       arch: x64
                       target: x86_64-unknown-linux-gnu
                       rust_targets: x86_64-unknown-linux-gnu
                       node_dist: linux-x64
-                    - runner: ubuntu-22.04
+                    - runner: ubuntu-26.04-arm
                       platform: linux
                       arch: arm64
                       target: aarch64-unknown-linux-gnu
@@ -129,6 +130,13 @@ jobs:
                       node_dist: linux-arm64
 
         steps:
+            - name: Bootstrap Linux build container
+              if: matrix.platform == 'linux'
+              shell: bash
+              run: |
+                  apt-get update
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git sudo
+
             - uses: actions/checkout@v6
               with:
                   ref: ${{ env.RELEASE_TAG }}
@@ -152,37 +160,12 @@ jobs:
               if: matrix.platform == 'linux'
               shell: bash
               run: |
-                  if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-                    # GitHub's amd64 Ubuntu runners may use mirrorlist or
-                    # deb822 sources. Replace only Ubuntu's default sources so
-                    # apt never requests arm64 indexes from non-ports mirrors.
-                    while IFS= read -r source_file; do
-                      if sudo grep -Eq 'ubuntu\.com|apt-mirrors' "$source_file"; then
-                        sudo mv "$source_file" "${source_file}.disabled"
-                      fi
-                    done < <(sudo find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \))
-                    sudo dpkg --add-architecture arm64
-                    sudo tee /etc/apt/sources.list.d/ubuntu-amd64.list >/dev/null <<'EOF'
-                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
-                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
-                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
-                  deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
-                  EOF
-                    sudo tee /etc/apt/sources.list.d/ubuntu-ports-arm64.list >/dev/null <<'EOF'
-                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
-                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
-                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
-                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
-                  EOF
-                  fi
                   sudo apt-get update
-                  sudo apt-get install -y pkg-config libcap-dev gnupg rpm
-                  if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-                    sudo apt-get install -y gcc-aarch64-linux-gnu libcap-dev:arm64 libssl-dev:arm64
-                    echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-                    echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
-                    echo "PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
-                  fi
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                    build-essential file gnupg libcap-dev libssl-dev pkg-config rpm wget \
+                    libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 \
+                    libdrm2 libgbm1 libgtk-3-0 libnss3 libxcomposite1 \
+                    libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 libxss1
 
             - name: Install desktop dependencies
               working-directory: apps/desktop
@@ -318,7 +301,6 @@ jobs:
               run: npm run electron:release:local -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --unsigned
 
             - name: Smoke packaged sidecar
-              if: matrix.target != 'aarch64-unknown-linux-gnu'
               working-directory: apps/desktop
               env:
                   NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
@@ -326,7 +308,7 @@ jobs:
               run: npm run electron:sidecar:smoke:packaged
 
             - name: Smoke packaged app executable
-              if: runner.os == 'macOS' || (runner.os == 'Linux' && matrix.arch == 'x64')
+              if: runner.os == 'macOS' || runner.os == 'Linux'
               working-directory: apps/desktop
               env:
                   NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
@@ -456,6 +438,16 @@ jobs:
                     --target ${{ matrix.target }} \
                     --version "${{ needs.prepare.outputs.version }}" \
                     --require-signature
+
+            - name: Smoke Linux AppImage on Ubuntu 22.04
+              if: matrix.platform == 'linux'
+              shell: bash
+              run: |
+                  appimage="$RUNNER_TEMP/release-assets/NeverWrite-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.AppImage"
+                  test -f "$appimage"
+                  chmod +x "$appimage"
+                  APPIMAGE_EXTRACT_AND_RUN=1 ELECTRON_RUN_AS_NODE=1 \
+                    "$appimage" -e 'process.exit(0)'
 
             - name: Upload release asset artifact
               uses: actions/upload-artifact@v7
