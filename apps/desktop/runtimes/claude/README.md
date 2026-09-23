@@ -1,7 +1,7 @@
 # Claude runtime
 
 This private installation manifest pins the published Claude ACP adapter to
-`0.81.0`. `baseline.json` records the complete production graph and published
+`0.81.1`. `baseline.json` records the complete production graph and published
 runtime hashes without retaining upstream source. The only additional runtime
 package is the adapter itself.
 
@@ -59,7 +59,8 @@ Version updates must use an exact stable pin, regenerate the isolated lockfile a
 full baseline, and rerun contracts and packaged smokes. The `0.81.0` update moves
 `@anthropic-ai/claude-agent-sdk` to `0.3.280`; `@agentclientprotocol/sdk` stays
 at `1.5.0`, the resolved `@anthropic-ai/sdk` peer at `0.128.0`, and `zod` at
-`4.6.5`.
+`4.6.5`. The `0.81.1` update keeps those dependency versions and adds the
+published managed-policy module to the runtime baseline.
 
 ## Product compatibility
 
@@ -89,6 +90,11 @@ the upstream delta preference does not change the client metadata contract.
 NeverWrite also does not advertise `clientCapabilities.session.notices`. The
 new experimental session notices therefore retain their transcript-message
 fallback, preserving the existing chat presentation.
+In `0.81.1`, informational notices add metadata while retaining their rendered
+text, so the transcript fallback remains unchanged. The release also fixes
+permission mode updates after plan approval, Write tool input aliases, usage
+metadata, and provider/session handling. NeverWrite continues consuming the
+same ACP notifications and does not advertise new client capabilities.
 The push-only authStatus, goal, AIR session-failure and JetBrains file-audit
 extensions remain outside the current client integration. NeverWrite's own
 filesystem/diff tracking remains authoritative for inline review and accept/reject.

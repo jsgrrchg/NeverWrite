@@ -100,6 +100,14 @@ test("session advisories remain transcript messages without the notices capabili
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "**Model fallback:** Using another model" },
     });
+    const informational = noticeOrTranscriptUpdate({
+        severity: "info", title: "Running hook",
+    }, supportsNotices, "Running hook", { claudeCode: { kind: "informational", level: "info" } });
+    assert.deepEqual(informational, {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Running hook" },
+        _meta: { claudeCode: { kind: "informational", level: "info" } },
+    });
 });
 
 test("TaskList contracts execute an isolated runtime with an external timeout", async (t) => {
