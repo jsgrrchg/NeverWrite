@@ -446,8 +446,7 @@ jobs:
                   appimage="$RUNNER_TEMP/release-assets/NeverWrite-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.AppImage"
                   test -f "$appimage"
                   chmod +x "$appimage"
-                  APPIMAGE_EXTRACT_AND_RUN=1 ELECTRON_RUN_AS_NODE=1 \
-                    "$appimage" -e 'process.exit(0)'
+                  APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version
 
             - name: Upload release asset artifact
               uses: actions/upload-artifact@v7
