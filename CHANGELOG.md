@@ -34,6 +34,18 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.5] - 2026-09-25
+
+### Changed
+
+- Refreshed the Agents sidebar with simpler, borderless conversation rows and clearer selection styling.
+- Redesigned chat activity summaries with clearer tool icons, action labels, web addresses, and file targets; reduced the size of prompt previews in the activity rail.
+- Updated the bundled Claude ACP runtime to `0.81.2`.
+
+### Fixed
+
+- Fixed selecting a conversation in the Agents sidebar when the chat pane is hidden.
+
 ## [0.8.4] - 2026-09-23
 
 ### Changed
