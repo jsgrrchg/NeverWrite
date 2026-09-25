@@ -8,7 +8,6 @@ vi.mock("electron", () => ({
 }));
 
 import { saveWebClipperDeepLink } from "./webClipper";
-import { createClipDeepLink } from "../../../web-clipper/src/lib/deep-link";
 
 function createRuntime() {
     const invoke = vi.fn(async () => ({
@@ -24,13 +23,19 @@ function createRuntime() {
 }
 
 function clipLink(mode: "clipboard" | "inline", content?: string) {
+    // Match the extension's deep-link fields without importing its WXT source.
     const params = new URLSearchParams({
         requestId: "clip-1",
-        title: "Clipped page",
-        folder: "Inbox",
-        mode,
+        createdAt: "2026-09-25T00:00:00.000Z",
+        source: "web-clipper",
+        vault: "/vault",
         vaultPathHint: "/vault",
+        folder: "Inbox",
+        title: "Clipped page",
+        url: "https://example.com/article",
+        mode,
     });
+    if (mode === "clipboard") params.set("clipboardToken", "clip-token");
     if (content !== undefined) params.set("content", content);
     return `neverwrite://clip?${params}`;
 }
@@ -41,20 +46,8 @@ describe("web clipper deep link", () => {
     it("awaits the extension clipboard handoff before saving", async () => {
         const { runtime, invoke, emitEvent } = createRuntime();
         readText.mockResolvedValue("  # Clipped page\n\nBody  ");
-        const deepLink = createClipDeepLink({
-            requestId: "clip-1",
-            createdAt: "2026-09-25T00:00:00.000Z",
-            source: "web-clipper",
-            vault: "/vault",
-            vaultPathHint: "/vault",
-            folder: "Inbox",
-            title: "Clipped page",
-            url: "https://example.com/article",
-            mode: "clipboard",
-            clipboardToken: "clip-token",
-        });
 
-        await saveWebClipperDeepLink(deepLink, runtime);
+        await saveWebClipperDeepLink(clipLink("clipboard"), runtime);
 
         expect(readText).toHaveBeenCalledOnce();
         expect(invoke).toHaveBeenCalledWith("web_clipper_save_note", {
