@@ -62,7 +62,7 @@ describe("ToolActivityItem", () => {
         expect(screen.getByText("reader.ts")).toBeInTheDocument();
         expect(screen.getByText("search.ts")).toBeInTheDocument();
         expect(screen.getByText("Read")).toBeInTheDocument();
-        expect(screen.getByText("Searched")).toBeInTheDocument();
+        expect(screen.getByText("Search")).toBeInTheDocument();
         expect(
             view.container.querySelectorAll(
                 '[data-tool-activity-operation-icon="true"]',
@@ -105,7 +105,8 @@ describe("ToolActivityItem", () => {
             </div>,
         );
 
-        expect(screen.getByText("Searched")).toBeInTheDocument();
+        expect(screen.getByText("Web")).toBeInTheDocument();
+        expect(screen.getByText("https://example.com/search?q=markets")).toBeInTheDocument();
         expect(screen.getByText("Query browser MCP")).toBeInTheDocument();
         expect(
             view.container.querySelector('[data-tool-activity-source="web"]'),
@@ -187,7 +188,7 @@ describe("ToolActivityItem", () => {
         );
 
         expect(screen.getByText("write.ts")).toBeInTheDocument();
-        expect(screen.getByText("Updated")).toBeInTheDocument();
+        expect(screen.getByText("Edit")).toBeInTheDocument();
         expect(screen.getByText("Failed")).toBeInTheDocument();
         expect(
             view.container.querySelector('[data-tool-activity-row="attention"]'),

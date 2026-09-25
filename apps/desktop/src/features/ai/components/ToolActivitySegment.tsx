@@ -14,7 +14,6 @@ import {
     useChatRowUiStore,
 } from "../store/chatRowUiStore";
 import {
-    getActivityTimelineLatestLabel,
     getActivityTimelineSegmentHeadline,
     type ActivityTimelineSegmentRow,
 } from "./activityTimelinePresentation";
@@ -31,29 +30,13 @@ interface ToolActivitySegmentProps {
     readonly sessionId?: string | null;
 }
 
-function Chevron({ expanded }: { readonly expanded: boolean }) {
-    return (
-        <svg
-            aria-hidden="true"
-            fill="none"
-            height="11"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.8"
-            style={{
-                transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
-                transition: "transform 150ms ease",
-            }}
-            viewBox="0 0 16 16"
-            width="11"
-        >
-            <path d="m4 6 4 4 4-4" />
-        </svg>
-    );
-}
-
-function ActivityIndicator({ active }: { readonly active: boolean }) {
+function ActivityIndicator({
+    active,
+    expanded,
+}: {
+    readonly active: boolean;
+    readonly expanded: boolean;
+}) {
     return (
         <span
             aria-hidden="true"
@@ -64,15 +47,16 @@ function ActivityIndicator({ active }: { readonly active: boolean }) {
             <svg
                 className="activity-rail-chevron"
                 fill="none"
-                height="12"
+                height="14"
                 stroke="currentColor"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                strokeWidth="1.8"
+                strokeWidth="1"
+                style={{ transform: expanded ? "rotate(0deg)" : "rotate(-90deg)" }}
                 viewBox="0 0 16 16"
-                width="12"
+                width="14"
             >
-                <path d="m6 4 4 4-4 4" />
+                <path d="m4 6 4 4 4-4" />
             </svg>
         </span>
     );
@@ -119,7 +103,6 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
         segment.summary,
         isCurrentTurnTail,
     );
-    const latestLabel = getActivityTimelineLatestLabel(segment);
     const hasChanges = segment.summary.changeCount > 0;
     const visibleEntries = expanded
         ? segment.entries
@@ -137,11 +120,14 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
             patchRow(rowUiSessionId, segment.id, (current) => ({
                 activitySegmentExpanded:
                     typeof value === "function"
-                        ? value(current.activitySegmentExpanded === true)
+                        ? value(
+                              current.activitySegmentExpanded ??
+                                  activityDisplayMode === "expanded",
+                          )
                         : value,
             }));
         },
-        [patchRow, rowUiSessionId, segment.id],
+        [activityDisplayMode, patchRow, rowUiSessionId, segment.id],
     );
 
     useLayoutEffect(() => {
@@ -162,32 +148,16 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 aria-controls={contentId}
                 aria-expanded={expanded}
                 aria-label={accessibleLabel}
-                className="flex min-h-10 w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-bg-elevated focus-visible:bg-bg-elevated focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--accent)]"
+                className="activity-rail-header"
                 onClick={() => setExpanded((current) => !current)}
-                style={{
-                    background: "none",
-                    border: "none",
-                    color: "var(--text-primary)",
-                }}
                 type="button"
             >
-                <span className="flex min-w-0 flex-1 items-start gap-1.5">
-                    <ActivityIndicator active={isCurrentTurnTail} />
-                    <span className="min-w-0 flex-1">
-                        <span
-                            className="block truncate text-[11px] font-semibold leading-4"
-                            title={headline}
-                        >
-                            {headline}
-                        </span>
-                        <span
-                            className="block truncate text-[10px] leading-3.5 text-text-secondary"
-                            data-activity-rail-current="true"
-                            title={latestLabel}
-                        >
-                            {isCurrentTurnTail ? "Current" : "Latest"}: {latestLabel}
-                        </span>
-                    </span>
+                <ActivityIndicator active={isCurrentTurnTail} expanded={expanded} />
+                <span
+                    className="activity-rail-summary min-w-0 truncate"
+                    title={headline}
+                >
+                    {headline}
                 </span>
                 {hasChanges ? (
                     <span
@@ -215,9 +185,6 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                         <span className="text-text-secondary">Changed</span>
                     </span>
                 ) : null}
-                <span className="shrink-0 text-text-secondary">
-                    <Chevron expanded={expanded} />
-                </span>
             </button>
 
             {visibleEntries.length > 0 ? (
@@ -225,12 +192,12 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                     aria-label={
                         expanded ? "Full tool activity" : "Important tool activity"
                     }
-                    className="pt-1"
+                    className="pt-0.5"
                     id={contentId}
                     role="region"
                 >
                     <div
-                        className="activity-tree flex min-w-0 flex-col gap-1.5"
+                        className="activity-tree flex min-w-0 flex-col"
                         role="list"
                     >
                         {visibleEntries.map((entry) => {
@@ -238,7 +205,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                                 entry.message.id === highlightedMessageId;
                             return (
                                 <div
-                                    className="activity-tree-branch min-w-0 pl-10"
+                                    className="activity-tree-branch min-w-0"
                                     data-activity-rail-decoration="branch"
                                     data-activity-rail-indent="child"
                                     data-chat-message-id={entry.message.id}
@@ -257,7 +224,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                                     role="listitem"
                                     style={getChatOutlineStyle(isHighlighted)}
                                 >
-                                    <div className="min-w-0 py-0.5">
+                                    <div className="min-w-0">
                                         {renderEntry(entry.message)}
                                     </div>
                                 </div>

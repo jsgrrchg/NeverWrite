@@ -377,7 +377,7 @@ describe("buildActivityTimelineRows", () => {
 });
 
 describe("activity timeline summaries", () => {
-    it("uses an exploration headline for read and search activity", () => {
+    it("summarizes read and search activity by operation", () => {
         const segment = getOnlySegment(
             buildActivityTimelineRows([
                 createTool("tool-read", {
@@ -394,8 +394,23 @@ describe("activity timeline summaries", () => {
         );
 
         expect(getActivityTimelineSegmentHeadline(segment.summary)).toBe(
-            "Explored 1 file · 1 search",
+            "Read 1 file · Searched 1 time",
         );
+    });
+
+    it("counts thoughts and web searches without treating URLs as files", () => {
+        const segment = getOnlySegment(buildActivityTimelineRows([
+            ...Array.from({ length: 3 }, (_, i) => createTool(`thought-${i}`, {
+                kind: "thinking", meta: undefined,
+            })),
+            ...Array.from({ length: 4 }, (_, i) => createTool(`web-${i}`, {
+                meta: { tool: "web_search", target: `https://example.com/${i}`, status: "completed" },
+            })),
+        ]));
+        expect(getActivityTimelineSegmentHeadline(segment.summary)).toBe(
+            "Thought 3 times · Searched 4 times",
+        );
+        expect(segment.summary.fileCount).toBe(0);
     });
 
     it("calculates the net diff for compatible repeated file snapshots", () => {

@@ -252,7 +252,7 @@ describe("AIChatMessageItem reasoning", () => {
             title: "Thinking",
         });
 
-        expect(screen.getByText("Reasoning")).toBeInTheDocument();
+        expect(screen.getByText("Thought process")).toBeInTheDocument();
         expect(
             document.querySelector("[data-reasoning-activity]"),
         ).toBeInTheDocument();
@@ -260,7 +260,7 @@ describe("AIChatMessageItem reasoning", () => {
             screen.queryByText("Checking source reliability"),
         ).not.toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
+        fireEvent.click(screen.getByRole("button", { name: "Thought process" }));
 
         expect(
             screen.getByText("Checking source reliability"),

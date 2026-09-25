@@ -251,20 +251,18 @@ function ChangeReviewToolRailRow({
 
     return (
         <div
-            className="min-w-0 max-w-full select-none"
+            className="activity-item min-w-0 max-w-full select-none"
             data-change-review-path={diff.path}
             data-change-review-surface="rail-row"
             style={{
                 color: "var(--text-secondary)",
-                fontFamily: "var(--font-mono), ui-monospace, monospace",
-                fontSize: "0.82em",
             }}
         >
-            <div className="flex min-h-7 w-full min-w-0 items-center gap-1 px-2">
+            <div className="activity-item-header">
                 <span className="flex shrink-0 items-center gap-1">
                     <span
                         aria-hidden="true"
-                        className="flex w-3.5 shrink-0 items-center justify-center"
+                        className="activity-item-icon"
                         data-change-review-operation-icon="true"
                         style={{
                             color: isFailed ? accent : "var(--text-secondary)",
@@ -280,10 +278,6 @@ function ChangeReviewToolRailRow({
                             />
                         )}
                     </span>
-                    <span
-                        aria-hidden="true"
-                        className="flex w-3.5 shrink-0 items-center justify-center"
-                    />
                 </span>
                 <span className="shrink-0 opacity-70">{actionLabel}</span>
                 {canOpen && openPath ? (
