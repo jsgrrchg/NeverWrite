@@ -33,6 +33,7 @@ NeverWrite is an agentic markdown workspace for people who work with a local vau
 
 ### Requirements
 
+- Desktop release: macOS 13 or later, Windows, or Linux (x64/ARM64)
 - Node.js 22.12 or later and npm
 - Rust and Cargo
 - pnpm 10.33.0 for the web clipper
