@@ -146,7 +146,7 @@ describe("ToolActivitySegment", () => {
         ]);
     });
 
-    it("uses current wording only for the active turn tail", () => {
+    it("keeps a single summary line and exposes active state accessibly", () => {
         const segment = createSegment([createTool("tool-1")]);
 
         const view = renderComponent(
@@ -158,8 +158,9 @@ describe("ToolActivitySegment", () => {
             />,
         );
 
-        expect(screen.getByText(/working/i)).toBeInTheDocument();
-        expect(screen.getByText(/current:/i)).toBeInTheDocument();
+        expect(screen.getByText("Read 1 file")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /in progress/i })).toBeInTheDocument();
+        expect(screen.queryByText(/current:|latest:/i)).not.toBeInTheDocument();
         expect(
             view.container.querySelector("[data-tool-activity-segment]"),
         ).toHaveAttribute("aria-busy", "true");
@@ -211,6 +212,23 @@ describe("ToolActivitySegment", () => {
         expect(
             view.container.querySelector('[data-tool-activity-id="tool-1"]'),
         ).toBeNull();
+    });
+
+    it("collapses an expanded preference on the first click and retains that choice", () => {
+        const segment = createSegment([createTool("tool-1")]);
+        const props = {
+            activityDisplayMode: "expanded" as const,
+            renderEntry: (message: AIChatMessage) => <div>{message.title}</div>,
+            segment,
+            sessionId: "session-expanded",
+        };
+        const view = renderComponent(<ToolActivitySegment {...props} />);
+        fireEvent.click(screen.getByRole("button", { name: /hide full activity/i }));
+        expect(screen.getByRole("button", { name: /show full activity/i })).toHaveAttribute("aria-expanded", "false");
+        expect(document.querySelector("[data-tool-activity-id]")).toBeNull();
+        view.unmount();
+        renderComponent(<ToolActivitySegment {...props} />);
+        expect(screen.getByRole("button", { name: /show full activity/i })).toHaveAttribute("aria-expanded", "false");
     });
 
     it("only shows the terminal indicator while a rail is active", () => {

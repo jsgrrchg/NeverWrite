@@ -41,7 +41,9 @@ const FILE_TOOL_KINDS = new Set([
     ...MUTATING_FILE_TOOL_KINDS,
 ]);
 
-const SEARCH_TOOL_KINDS = new Set(["find", "glob", "grep", "search"]);
+const SEARCH_TOOL_KINDS = new Set(["find", "glob", "grep", "search", "web_search", "browse"]);
+const READ_TOOL_KINDS = new Set(["read", "read_file"]);
+const FETCH_TOOL_KINDS = new Set(["fetch", "web_fetch"]);
 const DETACHED_ACTIVITY_TIMELINE_SCOPE = "__detached_activity_timeline__";
 
 export type ActivityTimelineToolPolicy =
@@ -72,6 +74,9 @@ export interface ActivityTimelineSegmentSummary {
     readonly isInProgress: boolean;
     readonly latestMessageId: string;
     readonly latestTitle: string;
+    readonly readCount: number;
+    readonly fetchCount: number;
+    readonly otherToolCount: number;
     readonly reasoningCount: number;
     readonly searchCount: number;
     readonly statusCount: number;
@@ -375,6 +380,9 @@ export function buildActivityTimelineSegmentSummary(
     let changeCount = 0;
     let commandCount = 0;
     let failureCount = 0;
+    let readCount = 0;
+    let fetchCount = 0;
+    let otherToolCount = 0;
     let reasoningCount = 0;
     let searchCount = 0;
     let statusCount = 0;
@@ -399,7 +407,19 @@ export function buildActivityTimelineSegmentSummary(
         if (SEARCH_TOOL_KINDS.has(kind)) {
             searchCount += 1;
         }
-        if (FILE_TOOL_KINDS.has(kind)) {
+        if (READ_TOOL_KINDS.has(kind)) readCount += 1;
+        if (FETCH_TOOL_KINDS.has(kind)) fetchCount += 1;
+        if (message.kind === "tool" && !COMMAND_TOOL_KINDS.has(kind) &&
+            !SEARCH_TOOL_KINDS.has(kind) && !READ_TOOL_KINDS.has(kind) &&
+            !FETCH_TOOL_KINDS.has(kind) && !hasChangeData(message)) {
+            otherToolCount += 1;
+        }
+        if (
+            FILE_TOOL_KINDS.has(kind) &&
+            !FETCH_TOOL_KINDS.has(kind) &&
+            kind !== "web_search" && kind !== "browse" &&
+            !/^https?:\/\//i.test(target ?? "")
+        ) {
             addPath(fileTargets, target);
         }
         if (policy === "standalone-change") {
@@ -437,6 +457,9 @@ export function buildActivityTimelineSegmentSummary(
         isInProgress,
         latestMessageId: (latestToolEntry ?? latestEntry).message.id,
         latestTitle: getEntryTitle((latestToolEntry ?? latestEntry).message),
+        readCount,
+        fetchCount,
+        otherToolCount,
         reasoningCount,
         searchCount,
         statusCount,
@@ -449,53 +472,24 @@ export function getActivityTimelineSegmentHeadline(
     summary: ActivityTimelineSegmentSummary,
     isCurrentTurnTail = false,
 ): string {
-    if (summary.actionCount === 0 && summary.reasoningCount === 0) {
-        return isCurrentTurnTail ? "Working" : "Worked";
-    }
-
     const details = [
-        pluralize(summary.actionCount, "action"),
-        summary.changedFileCount > 0
-            ? pluralize(
-                  summary.changedFileCount,
-                  "file changed",
-                  "files changed",
-              )
+        summary.reasoningCount === 1
+            ? "Thought process"
+            : summary.reasoningCount > 1
+              ? `Thought ${summary.reasoningCount} times`
+              : null,
+        summary.commandCount > 0 ? `Ran ${pluralize(summary.commandCount, "command")}` : null,
+        summary.changeCount > 0
+            ? `Edited ${pluralize(summary.changedFileCount || summary.changeCount, "file")}`
             : null,
-        summary.failureCount > 0
-            ? pluralize(summary.failureCount, "failure")
-            : null,
+        summary.readCount > 0 ? `Read ${pluralize(summary.readCount, "file")}` : null,
+        summary.searchCount > 0 ? `Searched ${pluralize(summary.searchCount, "time")}` : null,
+        summary.fetchCount > 0 ? `Fetched ${pluralize(summary.fetchCount, "page")}` : null,
+        summary.otherToolCount > 0 ? `Called ${pluralize(summary.otherToolCount, "tool")}` : null,
+        summary.failureCount > 0 ? `${summary.failureCount} failed` : null,
     ].filter((detail): detail is string => detail !== null);
 
-    if (isCurrentTurnTail) {
-        if (summary.actionCount === 0 && summary.reasoningCount > 0) {
-            return "Thinking";
-        }
-        return `Working · ${details.join(" · ")}`;
-    }
-
-    if (summary.actionCount === 0 && summary.reasoningCount > 0) {
-        return "Reasoned";
-    }
-
-    if (
-        summary.changeCount === 0 &&
-        summary.commandCount === 0 &&
-        summary.failureCount === 0 &&
-        (summary.fileCount > 0 || summary.searchCount > 0)
-    ) {
-        const explorationDetails = [
-            summary.fileCount > 0
-                ? pluralize(summary.fileCount, "file")
-                : null,
-            summary.searchCount > 0
-                ? pluralize(summary.searchCount, "search", "searches")
-                : null,
-        ].filter((detail): detail is string => detail !== null);
-        return `Explored ${explorationDetails.join(" · ")}`;
-    }
-
-    return `Worked · ${details.join(" · ")}`;
+    return details.join(" · ") || (isCurrentTurnTail ? "Working" : "Worked");
 }
 
 export function getActivityTimelineLatestLabel(

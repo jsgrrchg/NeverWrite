@@ -18,7 +18,10 @@ export interface ToolTargetContextMenuPayload {
     target: string;
 }
 
+const WEB_TOOL_KINDS = new Set(["browse", "fetch", "web_fetch", "web_search"]);
+
 const SEARCH_TOOL_KINDS = new Set([
+    "glob",
     "browse",
     "fetch",
     "find",
@@ -143,7 +146,20 @@ export function OpenSessionActionButton({
 
 export function ToolIcon({ kind }: { kind?: string }) {
     const normalizedKind = String(kind ?? "");
-    if (normalizedKind === "read" || SEARCH_TOOL_KINDS.has(normalizedKind)) {
+    if (normalizedKind === "thinking" || WEB_TOOL_KINDS.has(normalizedKind) || normalizedKind === "read" || normalizedKind === "read_file") {
+        return (
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
+                {normalizedKind === "thinking" ? (
+                    <><path d="M14 7.7a6 6 0 0 1-6 6H2.5l.5-2.5A6 6 0 1 1 14 7.7Z" /><path d="M5.5 6h5M5.5 9h3" /></>
+                ) : WEB_TOOL_KINDS.has(normalizedKind) ? (
+                    <><circle cx="8" cy="8" r="6.5" /><ellipse cx="8" cy="8" rx="2.5" ry="6.5" /><path d="M1.5 8h13" /></>
+                ) : (
+                    <><path d="M9.5 1.5h-6v13h9v-10Z" /><path d="M9 1.5v4h3.5M5.5 8h5M5.5 10.5h4" /></>
+                )}
+            </svg>
+        );
+    }
+    if (SEARCH_TOOL_KINDS.has(normalizedKind)) {
         return (
             <svg
                 width="12"
@@ -238,16 +254,19 @@ export function ToolIcon({ kind }: { kind?: string }) {
 }
 
 function getActionLabel(toolKind: string) {
-    if (toolKind === "read") return "Read";
+    if (toolKind === "read" || toolKind === "read_file") return "Read";
+    if (toolKind === "web_search" || toolKind === "browse") return "Web";
     if (SEARCH_TOOL_KINDS.has(toolKind)) {
         return toolKind === "fetch" || toolKind === "web_fetch"
-            ? "Fetched"
-            : "Searched";
+            ? "Fetch"
+            : "Search";
     }
-    if (toolKind === "delete") return "Deleted";
-    if (toolKind === "move") return "Moved";
-    if (toolKind === "edit") return "Updated";
-    if (toolKind === "execute" || toolKind === "command") return "Ran";
+    if (toolKind === "delete") return "Delete";
+    if (toolKind === "move") return "Move";
+    if (toolKind === "edit") return "Edit";
+    if (["execute", "command", "bash", "shell", "terminal"].includes(toolKind)) return "Run";
+    if (["write", "create"].includes(toolKind)) return "Write";
+    if (toolKind === "apply_patch") return "Patch";
     return "Completed";
 }
 
@@ -272,7 +291,7 @@ function Chevron({ expanded }: { expanded: boolean }) {
             strokeWidth="1.5"
             strokeLinecap="round"
             strokeLinejoin="round"
-            className="shrink-0"
+            className="activity-item-disclosure shrink-0"
             style={{
                 transform: expanded ? "rotate(180deg)" : "rotate(0)",
                 transition: "transform 0.15s ease",
@@ -306,14 +325,16 @@ export function ToolActivityItem({
         useState<ContextMenuState<ToolTargetContextMenuPayload> | null>(null);
     const toolKind = String(message.meta?.tool ?? "").toLowerCase();
     const target = message.meta?.target ? String(message.meta.target) : null;
-    const shortTarget = target?.split(/[\\/]/).filter(Boolean).at(-1) ?? null;
+    const isWeb = WEB_TOOL_KINDS.has(toolKind) || /^https?:\/\//i.test(target ?? "");
+    const shortTarget = isWeb
+        ? target
+        : target?.split(/[\\/]/).filter(Boolean).at(-1) ?? null;
     const status = String(message.meta?.status ?? "").toLowerCase();
     const isFailed = status === "cancelled" || status === "error" || status === "failed";
     const isInProgress =
         message.inProgress === true ||
         status === "in_progress" ||
         status === "pending";
-    const isCompleted = status === "completed";
     const actionLabel = getActionLabel(toolKind);
     const label =
         shortTarget ??
@@ -325,7 +346,7 @@ export function ToolActivityItem({
         message.content !== message.title
             ? message.content
             : null;
-    const canOpenTarget = target
+    const canOpenTarget = target && !isWeb
         ? canOpenAiEditedFileByAbsolutePath(target)
         : false;
     const isAttention = isFailed || message.toolAction != null;
@@ -333,7 +354,7 @@ export function ToolActivityItem({
     const displayKind = isMcp && !toolKind.startsWith("mcp") ? "mcp" : toolKind;
     const activitySource = isMcp
         ? "mcp"
-        : SEARCH_TOOL_KINDS.has(toolKind)
+        : isWeb
           ? "web"
           : message.kind === "status"
             ? "status"
@@ -344,9 +365,7 @@ export function ToolActivityItem({
             : "Failed"
         : isInProgress
           ? "Running"
-          : isCompleted && !target
-            ? actionLabel
-            : null;
+          : null;
 
     const toggleDetail = useCallback(() => {
         if (detail) setExpanded((value) => !value);
@@ -365,7 +384,7 @@ export function ToolActivityItem({
     return (
         <div
             aria-expanded={detail ? expanded : undefined}
-            className="group min-w-0 rounded-md px-2 py-1 transition-colors hover:bg-bg-elevated"
+            className="activity-item group"
             data-tool-activity-row={isAttention ? "attention" : "routine"}
             data-tool-activity-source={activitySource}
             data-tool-activity-status={status || undefined}
@@ -376,41 +395,27 @@ export function ToolActivityItem({
                 backgroundColor: isFailed
                     ? "color-mix(in srgb, #dc2626 7%, transparent)"
                     : undefined,
-                color: "var(--text-secondary)",
                 cursor: detail ? "pointer" : "default",
-                fontSize: "0.83em",
             }}
             tabIndex={detail ? 0 : undefined}
         >
-            <div className="flex min-w-0 items-center gap-1">
-                <span className="flex shrink-0 items-center gap-1">
-                    <span
-                        className="flex w-3.5 shrink-0 items-center justify-center"
-                        data-tool-activity-operation-icon="true"
-                        style={{ color: isFailed ? "#f87171" : undefined }}
-                    >
-                        {target ? (
-                            <FileTypeIcon
-                                fileName={target}
-                                size={13}
-                                opacity={0.86}
-                            />
-                        ) : (
-                            <ToolIcon kind={displayKind} />
-                        )}
-                    </span>
-                    <span
-                        aria-hidden="true"
-                        className="flex w-3.5 shrink-0 items-center justify-center"
-                        data-tool-activity-file-icon="true"
-                    />
+            <div className="activity-item-header">
+                <span
+                    className="activity-item-icon"
+                    data-tool-activity-operation-icon="true"
+                    aria-hidden="true"
+                    style={{ color: isFailed ? "#f87171" : undefined }}
+                >
+                    <ToolIcon kind={isWeb ? "web_search" : displayKind} />
                 </span>
                 {target ? (
                     <>
-                        <span className="shrink-0 opacity-70">{actionLabel}</span>
+                        <span className="shrink-0">
+                            {isWeb && !WEB_TOOL_KINDS.has(toolKind) ? "Web" : actionLabel}
+                        </span>
                         {canOpenTarget ? (
                             <button
-                                className="min-w-0 flex-1 truncate text-left text-text-primary underline decoration-text-secondary/40 underline-offset-2 hover:decoration-current focus-visible:rounded-sm focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--accent)]"
+                                className="activity-file-badge text-left focus-visible:outline-accent"
                                 onClick={(event) => {
                                     event.stopPropagation();
                                     void openAiEditedFileByAbsolutePath(target);
@@ -427,11 +432,18 @@ export function ToolActivityItem({
                                 title={target}
                                 type="button"
                             >
-                                {shortTarget}
+                                <span
+                                    className="shrink-0"
+                                    data-tool-activity-file-icon="true"
+                                    aria-hidden="true"
+                                >
+                                    <FileTypeIcon fileName={target} size={14} />
+                                </span>
+                                <span className="truncate">{shortTarget}</span>
                             </button>
                         ) : (
                             <span
-                                className="min-w-0 flex-1 truncate text-text-primary"
+                                className="min-w-0 truncate"
                                 title={target}
                             >
                                 {shortTarget}
@@ -439,12 +451,10 @@ export function ToolActivityItem({
                         )}
                     </>
                 ) : (
-                    <span
-                        className="min-w-0 flex-1 truncate font-medium"
-                        style={{ color: "var(--text-primary)" }}
-                    >
-                        {label}
-                    </span>
+                    <>
+                        {isWeb ? <span className="shrink-0">{actionLabel}</span> : null}
+                        <span className="min-w-0 truncate" title={label}>{label}</span>
+                    </>
                 )}
                 {isInProgress ? (
                     <span
@@ -471,19 +481,8 @@ export function ToolActivityItem({
             </div>
             {expanded && detail ? (
                 <pre
-                    className="mt-1 max-h-40 overflow-y-auto rounded px-2 py-1.5"
+                    className="activity-item-detail"
                     data-tool-activity-detail="true"
-                    style={{
-                        backgroundColor: "var(--bg-tertiary)",
-                        border: "1px solid var(--border)",
-                        color: "var(--text-secondary)",
-                        fontSize: "0.96em",
-                        lineHeight: 1.4,
-                        margin: 0,
-                        overflowWrap: "anywhere",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                    }}
                 >
                     {detail}
                 </pre>
