@@ -16,8 +16,7 @@ interface AgentsSidebarSectionProps {
     };
 }
 
-// Sections mirror the compact grouping used by Comando: the count belongs to
-// the label and the extra vertical space separates session groups, not rows.
+// Keep section labels quiet so the conversation titles lead the list.
 
 export function AgentsSidebarSection({
     title,
@@ -45,7 +44,7 @@ export function AgentsSidebarSection({
         >
             {showHeader ? (
                 <div
-                    className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.09em]"
+                    className="flex items-center gap-2 px-2 text-[10px] font-normal"
                     style={{
                         color: "var(--text-secondary)",
                         opacity: 0.8,
@@ -57,7 +56,7 @@ export function AgentsSidebarSection({
                     <span style={{ opacity: 0.7 }}>{count}</span>
                 </div>
             ) : null}
-            <div className="flex flex-col gap-1.5">{children}</div>
+            <div className="flex flex-col gap-0.5">{children}</div>
         </section>
     );
 }
