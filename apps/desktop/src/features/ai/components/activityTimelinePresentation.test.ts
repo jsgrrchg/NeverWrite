@@ -398,7 +398,7 @@ describe("activity timeline summaries", () => {
         );
     });
 
-    it("counts thoughts and web searches like Comet without treating URLs as files", () => {
+    it("counts thoughts and web searches without treating URLs as files", () => {
         const segment = getOnlySegment(buildActivityTimelineRows([
             ...Array.from({ length: 3 }, (_, i) => createTool(`thought-${i}`, {
                 kind: "thinking", meta: undefined,

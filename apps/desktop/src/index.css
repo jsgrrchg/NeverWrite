@@ -1191,7 +1191,7 @@ body.dragging-tab * {
     filter: brightness(0.95);
 }
 
-/* Comet's activity tree: 26px summary, 32px rows, and a continuous
+/* Activity tree: 26px summary, 32px rows, and a continuous
    trunk at x=12.5 with 6px elbows ending before the 16px operation icons. */
 .activity-rail {
     --activity-tree-color: color-mix(in srgb, var(--text-secondary) 24%, transparent);
