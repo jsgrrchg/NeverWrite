@@ -178,12 +178,12 @@ export function ChatPromptRing({
                                 boxShadow: "0 14px 30px rgba(0,0,0,0.25)",
                             }}
                         >
-                            <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium leading-5">
+                            <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-xs font-medium leading-4">
                                 {activeItem.userText ?? "User message"}
                             </span>
                             {activeItem.assistantText ? (
                                 <span
-                                    className="mt-1 overflow-hidden text-sm leading-5"
+                                    className="mt-1 overflow-hidden text-xs leading-4"
                                     style={{
                                         color: "var(--text-secondary)",
                                         display: "-webkit-box",
