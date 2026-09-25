@@ -388,6 +388,11 @@ function rewriteFeed({
     const document = parseDocument(fs.readFileSync(sourceFeedPath, "utf8"));
     document.set("path", updaterUrl);
     document.set("sha512", publishedAssetMetadata.updaterUrl.sha512);
+    if (buildTarget.endsWith("-apple-darwin")) {
+        // electron-updater compares this against os.release(), which reports
+        // Darwin 22.x on macOS 13, rather than the macOS marketing version.
+        document.set("minimumSystemVersion", "22.0.0");
+    }
     const files = document.get("files");
     if (files?.items) {
         const retainedItems = [];

@@ -93,6 +93,11 @@ test("stage-electron-release-assets rewrites macOS feed metadata", () => {
         );
 
         assert.equal(
+            parseDocument(rewrittenFeed).get("minimumSystemVersion"),
+            "22.0.0",
+        );
+
+        assert.equal(
             metadata.feedRelativePath,
             "darwin-universal/latest-mac.yml",
         );

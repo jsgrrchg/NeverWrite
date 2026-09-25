@@ -262,9 +262,9 @@ export function collectElectronBuildIssues(config) {
         );
     }
 
-    if (config.mac?.minimumSystemVersion !== "12.0") {
+    if (config.mac?.minimumSystemVersion !== "13.0") {
         issues.push(
-            'electron-builder.config.mjs mac.minimumSystemVersion must be "12.0".',
+            'electron-builder.config.mjs mac.minimumSystemVersion must be "13.0".',
         );
     }
 

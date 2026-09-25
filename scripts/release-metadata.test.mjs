@@ -147,7 +147,7 @@ test("collectElectronBuildIssues validates the Electron release contract", () =>
                 },
             ],
             mac: {
-                minimumSystemVersion: "12.0",
+                minimumSystemVersion: "13.0",
                 target: [{ target: "dmg" }, { target: "zip" }],
             },
             win: {
@@ -190,7 +190,7 @@ test("collectElectronBuildIssues validates the Electron release contract", () =>
         [
             'electron-builder.config.mjs must register the "neverwrite" protocol.',
             'electron-builder.config.mjs must stage "out/native-backend" into the packaged "native-backend" resources directory.',
-            'electron-builder.config.mjs mac.minimumSystemVersion must be "12.0".',
+            'electron-builder.config.mjs mac.minimumSystemVersion must be "13.0".',
             'electron-builder.config.mjs artifactName must include "${arch}" to avoid multi-architecture asset collisions.',
             "electron-builder.config.mjs must configure afterPack bundle verification.",
             'electron-builder.config.mjs mac.target must include "zip".',
@@ -214,7 +214,7 @@ test("collectElectronBuildIssues validates Debian and RPM package metadata", () 
                 },
             ],
             mac: {
-                minimumSystemVersion: "12.0",
+                minimumSystemVersion: "13.0",
                 target: ["dmg", "zip"],
             },
             win: {
@@ -263,7 +263,7 @@ test("collectElectronBuildIssues validates Debian and RPM package metadata", () 
         [
             'electron-builder.config.mjs must register the "neverwrite" protocol.',
             'electron-builder.config.mjs must stage "out/native-backend" into the packaged "native-backend" resources directory.',
-            'electron-builder.config.mjs mac.minimumSystemVersion must be "12.0".',
+            'electron-builder.config.mjs mac.minimumSystemVersion must be "13.0".',
             'electron-builder.config.mjs artifactName must include "${arch}" to avoid multi-architecture asset collisions.',
             "electron-builder.config.mjs must configure afterPack bundle verification.",
             'electron-builder.config.mjs mac.target must include "zip".',

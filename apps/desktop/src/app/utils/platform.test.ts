@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
     getDesktopPlatform,
+    getLinuxTitlebarSafePadding,
     getManagedWindowChromeOptions,
     getWindowChromeLayout,
 } from "./platform";
@@ -64,7 +65,7 @@ describe("platform helpers", () => {
         expect(getManagedWindowChromeOptions()).toEqual({});
     });
 
-    it("uses right-side overlay chrome on Linux", () => {
+    it("follows the system window control layout on Linux", () => {
         setNavigatorIdentity(
             "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36",
             "Linux aarch64",
@@ -75,7 +76,12 @@ describe("platform helpers", () => {
             platform: "linux",
             leadingInsetWidth: 0,
             titlebarPaddingTop: 0,
-            windowControlsSide: "right",
+            windowControlsSide: "system",
+        });
+        expect(getLinuxTitlebarSafePadding(6)).toEqual({
+            paddingLeft: "calc(6px + env(titlebar-area-x, 0px))",
+            paddingRight:
+                "calc(6px + max(0px, 100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%)))",
         });
         expect(getManagedWindowChromeOptions()).toEqual({});
     });

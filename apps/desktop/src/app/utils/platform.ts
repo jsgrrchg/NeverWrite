@@ -4,7 +4,7 @@ export interface WindowChromeLayout {
     platform: DesktopPlatform;
     leadingInsetWidth: number;
     titlebarPaddingTop: number;
-    windowControlsSide: "left" | "right";
+    windowControlsSide: "left" | "right" | "system";
 }
 
 export interface ManagedWindowChromeOptions {
@@ -90,7 +90,22 @@ export function getWindowChromeLayout(): WindowChromeLayout {
         leadingInsetWidth:
             platform === "macos" ? getTrafficLightSpacerWidth() : 0,
         titlebarPaddingTop: getTitlebarPaddingTop(),
-        windowControlsSide: platform === "macos" ? "left" : "right",
+        windowControlsSide:
+            platform === "macos"
+                ? "left"
+                : platform === "windows"
+                  ? "right"
+                  : "system",
+    };
+}
+
+/** Insets for a full-width Linux title bar with native Window Controls Overlay. */
+export function getLinuxTitlebarSafePadding(gap: number) {
+    // Electron exposes the usable area in viewport coordinates. The controls
+    // may be on either side, or GNOME may draw only a close button.
+    return {
+        paddingLeft: `calc(${gap}px + env(titlebar-area-x, 0px))`,
+        paddingRight: `calc(${gap}px + max(0px, 100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%)))`,
     };
 }
 
