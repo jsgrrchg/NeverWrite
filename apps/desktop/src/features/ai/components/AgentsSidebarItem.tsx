@@ -7,7 +7,7 @@ import { AIProviderIcon } from "./AIProviderIcon";
 import type { AIChatSession } from "../types";
 import { getRuntimeDisplayName } from "../utils/runtimeMetadata";
 
-// A conversation card keeps its title separate from provider and activity.
+// Session rows follow Zeron: quiet metadata above the provider mark and title.
 
 export type AgentsSidebarActivityIndicator = {
     readonly tone: "working" | "danger";
@@ -273,6 +273,104 @@ export function AgentsSidebarItem({
     };
 
     const isCompact = compact || isArchived;
+    const statusLabel = indicator?.tone === "working"
+        ? "Working…"
+        : indicator?.tone === "danger" ? "Error" : timestampLabel;
+    const statusColor = indicator?.tone === "danger"
+        ? "var(--diff-remove)"
+        : indicator?.tone === "working" ? "var(--diff-warn)" : "var(--text-secondary)";
+
+    const hasRowActions = hasChildren || canPin || Boolean(onToggleArchive && !isArchived);
+    const rowActions = (
+        <span className="flex shrink-0 items-center gap-1" style={{ color: "var(--text-secondary)" }}>
+            {hasChildren ? (
+                <button
+                    type="button"
+                    title={isCollapsed ? "Expand agents" : "Collapse agents"}
+                    aria-label={
+                        isCollapsed ? "Expand agents" : "Collapse agents"
+                    }
+                    onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onToggleCollapse?.();
+                    }}
+                    className="flex shrink-0 items-center justify-center rounded"
+                    style={{
+                        width: metrics.pinButtonSize,
+                        height: metrics.pinButtonSize,
+                        color: "var(--text-secondary)",
+                        background: "transparent",
+                    }}
+                >
+                    <svg
+                        width={metrics.pinIconSize}
+                        height={metrics.pinIconSize}
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{
+                            transform: isCollapsed
+                                ? "rotate(-90deg)"
+                                : "rotate(0)",
+                            transition: "transform 120ms ease",
+                        }}
+                    >
+                        <path d="m4 6 4 4 4-4" />
+                    </svg>
+                </button>
+            ) : null}
+
+            {onToggleArchive && !isArchived && <button type="button" aria-label={isArchived ? "Unarchive chat" : "Archive chat"} title={isArchived ? "Unarchive chat" : "Archive chat"} className="shrink-0 rounded opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={event => { event.stopPropagation(); onToggleArchive(); }}>
+                <svg width={metrics.pinIconSize} height={metrics.pinIconSize} viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M2 3h12v3H2zM3 6v7h10V6M6 9h4" /></svg>
+            </button>}
+            {canPin ? (
+                    <button
+                        type="button"
+                        title={
+                            isPinned ? "Unpin from sidebar" : "Pin to sidebar"
+                        }
+                        aria-label={
+                            isPinned ? "Unpin from sidebar" : "Pin to sidebar"
+                        }
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onTogglePin();
+                        }}
+                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity ${
+                            isPinned
+                                ? "opacity-100"
+                                : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        }`}
+                        style={{
+                            width: metrics.pinButtonSize,
+                            height: metrics.pinButtonSize,
+                            color: isPinned
+                                ? "var(--text-primary)"
+                                : "var(--text-secondary)",
+                        }}
+                    >
+                        <svg
+                            width={metrics.pinIconSize}
+                            height={metrics.pinIconSize}
+                            viewBox="0 0 24 24"
+                            fill={isPinned ? "currentColor" : "none"}
+                            stroke="currentColor"
+                            strokeWidth="1.7"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M9 3h6l-1 6 4 4v2H6v-2l4-4-1-6Z" />
+                            <path d="M12 15v6" />
+                        </svg>
+                    </button>
+                ) : null}
+
+        </span>
+    );
 
     return (
         <div
@@ -282,19 +380,18 @@ export function AgentsSidebarItem({
             data-testid="agent-sidebar-item"
             title={title}
             aria-label={title}
-            className={`group flex w-full cursor-pointer items-center focus-visible:outline-2 focus-visible:outline-(--accent) ${
-                isCompact ? "flex-nowrap rounded-md" : "flex-wrap rounded-lg"
+            className={`group flex w-full cursor-pointer items-center rounded-md hover:bg-[color-mix(in_srgb,var(--bg-tertiary)_65%,transparent)] focus-within:bg-[color-mix(in_srgb,var(--bg-tertiary)_65%,transparent)] focus-visible:outline-2 focus-visible:outline-(--accent) ${
+                isCompact ? "flex-nowrap" : "flex-wrap"
             }`}
             style={{
                 columnGap: metrics.inlineGap,
-                rowGap: isCompact ? 0 : 4,
+                rowGap: isCompact ? 0 : 2,
                 minHeight: isCompact ? metrics.titleFontSize * 3 : undefined,
-                border: isCompact ? "1px solid transparent" : "1px solid var(--border)",
                 padding: `${isCompact ? 4 : metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
                 paddingLeft: metrics.rowPaddingLeft + depth * 24,
                 backgroundColor: isActive
-                    ? "color-mix(in srgb, var(--accent) 14%, transparent)"
-                    : "transparent",
+                    ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                    : undefined,
                 transition:
                     "background-color 100ms ease, color 100ms ease",
             }}
@@ -356,24 +453,36 @@ export function AgentsSidebarItem({
                     onOpen();
                 }
             }}
-            onMouseEnter={(event) => {
-                if (isActive) return;
-                event.currentTarget.style.backgroundColor =
-                    "color-mix(in srgb, var(--bg-tertiary) 65%, transparent)";
-            }}
-            onMouseLeave={(event) => {
-                if (isActive) return;
-                event.currentTarget.style.backgroundColor = "transparent";
-            }}
         >
-            {isCompact && (
-                <span
-                    className={`shrink-0 transition-opacity ${isActive ? "opacity-100" : "opacity-40 group-hover:opacity-100 group-focus-within:opacity-100"}`}
-                    title={getRuntimeDisplayName(session.runtimeId)}
+            {!isCompact && (
+                <div
+                    className="flex w-full min-w-0 items-center justify-between gap-2"
+                    style={{ color: "var(--text-secondary)", fontSize: metrics.timestampFontSize, lineHeight: "1.4" }}
                 >
-                    <AIProviderIcon runtimeId={session.runtimeId} size={metrics.providerIconSize} />
-                </span>
+                    <span className="min-w-0 flex-1 truncate opacity-70">{getRuntimeDisplayName(session.runtimeId)}</span>
+                    <span className="grid shrink-0 items-center">
+                        <span
+                            className={`col-start-1 row-start-1 text-right ${hasRowActions ? "group-hover:invisible group-focus-within:invisible" : ""}`}
+                            title={indicator?.title}
+                            style={{ color: statusColor }}
+                        >
+                            {statusLabel}
+                        </span>
+                        {hasRowActions && (
+                            <span className="pointer-events-none col-start-1 row-start-1 justify-self-end opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 [&_button]:opacity-100">
+                                {rowActions}
+                            </span>
+                        )}
+                    </span>
+                </div>
             )}
+            <span
+                className={`shrink-0 transition-opacity ${isActive ? "opacity-100" : "opacity-50 group-hover:opacity-100 group-focus-within:opacity-100"}`}
+                title={getRuntimeDisplayName(session.runtimeId)}
+                style={{ color: "var(--text-primary)" }}
+            >
+                <AIProviderIcon runtimeId={session.runtimeId} size={metrics.providerIconSize} className="shrink-0" />
+            </span>
             {isRenaming ? (
                     <input
                         ref={renameInputRef}
@@ -402,7 +511,7 @@ export function AgentsSidebarItem({
                     />
                 ) : (
                     <span
-                        className={`min-w-0 flex-1 truncate text-[11.5px] font-medium ${isArchived && !isActive ? "opacity-60 group-hover:opacity-100 group-focus-within:opacity-100" : ""}`}
+                        className={`min-w-0 flex-1 truncate font-normal leading-snug transition-opacity ${isActive ? "opacity-100" : `${isArchived ? "opacity-60" : "opacity-80"} group-hover:opacity-100 group-focus-within:opacity-100`}`}
                         style={{
                             color: "var(--text-primary)",
                             fontSize: metrics.titleFontSize,
@@ -422,102 +531,7 @@ export function AgentsSidebarItem({
                 />
             )}
 
-            {/* Keep provider marks aligned; expansion is a row action, not a
-                leading tree gutter. */}
-            {hasChildren ? (
-                <button
-                    type="button"
-                    title={isCollapsed ? "Expand agents" : "Collapse agents"}
-                    aria-label={
-                        isCollapsed ? "Expand agents" : "Collapse agents"
-                    }
-                    onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onToggleCollapse?.();
-                    }}
-                    className="flex shrink-0 items-center justify-center rounded"
-                    style={{
-                        width: metrics.pinButtonSize,
-                        height: metrics.pinButtonSize,
-                        color: "var(--text-secondary)",
-                        background: "transparent",
-                    }}
-                >
-                    <svg
-                        width={metrics.pinIconSize}
-                        height={metrics.pinIconSize}
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        style={{
-                            transform: isCollapsed
-                                ? "rotate(-90deg)"
-                                : "rotate(0)",
-                            transition: "transform 120ms ease",
-                        }}
-                    >
-                        <path d="m4 6 4 4 4-4" />
-                    </svg>
-                </button>
-            ) : canPin ? (
-                <span
-                    aria-hidden
-                    className="shrink-0"
-                    style={{
-                        width: metrics.pinButtonSize,
-                        height: metrics.pinButtonSize,
-                    }}
-                />
-            ) : null}
-
-            {onToggleArchive && !isArchived && <button type="button" aria-label={isArchived ? "Unarchive chat" : "Archive chat"} title={isArchived ? "Unarchive chat" : "Archive chat"} className="shrink-0 rounded opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={event => { event.stopPropagation(); onToggleArchive(); }}>
-                <svg width={metrics.pinIconSize} height={metrics.pinIconSize} viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M2 3h12v3H2zM3 6v7h10V6M6 9h4" /></svg>
-            </button>}
-            {canPin ? (
-                    <button
-                        type="button"
-                        title={
-                            isPinned ? "Unpin from sidebar" : "Pin to sidebar"
-                        }
-                        aria-label={
-                            isPinned ? "Unpin from sidebar" : "Pin to sidebar"
-                        }
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            onTogglePin();
-                        }}
-                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity ${
-                            isPinned
-                                ? "opacity-100"
-                                : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-                        }`}
-                        style={{
-                            width: metrics.pinButtonSize,
-                            height: metrics.pinButtonSize,
-                            color: isPinned
-                                ? "var(--text-primary)"
-                                : "var(--text-secondary)",
-                        }}
-                    >
-                        <svg
-                            width={metrics.pinIconSize}
-                            height={metrics.pinIconSize}
-                            viewBox="0 0 24 24"
-                            fill={isPinned ? "currentColor" : "none"}
-                            stroke="currentColor"
-                            strokeWidth="1.7"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="M9 3h6l-1 6 4 4v2H6v-2l4-4-1-6Z" />
-                            <path d="M12 15v6" />
-                        </svg>
-                    </button>
-                ) : null}
+            {isCompact && hasRowActions && rowActions}
 
             {isCompact && !isArchived ? (
                 <span
@@ -525,14 +539,10 @@ export function AgentsSidebarItem({
                     title={indicator?.title}
                     style={{
                         fontSize: metrics.timestampFontSize,
-                        color: indicator?.tone === "danger"
-                            ? "var(--diff-remove)"
-                            : indicator?.tone === "working"
-                              ? "var(--diff-warn)"
-                              : "var(--text-secondary)",
+                        color: statusColor,
                     }}
                 >
-                    {indicator?.tone === "working" ? "Working…" : indicator?.tone === "danger" ? "Error" : timestampLabel}
+                    {statusLabel}
                 </span>
             ) : isArchived ? (
                 <span className="grid shrink-0 items-center" style={{ fontSize: metrics.timestampFontSize }}>
@@ -561,32 +571,7 @@ export function AgentsSidebarItem({
                         </button>
                     )}
                 </span>
-            ) : (
-            <div className="flex w-full min-w-0 items-center gap-1.5" style={{ color: "var(--text-secondary)", fontSize: metrics.timestampFontSize }}>
-                <AIProviderIcon runtimeId={session.runtimeId} size={metrics.providerIconSize} />
-                <span className="min-w-0 flex-1 truncate">{getRuntimeDisplayName(session.runtimeId)}</span>
-            <span
-                className="shrink-0 text-[10px]"
-                title={indicator?.title}
-                style={{
-                    color:
-                        indicator?.tone === "danger"
-                            ? "var(--diff-remove, #f43f5e)"
-                            : indicator?.tone === "working"
-                              ? "var(--diff-warn, #d97706)"
-                              : "var(--text-secondary)",
-                    fontSize: metrics.timestampFontSize,
-                    opacity: 0.8,
-                }}
-            >
-                {indicator?.tone === "working"
-                    ? "Working…"
-                    : indicator?.tone === "danger"
-                      ? "Error"
-                      : timestampLabel}
-            </span>
-            </div>
-            )}
+            ) : null}
         </div>
     );
 }

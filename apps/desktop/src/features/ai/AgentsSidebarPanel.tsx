@@ -68,7 +68,7 @@ import {
 import { AIProviderIcon } from "./components/AIProviderIcon";
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection";
 
-// Card-based Agents panel for the session list. Conversations open in the
+// Borderless Agents panel for the session list. Conversations open in the
 // dedicated chat pane. The list groups them by status and supports inline
 // rename, pinning, archiving and deletion.
 
@@ -99,31 +99,20 @@ function deriveActivityIndicator(
     }
 }
 
-function formatAgentTimestamp(timestamp: number, compact = false): string {
+function formatAgentTimestamp(timestamp: number): string {
     if (!timestamp) return "";
     const now = Date.now();
     const diffMs = now - timestamp;
     const diffMinutes = Math.floor(diffMs / 60000);
 
-    if (diffMinutes < 1) return compact ? "Now" : "Just now";
-    if (diffMinutes < 60) {
-        if (compact) return `${diffMinutes}m`;
-        return diffMinutes === 1
-            ? "1 minute ago"
-            : `${diffMinutes} minutes ago`;
-    }
+    if (diffMinutes < 1) return "Now";
+    if (diffMinutes < 60) return `${diffMinutes}m`;
 
     const diffHours = Math.floor(diffMinutes / 60);
-    if (diffHours < 24) {
-        if (compact) return `${diffHours}h`;
-        return diffHours === 1 ? "1 hour ago" : `${diffHours} hours ago`;
-    }
+    if (diffHours < 24) return `${diffHours}h`;
 
     const diffDays = Math.floor(diffHours / 24);
-    if (diffDays < 7) {
-        if (compact) return `${diffDays}d`;
-        return diffDays === 1 ? "Yesterday" : `${diffDays} days ago`;
-    }
+    if (diffDays < 7) return `${diffDays}d`;
 
     return new Intl.DateTimeFormat("en", {
         month: "short",
@@ -185,7 +174,7 @@ function buildAgentsSidebarMetrics(scalePercent: number): {
         item: {
             rowPaddingX: scaleMetric(8, scale, 7),
             rowPaddingLeft: scaleMetric(12, scale, 10),
-            rowPaddingY: scaleMetric(8, scale, 6),
+            rowPaddingY: scaleMetric(6, scale, 5),
             inlineGap: scaleMetric(6, scale, 5),
             titleFontSize: scaleMetric(12, scale, 11),
             timestampFontSize: scaleMetric(10, scale, 9),
@@ -479,7 +468,7 @@ export function AgentsSidebarPanel() {
         const isPinned = Boolean(pinnedEntries[session.sessionId]);
         const indicator = deriveActivityIndicator(session);
         const updatedAt = getSessionUpdatedAt(session);
-        const timestampLabel = formatAgentTimestamp(updatedAt, isSubagent || isSessionArchived(session, sessionsById, archivedEntries));
+        const timestampLabel = formatAgentTimestamp(updatedAt);
         const dragTitle = getSessionTitleText(session);
         const updateDragPreview = (clientX: number, clientY: number) => {
             setDragPreview({
