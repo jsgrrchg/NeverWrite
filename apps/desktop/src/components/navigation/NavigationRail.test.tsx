@@ -25,6 +25,7 @@ describe("NavigationRail", () => {
         vi.spyOn(button, "getBoundingClientRect").mockReturnValue({ top: 100, height: 80 } as DOMRect);
         expect(screen.getByTestId("rail")).toHaveStyle({ right: "0px" });
         fireEvent.mouseMove(button, { clientY: 180 });
+        expect(button).toHaveStyle({ width: "32px" });
         expect(screen.getByText("last").closest("[data-navigation-rail-preview]")).toHaveStyle({ right: "32px" });
         fireEvent.click(screen.getByText("last"));
         expect(onSelect).not.toHaveBeenCalled();
@@ -49,5 +50,21 @@ describe("NavigationRail", () => {
         expect(screen.queryByText("last")).not.toBeInTheDocument();
         view.rerender(<NavigationRail {...props} hitStripWidth={0} />);
         expect(button).toHaveAttribute("tabindex", "-1");
+    });
+
+    it("bridges the preview to a narrow hit strip without widening the button", () => {
+        renderComponent(
+            <NavigationRail
+                side="right" items={items} height={80} hitStripWidth={24}
+                hasPersistentGutter testId="rail" getLabel={() => "Jump"}
+                renderPreview={(item) => item.id} onSelect={vi.fn()}
+            />,
+        );
+        const button = screen.getByRole("button");
+        fireEvent.focus(button);
+        expect(button).toHaveStyle({ width: "24px" });
+        expect(screen.getByText("first").closest("[data-navigation-rail-preview]")).toHaveStyle({
+            right: "24px", paddingRight: "8px", boxSizing: "content-box",
+        });
     });
 });

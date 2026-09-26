@@ -67,7 +67,8 @@ export function extractHeadings(content: string): OutlineHeading[] {
         const rawLine = lines[index];
         const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
         const trimmed = line.trim();
-        const detectedFence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+        // List-contained fences may be indented beyond three columns.
+        const detectedFence = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
 
         if (detectedFence) {
             if (fenceMarker === null) {

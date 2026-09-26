@@ -194,3 +194,18 @@ test("hides when unwrapped content occupies the right gutter", async ({ page }) 
     await page.evaluate(() => window.editorFixture.setLineWrapping(true));
     await expect(rail(page)).toBeVisible();
 });
+
+test("an open preview does not capture text clicks outside its card", async ({ page }) => {
+    await page.setViewportSize({ width: 1100, height: 700 });
+    await mount(page);
+    const before = (await button(page).boundingBox())!;
+    await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+    await expect(rail(page).locator("[data-navigation-rail-preview]")).toBeVisible();
+    expect((await button(page).boundingBox())!.width).toBe(before.width);
+    const point = { x: before.x - 100, y: before.y + 8 };
+    expect(await page.evaluate(({ x, y }) =>
+        document.elementFromPoint(x, y)?.closest('[data-testid="markdown-outline-rail"]') === null,
+    point)).toBe(true);
+    await page.mouse.click(point.x, point.y);
+    expect(await page.evaluate(() => window.editorFixture.getView().state.selection.main.empty)).toBe(true);
+});

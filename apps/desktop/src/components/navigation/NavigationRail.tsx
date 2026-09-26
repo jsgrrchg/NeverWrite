@@ -28,7 +28,6 @@ interface NavigationRailProps<T extends { id: string }> {
     renderPreview: (item: T) => ReactNode;
     height: CSSProperties["height"];
     previewWidth?: CSSProperties["width"];
-    expandedWidth?: CSSProperties["width"];
     getStripWidth?: (item: T) => number;
     isInView?: (item: T) => boolean;
     testId: string;
@@ -45,7 +44,6 @@ export function NavigationRail<T extends { id: string }>({
     renderPreview,
     height,
     previewWidth = "20rem",
-    expandedWidth = "22rem",
     getStripWidth,
     isInView,
     testId,
@@ -157,9 +155,7 @@ export function NavigationRail<T extends { id: string }>({
                     [side]: 12,
                     height,
                     pointerEvents: hitStripWidth > 0 ? "auto" : "none",
-                    width: activeItem
-                        ? expandedWidth
-                        : hitStripWidth,
+                    width: hitStripWidth,
                 }}
             >
                 <span style={{ [side]: 12 }} className="absolute top-0 h-full w-px bg-[color-mix(in_srgb,var(--border)_35%,transparent)]" />
@@ -196,8 +192,13 @@ export function NavigationRail<T extends { id: string }>({
                         data-navigation-rail-preview
                         onMouseMove={(event) => event.stopPropagation()}
                         style={{
-                            [side]: 32,
+                            [side]: Math.min(32, hitStripWidth),
                             width: previewWidth,
+                            // Bridge narrow gutters without expanding the rail's
+                            // hitbox over editor text outside the preview card.
+                            boxSizing: "content-box",
+                            [side === "left" ? "paddingLeft" : "paddingRight"]:
+                                Math.max(0, 32 - hitStripWidth),
                             top: `${activeTopPercent}%`,
                             transform: `translateY(${previewTranslate})`,
                         }}

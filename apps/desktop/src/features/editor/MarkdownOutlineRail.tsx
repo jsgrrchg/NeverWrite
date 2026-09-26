@@ -33,7 +33,6 @@ export function MarkdownOutlineRail({ bridge }: { bridge: EditorOutlineBridge })
                 hitStripWidth={layout.hitStripWidth}
                 hasPersistentGutter={layout.hasPersistentGutter}
                 previewWidth={layout.previewWidth}
-                expandedWidth={layout.previewWidth + 32}
                 getStripWidth={(heading) => 20 - heading.level * 2}
                 isInView={(heading) => heading.id === snapshot.activeId}
                 getLabel={(heading) => heading

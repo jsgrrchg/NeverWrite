@@ -37,4 +37,9 @@ describe("outlineModel", () => {
         expect(tree[0].children[0].children[0].title).toBe("Leaf");
         expect(extractHeadings("ordinary text")).toEqual([]);
     });
+
+    it("ignores headings in fenced code nested inside a list", () => {
+        const content = "- item\n\n    ```md\n    # Fake\n    ```\n\n# Real\n## Another";
+        expect(extractHeadings(content).map((heading) => heading.title)).toEqual(["Real", "Another"]);
+    });
 });

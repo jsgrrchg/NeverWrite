@@ -12,4 +12,3 @@ export function resolveOutlineRailLayout({ width, height, gutter, rightInset }: 
         previewWidth: Math.min(320, width - rightInset - 64),
     };
 }
-
