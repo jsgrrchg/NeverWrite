@@ -1,3 +1,8 @@
+export {
+    resolveNavigationRailTopPercent as resolveChatPromptRingTopPercent,
+    resolveNavigationRailIndexFromPointer as resolveChatPromptRingIndexFromPointer,
+} from "../../../components/navigation/navigationRail";
+
 import type { AIChatMessage } from "../types";
 
 export const CHAT_PROMPT_RING_MIN_ITEMS = 2;
@@ -59,39 +64,6 @@ export function resolveChatPromptRingHeight(itemCount: number) {
         (itemCount - 1) * CHAT_PROMPT_RING_ITEM_SPACING,
     );
     return `min(${naturalHeight}px, calc(100vh - 18rem))`;
-}
-
-export function resolveChatPromptRingTopPercent(
-    index: number,
-    itemCount: number,
-) {
-    if (itemCount <= 1) return 0;
-    return (
-        (Math.max(0, Math.min(index, itemCount - 1)) / (itemCount - 1)) *
-        100
-    );
-}
-
-export function resolveChatPromptRingIndexFromPointer(input: {
-    itemCount: number;
-    railTop: number;
-    railHeight: number;
-    pointerY: number;
-}) {
-    if (input.itemCount <= 0 || input.railHeight <= 0) return null;
-    if (input.itemCount === 1) return 0;
-
-    const progress = Math.max(
-        0,
-        Math.min(1, (input.pointerY - input.railTop) / input.railHeight),
-    );
-    return Math.max(
-        0,
-        Math.min(
-            input.itemCount - 1,
-            Math.round(progress * (input.itemCount - 1)),
-        ),
-    );
 }
 
 export function resolveChatPromptRingLayout(
