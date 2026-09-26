@@ -1,3 +1,4 @@
+import { MarkdownOutlineRail } from "./MarkdownOutlineRail";
 import { createEditorOutlineBridge } from "./extensions/editorOutline";
 import { revealOutlineSelection } from "./outlineNavigation";
 import { useChatTabsStore } from "../ai/store/chatTabsStore";
@@ -4205,6 +4206,12 @@ export function Editor({
                             ref={containerRef}
                             className="h-full relative z-1"
                         />
+                        {activeTabInfo && isVisible && livePreviewEnabled && (
+                            <MarkdownOutlineRail
+                                key={`${activeTabInfo.id}:${activeTabInfo.noteId}`}
+                                bridge={outlineBridge}
+                            />
+                        )}
                     </div>
                 </div>
                 {!activeTabInfo && isVisible && (
