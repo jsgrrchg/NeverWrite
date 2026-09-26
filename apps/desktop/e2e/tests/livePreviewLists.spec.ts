@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 /**
  * Regression coverage for jsgrrchg/NeverWrite#102.
@@ -22,16 +22,19 @@ import { expect, test } from "@playwright/test";
 
 type CaretMeasurement = {
     cursorLeft: number;
+    cursorTop: number;
     cursorWidth: number;
     cursorHeight: number;
     contentBoxLeft: number;
+    lineTop: number;
+    lineBottom: number;
 };
 
 const MIN_CARET_HEIGHT_PX = 10; // anything below this is effectively invisible
 const POSITION_TOLERANCE_PX = 2;
 
 async function measureCaretAtLine(
-    page: import("@playwright/test").Page,
+    page: Page,
     lineNumber: number,
 ): Promise<CaretMeasurement> {
     return page.evaluate((nth) => {
@@ -55,19 +58,30 @@ async function measureCaretAtLine(
 
         return {
             cursorLeft: caretRect.left,
+            cursorTop: caretRect.top,
             cursorWidth: caretRect.width,
             cursorHeight: caretRect.height,
             contentBoxLeft: lineRect.left + paddingLeft,
+            lineTop: lineRect.top,
+            lineBottom: lineRect.bottom,
         };
     }, lineNumber);
 }
 
-function expectCaretAnchoredToBullet(measurement: CaretMeasurement) {
-    expect(Math.abs(measurement.cursorLeft - measurement.contentBoxLeft))
-        .toBeLessThan(POSITION_TOLERANCE_PX);
-    expect(measurement.cursorHeight).toBeGreaterThanOrEqual(
-        MIN_CARET_HEIGHT_PX,
-    );
+async function expectCaretAnchoredToBullet(page: Page, lineNumber: number) {
+    // Selection state updates before drawSelection paints the cursor on the
+    // next frame. Remeasure until the rendered cursor reaches the target line,
+    // keeping the original alignment and visibility thresholds.
+    await expect(async () => {
+        const measurement = await measureCaretAtLine(page, lineNumber);
+        expect(measurement.cursorTop).toBeGreaterThanOrEqual(measurement.lineTop);
+        expect(measurement.cursorTop).toBeLessThan(measurement.lineBottom);
+        expect(Math.abs(measurement.cursorLeft - measurement.contentBoxLeft))
+            .toBeLessThan(POSITION_TOLERANCE_PX);
+        expect(measurement.cursorHeight).toBeGreaterThanOrEqual(
+            MIN_CARET_HEIGHT_PX,
+        );
+    }).toPass({ timeout: 2000 });
 }
 
 test.beforeEach(async ({ page }) => {
@@ -91,7 +105,7 @@ test("active empty top-level list item: caret sits flush with the bullet (#102)"
     await page.waitForSelector(".cm-lp-li-line");
     await page.locator(".cm-content").focus();
 
-    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 1));
+    await expectCaretAnchoredToBullet(page, 1);
 });
 
 test("active empty nested list item: caret sits flush with the bullet (#102)", async ({
@@ -106,7 +120,7 @@ test("active empty nested list item: caret sits flush with the bullet (#102)", a
     expect(await page.locator(".cm-lp-li-line").count()).toBeGreaterThanOrEqual(
         2,
     );
-    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 2));
+    await expectCaretAnchoredToBullet(page, 2);
 });
 
 test("active empty middle list item: caret sits flush with the bullet (#102)", async ({
@@ -122,7 +136,7 @@ test("active empty middle list item: caret sits flush with the bullet (#102)", a
     await page.waitForSelector(".cm-lp-li-line");
     await page.locator(".cm-content").focus();
 
-    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 2));
+    await expectCaretAnchoredToBullet(page, 2);
 });
 
 test("active empty middle item with nested child below (issue repro #102)", async ({
@@ -139,7 +153,7 @@ test("active empty middle item with nested child below (issue repro #102)", asyn
     await page.waitForSelector(".cm-lp-li-line");
     await page.locator(".cm-content").focus();
 
-    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 2));
+    await expectCaretAnchoredToBullet(page, 2);
 });
 
 test("clicking an active empty list prefix keeps the caret visible (#102)", async ({
@@ -162,7 +176,7 @@ test("clicking an active empty list prefix keeps the caret visible (#102)", asyn
     });
 
     expect(selectionHead).toBe(doc.length);
-    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 4));
+    await expectCaretAnchoredToBullet(page, 4);
 });
 
 test("clicking an inactive empty list item activates its caret anchor (#102)", async ({
@@ -185,7 +199,7 @@ test("clicking an inactive empty list item activates its caret anchor (#102)", a
     });
 
     expect(selectionHead).toBe(8);
-    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 2));
+    await expectCaretAnchoredToBullet(page, 2);
 });
 
 // ---------------------------------------------------------------------------
@@ -201,7 +215,7 @@ test("active empty top-level task item: caret sits flush with the checkbox (#102
     await page.waitForSelector(".cm-lp-task-line");
     await page.locator(".cm-content").focus();
 
-    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 1));
+    await expectCaretAnchoredToBullet(page, 1);
 });
 
 test("active empty nested task item: caret sits flush with the checkbox (#102)", async ({
@@ -214,7 +228,7 @@ test("active empty nested task item: caret sits flush with the checkbox (#102)",
     await page.waitForSelector(".cm-lp-task-line");
     await page.locator(".cm-content").focus();
 
-    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 2));
+    await expectCaretAnchoredToBullet(page, 2);
 });
 
 // ---------------------------------------------------------------------------
@@ -230,7 +244,7 @@ test("active empty top-level ordered list item: caret sits flush with the marker
     await page.waitForSelector(".cm-lp-li-line");
     await page.locator(".cm-content").focus();
 
-    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 1));
+    await expectCaretAnchoredToBullet(page, 1);
 });
 
 // ---------------------------------------------------------------------------
