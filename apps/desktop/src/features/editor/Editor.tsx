@@ -1,3 +1,6 @@
+import { MarkdownOutlineRail } from "./MarkdownOutlineRail";
+import { createEditorOutlineBridge } from "./extensions/editorOutline";
+import { revealOutlineSelection } from "./outlineNavigation";
 import { useChatTabsStore } from "../ai/store/chatTabsStore";
 import {
     useEffect,
@@ -325,6 +328,7 @@ export function Editor({
 }: EditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
+    const [outlineBridge] = useState(createEditorOutlineBridge);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const scheduleSaveRef = useRef<(tabId: string, doc: Text | string) => void>(
         () => {},
@@ -2378,6 +2382,7 @@ export function Editor({
             return EditorState.create({
                 doc,
                 extensions: [
+                    outlineBridge.extension,
                     // Vim must come before the default keymaps so its modal
                     // bindings take precedence when enabled.
                     vimCompartment.of(
@@ -2737,6 +2742,7 @@ export function Editor({
             });
         },
         [
+            outlineBridge,
             closeWikilinkSuggester,
             commitWikilinkSuggestion,
             moveWikilinkSuggesterSelection,
@@ -3880,26 +3886,7 @@ export function Editor({
         if (!view || !activeTab || !pendingSelectionReveal) return;
         if (pendingSelectionReveal.noteId !== activeTab.noteId) return;
 
-        const docLen = view.state.doc.length;
-        const clampedAnchor = Math.max(
-            0,
-            Math.min(pendingSelectionReveal.anchor, docLen),
-        );
-        const clampedHead = Math.max(
-            0,
-            Math.min(pendingSelectionReveal.head, docLen),
-        );
-        // Center the heading in the viewport instead of nudging it to the
-        // nearest edge (the default `scrollIntoView: true`), so the selected
-        // outline entry lands in the middle of the screen. Near the end of the
-        // document CodeMirror scrolls as far as it can ("as centered as
-        // possible"). A brief line flash marks where the jump landed.
-        view.dispatch({
-            selection: { anchor: clampedAnchor, head: clampedHead },
-            effects: EditorView.scrollIntoView(clampedAnchor, { y: "center" }),
-        });
-        flashLine(view, clampedAnchor);
-        view.focus();
+        revealOutlineSelection(view, pendingSelectionReveal);
         clearPendingSelectionReveal();
     }, [activeTab, pendingSelectionReveal, clearPendingSelectionReveal]);
 
@@ -4219,6 +4206,12 @@ export function Editor({
                             ref={containerRef}
                             className="h-full relative z-1"
                         />
+                        {activeTabInfo && isVisible && livePreviewEnabled && (
+                            <MarkdownOutlineRail
+                                key={`${activeTabInfo.id}:${activeTabInfo.noteId}`}
+                                bridge={outlineBridge}
+                            />
+                        )}
                     </div>
                 </div>
                 {!activeTabInfo && isVisible && (

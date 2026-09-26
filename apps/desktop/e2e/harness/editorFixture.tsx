@@ -3,6 +3,7 @@ import { EditorView } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 import "./chat.css";
 import { Editor } from "../../src/features/editor/Editor";
+import { StackedPaneContent } from "../../src/features/editor/StackedPaneContent";
 import { useEditorStore, type TabInput } from "../../src/app/store/editorStore";
 import { useSettingsStore } from "../../src/app/store/settingsStore";
 import { useVaultStore } from "../../src/app/store/vaultStore";
@@ -18,7 +19,7 @@ const root = createRoot(document.getElementById("root")!);
 let mountId = 0;
 
 const editorFixture = {
-    mount(tabs: TabInput[], preview = true) {
+    mount(tabs: TabInput[], preview = true, layout: "single" | "columns" | "stacked" = "single") {
         useSettingsStore.setState({ livePreviewEnabled: preview });
         useVaultStore.setState({ vaultPath: "/fixture", notes: [], entries: [] });
         useEditorStore.getState().hydrateTabs(tabs, tabs[0]?.id ?? null);
@@ -37,9 +38,23 @@ const editorFixture = {
                         </button>
                     ))}
                 </nav>
-                <Editor />
+                {layout === "stacked" ? <StackedPaneContent /> : layout === "columns" ? (
+                    <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+                        {tabs.map((tab) => (
+                            <div key={tab.id} style={{ flex: 1, minWidth: 0 }}>
+                                <Editor tabId={tab.id} />
+                            </div>
+                        ))}
+                    </div>
+                ) : <Editor />}
             </div>,
         );
+    },
+    setPreview(enabled: boolean) {
+        useSettingsStore.getState().setSetting("livePreviewEnabled", enabled);
+    },
+    setLineWrapping(enabled: boolean) {
+        useSettingsStore.getState().setSetting("lineWrapping", enabled);
     },
     getView,
     snapshot() {

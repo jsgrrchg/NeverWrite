@@ -1840,7 +1840,7 @@ body.dragging-tab * {
 }
 
 .nw-prompt-ring-strip {
-    width: 8px;
+    width: var(--navigation-strip-width, 8px);
     background-color: color-mix(
         in srgb,
         var(--text-secondary) 35%,
