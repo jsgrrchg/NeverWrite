@@ -596,6 +596,12 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         const timelineMessages = messages.filter(
             (message) =>
                 !isTurnStartedStatusMessage(message) &&
+                // Keep saved-chat reconnection silent without changing recovery state.
+                !(
+                    message.kind === "status" &&
+                    message.id ===
+                        "status:neverwrite:recovery:reconnecting-saved-chat"
+                ) &&
                 !(
                     message.kind === "plan" &&
                     message.id === visiblePinnedPlanId
