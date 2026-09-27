@@ -169,7 +169,7 @@ export default {
     mac: {
         category: "public.app-category.productivity",
         icon: path.join("build", "icons", "icon.icns"),
-        minimumSystemVersion: "12.0",
+        minimumSystemVersion: "13.0",
         hardenedRuntime: true,
         gatekeeperAssess: false,
         entitlements: path.join("build", "entitlements.mac.plist"),

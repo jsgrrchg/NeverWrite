@@ -59,7 +59,10 @@ import { useCommandStore } from "../command-palette/store/commandStore";
 import { isSearchTab, SEARCH_TAB_TITLE } from "../search/searchTab";
 import { getTabStripDropIndex, useActiveTabStripReveal } from "./tabStrip";
 import { WindowChrome } from "../../components/layout/WindowChrome";
-import { getDesktopPlatform } from "../../app/utils/platform";
+import {
+    getDesktopPlatform,
+    getLinuxTitlebarSafePadding,
+} from "../../app/utils/platform";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import {
@@ -138,15 +141,16 @@ interface UnifiedBarProps {
 
 export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const desktopPlatform = getDesktopPlatform();
-    const usesNativeTitleBarOverlay =
-        desktopPlatform === "windows" || desktopPlatform === "linux";
-    // Detached note windows on Windows and Linux use the native `titleBarOverlay`
-    // (min/max/close painted in the top-right 140px), so the trailing
-    // drag zone has to reserve that width — otherwise tabs slide under the
-    // caption buttons. Main windows already reserve 152 (140 for the native
-    // controls + 12 for the right-panel toggle and its margins).
+    // Main-window tabs sit below the overlay. Detached Linux windows use the
+    // full-width titlebar safe area, which follows the system button layout.
     const trailingDragZoneWidth =
-        windowMode === "main" ? 152 : usesNativeTitleBarOverlay ? 140 : 8;
+        windowMode === "main"
+            ? desktopPlatform === "linux"
+                ? 48
+                : 152
+            : desktopPlatform === "windows"
+              ? 140
+              : 8;
     const focusedPane = useEditorStore(selectEditorPaneState);
     const tabs = focusedPane.tabs;
     const activeTabId = focusedPane.activeTabId;
@@ -965,7 +969,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     background: "var(--bg-secondary)",
                     borderBottom: "1px solid var(--border)",
                 }}
-                barStyle={{ padding: "0 6px" }}
+                barStyle={{
+                    padding: "0 6px",
+                    ...(windowMode === "note" && desktopPlatform === "linux"
+                        ? getLinuxTitlebarSafePadding(6)
+                        : {}),
+                }}
             >
                 {windowMode === "main" && (
                     <>

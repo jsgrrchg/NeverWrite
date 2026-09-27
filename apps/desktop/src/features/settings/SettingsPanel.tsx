@@ -69,7 +69,10 @@ import {
 } from "../spellcheck/language";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import { SETTINGS_OPEN_SECTION_EVENT } from "../../app/detachedWindows";
-import { getDesktopPlatform } from "../../app/utils/platform";
+import {
+    getDesktopPlatform,
+    getLinuxTitlebarSafePadding,
+} from "../../app/utils/platform";
 import { readSearchParam } from "../../app/utils/safeBrowser";
 import { subscribeSafeStorage } from "../../app/utils/safeStorage";
 import { checkClaudeCodeInstalled } from "../terminal/claudeCodeTerminal";
@@ -5833,11 +5836,10 @@ export function SettingsPanel({
                     alignItems: "center",
                     position: "relative",
                     padding: "0 20px",
-                    // Standalone settings on Windows and Linux get native
-                    // caption buttons via `titleBarOverlay` in the top-right
-                    // 140px — reserve that space so the header content never
-                    // slides under them.
                     paddingRight: isStandaloneNativeTitlebarOverlay ? 140 : 20,
+                    ...(standalone && desktopPlatform === "linux"
+                        ? getLinuxTitlebarSafePadding(20)
+                        : {}),
                     borderBottom: "1px solid var(--border)",
                     flexShrink: 0,
                     backgroundColor: chromeBackground,
@@ -5846,9 +5848,10 @@ export function SettingsPanel({
             >
                 <span
                     style={{
-                        position: "absolute",
-                        left: "50%",
-                        transform: "translateX(-50%)",
+                        position: standalone ? "static" : "absolute",
+                        left: standalone ? undefined : "50%",
+                        transform: standalone ? undefined : "translateX(-50%)",
+                        margin: standalone ? "0 auto" : undefined,
                         fontSize: 13,
                         fontWeight: 600,
                         color: "var(--text-primary)",

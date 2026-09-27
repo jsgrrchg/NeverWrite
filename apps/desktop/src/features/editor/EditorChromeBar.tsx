@@ -9,10 +9,8 @@ import {
     getWindowChromeLayout,
 } from "../../app/utils/platform";
 
-// Thin top strip above the editor. It exists only to reserve the trailing
-// 140px that the Windows / Linux `titleBarOverlay` paints native caption
-// controls on top of — without the spacer, the tab strip would slide under
-// min/max/close.
+// Thin top strip above the editor. It keeps the tabs below the 34px native
+// title bar overlay, regardless of which side Linux places its controls on.
 //
 // On macOS the component collapses to `null`: the traffic lights are handled
 // entirely by the window adapter (`setTrafficLightsVisible`) and the sidebar
@@ -23,7 +21,6 @@ const PLATFORM = getDesktopPlatform();
 const IS_WINDOWS = PLATFORM === "windows";
 const IS_LINUX = PLATFORM === "linux";
 const USES_NATIVE_TITLEBAR_OVERLAY = IS_WINDOWS || IS_LINUX;
-const NATIVE_CONTROLS_RESERVED = USES_NATIVE_TITLEBAR_OVERLAY ? 140 : 0;
 
 function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
     if (event.button !== 0) return;
@@ -69,26 +66,7 @@ export function EditorChromeBar() {
                 backgroundColor: "var(--sidebar-vibrancy-tint)",
             } as CSSProperties}
         >
-            <div
-                className="flex items-stretch select-none"
-                style={{
-                    height: 34,
-                    padding: "0 6px",
-                    cursor: "default",
-                }}
-            >
-                <div aria-hidden="true" className="flex-1 min-w-0" />
-
-                {/* Reserve space for the titleBarOverlay native controls so
-                    chrome controls don't slide under them. */}
-                <div
-                    aria-hidden="true"
-                    style={{
-                        width: NATIVE_CONTROLS_RESERVED,
-                        flexShrink: 0,
-                    }}
-                />
-            </div>
+            <div aria-hidden="true" style={{ height: 34, cursor: "default" }} />
         </div>
     );
 }

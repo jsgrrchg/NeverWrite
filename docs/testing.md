@@ -127,6 +127,13 @@ NEVERWRITE_ELECTRON_DIST_ARCH=x64
 
 For custom paths, use `NEVERWRITE_PACKAGED_APP_EXECUTABLE` or `NEVERWRITE_PACKAGED_SIDECAR_PATH`.
 
+For an Electron release, also check the actual windows on each supported OS:
+
+- On macOS 13 or later, confirm the universal app's `Contents/Info.plist` has `LSMinimumSystemVersion` set to `13.0`, then test signing, notarization, updates, and clean shutdown. On a macOS 12 installation of the previous release, confirm the new update is not offered. The macOS feed uses `minimumSystemVersion: 22.0.0` because `electron-updater` compares it with the Darwin kernel version.
+- On Linux, check the main, settings, and detached note windows under GNOME's close-only layout and a configuration with window buttons on the opposite side. Confirm tabs and header buttons stay outside the native controls, and test focus, dragging, resizing, and both themes.
+- On Windows x64 and ARM64, check the same windows and controls, including acrylic, dragging, resizing, and updates.
+- On each supported target, exercise a vault and editor, text and image copy/paste, the web clipper clipboard deep link, custom-protocol previews, external links, the updater, and clean shutdown.
+
 ## Windows AI History Release Smoke
 
 The `AI history recovery (Windows)` CI job executes the transaction and recovery

@@ -59,29 +59,31 @@ export function handleWebClipperDeepLink(rawUrl: string) {
         return;
     }
 
-    void (async () => {
-        const request = parseWebClipperDeepLink(rawUrl);
-        const content =
-            request.mode === "clipboard"
-                ? clipboard.readText().trim()
-                : (request.content ?? "").trim();
-        if (!content) {
-            throw new Error("Clip content is empty.");
-        }
-        const payload = await runtime!.backend.invoke("web_clipper_save_note", {
-            requestId: request.requestId,
-            vaultPathHint: request.vaultPathHint,
-            vaultNameHint: request.vaultNameHint,
-            title: request.title,
-            folder: request.folder,
-            content,
-        });
-        emitClipSaved(payload);
-    })().catch((error) => {
+    void saveWebClipperDeepLink(rawUrl, runtime).catch((error) => {
         console.error(
             `[web-clipper-deep-link] ${formatWebClipperLogError(error)}`,
         );
     });
+}
+
+export async function saveWebClipperDeepLink(rawUrl: string, target: Runtime) {
+    const request = parseWebClipperDeepLink(rawUrl);
+    const content =
+        request.mode === "clipboard"
+            ? (await clipboard.readText()).trim()
+            : (request.content ?? "").trim();
+    if (!content) {
+        throw new Error("Clip content is empty.");
+    }
+    const payload = await target.backend.invoke("web_clipper_save_note", {
+        requestId: request.requestId,
+        vaultPathHint: request.vaultPathHint,
+        vaultNameHint: request.vaultNameHint,
+        title: request.title,
+        folder: request.folder,
+        content,
+    });
+    emitClipSaved(payload, target);
 }
 
 function startWebClipperServer() {
@@ -251,9 +253,9 @@ async function handleWebClipperRequest(
     }
 }
 
-function emitClipSaved(payload: unknown) {
+function emitClipSaved(payload: unknown, target: Runtime = runtime!) {
     const targetWindowLabel = asRecord(payload).targetWindowLabel;
-    runtime!.emitEvent(
+    target.emitEvent(
         typeof targetWindowLabel === "string"
             ? WEB_CLIPPER_CLIP_SAVED_EVENT
             : WEB_CLIPPER_ROUTE_CLIP_EVENT,
