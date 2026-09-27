@@ -14,6 +14,12 @@ export interface VisibleChatAnchorSnapshot {
     offset: number;
 }
 
+// Only the mounted scroll controller keeps the DOM node. Persisted state stores
+// the row key and offset so detached nodes cannot survive a conversation switch.
+export interface CapturedChatAnchor extends VisibleChatAnchorSnapshot {
+    node: HTMLElement | null;
+}
+
 const persistedViewStateByScope = new Map<string, PersistedChatViewState>();
 
 export function resolveChatMessageListViewStateScope(
@@ -25,13 +31,14 @@ export function resolveChatMessageListViewStateScope(
 export function captureVisibleChatAnchor(
     container: HTMLElement,
     isNearBottom: (element: HTMLElement) => boolean,
-): VisibleChatAnchorSnapshot {
+): CapturedChatAnchor {
     const nearBottom = isNearBottom(container);
     if (nearBottom) {
         return {
             nearBottom,
             rowKey: null,
             offset: 0,
+            node: null,
         };
     }
 
@@ -44,6 +51,7 @@ export function captureVisibleChatAnchor(
                 nearBottom,
                 rowKey: row.dataset.chatRowKey ?? null,
                 offset: rect.top - containerRect.top,
+                node: row,
             };
         }
     }
@@ -52,6 +60,7 @@ export function captureVisibleChatAnchor(
         nearBottom,
         rowKey: null,
         offset: 0,
+        node: null,
     };
 }
 
@@ -72,14 +81,13 @@ export function readPersistedChatMessageListViewState(scope: string) {
 export function persistChatMessageListViewState(
     scope: string,
     container: HTMLElement | null,
-    isNearBottom: (element: HTMLElement) => boolean,
+    anchor: VisibleChatAnchorSnapshot,
     runwayMessageId: string | null = null,
 ) {
     if (!container) {
         return readPersistedChatMessageListViewState(scope);
     }
 
-    const anchor = captureVisibleChatAnchor(container, isNearBottom);
     const nextState: PersistedChatViewState = {
         scrollTop: Math.max(0, container.scrollTop),
         nearBottom: anchor.nearBottom,

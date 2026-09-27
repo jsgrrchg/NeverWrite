@@ -4,7 +4,7 @@ import { useChatSubmissionStore } from "../store/chatSubmissionStore";
 import {
     captureVisibleChatAnchor, findChatRowByKey, persistChatMessageListViewState,
     readPersistedChatMessageListViewState, resolveChatMessageListViewStateScope,
-    restoreChatMessageListViewState, type VisibleChatAnchorSnapshot,
+    restoreChatMessageListViewState, type CapturedChatAnchor,
 } from "./chatMessageListViewState";
 
 const NEAR_BOTTOM_PX = 80;
@@ -52,14 +52,15 @@ export function useChatTranscriptScroll(options: Options) {
     const state = useRef({
         scope: "", mode: "following" as ScrollMode,
         runwayId: null as string | null, seenPrompt: false,
+        promptNode: null as HTMLElement | null,
         inset: options.bottomInset,
-        anchor: null as VisibleChatAnchorSnapshot | null,
+        anchor: null as CapturedChatAnchor | null,
         messages: options.messages,
         loadingOlder: options.isLoadingOlderMessages,
         restore: null as ReturnType<typeof readPersistedChatMessageListViewState>,
         prepend: null as {
             height: number; top: number; firstId?: string;
-            anchor: VisibleChatAnchorSnapshot;
+            anchor: CapturedChatAnchor;
         } | null,
         glide: null as { start: number; from: number } | null,
         frame: 0,
@@ -79,14 +80,32 @@ export function useChatTranscriptScroll(options: Options) {
             && container.scrollHeight > container.clientHeight && !nearBottom(container)));
     }, []);
 
-    const remember = useCallback(() => {
+    const getPrompt = useCallback(() => {
+        const container = containerRef.current;
+        const current = state.current;
+        if (!container || !current.runwayId) return null;
+        if (!current.promptNode?.isConnected
+            || !container.contains(current.promptNode)
+            || current.promptNode.dataset.chatMessageId !== current.runwayId) {
+            current.promptNode = findPrompt(container, current.runwayId) ?? null;
+        }
+        return current.promptNode;
+    }, []);
+
+    const remember = useCallback((recapture = false) => {
         const container = containerRef.current;
         const current = state.current;
         if (!container || current.restore) return;
-        // Held prompts restore as reader-owned anchors, even at the geometric end.
-        const follows = () => current.mode === "following";
-        current.anchor = captureVisibleChatAnchor(container, follows);
-        persistChatMessageListViewState(current.scope, container, follows, current.runwayId);
+        if (current.mode === "following") {
+            current.anchor = { nearBottom: true, rowKey: null, offset: 0, node: null };
+        } else if (recapture || !current.anchor?.node?.isConnected
+            || !container.contains(current.anchor.node)
+            || current.anchor.node.dataset.chatRowKey !== current.anchor.rowKey) {
+            // Scan only on user navigation or when the saved row disappears.
+            // Streaming and layout corrections reuse the same row and offset.
+            current.anchor = captureVisibleChatAnchor(container, () => false);
+        }
+        persistChatMessageListViewState(current.scope, container, current.anchor, current.runwayId);
     }, []);
 
     const releaseForNavigation = useCallback(() => {
@@ -94,18 +113,30 @@ export function useChatTranscriptScroll(options: Options) {
         state.current.mode = "reading";
         state.current.writtenTop = null;
         state.current.restore = null;
-        remember();
+        remember(true);
         syncScrollButton();
     }, [cancelGlide, remember, syncScrollButton]);
 
-    const restoreAnchor = useCallback((anchor: VisibleChatAnchorSnapshot | null) => {
+    const restoreAnchor = useCallback((anchor: CapturedChatAnchor | null) => {
         const container = containerRef.current;
         if (!container || !anchor?.rowKey) return false;
-        const row = findChatRowByKey(container, anchor.rowKey);
-        if (!row) return false;
-        const delta = row.getBoundingClientRect().top
-            - container.getBoundingClientRect().top - anchor.offset;
-        if (Math.abs(delta) > 0.5) container.scrollTop += delta;
+        if (!anchor.node?.isConnected || !container.contains(anchor.node)
+            || anchor.node.dataset.chatRowKey !== anchor.rowKey) {
+            anchor.node = findChatRowByKey(container, anchor.rowKey);
+        }
+        if (!anchor.node) return false;
+        const rect = anchor.node.getBoundingClientRect();
+        const offset = rect.top - container.getBoundingClientRect().top;
+        const delta = offset - anchor.offset;
+        if (Math.abs(delta) > 0.5) {
+            const before = container.scrollTop;
+            container.scrollTop += delta;
+            // Account for clamping when the viewport grows or content shrinks.
+            anchor.offset = offset - (container.scrollTop - before);
+        }
+        // A collapsed/reflowed row can remain mounted but end above the reader.
+        // Recapture once so future resizes preserve the newly visible row.
+        if (anchor.offset + rect.height <= 0) anchor.node = null;
         return true;
     }, []);
 
@@ -129,13 +160,15 @@ export function useChatTranscriptScroll(options: Options) {
         container.style.scrollPaddingBottom = `${bottomPadding}px`;
 
         let target: number | null = null;
+        let promptDocumentTop = 0;
         let space = 0;
         if (current.runwayId) {
-            const prompt = findPrompt(container, current.runwayId);
+            const prompt = getPrompt();
             if (prompt) {
                 current.seenPrompt = true;
                 const promptTop = prompt.getBoundingClientRect().top;
                 const naturalTop = container.scrollTop + promptTop - container.getBoundingClientRect().top;
+                promptDocumentTop = naturalTop;
                 const inset = Math.min(PROMPT_TOP_PX, naturalTop);
                 const turnHeight = rows.getBoundingClientRect().bottom - promptTop;
                 space = Math.max(0, container.clientHeight - bottomPadding - inset - turnHeight);
@@ -168,6 +201,14 @@ export function useChatTranscriptScroll(options: Options) {
             } else {
                 container.scrollTop = target;
             }
+            // The prompt is already measured for the reservation. Reuse that
+            // measurement even during the glide instead of scanning the history.
+            current.anchor = {
+                nearBottom: false,
+                rowKey: current.promptNode?.dataset.chatRowKey ?? null,
+                offset: promptDocumentTop - container.scrollTop,
+                node: current.promptNode,
+            };
         } else if (current.prepend && args.messages[0]?.id !== current.prepend.firstId) {
             const prepend = current.prepend;
             current.prepend = null;
@@ -182,7 +223,7 @@ export function useChatTranscriptScroll(options: Options) {
         current.writtenTop = container.scrollTop;
         remember();
         syncScrollButton();
-    }, [cancelGlide, remember, restoreAnchor, syncScrollButton]);
+    }, [cancelGlide, getPrompt, remember, restoreAnchor, syncScrollButton]);
 
     const startGlide = useCallback(() => {
         const tick = () => {
@@ -191,7 +232,7 @@ export function useChatTranscriptScroll(options: Options) {
             // A send can fail and remove its echo before React paints it.
             // Never keep an animation alive waiting for a row that was rolled back.
             if (current.mode === "prompt" && current.runwayId && containerRef.current
-                && !findPrompt(containerRef.current, current.runwayId)) {
+                && !getPrompt()) {
                 current.runwayId = null;
                 current.mode = "reading";
                 cancelGlide();
@@ -200,7 +241,7 @@ export function useChatTranscriptScroll(options: Options) {
             if (state.current.glide) state.current.frame = requestAnimationFrame(tick);
         };
         state.current.frame = requestAnimationFrame(tick);
-    }, [cancelGlide, reconcile]);
+    }, [cancelGlide, getPrompt, reconcile]);
 
     useLayoutEffect(() => {
         const current = state.current;
@@ -213,6 +254,7 @@ export function useChatTranscriptScroll(options: Options) {
             current.mode = saved?.nearBottom === false ? "reading" : "following";
             current.runwayId = options.readOnly ? null : saved?.runwayMessageId ?? null;
             current.seenPrompt = false;
+            current.promptNode = null;
             current.restore = saved;
             current.prepend = null;
             current.anchor = null;
@@ -224,6 +266,7 @@ export function useChatTranscriptScroll(options: Options) {
             current.mode = "prompt";
             current.runwayId = submission.messageId;
             current.seenPrompt = false;
+            current.promptNode = null;
             current.restore = null;
             current.prepend = null;
             const container = containerRef.current;
@@ -254,7 +297,7 @@ export function useChatTranscriptScroll(options: Options) {
             current.mode = nearBottom(container) ? "following" : "reading";
             if (current.mode === "following" && current.inset !== latest.current.bottomInset) reconcile();
         }
-        remember();
+        remember(!programmatic && current.mode !== "prompt");
         syncScrollButton();
         const args = latest.current;
         if (!programmatic && current.mode !== "prompt" && container.scrollTop <= 120
@@ -263,7 +306,9 @@ export function useChatTranscriptScroll(options: Options) {
             current.prepend = {
                 height: container.scrollHeight, top: container.scrollTop,
                 firstId: args.messages[0]?.id,
-                anchor: captureVisibleChatAnchor(container, () => false),
+                anchor: current.anchor?.node
+                    ? { ...current.anchor }
+                    : captureVisibleChatAnchor(container, () => false),
             };
             args.onLoadOlderMessages();
         }

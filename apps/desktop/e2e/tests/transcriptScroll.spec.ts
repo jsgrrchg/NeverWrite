@@ -172,3 +172,98 @@ test("a send rolled back before paint does not leave an active anchor", async ({
     await page.evaluate(() => window.transcriptFixture.send("retry"));
     await expectHeld(page, "retry");
 });
+
+async function readAt(page: Page, id: string) {
+    await page.locator(scroller).evaluate(async (container, messageId) => {
+        container.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
+        const row = container.querySelector<HTMLElement>(`[data-chat-message-id="${messageId}"]`)!;
+        container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top + 10;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    }, id);
+}
+
+test("a cached reading anchor survives resize, growth above it and removal", async ({ page }) => {
+    await page.evaluate(() => window.transcriptFixture.send("cached"));
+    await expectHeld(page, "cached");
+    await page.evaluate(() => window.transcriptFixture.reply(40));
+    await expect.poll(async () => (await geometry(page, "cached")).space).toBe(0);
+    await readAt(page, "history-10");
+    const before = await geometry(page, "history-10");
+    await page.setViewportSize({ width: 420, height: 900 });
+    await expect.poll(async () => Math.abs((await geometry(page, "history-10")).top! - before.top!)).toBeLessThan(2);
+
+    // Async growth above the reader (e.g. an image or expanded activity) must
+    // still correct the anchor even though there is no React message update.
+    await page.locator('[data-chat-message-id="history-2"]').evaluate((row) => {
+        (row as HTMLElement).style.height = "400px";
+    });
+    await expect.poll(async () => Math.abs((await geometry(page, "history-10")).top! - before.top!)).toBeLessThan(2);
+    await page.evaluate(() => window.transcriptFixture.remove("history-10"));
+    await expect(page.locator('[data-chat-message-id="history-10"]')).toHaveCount(0);
+    const replacement = await geometry(page, "history-11");
+    await page.evaluate(() => window.transcriptFixture.reply(45));
+    await expect.poll(async () => Math.abs((await geometry(page, "history-11")).top! - replacement.top!)).toBeLessThan(2);
+});
+
+test("streaming does not remeasure unrelated offscreen rows to remember the anchor", async ({ page }) => {
+    await page.evaluate(() => window.transcriptFixture.send("bounded-work"));
+    await expectHeld(page, "bounded-work");
+    async function countOffscreenReads(startParagraphs: number) {
+        return page.evaluate(async (start) => {
+            const original = Element.prototype.getBoundingClientRect;
+            let oldRowReads = 0;
+            Element.prototype.getBoundingClientRect = function () {
+                // This assistant row is neither the reading anchor nor a prompt
+                // used by the navigation rail. Token updates need not measure it.
+                if (this.getAttribute("data-chat-message-id") === "history-1") oldRowReads++;
+                return original.call(this);
+            };
+            try {
+                for (let i = 0; i < 12; i++) {
+                    window.transcriptFixture.reply(start + i % 3);
+                    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+                }
+                return oldRowReads;
+            } finally {
+                Element.prototype.getBoundingClientRect = original;
+            }
+        }, startParagraphs);
+    }
+    expect(await countOffscreenReads(1)).toBe(0);
+    await page.evaluate(() => window.transcriptFixture.reply(40));
+    await expect.poll(async () => (await geometry(page, "bounded-work")).space).toBe(0);
+    await readAt(page, "history-10");
+    const before = await geometry(page, "history-10");
+    expect(await countOffscreenReads(40)).toBe(0);
+    expect(Math.abs((await geometry(page, "history-10")).top! - before.top!)).toBeLessThan(2);
+});
+
+test("a row that shrinks out of view hands the anchor to the new visible row", async ({ page }) => {
+    await page.evaluate(() => window.transcriptFixture.send("collapse"));
+    await expectHeld(page, "collapse");
+    await page.evaluate(() => window.transcriptFixture.reply(40));
+    await expect.poll(async () => (await geometry(page, "collapse")).space).toBe(0);
+    await page.locator('[data-chat-message-id="history-10"]').evaluate((row) => {
+        (row as HTMLElement).style.height = "500px";
+    });
+    await readAt(page, "history-10");
+    await page.locator(scroller).evaluate(async (container) => {
+        container.scrollTop += 220;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
+    await page.locator('[data-chat-message-id="history-10"]').evaluate((row) => {
+        (row as HTMLElement).style.height = "";
+    });
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const anchor = await page.locator(scroller).evaluate((container) => {
+        const top = container.getBoundingClientRect().top;
+        const row = Array.from(container.querySelectorAll<HTMLElement>("[data-chat-row]"))
+            .find((row) => row.getBoundingClientRect().bottom > top)!;
+        return { id: row.dataset.chatMessageId!, offset: row.getBoundingClientRect().top - top };
+    });
+    expect(anchor.id).not.toBe("history-10");
+    await page.setViewportSize({ width: 300, height: 760 });
+    await expect.poll(async () => Math.abs((await geometry(page, anchor.id)).top! - anchor.offset)).toBeLessThan(2);
+    await page.evaluate(() => window.transcriptFixture.reply(45));
+    expect(Math.abs((await geometry(page, anchor.id)).top! - anchor.offset)).toBeLessThan(2);
+});
