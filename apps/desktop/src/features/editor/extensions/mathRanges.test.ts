@@ -33,6 +33,11 @@ describe("Markdown math delimiters", () => {
         expect(parse(doc)).toEqual([]);
     });
 
+    it("gives display delimiters precedence over an unmatched inline opener", () => {
+        expect(parse("Text $unfinished $$y$$ trailing$").map(({ tex, display }) => ({ tex, display })))
+            .toEqual([{ tex: "y", display: true }]);
+    });
+
     it("keeps prices literal next to a real formula", () => {
         expect(parse("Costs $20 and $30; formula $x$.").map((range) => range.tex)).toEqual(["x"]);
     });

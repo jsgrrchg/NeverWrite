@@ -76,6 +76,8 @@ export function parseMathRanges(state: EditorState): MathRange[] {
             let end = close + 1;
             while (text[end] === "$") end++;
             if (end - close !== width) {
+                // An unmatched inline opener must not consume a display formula.
+                if (!display) break;
                 close = end - 1;
                 continue;
             }
