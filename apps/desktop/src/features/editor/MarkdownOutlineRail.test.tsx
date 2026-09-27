@@ -8,13 +8,13 @@ import { resolveOutlineRailLayout } from "./markdownOutlineRailLayout";
 
 const snapshot: EditorOutlineSnapshot = {
     headings: extractHeadings("# Root\n## Child\n### Leaf"),
-    activeId: null, width: 600, height: 400, gutter: 56, rightInset: 10,
+    inViewStart: -1, inViewEnd: -1, width: 600, height: 400, gutter: 56, rightInset: 10,
 };
 
 describe("MarkdownOutlineRail", () => {
-    it("previews heading hierarchy, marks the active section, and navigates", () => {
+    it("previews heading hierarchy, lights headings in view, and navigates", () => {
         const bridge = createEditorOutlineBridge();
-        bridge.getSnapshot = () => ({ ...snapshot, activeId: snapshot.headings[1].id });
+        bridge.getSnapshot = () => ({ ...snapshot, inViewStart: 1, inViewEnd: 2 });
         // useSyncExternalStore requires a cached snapshot.
         const current = bridge.getSnapshot();
         bridge.getSnapshot = () => current;
@@ -22,11 +22,17 @@ describe("MarkdownOutlineRail", () => {
         renderComponent(<MarkdownOutlineRail bridge={bridge} />);
         const rail = screen.getByTestId("markdown-outline-rail");
         expect(rail).toHaveAttribute("data-side", "right");
-        expect(rail.querySelectorAll('[data-in-view="true"]')).toHaveLength(1);
+        const strips = rail.querySelectorAll("[data-prompt-ring-strip]");
+        expect(Array.from(strips, (strip) => strip.getAttribute("data-in-view")))
+            .toEqual(["false", "true", "true"]);
         const button = screen.getByRole("button", { name: "Jump to heading" });
         fireEvent.focus(button);
         fireEvent.keyDown(button, { key: "End" });
-        expect(screen.getByText("Root › Child · H3")).toBeInTheDocument();
+        const preview = rail.querySelector("[data-outline-preview]")!;
+        expect(Array.from(preview.querySelectorAll("[data-outline-preview-ancestor]"), (row) => row.textContent))
+            .toEqual(["Root", "Child"]);
+        expect(preview.querySelector("[data-outline-preview-title]")).toHaveTextContent("Leaf");
+        expect(preview).toHaveTextContent("H3");
         expect(button).toHaveAccessibleName("Jump to heading: Leaf (H3)");
         fireEvent.keyDown(button, { key: "Enter" });
         expect(bridge.select).toHaveBeenCalledWith(snapshot.headings[2]);

@@ -1,7 +1,7 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
-import { createEditorOutlineBridge, findActiveHeading } from "./editorOutline";
+import { createEditorOutlineBridge, resolveHeadingsInView } from "./editorOutline";
 import { lineFlashField } from "./livePreviewHelpers";
 import { extractHeadings } from "../../notes/outlineModel";
 
@@ -54,10 +54,21 @@ describe("editor outline bridge", () => {
         expect(bridge.getSnapshot().headings).toEqual([]);
     });
 
-    it("keeps the current section active after its heading leaves the viewport", () => {
-        const headings = extractHeadings("# First\n" + "paragraph\n".repeat(100) + "## Last\nbody");
-        expect(findActiveHeading(headings, 500)).toBe(headings[0].id);
-        expect(findActiveHeading(headings, headings[1].anchor)).toBe(headings[1].id);
-        expect(findActiveHeading([], 0)).toBeNull();
+    it("lights the current section and every heading visible in the viewport", () => {
+        const headings = extractHeadings(
+            "Intro\n\n# First\n" + "paragraph\n".repeat(100) + "## Middle\nbody\n### Last\nbody",
+        );
+        const none = { inViewStart: -1, inViewEnd: -1 };
+        // Current section stays lit after its heading scrolls away.
+        expect(resolveHeadingsInView(headings, 500, 600)).toEqual({ inViewStart: 0, inViewEnd: 0 });
+        // Every heading starting inside the viewport is lit alongside it.
+        expect(resolveHeadingsInView(headings, 500, headings[2].anchor))
+            .toEqual({ inViewStart: 0, inViewEnd: 2 });
+        expect(resolveHeadingsInView(headings, headings[1].anchor, headings[2].anchor))
+            .toEqual({ inViewStart: 1, inViewEnd: 2 });
+        // Leading text before the first heading lights nothing until it appears.
+        expect(resolveHeadingsInView(headings, 0, 3)).toEqual(none);
+        expect(resolveHeadingsInView(headings, 0, headings[0].anchor)).toEqual({ inViewStart: 0, inViewEnd: 0 });
+        expect(resolveHeadingsInView([], 0, 10)).toEqual(none);
     });
 });
