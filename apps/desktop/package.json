@@ -106,7 +106,7 @@
         "globals": "^16.5.0",
         "jsdom": "^26.1.0",
         "rcedit": "^5.0.2",
-        "tar": "7.5.20",
+        "tar": "7.5.22",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.59.0",
         "vite": "^8.0.16",
