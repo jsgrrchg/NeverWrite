@@ -13,6 +13,7 @@ interface UseChatFindArgs {
     query: string;
     caseSensitive: boolean;
     enabled: boolean;
+    onNavigate?: () => void;
 }
 
 interface UseChatFindResult {
@@ -37,6 +38,7 @@ export function useChatFind({
     query,
     caseSensitive,
     enabled,
+    onNavigate,
 }: UseChatFindArgs): UseChatFindResult {
     const rangesRef = useRef<Range[]>([]);
     const activeIndexRef = useRef(-1);
@@ -53,6 +55,7 @@ export function useChatFind({
         const ranges = rangesRef.current;
         const idx = activeIndexRef.current;
         if (!container || idx < 0 || idx >= ranges.length) return;
+        onNavigate?.();
         const range = ranges[idx];
         const rect = range.getBoundingClientRect();
         if (rect.height === 0 && rect.width === 0) {
@@ -71,7 +74,7 @@ export function useChatFind({
             top: container.scrollTop + delta,
             behavior: "smooth",
         });
-    }, [containerRef]);
+    }, [containerRef, onNavigate]);
 
     // Core: rebuild ranges + highlights. `preserveActive` keeps the current
     // cursor (used while streaming); otherwise it resets to the first match.
