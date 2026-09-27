@@ -1,4 +1,5 @@
 import { openChatSessionInWorkspace } from "../chatPaneMovement";
+import { announceChatSubmission } from "./chatSubmissionStore";
 import { getArchiveIdentity, getArchiveRoot, useArchivedChatsStore } from "./archivedChatsStore";
 import { create, type StateCreator } from "zustand";
 import { confirm, openUrl } from "@neverwrite/runtime";
@@ -9930,6 +9931,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                 if (!optimisticMessageInserted) {
                     return;
                 }
+                announceChatSubmission(activeSessionId, userMessageId);
 
                 if (preflightOwnership && !route.initialProviderChanged) {
                     const releasedOwnership =

@@ -1,3 +1,4 @@
+import { useChatSubmissionStore } from "./chatSubmissionStore";
 import { useUnreadChatsStore } from "./unreadChatsStore";
 import { useArchivedChatsStore } from "./archivedChatsStore";
 import { selectChatForTest } from "../../../test/test-utils";
@@ -583,6 +584,7 @@ function expectTrackedFileToMatchAccumulatedDiff(
 
 describe("chatStore", () => {
     beforeEach(() => {
+        useChatSubmissionStore.setState({ revision: 0, submissionsBySessionId: {} });
         useSettingsStore.setState({
             aiReviewEnabled: true,
             inlineReviewEnabled: true,
@@ -2229,6 +2231,10 @@ describe("chatStore", () => {
         expect(session.activeWorkCycleId).toBeTruthy();
         expect(session.visibleWorkCycleId).toBe(session.activeWorkCycleId);
         expect(userMessage?.workCycleId).toBe(session.activeWorkCycleId);
+        expect(useChatSubmissionStore.getState().submissionsBySessionId[activeSessionId]).toMatchObject({
+            sessionId: activeSessionId,
+            messageId: userMessage?.id,
+        });
     });
 
     it("sends plain full paths to the agent for path-based composer parts", async () => {
@@ -7604,6 +7610,7 @@ describe("chatStore", () => {
 
         await useChatStore.getState().sendMessage();
 
+        expect(useChatSubmissionStore.getState().submissionsBySessionId[activeSessionId]).toBeUndefined();
         const state = useChatStore.getState();
         expect(
             invokeMock.mock.calls.filter(
@@ -7718,11 +7725,19 @@ describe("chatStore", () => {
             useChatStore.getState().queuedMessagesBySessionId[activeSessionId],
         ).toHaveLength(1);
 
+        expect(useChatSubmissionStore.getState().submissionsBySessionId[activeSessionId]).toBeUndefined();
         useChatStore.getState().applyMessageCompleted({
             session_id: activeSessionId,
             message_id: "assistant-1",
         });
         await new Promise((resolve) => setTimeout(resolve, 0));
+        const dispatchedPrompt = useChatStore.getState().sessionsById[activeSessionId]
+            ?.messages.find((message) => message.role === "user" && message.content === "Send after this turn");
+        expect(dispatchedPrompt).toBeDefined();
+        expect(useChatSubmissionStore.getState().submissionsBySessionId[activeSessionId]).toMatchObject({
+            sessionId: activeSessionId,
+            messageId: dispatchedPrompt!.id,
+        });
 
         expect(
             invokeMock.mock.calls.some(
