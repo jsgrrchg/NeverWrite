@@ -1,0 +1,114 @@
+import { syntaxTree } from "@codemirror/language";
+import { StateField, type EditorState } from "@codemirror/state";
+
+export interface MathRange {
+    from: number;
+    to: number;
+    contentFrom: number;
+    contentTo: number;
+    tex: string;
+    display: boolean;
+    block: boolean;
+}
+
+const excludedNodes = new Set([
+    "FencedCode", "CodeBlock", "InlineCode", "HTMLBlock", "HTMLTag",
+    "URL", "LinkTitle", "LinkReference", "LinkLabel", "Autolink", "Image", "Table",
+]);
+
+function escaped(text: string, at: number): boolean {
+    let slashes = 0;
+    while (at > 0 && text[--at] === "\\") slashes++;
+    return slashes % 2 === 1;
+}
+
+/** Recognize math in parsed Markdown only; background parsing fills later ranges. */
+export function parseMathRanges(state: EditorState): MathRange[] {
+    const tree = syntaxTree(state);
+    const text = state.doc.sliceString(0, tree.length);
+    const excluded: Array<{ from: number; to: number }> = [];
+    const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(text);
+    if (frontmatter) excluded.push({ from: 0, to: frontmatter[0].length });
+    tree.iterate({
+        enter(node) {
+            if (excludedNodes.has(node.name)) {
+                excluded.push({ from: node.from, to: node.to });
+                return false;
+            }
+        },
+    });
+    excluded.sort((a, b) => a.from - b.from);
+    const ranges: MathRange[] = [];
+    let excludedIndex = 0;
+    for (let from = 0; from < text.length; from++) {
+        while (excludedIndex < excluded.length && excluded[excludedIndex].to <= from) {
+            excludedIndex++;
+        }
+        const boundary = excluded[excludedIndex];
+        if (boundary && boundary.from <= from) {
+            from = boundary.to - 1;
+            continue;
+        }
+        if (text[from] !== "$" || escaped(text, from)) continue;
+        let runEnd = from + 1;
+        while (text[runEnd] === "$") runEnd++;
+        const width = runEnd - from;
+        if (width > 2) {
+            from = runEnd - 1;
+            continue;
+        }
+        const display = width === 2;
+        const contentFrom = from + width;
+        if (!display && (!text[contentFrom] || /\s/.test(text[contentFrom]))) continue;
+        const openingLine = state.doc.lineAt(from);
+        const standaloneOpening = /^ {0,3}$/.test(text.slice(openingLine.from, from));
+        // Multiline display math must open on its own line. Embedded $$ stays inline.
+        const multiline = display && standaloneOpening &&
+            /^\s*$/.test(text.slice(contentFrom, openingLine.to));
+        const limit = Math.min(
+            boundary?.from ?? text.length,
+            multiline ? text.length : openingLine.to,
+        );
+        let close = contentFrom;
+        for (; close < limit; close++) {
+            if (text[close] !== "$" || escaped(text, close)) continue;
+            let end = close + 1;
+            while (text[end] === "$") end++;
+            if (end - close !== width) {
+                close = end - 1;
+                continue;
+            }
+            if (!display && (/\s/.test(text[close - 1]) || /\d/.test(text[end] ?? ""))) break;
+            const closingLine = state.doc.lineAt(close);
+            if (multiline && (
+                !/^ {0,3}$/.test(text.slice(closingLine.from, close)) ||
+                !/^\s*$/.test(text.slice(end, closingLine.to))
+            )) continue;
+            const tex = text.slice(contentFrom, close).trim();
+            if (!tex) break;
+            ranges.push({
+                from, to: end, contentFrom, contentTo: close, tex, display,
+                block: display && standaloneOpening && /^\s*$/.test(text.slice(end, closingLine.to)),
+            });
+            from = end - 1;
+            break;
+        }
+        // Never reinterpret the second dollar of an unmatched display delimiter.
+        if (close >= limit || !text.slice(contentFrom, close).trim()) from = Math.max(from, runEnd - 1);
+    }
+    return ranges;
+}
+
+/** Shared by inline and block decorations; selection changes reuse the parsed ranges. */
+export const mathRangesField = StateField.define<readonly MathRange[]>({
+    create: parseMathRanges,
+    update(ranges, transaction) {
+        return transaction.docChanged || syntaxTree(transaction.startState) !== syntaxTree(transaction.state)
+            ? parseMathRanges(transaction.state)
+            : ranges;
+    },
+});
+
+export function getMathRanges(state: EditorState): readonly MathRange[] {
+    return state.field(mathRangesField, false) ?? parseMathRanges(state);
+}
