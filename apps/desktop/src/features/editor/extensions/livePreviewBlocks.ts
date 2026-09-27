@@ -15,6 +15,7 @@ import {
 import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import katex from "katex";
+import { getMathRanges } from "./mathRanges";
 import {
     buildVaultPreviewUrlFromAbsolutePath,
     isAuthorizedVaultPreviewPath,
@@ -1409,13 +1410,13 @@ export function createCodeBlockLivePreviewExtension() {
 export class InlineMathWidget extends WidgetType {
     private tex: string;
 
-    constructor(tex: string) {
+    constructor(tex: string, private display = false) {
         super();
         this.tex = tex;
     }
 
     eq(other: InlineMathWidget) {
-        return this.tex === other.tex;
+        return this.tex === other.tex && this.display === other.display;
     }
 
     toDOM() {
@@ -1425,7 +1426,7 @@ export class InlineMathWidget extends WidgetType {
         try {
             katex.render(this.tex, span, {
                 throwOnError: false,
-                displayMode: false,
+                displayMode: this.display,
                 output: "htmlAndMathml",
             });
         } catch {
@@ -1473,22 +1474,10 @@ class BlockMathWidget extends WidgetType {
     }
 }
 
-const BLOCK_MATH_RE = /\$\$([\s\S]+?)\$\$/g;
-
 function buildBlockMathDecorations(state: EditorState): DecorationSet {
     const decos: DecoEntry[] = [];
-    const text = state.doc.toString();
-
-    BLOCK_MATH_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = BLOCK_MATH_RE.exec(text)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
-        const tex = match[1].trim();
-
-        if (!tex || !match[0].includes("\n")) continue;
-        if (selectionTouchesRange(state, from, to)) continue;
-
+    for (const { from, to, tex, block } of getMathRanges(state)) {
+        if (!block || selectionTouchesRange(state, from, to)) continue;
         decos.push({
             from,
             to,
@@ -1511,14 +1500,11 @@ function buildBlockMathDecorations(state: EditorState): DecorationSet {
 
 export function createBlockMathLivePreviewExtension() {
     return StateField.define<DecorationSet>({
-        create(state) {
-            return buildBlockMathDecorations(state);
-        },
+        create: buildBlockMathDecorations,
         update(decorations, transaction) {
-            if (!needsBlockRebuild(transaction)) {
-                return transaction.docChanged
-                    ? decorations.map(transaction.changes)
-                    : decorations;
+            if (!transaction.docChanged && !transaction.selection &&
+                syntaxTree(transaction.startState) === syntaxTree(transaction.state)) {
+                return decorations;
             }
             return buildBlockMathDecorations(transaction.state);
         },

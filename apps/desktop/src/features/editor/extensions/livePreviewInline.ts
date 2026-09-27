@@ -46,6 +46,7 @@ import {
     FRONTMATTER_RE,
     getLeadingContentCollapseRanges,
 } from "../noteTitleHelpers";
+import { getMathRanges, type MathRange } from "./mathRanges";
 import { InlineMathWidget } from "./livePreviewBlocks";
 import {
     perfMeasure,
@@ -85,7 +86,6 @@ const LOOSE_UNORDERED_LIST_RE = /^([ \t]*)([-+*]|[•◦▪‣–—−])([ \t]+
 const FOOTNOTE_REF_RE = /\[\^([^\]\s]+)\]/g;
 const INLINE_HTML_RE = /<(sub|sup|kbd)>([^<\n]+)<\/\1>/gi;
 const INLINE_BR_RE = /<br\s*\/?>/gi;
-const BLOCK_MATH_RE = /\$\$([\s\S]+?)\$\$/g;
 const FOOTNOTE_DEF_RE = /^\[\^([^\]]+)\]:\s*(.*)$/;
 const CALLOUT_RE = /^\s*>\s+\[!([a-zA-Z0-9-]+)\]([+-])?(?:\s+(.*))?$/;
 const EXTENDED_TASK_RE = /^(\s*(?:[-+*]|\d+[.)])\s+)\[( |x|X|~|\/)\](\s+.*)?$/;
@@ -107,6 +107,7 @@ interface BuildContext {
     decos: DecoEntry[];
     lineDecos: Map<number, LineDecoEntry>;
     blockRanges: Array<{ from: number; to: number }>;
+    mathRanges: readonly MathRange[];
     orderedListMarkerWidths: Map<string, string>;
     linkReferences: Map<string, { url: string; title: string | null }>;
     footnoteNumbers: FootnoteNumberMap;
@@ -1200,6 +1201,7 @@ function applyNodeRules(context: BuildContext) {
         from: context.vpFrom,
         to: context.vpTo,
         enter(node) {
+            if (context.mathRanges.some((range) => node.from >= range.from && node.from < range.to)) return false;
             if (node.name === "Table" || node.name === "FencedCode") {
                 context.blockRanges.push({ from: node.from, to: node.to });
                 if (node.name === "Table") return false;
@@ -1715,32 +1717,19 @@ function applyRichRegexRules(context: BuildContext) {
         );
     }
 
-    // Block math ($$...$$) that spans multiple lines is handled by
-    // createBlockMathLivePreviewExtension (StateField in livePreviewBlocks.ts).
-    // Single-line block math still gets styled here.
-    BLOCK_MATH_RE.lastIndex = 0;
-    let blockMathMatch: RegExpExecArray | null;
-    while ((blockMathMatch = BLOCK_MATH_RE.exec(context.vpText)) !== null) {
-        const absFrom = context.vpFrom + blockMathMatch.index;
-        const absTo = absFrom + blockMathMatch[0].length;
-        if (rangeOverlapsBlock(context, absFrom, absTo)) continue;
-        if (blockMathMatch[1].includes("\n")) continue; // handled by StateField
+}
 
-        const tex = blockMathMatch[1].trim();
-        if (!tex) continue;
-        registerRevealSensitiveRange(context, "range", absFrom, absTo);
-
-        if (!selectionTouchesRange(context.state, absFrom, absTo)) {
-            pushDeco(
-                context,
-                absFrom,
-                absTo,
-                Decoration.replace({
-                    widget: new InlineMathWidget(tex),
-                }),
-            );
+function applyMathRules(context: BuildContext) {
+    for (const range of context.mathRanges) {
+        const { from, to, tex, contentFrom, contentTo, display, block } = range;
+        if (block || from < context.vpFrom || to > context.vpTo) continue;
+        registerRevealSensitiveRange(context, "range", from, to);
+        if (!selectionTouchesRange(context.state, from, to)) {
+            pushDeco(context, from, to, Decoration.replace({
+                widget: new InlineMathWidget(tex, display),
+            }));
         } else {
-            pushDeco(context, absFrom + 2, absTo - 2, createMathMark("block"));
+            pushDeco(context, contentFrom, contentTo, createMathMark(display ? "block" : "inline"));
         }
     }
 }
@@ -1779,11 +1768,13 @@ function buildInlineDecorations(
     revealSensitiveRanges: RevealSensitiveRange[];
     activeRevealSignature: string;
 } {
+    const mathRanges = getMathRanges(state).filter((range) => range.display);
     const context: BuildContext = {
         state,
         decos: [],
         lineDecos: new Map<number, LineDecoEntry>(),
-        blockRanges: [],
+        blockRanges: [...mathRanges],
+        mathRanges,
         orderedListMarkerWidths: new Map<string, string>(),
         linkReferences: state.field(linkReferenceField),
         footnoteNumbers: state.field(footnoteNumberField),
@@ -1801,6 +1792,7 @@ function buildInlineDecorations(
     applyHighlightRules(context);
     applyRegexRules(context);
     applyRichRegexRules(context);
+    applyMathRules(context);
     applyFootnoteDefinitionDecorations(context);
     applyCalloutDecorations(context);
     appendLineDecorations(context);

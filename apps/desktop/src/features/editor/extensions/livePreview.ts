@@ -12,6 +12,7 @@ import {
 import { dispatchOpenYouTubeModal } from "../youtube";
 import { openVaultEmbedTarget } from "../embedNavigation";
 import {
+    createBlockMathLivePreviewExtension,
     createCodeBlockLivePreviewExtension,
     createImageLivePreviewExtension,
     createImageResizeExtension,
@@ -29,6 +30,8 @@ import {
     LIVE_PREVIEW_TASK_MARKER_WIDTH_EM,
 } from "./livePreviewListMetrics";
 import { livePreviewTheme } from "./livePreviewTheme";
+
+import { mathRangesField } from "./mathRanges";
 
 const TASK_TOGGLE_HOVER_CLASS = "cm-lp-task-toggle-hover";
 
@@ -608,6 +611,8 @@ export function livePreviewExtension(
         linkReferenceField,
         footnoteNumberField,
         lineFlashField,
+        mathRangesField,
+        createBlockMathLivePreviewExtension(),
         createInlineLivePreviewPlugin(),
         createLeadingContentCollapseField(),
         createCodeBlockLivePreviewExtension(),
