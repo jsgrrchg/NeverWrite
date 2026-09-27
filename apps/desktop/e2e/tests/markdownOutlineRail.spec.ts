@@ -84,6 +84,21 @@ test("keeps a long section active when its heading is no longer rendered", async
     await expect(strips.last()).toHaveAttribute("data-in-view", "true");
 });
 
+test("lights every heading visible in the viewport", async ({ page }) => {
+    await page.setViewportSize({ width: 1100, height: 700 });
+    await mount(page, "# Root\n\n## Near\n\nShort.\n\n### Nested\n\nShort.\n\n" +
+        "## Far\n\n" + "Paragraph\n\n".repeat(80) + "## End\n\nShort.");
+    const strips = rail(page).locator("[data-prompt-ring-strip]");
+    await expect.poll(() => strips.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-in-view"))))
+        .toEqual(["true", "true", "true", "true", "false"]);
+    await page.evaluate(() => {
+        const view = window.editorFixture.getView();
+        view.scrollDOM.scrollTop = view.scrollDOM.scrollHeight;
+    });
+    await expect.poll(() => strips.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-in-view"))))
+        .toEqual(["false", "false", "false", "true", "true"]);
+});
+
 test("fits the panel and leaves the text and scrollbar interactive", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 280 });
     await mount(page);
