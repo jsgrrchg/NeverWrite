@@ -34,6 +34,25 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.6] - 2026-09-27
+
+### Added
+
+- Added a right-side outline rail to Markdown Live Preview for navigating document headings.
+
+### Changed
+
+- Hid saved-chat reconnection status from the conversation transcript.
+- Updated the desktop app to Electron `44.4.5`; desktop releases now require macOS 13 or later.
+
+### Fixed
+
+- Kept newly sent chat messages visible by reserving transcript space during submission.
+
+### Security
+
+- Updated vulnerable npm dependencies used by the desktop app.
+
 ## [0.8.5] - 2026-09-25
 
 ### Changed
