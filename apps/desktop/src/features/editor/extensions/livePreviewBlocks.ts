@@ -15,7 +15,7 @@ import {
 import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import katex from "katex";
-import { getMathRanges } from "./mathRanges";
+import { getMathRanges, mathRenderingChanged } from "./mathRanges";
 import {
     buildVaultPreviewUrlFromAbsolutePath,
     isAuthorizedVaultPreviewPath,
@@ -1439,7 +1439,7 @@ export class InlineMathWidget extends WidgetType {
     }
 
     ignoreEvent() {
-        return true;
+        return false;
     }
 }
 
@@ -1472,7 +1472,7 @@ class BlockMathWidget extends WidgetType {
     }
 
     ignoreEvent() {
-        return true;
+        return false;
     }
 }
 
@@ -1504,9 +1504,8 @@ export function createBlockMathLivePreviewExtension() {
     return StateField.define<DecorationSet>({
         create: buildBlockMathDecorations,
         update(decorations, transaction) {
-            if (!transaction.docChanged && !transaction.selection &&
-                syntaxTree(transaction.startState) === syntaxTree(transaction.state)) {
-                return decorations;
+            if (!mathRenderingChanged(transaction.startState, transaction.state, true)) {
+                return transaction.docChanged ? decorations.map(transaction.changes) : decorations;
             }
             return buildBlockMathDecorations(transaction.state);
         },

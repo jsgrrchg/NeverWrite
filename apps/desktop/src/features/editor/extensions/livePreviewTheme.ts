@@ -829,7 +829,8 @@ export const livePreviewTheme = EditorView.baseTheme({
         WebkitBoxDecorationBreak: "clone",
     },
     ".cm-katex-inline": {
-        verticalAlign: "middle",
+        display: "inline-block",
+        verticalAlign: "baseline",
     },
     ".cm-katex-block": {
         display: "flex",

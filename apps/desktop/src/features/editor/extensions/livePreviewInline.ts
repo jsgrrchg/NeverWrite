@@ -46,7 +46,7 @@ import {
     FRONTMATTER_RE,
     getLeadingContentCollapseRanges,
 } from "../noteTitleHelpers";
-import { getMathRanges, type MathRange } from "./mathRanges";
+import { getMathRanges, mathRenderingChanged, type MathRange } from "./mathRanges";
 import { InlineMathWidget } from "./livePreviewBlocks";
 import {
     perfMeasure,
@@ -1891,6 +1891,7 @@ function touchesListPresentationTransition(update: ViewUpdate): boolean {
 
 function isSimpleEdit(update: ViewUpdate): boolean {
     if (
+        mathRenderingChanged(update.startState, update.state) ||
         touchesLineIndentation(update) ||
         touchesListPresentationTransition(update)
     ) {
@@ -1941,6 +1942,14 @@ export function createInlineLivePreviewPlugin() {
                     // rebuilding the entire viewport.
                     if (isSimpleEdit(update)) {
                         this.decorations = this.decorations.map(update.changes);
+                        this.revealSensitiveRanges = this.revealSensitiveRanges.map((range) => ({
+                            ...range,
+                            from: update.changes.mapPos(range.from, 1),
+                            to: update.changes.mapPos(range.to, -1),
+                        }));
+                        this.activeRevealSignature = getRevealSensitiveSignature(
+                            update.state, this.revealSensitiveRanges,
+                        );
                         return;
                     }
                     this.decorations = this.build(update.view, "docChanged");

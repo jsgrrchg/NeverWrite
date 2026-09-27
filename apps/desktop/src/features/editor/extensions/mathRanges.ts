@@ -1,5 +1,6 @@
 import { syntaxTree } from "@codemirror/language";
 import { StateField, type EditorState } from "@codemirror/state";
+import { selectionTouchesRange } from "./selectionActivity";
 
 export interface MathRange {
     from: number;
@@ -111,4 +112,15 @@ export const mathRangesField = StateField.define<readonly MathRange[]>({
 
 export function getMathRanges(state: EditorState): readonly MathRange[] {
     return state.field(mathRangesField, false) ?? parseMathRanges(state);
+}
+
+/** Positions can be mapped cheaply when formula content and reveal state agree. */
+export function mathRenderingChanged(before: EditorState, after: EditorState, blocksOnly = false): boolean {
+    const previous = getMathRanges(before).filter((range) => !blocksOnly || range.block);
+    const current = getMathRanges(after).filter((range) => !blocksOnly || range.block);
+    return previous.length !== current.length || previous.some((range, index) => {
+        const next = current[index];
+        return range.tex !== next.tex || range.display !== next.display || range.block !== next.block ||
+            selectionTouchesRange(before, range.from, range.to) !== selectionTouchesRange(after, next.from, next.to);
+    });
 }

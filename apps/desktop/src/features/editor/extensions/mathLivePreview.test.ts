@@ -1,5 +1,6 @@
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
+import { history, undo, redo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 import { livePreviewExtension } from "./livePreview";
@@ -9,7 +10,7 @@ function mount(doc: string, anchor = 0) {
     const parent = document.body.appendChild(document.createElement("div"));
     const view = new EditorView({ parent, state: EditorState.create({
         doc, selection: { anchor },
-        extensions: [markdown({ base: markdownLanguage }), livePreviewExtension(null, {
+        extensions: [history(), EditorState.allowMultipleSelections.of(true), markdown({ base: markdownLanguage }), livePreviewExtension(null, {
             resolveWikilink: () => false, navigateWikilink: () => {},
             getNoteLinkTarget: () => null, openLinkContextMenu: () => {},
         })],
@@ -48,6 +49,60 @@ describe("math live preview integration", () => {
         const view = mount(doc, doc.indexOf("a*b"));
         expect(view.contentDOM.textContent).toContain("$a*b*c + x_1_2$");
         expect(view.dom.querySelector(".cm-lp-italic")).toBeNull();
+    });
+
+    it.each(["$x$", "$$x$$", "$$\nx\n$$"])("updates formula content and supports undo/redo: %s", (formula) => {
+        const doc = `Start\n\n${formula}\n\nEnd`;
+        const view = mount(doc);
+        const from = doc.indexOf("x");
+        view.dispatch({ changes: { from, to: from + 1, insert: "y" } });
+        expect(view.dom.querySelector(".katex annotation")?.textContent).toBe("y");
+        undo(view);
+        expect(view.state.doc.toString()).toBe(doc);
+        view.dispatch({ selection: { anchor: 0 } });
+        expect(view.dom.querySelector(".katex annotation")?.textContent).toBe("x");
+        redo(view);
+        view.dispatch({ selection: { anchor: 0 } });
+        expect(view.dom.querySelector(".katex annotation")?.textContent).toBe("y");
+    });
+
+    it.each(["$x$", "$$x$$", "$$\nx\n$$"])("clicks moved widgets using current source positions: %s", (formula) => {
+        const view = mount(`Start\n\n${formula}\n\nEnd`);
+        view.dispatch({ changes: { from: 0, insert: "prefix" } });
+        const math = view.dom.querySelector(".cm-katex-inline, .cm-katex-block")!;
+        math.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+        expect(view.dom.querySelector(".katex")).toBeNull();
+        expect(view.state.doc.sliceString(view.state.selection.main.head, view.state.selection.main.head + 1)).toMatch(/[x\n]/);
+    });
+
+    it("maps reveal ranges when preceding text changes", () => {
+        const view = mount("Start $x$ end");
+        view.dispatch({ changes: { from: 0, insert: "prefix" } });
+        view.dispatch({ selection: { anchor: view.state.doc.toString().indexOf("$x$") + 1 } });
+        expect(view.dom.querySelector(".katex")).toBeNull();
+        view.dispatch({ selection: { anchor: 0 } });
+        expect(view.dom.querySelector(".katex annotation")?.textContent).toBe("x");
+    });
+
+    it("reveals formulas touched by secondary selections on the same line", () => {
+        const doc = "Start $$x$$\n\nText $y$ and $z$.";
+        const view = mount(doc);
+        view.dispatch({ selection: EditorSelection.create([
+            EditorSelection.cursor(0), EditorSelection.cursor(doc.indexOf("x")),
+            EditorSelection.range(doc.indexOf("$y$"), doc.indexOf("$y$") + 3),
+        ]) });
+        expect([...view.dom.querySelectorAll(".katex annotation")].map((node) => node.textContent)).toEqual(["z"]);
+        view.dispatch({ selection: { anchor: 0 } });
+        expect(view.dom.querySelectorAll(".katex")).toHaveLength(3);
+    });
+
+    it("reveals a single-line display block when the cursor crosses its boundary", () => {
+        const view = mount("  $$x$$  ", 0);
+        expect(view.dom.querySelector(".cm-katex-block")).not.toBeNull();
+        view.dispatch({ selection: { anchor: 2 } });
+        expect(view.dom.querySelector(".cm-katex-block")).toBeNull();
+        view.dispatch({ selection: { anchor: 7 } });
+        expect(view.dom.querySelector(".cm-katex-block")).not.toBeNull();
     });
 
     it("renders both single and multiline display math with display layout", () => {

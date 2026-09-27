@@ -31,7 +31,7 @@ import {
 } from "./livePreviewListMetrics";
 import { livePreviewTheme } from "./livePreviewTheme";
 
-import { mathRangesField } from "./mathRanges";
+import { getMathRanges, mathRangesField } from "./mathRanges";
 
 const TASK_TOGGLE_HOVER_CLASS = "cm-lp-task-toggle-hover";
 
@@ -465,6 +465,23 @@ export function livePreviewExtension(
     const clickHandler = EditorView.domEventHandlers({
         mousedown(event: MouseEvent, view: EditorView) {
             const target = event.target as HTMLElement;
+            const math = target.closest(".cm-katex-inline, .cm-katex-block");
+            if (math && event.button === 0) {
+                // Resolve against the current document: reused widgets may have moved.
+                const position = view.posAtDOM(math);
+                const range = getMathRanges(view.state).find((candidate) =>
+                    candidate.from <= position && position < candidate.to,
+                );
+                if (range) {
+                    event.preventDefault();
+                    view.dispatch({ selection: {
+                        anchor: event.shiftKey ? view.state.selection.main.anchor : range.contentFrom,
+                        head: range.contentFrom,
+                    } });
+                    view.focus();
+                    return true;
+                }
+            }
 
             // A footnote reference renders as a tiny raised superscript number;
             // a plain mousedown would drop the caret inside the token (revealing
