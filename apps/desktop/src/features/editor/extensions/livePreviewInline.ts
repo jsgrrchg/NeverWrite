@@ -1768,7 +1768,7 @@ function buildInlineDecorations(
     revealSensitiveRanges: RevealSensitiveRange[];
     activeRevealSignature: string;
 } {
-    const mathRanges = getMathRanges(state).filter((range) => range.display);
+    const mathRanges = getMathRanges(state);
     const context: BuildContext = {
         state,
         decos: [],

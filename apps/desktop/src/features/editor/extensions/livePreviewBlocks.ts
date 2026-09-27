@@ -1409,10 +1409,12 @@ export function createCodeBlockLivePreviewExtension() {
 
 export class InlineMathWidget extends WidgetType {
     private tex: string;
+    private display: boolean;
 
-    constructor(tex: string, private display = false) {
+    constructor(tex: string, display = false) {
         super();
         this.tex = tex;
+        this.display = display;
     }
 
     eq(other: InlineMathWidget) {

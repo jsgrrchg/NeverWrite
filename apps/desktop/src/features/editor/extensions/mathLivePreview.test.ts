@@ -24,6 +24,32 @@ afterEach(() => {
 });
 
 describe("math live preview integration", () => {
+    it("renders inline formulas next to prices and Markdown formatting", () => {
+        const view = mount("Text **bold** $x_1$ and $2+2$; $20 and $30. ` $literal$ `");
+        expect([...view.dom.querySelectorAll(".cm-katex-inline annotation")].map((node) => node.textContent))
+            .toEqual(["x_1", "2+2"]);
+        expect(view.dom.querySelector(".cm-lp-bold")?.textContent).toContain("bold");
+        expect(view.contentDOM.textContent).toContain("$20 and $30");
+    });
+
+    it("reveals only the selected inline formula and keeps its full source", () => {
+        const doc = "Text $x_1$ and $y^2$ end";
+        const view = mount(doc);
+        view.dispatch({ selection: { anchor: doc.indexOf("x_1") } });
+        expect(view.contentDOM.textContent).toContain("$x_1$");
+        expect(view.dom.querySelectorAll(".cm-katex-inline")).toHaveLength(1);
+        expect(view.dom.querySelector(".cm-katex-inline annotation")?.textContent).toBe("y^2");
+        view.dispatch({ selection: { anchor: doc.length } });
+        expect(view.dom.querySelectorAll(".cm-katex-inline")).toHaveLength(2);
+    });
+
+    it("does not interpret Markdown operators inside a selected formula", () => {
+        const doc = "Text $a*b*c + x_1_2$ end";
+        const view = mount(doc, doc.indexOf("a*b"));
+        expect(view.contentDOM.textContent).toContain("$a*b*c + x_1_2$");
+        expect(view.dom.querySelector(".cm-lp-italic")).toBeNull();
+    });
+
     it("renders both single and multiline display math with display layout", () => {
         const view = mount("Text\n\n$$x^2$$\n\n$$\n\\frac{a}{b}\n$$\n\nEnd");
         expect(view.dom.querySelectorAll(".cm-katex-block .katex-display")).toHaveLength(2);
