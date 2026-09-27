@@ -105,6 +105,27 @@ describe("math live preview integration", () => {
         expect(view.dom.querySelector(".cm-katex-block")).not.toBeNull();
     });
 
+    it("renders MathML alongside visual HTML", () => {
+        const view = mount("Start $x$\n\n$$y$$");
+        expect(view.dom.querySelectorAll(".katex-mathml math")).toHaveLength(2);
+        expect(view.dom.querySelectorAll('.katex-html[aria-hidden="true"]')).toHaveLength(2);
+    });
+
+    it("keeps invalid formulas readable and recovers after correction", () => {
+        const doc = String.raw`Start $\unknowncommand{x}$ end`;
+        const view = mount(doc);
+        const error = view.dom.querySelector<HTMLElement>(".cm-katex-error")!;
+        expect(error.textContent).toBe(String.raw`\unknowncommand{x}`);
+        expect(error.title).toContain("Undefined control sequence");
+        error.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        expect(view.dom.querySelector(".cm-katex-error")).toBeNull();
+        const from = doc.indexOf("unknowncommand");
+        view.dispatch({ changes: { from, to: from + "unknowncommand".length, insert: "sqrt" } });
+        view.dispatch({ selection: { anchor: 0 } });
+        expect(view.dom.querySelector(".cm-katex-error")).toBeNull();
+        expect(view.dom.querySelector(".katex annotation")?.textContent).toBe(String.raw`\sqrt{x}`);
+    });
+
     it("renders both single and multiline display math with display layout", () => {
         const view = mount("Text\n\n$$x^2$$\n\n$$\n\\frac{a}{b}\n$$\n\nEnd");
         expect(view.dom.querySelectorAll(".cm-katex-block .katex-display")).toHaveLength(2);

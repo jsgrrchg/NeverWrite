@@ -1407,6 +1407,26 @@ export function createCodeBlockLivePreviewExtension() {
     });
 }
 
+function renderMath(element: HTMLElement, tex: string, displayMode: boolean) {
+    element.setAttribute("contenteditable", "false");
+    element.title = "Click to edit formula";
+    try {
+        katex.render(tex, element, {
+            displayMode,
+            output: "htmlAndMathml",
+            throwOnError: true,
+            trust: false,
+            maxExpand: 1000,
+            maxSize: 20,
+        });
+    } catch (error) {
+        // A broken formula stays readable and editable without disrupting the editor.
+        element.textContent = tex;
+        element.classList.add("cm-katex-error");
+        element.title = error instanceof Error ? error.message : "Invalid formula";
+    }
+}
+
 export class InlineMathWidget extends WidgetType {
     private tex: string;
     private display: boolean;
@@ -1424,17 +1444,7 @@ export class InlineMathWidget extends WidgetType {
     toDOM() {
         const span = document.createElement("span");
         span.className = "cm-katex-inline";
-        span.setAttribute("contenteditable", "false");
-        try {
-            katex.render(this.tex, span, {
-                throwOnError: false,
-                displayMode: this.display,
-                output: "htmlAndMathml",
-            });
-        } catch {
-            span.textContent = this.tex;
-            span.classList.add("cm-katex-error");
-        }
+        renderMath(span, this.tex, this.display);
         return span;
     }
 
@@ -1458,16 +1468,7 @@ class BlockMathWidget extends WidgetType {
     toDOM() {
         const div = document.createElement("div");
         div.className = "cm-katex-block";
-        div.setAttribute("contenteditable", "false");
-        try {
-            katex.render(this.tex, div, {
-                throwOnError: false,
-                displayMode: true,
-            });
-        } catch {
-            div.textContent = this.tex;
-            div.classList.add("cm-katex-error");
-        }
+        renderMath(div, this.tex, true);
         return div;
     }
 
