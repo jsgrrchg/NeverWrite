@@ -1,7 +1,7 @@
 export {
     resolveNavigationRailTopPercent as resolveChatPromptRingTopPercent,
     resolveNavigationRailIndexFromPointer as resolveChatPromptRingIndexFromPointer,
-} from "../../../components/navigation/navigationRail";
+} from "../../../components/navigation/navigationRailGeometry";
 
 import type { AIChatMessage } from "../types";
 

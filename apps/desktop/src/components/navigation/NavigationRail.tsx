@@ -8,7 +8,7 @@ import {
 import {
     resolveNavigationRailIndexFromPointer,
     resolveNavigationRailTopPercent,
-} from "./navigationRail";
+} from "./navigationRailGeometry";
 
 function eventTargetsPreview(target: EventTarget) {
     return (
