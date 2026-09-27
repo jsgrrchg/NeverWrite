@@ -5,7 +5,6 @@ import {
     useId,
     useLayoutEffect,
     useMemo,
-    useRef,
     useState,
 } from "react";
 import {
@@ -30,15 +29,7 @@ import type {
 } from "../types";
 import { getChatPillMetrics } from "./chatPillMetrics";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
-import {
-    captureVisibleChatAnchor,
-    findChatRowByKey,
-    persistChatMessageListViewState,
-    readPersistedChatMessageListViewState,
-    resolveChatMessageListViewStateScope,
-    restoreChatMessageListViewState,
-    type PersistedChatViewState,
-} from "./chatMessageListViewState";
+import { useChatTranscriptScroll } from "./useChatTranscriptScroll";
 import {
     resolveChatRowUiSessionId,
     useChatRowUiStore,
@@ -109,27 +100,9 @@ type TimelineRow =
           active: boolean;
       };
 
-const NEAR_BOTTOM_THRESHOLD = 80;
-const LOAD_OLDER_THRESHOLD = 120;
-// Keep a small visual gap without raising the button above the dock's stacking
-// context, where it could cover non-portaled composer dropdowns.
+// Keep the control clear of the floating composer.
 const SCROLL_TO_BOTTOM_DOCK_GAP_PX = 12;
 const DETACHED_TIMELINE_SCOPE = "__detached_timeline__";
-
-function getRemainingScrollDistance(el: HTMLElement) {
-    return Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
-}
-
-function isNearBottom(el: HTMLElement) {
-    return getRemainingScrollDistance(el) < NEAR_BOTTOM_THRESHOLD;
-}
-
-function shouldShowScrollToBottomButton(el: HTMLElement) {
-    return (
-        el.scrollHeight > el.clientHeight &&
-        getRemainingScrollDistance(el) >= NEAR_BOTTOM_THRESHOLD
-    );
-}
 
 function formatElapsedRunTime(durationMs: number) {
     const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
@@ -428,8 +401,14 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     onUrlElicitationResponse,
 }: AIChatMessageListProps) {
     const aiChatContentWidth = useSettingsStore((s) => s.aiChatContentWidth);
-    const containerRef = useRef<HTMLDivElement>(null);
-    const contentRef = useRef<HTMLDivElement>(null);
+    const {
+        containerRef, contentRef, rowsRef, runwayRef,
+        reservedBottomInset, showScrollButton, handleScroll, scrollToBottom,
+        releaseForNavigation, syncScrollButton,
+    } = useChatTranscriptScroll({
+        sessionId, messages, status, bottomInset, readOnly,
+        hasOlderMessages, isLoadingOlderMessages, onLoadOlderMessages,
+    });
     const [promptRingStripMap] = useState(
         () => new Map<string, HTMLSpanElement>(),
     );
@@ -440,6 +419,9 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     const findHighlightOwnerId = useId();
     const [findQuery, setFindQuery] = useState("");
     const [findCaseSensitive, setFindCaseSensitive] = useState(false);
+    useLayoutEffect(() => {
+        if (findOpen) releaseForNavigation();
+    }, [findOpen, releaseForNavigation]);
     const {
         total: findTotal,
         activeIndex: findActiveIndex,
@@ -451,30 +433,13 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         query: findQuery,
         caseSensitive: findCaseSensitive,
         enabled: findOpen,
+        onNavigate: releaseForNavigation,
     });
-    const wasNearBottomRef = useRef(true);
-    // Do not shrink the spacer while someone is reading above the bottom.
-    // Chromium would clamp scrollTop immediately and move the visible rows.
-    const [reservedBottomInset, setReservedBottomInset] =
-        useState(bottomInset);
-    const previousReservedBottomInsetRef = useRef(reservedBottomInset);
-    const pendingPrependAdjustmentRef = useRef<{
-        previousScrollHeight: number;
-        previousScrollTop: number;
-    } | null>(null);
-    const [showScrollButton, setShowScrollButton] = useState(false);
     const [outlineHighlightedMessageId, setOutlineHighlightedMessageId] =
         useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState<{
         hasSelection: boolean;
     }> | null>(null);
-    const previousMessagesRef = useRef(messages);
-    const previousStatusRef = useRef(status);
-    const restoredScopeRef = useRef<string | null>(null);
-    const viewStateScope = resolveChatMessageListViewStateScope(sessionId);
-    const pendingRestoreRef = useRef<PersistedChatViewState | null>(
-        readPersistedChatMessageListViewState(viewStateScope),
-    );
     const rowUiSessionId = resolveChatRowUiSessionId(sessionId);
     const dismissMessage = useChatStore((state) => state.dismissMessage);
     const activityDisplayMode = useChatStore(
@@ -487,64 +452,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         },
         [dismissMessage, sessionId],
     );
-
-    const scrollToBottom = useCallback(() => {
-        const container = containerRef.current;
-        if (!container) return;
-        wasNearBottomRef.current = true;
-        setReservedBottomInset(bottomInset);
-        container.scrollTop = container.scrollHeight;
-        setShowScrollButton(false);
-    }, [bottomInset]);
-
-    const syncScrollButton = useCallback(() => {
-        const container = containerRef.current;
-        if (!container) {
-            setShowScrollButton(false);
-            return;
-        }
-
-        setShowScrollButton(shouldShowScrollToBottomButton(container));
-    }, []);
-
-    const handleScroll = useCallback(() => {
-        const container = containerRef.current;
-        if (!container) return;
-
-        const nearBottom = isNearBottom(container);
-        wasNearBottomRef.current = nearBottom;
-        if (nearBottom && reservedBottomInset !== bottomInset) {
-            setReservedBottomInset(bottomInset);
-        }
-        setShowScrollButton(shouldShowScrollToBottomButton(container));
-
-        persistChatMessageListViewState(
-            viewStateScope,
-            container,
-            isNearBottom,
-        );
-
-        if (
-            container.scrollTop <= LOAD_OLDER_THRESHOLD &&
-            hasOlderMessages &&
-            !isLoadingOlderMessages &&
-            onLoadOlderMessages &&
-            !pendingPrependAdjustmentRef.current
-        ) {
-            pendingPrependAdjustmentRef.current = {
-                previousScrollHeight: container.scrollHeight,
-                previousScrollTop: container.scrollTop,
-            };
-            onLoadOlderMessages();
-        }
-    }, [
-        hasOlderMessages,
-        isLoadingOlderMessages,
-        onLoadOlderMessages,
-        bottomInset,
-        reservedBottomInset,
-        viewStateScope,
-    ]);
 
     const handleContextMenu = useCallback((event: React.MouseEvent) => {
         event.preventDefault();
@@ -675,7 +582,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             container.scrollTop + targetRect.top - containerRect.top - 24,
         );
 
-        wasNearBottomRef.current = false;
+        releaseForNavigation();
         setOutlineHighlightedMessageId(messageId);
         if (typeof container.scrollTo === "function") {
             container.scrollTo({ top, behavior: "smooth" });
@@ -683,7 +590,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             container.scrollTop = top;
         }
         syncScrollButton();
-    }, [syncScrollButton]);
+    }, [containerRef, releaseForNavigation, syncScrollButton]);
     const rowRenderOptions = useMemo(
         () => ({
             sessionId,
@@ -721,55 +628,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             visibleWorkCycleId,
         ],
     );
-    useLayoutEffect(() => {
-        if (restoredScopeRef.current === viewStateScope) {
-            return;
-        }
-
-        restoredScopeRef.current = viewStateScope;
-        setReservedBottomInset(bottomInset);
-        pendingRestoreRef.current =
-            readPersistedChatMessageListViewState(viewStateScope);
-        wasNearBottomRef.current =
-            pendingRestoreRef.current?.nearBottom ?? true;
-        previousMessagesRef.current = messages;
-        previousStatusRef.current = status;
-        pendingPrependAdjustmentRef.current = null;
-        setShowScrollButton(false);
-
-        if (!pendingRestoreRef.current) {
-            const container = containerRef.current;
-            if (container) {
-                container.scrollTop = container.scrollHeight;
-                queueMicrotask(syncScrollButton);
-            }
-        }
-    }, [bottomInset, messages, status, syncScrollButton, viewStateScope]);
-
-    useLayoutEffect(() => {
-        const container = containerRef.current;
-        const pendingState = pendingRestoreRef.current;
-        if (!container || !pendingState) {
-            return;
-        }
-
-        const restored = restoreChatMessageListViewState(
-            container,
-            pendingState,
-        );
-        if (
-            !restored &&
-            !pendingState.nearBottom &&
-            timelineRows.length === 0
-        ) {
-            return;
-        }
-
-        pendingRestoreRef.current = null;
-        wasNearBottomRef.current = pendingState.nearBottom;
-        syncScrollButton();
-    }, [syncScrollButton, timelineRows, viewStateScope]);
-
     useLayoutEffect(() => {
         const container = containerRef.current;
         if (!container) return;
@@ -809,7 +667,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             window.cancelAnimationFrame(frame);
             container.removeEventListener("scroll", syncInViewStrips);
         };
-    }, [promptRingItems, promptRingStripMap, timelineRows]);
+    }, [containerRef, promptRingItems, promptRingStripMap, timelineRows]);
 
     useLayoutEffect(() => {
         const container = containerRef.current;
@@ -838,166 +696,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             window.cancelAnimationFrame(frame);
             observer.disconnect();
         };
-    }, [aiChatContentWidth, promptRingItems.length]);
-
-    useLayoutEffect(() => {
-        const container = containerRef.current;
-        return () => {
-            const persistedState = persistChatMessageListViewState(
-                viewStateScope,
-                container,
-                isNearBottom,
-            );
-            wasNearBottomRef.current = persistedState?.nearBottom ?? true;
-        };
-    }, [viewStateScope]);
-
-    useLayoutEffect(() => {
-        const container = containerRef.current;
-        if (!container) return;
-        const contentChanged =
-            previousMessagesRef.current !== messages ||
-            previousStatusRef.current !== status;
-        if (!contentChanged) {
-            return;
-        }
-
-        if (pendingPrependAdjustmentRef.current) {
-            const { previousScrollHeight, previousScrollTop } =
-                pendingPrependAdjustmentRef.current;
-            pendingPrependAdjustmentRef.current = null;
-            container.scrollTop =
-                container.scrollHeight -
-                previousScrollHeight +
-                previousScrollTop;
-            queueMicrotask(syncScrollButton);
-        } else if (wasNearBottomRef.current) {
-            container.scrollTop = container.scrollHeight;
-            queueMicrotask(syncScrollButton);
-        } else {
-            const frameId = window.requestAnimationFrame(() => {
-                syncScrollButton();
-            });
-
-            previousMessagesRef.current = messages;
-            previousStatusRef.current = status;
-
-            return () => {
-                window.cancelAnimationFrame(frameId);
-            };
-        }
-
-        previousMessagesRef.current = messages;
-        previousStatusRef.current = status;
-    }, [messages, status, syncScrollButton]);
-
-    useEffect(() => {
-        if (isLoadingOlderMessages || !pendingPrependAdjustmentRef.current) {
-            return;
-        }
-
-        const container = containerRef.current;
-        if (!container) {
-            pendingPrependAdjustmentRef.current = null;
-            return;
-        }
-
-        if (
-            container.scrollHeight <=
-            pendingPrependAdjustmentRef.current.previousScrollHeight
-        ) {
-            pendingPrependAdjustmentRef.current = null;
-        }
-    }, [isLoadingOlderMessages, messages.length]);
-
-    useLayoutEffect(() => {
-        if (
-            bottomInset > reservedBottomInset ||
-            (wasNearBottomRef.current && bottomInset !== reservedBottomInset)
-        ) {
-            setReservedBottomInset(bottomInset);
-        }
-    }, [bottomInset, reservedBottomInset]);
-
-    useLayoutEffect(() => {
-        if (
-            previousReservedBottomInsetRef.current === reservedBottomInset
-        ) {
-            return;
-        }
-
-        previousReservedBottomInsetRef.current = reservedBottomInset;
-        const container = containerRef.current;
-        if (!container) return;
-
-        if (wasNearBottomRef.current) {
-            container.scrollTop = container.scrollHeight;
-        }
-        queueMicrotask(syncScrollButton);
-    }, [reservedBottomInset, syncScrollButton]);
-
-    // Anchor scroll position when container width changes (e.g. sidebar resize).
-    // Tracks the topmost visible chat row and its viewport offset on every scroll,
-    // then corrects scrollTop after text reflow so content stays visually stable.
-    useLayoutEffect(() => {
-        const container = containerRef.current;
-        if (!container) return;
-        const scrollContainer: HTMLElement = container;
-
-        let prevWidth = scrollContainer.clientWidth;
-        let anchorSnapshot = captureVisibleChatAnchor(
-            scrollContainer,
-            isNearBottom,
-        );
-
-        function captureAnchor() {
-            anchorSnapshot = captureVisibleChatAnchor(
-                scrollContainer,
-                isNearBottom,
-            );
-        }
-
-        scrollContainer.addEventListener("scroll", captureAnchor, {
-            passive: true,
-        });
-        captureAnchor();
-
-        const ro = new ResizeObserver(() => {
-            const newWidth = scrollContainer.clientWidth;
-            if (newWidth !== prevWidth) {
-                prevWidth = newWidth;
-
-                if (anchorSnapshot.nearBottom) {
-                    scrollContainer.scrollTop = scrollContainer.scrollHeight;
-                } else if (anchorSnapshot.rowKey) {
-                    const anchorNode = findChatRowByKey(
-                        scrollContainer,
-                        anchorSnapshot.rowKey,
-                    );
-                    if (!anchorNode) {
-                        syncScrollButton();
-                        return;
-                    }
-                    const containerRect =
-                        scrollContainer.getBoundingClientRect();
-                    const rect = anchorNode.getBoundingClientRect();
-                    scrollContainer.scrollTop +=
-                        rect.top - containerRect.top - anchorSnapshot.offset;
-                }
-            }
-
-            syncScrollButton();
-        });
-
-        ro.observe(scrollContainer);
-        if (contentRef.current) {
-            ro.observe(contentRef.current);
-        }
-        return () => {
-            scrollContainer.removeEventListener("scroll", captureAnchor);
-            ro.disconnect();
-        };
-    }, [syncScrollButton]);
+    }, [aiChatContentWidth, containerRef, promptRingItems.length]);
 
     useLayoutEffect(() => {
         if (!scrollToMessageId) return;
@@ -1019,10 +718,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             return;
         }
 
+        releaseForNavigation();
         target.scrollIntoView({ block: "center", behavior: "smooth" });
         setOutlineHighlightedMessageId(scrollToMessageId);
         onScrollToMessageComplete?.();
-    }, [onScrollToMessageComplete, scrollToMessageId, timelineRows]);
+    }, [containerRef, onScrollToMessageComplete, releaseForNavigation, scrollToMessageId, timelineRows]);
 
     useEffect(() => {
         if (!outlineHighlightedMessageId) return;
@@ -1088,6 +788,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                     className="min-h-0 min-w-0 flex-1 flex flex-col overflow-y-auto px-3 py-3"
                     data-scrollbar-active="true"
                     style={{
+                        overflowAnchor: "none",
                         paddingBottom: Math.max(0, reservedBottomInset) + 12,
                         scrollPaddingBottom:
                             Math.max(0, reservedBottomInset) + 12,
@@ -1095,7 +796,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 >
                     <div
                         ref={contentRef}
-                        className="min-w-0"
+                        className="min-w-0 shrink-0"
                         data-selectable="true"
                         style={{
                             ...getAiChatContentColumnStyle(aiChatContentWidth),
@@ -1116,7 +817,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                                     : "Scroll up to load earlier messages"}
                             </div>
                         )}
-                        <div className="min-w-0 space-y-2">
+                        <div ref={rowsRef} className="min-w-0 space-y-2">
                             {timelineRows.map((row) => (
                                 <div
                                     key={row.key}
@@ -1154,6 +855,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                                 </div>
                             ))}
                         </div>
+                        <div ref={runwayRef} aria-hidden="true" data-chat-runway="true" />
                     </div>
                 </div>
                 <ChatPromptRing

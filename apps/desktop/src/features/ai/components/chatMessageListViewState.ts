@@ -5,6 +5,7 @@ export interface PersistedChatViewState {
     nearBottom: boolean;
     anchorRowKey: string | null;
     anchorOffset: number;
+    runwayMessageId?: string | null;
 }
 
 export interface VisibleChatAnchorSnapshot {
@@ -72,6 +73,7 @@ export function persistChatMessageListViewState(
     scope: string,
     container: HTMLElement | null,
     isNearBottom: (element: HTMLElement) => boolean,
+    runwayMessageId: string | null = null,
 ) {
     if (!container) {
         return readPersistedChatMessageListViewState(scope);
@@ -83,6 +85,7 @@ export function persistChatMessageListViewState(
         nearBottom: anchor.nearBottom,
         anchorRowKey: anchor.rowKey,
         anchorOffset: anchor.offset,
+        runwayMessageId,
     };
     persistedViewStateByScope.set(scope, nextState);
     return nextState;
