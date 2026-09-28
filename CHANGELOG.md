@@ -34,6 +34,12 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.7] - 2026-09-28
+
+### Changed
+
+- Improved the Markdown outline rail to highlight headings visible on screen, align its markers with the chat prompt rail, and show heading ancestry and level in a compact tree preview.
+
 ## [0.8.6] - 2026-09-27
 
 ### Added
