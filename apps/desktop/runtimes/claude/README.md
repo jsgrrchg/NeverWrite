@@ -1,9 +1,10 @@
 # Claude runtime
 
 This private installation manifest pins the published Claude ACP adapter to
-`0.81.2`. `baseline.json` records the complete production graph and published
-runtime hashes without retaining upstream source. The only additional runtime
-package is the adapter itself.
+`0.83.0`, temporarily overriding Claude Agent SDK to `0.3.284` for Sonnet 5.5
+([#492](https://github.com/jsgrrchg/NeverWrite/issues/492)). All eight SDK native
+packages are locked to `0.3.284` too. `baseline.json` records the complete
+production graph, published runtime hashes and the reviewed patched file hash.
 
 Development and release staging use the same preparer. The native backend keeps
 its existing override precedence and serialized runtime source values; its local
@@ -20,8 +21,8 @@ staging input. Runtime executable overrides in settings and
 
 From `apps/desktop`, run `npm ci` then `npm run claude:prepare`. Preparation uses
 an isolated lockfile install, includes native optional packages for the requested
-target, and generates `.cache/claude-runtime/<rust-target>/` from the unmodified
-published package. Use `-- --target <target>` for cross builds or `-- --force`
+target, and generates `.cache/claude-runtime/<rust-target>/` from the published
+package plus the verified patch in `patches.json`. Use `-- --target <target>` for cross builds or `-- --force`
 for a clean rebuild. Generated installations are not committed.
 
 Foreign native packages are downloaded from their lockfile URLs, checked against
@@ -32,8 +33,18 @@ includes both native SDK packages.
 
 Claude ACP `0.77.0` includes the bounded linear TaskList parser from
 https://github.com/agentclientprotocol/claude-agent-acp/pull/1006, so the runtime
-no longer carries a local patch. The TaskList contracts remain as regression
+no longer carries a TaskList patch. The TaskList contracts remain as regression
 coverage for the published implementation.
+
+ACP `0.83.0` pins SDK `0.3.283`; the temporary SDK override supplies Claude Code
+`2.1.284`. Its model catalog exposes Sonnet 5.5 under `sonnet`. The local patch
+changes that entry to `claude-sonnet-5-5` only when the SDK's `resolvedModel`
+confirms that exact ID. It retains capability metadata, other generations,
+provider-specific IDs and the separate 1M context alias. This happens before
+upstream applies user allowlists and model overrides, which retain precedence.
+The preparer checks the published input hash and patched output hash and requires
+exactly one replacement. Packaged validation checks the patched hash; patch
+changes also invalidate the runtime cache fingerprint.
 
 Validate preparation with `npm run test:claude-preparation`. The runtime contracts
 accept `NEVERWRITE_CLAUDE_CONTRACT_RUNTIME` for comparing an explicit artifact and
@@ -41,7 +52,9 @@ execute the actual parser from a temporary isolated copy, with a parent timeout.
 
 `npm run claude:smoke` runs the actual adapter and native Claude CLI against a
 local Anthropic mock. It checks `--version`, `--cli --version`, ACP initialization,
-session creation, an actual Read tool result, assistant output, and cancellation
+session creation, discovery and selection of `claude-sonnet-5-5`, the exact model
+ID on provider requests (including tool followups), an actual Read tool result,
+assistant output, and cancellation
 of a pending inference request. The smoke uses a temporary profile and workspace,
 synthetic credentials and an isolated runtime copy. `--runtime`, `--node` and
 `--target` select a packaged runtime unit explicitly. Processes are cleaned up
@@ -64,6 +77,26 @@ published managed-policy module to the runtime baseline.
 The `0.81.2` update keeps the same production dependency graph. Its published
 JavaScript changes the ACP agent, exit-plan handling, and native subagent
 runtime; the runtime baseline records those three new file hashes.
+
+The `0.83.0` baseline comes from published tag commit
+`691328a9190d8729387149afad9bdb012450028b`. It includes ACP SDK `1.5.1` and
+`diff` `9.0.0`; the SDK override is recorded in the production graph separately
+from the unchanged published ACP hashes.
+
+### Removing the temporary Sonnet 5.5 override
+
+When a published ACP release officially depends on SDK `0.3.284` or later:
+
+1. Update the exact ACP pin and remove `overrides` from `package.json`.
+2. Regenerate `package-lock.json` and verify the SDK and every native package
+   have the same version. Refresh the published baseline from the new npm tarball.
+3. Set `patches.json` to `[]` and remove `patchedRuntimeFiles` from the baseline.
+   Remove the override-specific test while retaining native-version parity coverage.
+4. Run preparation, contracts, the Sonnet selection/provider smoke, UI selection
+   tests and all native/packaged CI jobs. Remove the patch only once the unpatched
+   adapter passes the same concrete model-ID checks. If it still exposes only
+   aliases, keep the minimal patch against the new verified baseline until that
+   behavior is available upstream.
 
 ## Product compatibility
 
@@ -104,6 +137,9 @@ change its current UI. The release also resumes a clear-context plan approved
 while a background task followup holds the turn open. NeverWrite's existing
 permission flow can deliver the plan approval; the adapter handles continuation
 without changing the client protocol.
+In `0.83.0`, permission presentation metadata is restricted to AIR clients.
+NeverWrite still receives the exact shell command in standard `toolCall.title`;
+the contract test checks that field and the absence of AIR-only metadata.
 
 The push-only authStatus, goal, AIR session-failure and JetBrains file-audit
 extensions remain outside the current client integration. NeverWrite's own
