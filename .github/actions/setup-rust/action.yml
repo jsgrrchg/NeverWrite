@@ -10,6 +10,12 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Enable long paths for Windows Cargo Git dependencies
+      if: runner.os == 'Windows'
+      shell: bash
+      # Cargo checks out the entire Codex repository, including snapshots whose
+      # paths exceed MAX_PATH under the runner's default CARGO_HOME.
+      run: git config --global core.longpaths true
     - name: Resolve channel from rust-toolchain.toml
       id: toolchain
       shell: bash
