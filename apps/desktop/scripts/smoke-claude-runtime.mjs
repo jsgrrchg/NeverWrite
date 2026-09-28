@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -31,7 +32,7 @@ function smokeEnvironment(root, baseUrl) {
 }
 
 function sendMessage(response, body, content) {
-    const message = { id: "msg_neverwrite_smoke", type: "message", role: "assistant",
+    const message = { id: `msg_${randomUUID()}`, type: "message", role: "assistant",
         model: body.model, content, stop_reason: content[0].type === "tool_use" ? "tool_use" : "end_turn",
         stop_sequence: null, usage: { input_tokens: 20, output_tokens: 10 } };
     if (!body.stream) {
@@ -56,7 +57,14 @@ function sendMessage(response, body, content) {
     response.end();
 }
 
-async function createMock(fixture) {
+function hasUserText(messages, matches) {
+    return (messages ?? []).some((message) => message.role === "user"
+        && (typeof message.content === "string"
+            ? [{ type: "text", text: message.content }] : message.content ?? [])
+            .some((block) => block.type === "text" && matches(block.text)));
+}
+
+export async function createClaudeSmokeMock(fixture) {
     const state = { readRequested: false, readCompleted: false, requests: [], turnModels: [] };
     let cancelStarted;
     const cancellationRequest = new Promise((resolve) => { cancelStarted = resolve; });
@@ -70,13 +78,15 @@ async function createMock(fixture) {
                 response.setHeader("Content-Type", "application/json");
                 response.end(JSON.stringify({ input_tokens: 20 }));
             } else if (request.url.startsWith("/v1/messages")) {
-                // Ignore auxiliary title/summary calls, but check every request in
-                // the actual conversation, including tool followups and cancellation.
-                if (JSON.stringify(body.messages).includes(marker)) {
+                // SDK system messages may follow the user's prompt. Title requests
+                // quote the transcript, so only standalone user text identifies a turn.
+                const cancellation = hasUserText(body.messages, (text) => text === `${marker}_CANCEL`);
+                const conversation = cancellation || hasUserText(body.messages, (text) => text.startsWith(`${marker}:`));
+                if (conversation) {
                     state.turnModels.push(body.model);
                     assert.equal(body.model, selectedModel, "Provider must receive the selected model ID");
                 }
-                if (JSON.stringify(body.messages?.at(-1)?.content).includes(`${marker}_CANCEL`)) {
+                if (cancellation) {
                     // Keep inference pending until the client cancels the actual SDK query.
                     response.writeHead(200, { "Content-Type": "text/event-stream" });
                     response.flushHeaders();
@@ -90,7 +100,7 @@ async function createMock(fixture) {
                     assert.ok(JSON.stringify(result.content).includes(fixtureContent), "Real Read did not return the fixture");
                     state.readCompleted = true;
                     sendMessage(response, body, [{ type: "text", text: `${marker} complete` }]);
-                } else if (JSON.stringify(body.messages).includes(marker) && !state.readRequested) {
+                } else if (conversation && !state.readRequested) {
                     assert.ok(body.tools?.some((tool) => tool.name === "Read"), "Native CLI did not advertise Read");
                     state.readRequested = true;
                     sendMessage(response, body, [{ type: "tool_use", id: "neverwrite_read", name: "Read", input: { file_path: fixture } }]);
@@ -201,7 +211,7 @@ export async function smokeClaudeRuntime({ runtimeRoot, nodeBinary, target = cla
         await fs.mkdir(workspace);
         const fixture = path.join(workspace, "fixture.txt");
         await fs.writeFile(fixture, fixtureContent);
-        mock = await createMock(fixture);
+        mock = await createClaudeSmokeMock(fixture);
         const env = smokeEnvironment(root, mock.baseUrl);
         const entry = path.join(isolatedRuntime, "dist", "index.js");
         const options = { cwd: workspace, env, timeout: 15000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 };
