@@ -23,7 +23,7 @@ use codex_core::{
 };
 use codex_exec_server::{EnvironmentManager, ExecServerRuntimePaths};
 use codex_extension_api::{
-    LoadUserInstructionsFuture, LoadedUserInstructions, UserInstructionsProvider,
+    LoadInstructionsFuture, LoadedUserInstructions, UserInstructionsProvider,
     empty_extension_registry,
 };
 use codex_features::Feature;
@@ -62,7 +62,7 @@ use crate::thread::Thread;
 struct EmptyUserInstructionsProvider;
 
 impl UserInstructionsProvider for EmptyUserInstructionsProvider {
-    fn load_user_instructions(&self) -> LoadUserInstructionsFuture<'_> {
+    fn load_user_instructions(&self) -> LoadInstructionsFuture<'_> {
         Box::pin(async { LoadedUserInstructions::default() })
     }
 }

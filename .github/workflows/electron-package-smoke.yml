@@ -105,6 +105,10 @@ jobs:
               working-directory: apps/desktop
               run: npm ci
 
+            - name: Test vendored PTY process lifecycle
+              shell: bash
+              run: cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml -p codex-utils-pty
+
             - name: Build target-specific sidecars
               shell: bash
               run: |
@@ -271,6 +275,10 @@ jobs:
               working-directory: apps/desktop
               run: npm ci
 
+            - name: Test vendored PTY process lifecycle
+              shell: bash
+              run: cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml -p codex-utils-pty
+
             - name: Build target-specific sidecars
               shell: bash
               run: |
@@ -398,6 +406,11 @@ jobs:
             - name: Install desktop dependencies
               working-directory: apps/desktop
               run: npm ci
+
+            - name: Test vendored PTY process lifecycle
+              if: matrix.arch == 'x64'
+              shell: bash
+              run: cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml -p codex-utils-pty
 
             - name: Build target-specific sidecars
               shell: bash
