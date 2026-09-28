@@ -121,6 +121,13 @@ new test dependency while preserving the two local Windows pointer-type fixes.
 The PTY is a member of the adapter workspace so its unit and platform tests use
 the committed runtime lockfile. Package CI runs them on native macOS, Windows
 x64/ARM64 and Linux x64 runners; cross-compiled Linux ARM64 remains build-only.
+Windows CI enables Git long paths before Cargo checks out the full upstream tree.
+It follows [upstream's Windows CI exclusion](https://github.com/openai/codex/blob/36650394c5b38c2990ccf2a3457165ca3e9d9726/.bazelrc#L168-L170)
+for `conpty_ctrl_c_interrupts_powershell_foreground_child`, whose Ctrl-C delivery
+is unreliable on Windows CI runners. The test remains unchanged and enabled for
+local `cargo test` runs; the other process, descendant termination and ConPTY
+lifecycle tests still run in CI. Interactive PowerShell Ctrl-C behavior requires
+validation on a Windows desktop outside the hosted runner environment.
 
 Rust remains 1.96.0 (upstream 1.95.0), V8 remains 150.4.0, and RMCP remains 3.2.0.
 The dependency graph upgrades Rustls to 0.23.45 and includes upstream's platform

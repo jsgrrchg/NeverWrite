@@ -273,7 +273,12 @@ jobs:
 
             - name: Test vendored PTY process lifecycle
               shell: pwsh
-              run: cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml -p codex-utils-pty
+              # Match upstream's Windows CI exception for unreliable ConPTY Ctrl-C
+              # delivery. Keep the test available for interactive Windows runs.
+              # https://github.com/openai/codex/blob/36650394c5b38c2990ccf2a3457165ca3e9d9726/.bazelrc#L168-L170
+              run: >-
+                  cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml -p codex-utils-pty
+                  -- --skip tests::windows_tests::conpty_ctrl_c_interrupts_powershell_foreground_child
 
             - name: Install desktop dependencies
               working-directory: apps/desktop
