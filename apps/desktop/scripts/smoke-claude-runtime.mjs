@@ -12,6 +12,7 @@ import { claudeHostTarget, claudeRuntimePath, validateClaudeRuntime } from "./cl
 
 const execute = promisify(execFile);
 const marker = "NEVERWRITE_CLAUDE_SMOKE";
+const selectedModel = "claude-sonnet-5-5";
 const fixtureContent = "NeverWrite packaged Claude read this fixture.";
 
 function smokeEnvironment(root, baseUrl) {
@@ -56,7 +57,7 @@ function sendMessage(response, body, content) {
 }
 
 async function createMock(fixture) {
-    const state = { readRequested: false, readCompleted: false, requests: [] };
+    const state = { readRequested: false, readCompleted: false, requests: [], turnModels: [] };
     let cancelStarted;
     const cancellationRequest = new Promise((resolve) => { cancelStarted = resolve; });
     const server = http.createServer(async (request, response) => {
@@ -69,6 +70,12 @@ async function createMock(fixture) {
                 response.setHeader("Content-Type", "application/json");
                 response.end(JSON.stringify({ input_tokens: 20 }));
             } else if (request.url.startsWith("/v1/messages")) {
+                // Ignore auxiliary title/summary calls, but check every request in
+                // the actual conversation, including tool followups and cancellation.
+                if (JSON.stringify(body.messages).includes(marker)) {
+                    state.turnModels.push(body.model);
+                    assert.equal(body.model, selectedModel, "Provider must receive the selected model ID");
+                }
                 if (JSON.stringify(body.messages?.at(-1)?.content).includes(`${marker}_CANCEL`)) {
                     // Keep inference pending until the client cancels the actual SDK query.
                     response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -209,6 +216,14 @@ export async function smokeClaudeRuntime({ runtimeRoot, nodeBinary, target = cla
         assert.equal(initialized.protocolVersion, 1);
         const session = await client.request("session/new", { cwd: workspace, mcpServers: [] });
         assert.ok(session.sessionId);
+        const modelConfig = session.configOptions?.find((option) => option.id === "model");
+        assert.ok(modelConfig?.options.some((option) => option.value === selectedModel),
+            `ACP must offer ${selectedModel}: ${JSON.stringify(modelConfig)}`);
+        assert.notEqual(modelConfig.currentValue, selectedModel, "Smoke must exercise a model switch");
+        const selected = await client.request("session/set_config_option", {
+            sessionId: session.sessionId, configId: "model", value: selectedModel,
+        });
+        assert.equal(selected.configOptions.find((option) => option.id === "model")?.currentValue, selectedModel);
         const result = await client.request("session/prompt", {
             sessionId: session.sessionId, prompt: [{ type: "text", text: `${marker}: read fixture.txt then finish.` }],
         });
@@ -233,7 +248,9 @@ export async function smokeClaudeRuntime({ runtimeRoot, nodeBinary, target = cla
             if (outcome.error) throw outcome.error;
             assert.equal(outcome.value.stopReason, "cancelled");
         } finally { clearTimeout(waitTimer); }
-        console.log(`Claude ACP ${runtimeVersion} completed a real Read turn and cancellation (${target}, CLI ${cliVersion}).`);
+        if (mock.state.error) throw mock.state.error;
+        assert.ok(mock.state.turnModels.length >= 3, "Provider must receive the Read, followup and cancellation requests");
+        console.log(`Claude ACP ${runtimeVersion} selected ${selectedModel} and completed a real Read turn and cancellation (${target}, CLI ${cliVersion}).`);
     } finally {
         try { if (client) await client.close(); }
         finally {
