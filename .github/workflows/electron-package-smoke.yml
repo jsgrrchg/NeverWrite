@@ -271,13 +271,13 @@ jobs:
             - name: Cache Rust build outputs
               uses: Swatinem/rust-cache@v2
 
-            - name: Install desktop dependencies
-              working-directory: apps/desktop
-              run: npm ci
-
             - name: Test vendored PTY process lifecycle
               shell: bash
               run: cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml -p codex-utils-pty
+
+            - name: Install desktop dependencies
+              working-directory: apps/desktop
+              run: npm ci
 
             - name: Build target-specific sidecars
               shell: bash

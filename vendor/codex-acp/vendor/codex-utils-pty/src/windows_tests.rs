@@ -394,7 +394,9 @@ async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Resul
     let (session, mut output_rx, exit_rx) = combine_spawned_output(spawned);
     let writer = session.writer_sender();
     writer.send(b"ping.exe -4 -t localhost\n".to_vec()).await?;
-    wait_for_output_contains(&mut output_rx, "127.0.0.1", /*timeout_ms*/ 10_000).await?;
+    // The startup banner already contains the IP address; it does not establish
+    // that ping is running. Wait for an actual reply before sending Ctrl-C.
+    wait_for_output_contains(&mut output_rx, "TTL=", /*timeout_ms*/ 10_000).await?;
 
     writer.send(vec![0x03]).await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
