@@ -1258,6 +1258,7 @@ mod tests {
             history_mode: ThreadHistoryMode::default(),
             forked_from_thread_id: None,
             originator: String::new(),
+            disabled_plugin_ids: Default::default(),
         }
     }
 

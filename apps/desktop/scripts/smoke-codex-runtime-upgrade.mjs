@@ -27,42 +27,47 @@ await runCodeModeTurn({
     requireStandaloneHost: true,
     async afterTurn({ codexHome, workspace, sessionId, marker, mock }) {
         // Exercise upgrade, rollback, then upgrade again against the same data.
-        for (const [label, executable] of [["upgrade", current], ["rollback", previous], ["re-upgrade", current]]) {
-            const client = new AcpClient(executable, {
-                ...process.env,
-                CODEX_HOME: codexHome,
-                NEVERWRITE_PACKAGING_SMOKE_API_KEY: "neverwrite-packaging-smoke",
-            });
-            try {
-                const initialized = await client.request("initialize", {
-                    protocolVersion: 1,
-                    clientCapabilities: {},
-                    clientInfo: { name: "NeverWrite runtime upgrade smoke", version: "0.0.0" },
+        for (const [transition, executable] of [["upgrade", current], ["rollback", previous], ["re-upgrade", current]]) {
+            for (const restoreMethod of ["load", "resume"]) {
+                const label = `${transition}/${restoreMethod}`;
+                const client = new AcpClient(executable, {
+                    ...process.env,
+                    CODEX_HOME: codexHome,
+                    NEVERWRITE_PACKAGING_SMOKE_API_KEY: "neverwrite-packaging-smoke",
                 });
-                assert.equal(initialized.protocolVersion, 1);
-                const listed = await client.request("session/list", { cwd: workspace });
-                assert(listed.sessions.some((session) => session.sessionId === sessionId),
-                    `${label}: saved session disappeared from listing`);
-                const loaded = await client.request("session/load", {
-                    sessionId, cwd: workspace, mcpServers: [],
-                });
-                assert.equal(loaded.configOptions.find((option) => option.id === "model")?.currentValue,
-                    "test-gpt-5.1-codex", `${label}: explicit model changed`);
-                assert(client.notifications.some((notification) =>
-                    notification.update?.sessionUpdate === "agent_message_chunk" &&
-                    notification.update.content?.text === marker), `${label}: assistant history was not replayed`);
+                try {
+                    const initialized = await client.request("initialize", {
+                        protocolVersion: 1,
+                        clientCapabilities: {},
+                        clientInfo: { name: "NeverWrite runtime upgrade smoke", version: "0.0.0" },
+                    });
+                    assert.equal(initialized.protocolVersion, 1);
+                    const listed = await client.request("session/list", { cwd: workspace });
+                    assert(listed.sessions.some((session) => session.sessionId === sessionId),
+                        `${label}: saved session disappeared from listing`);
+                    const loaded = await client.request(`session/${restoreMethod}`, {
+                        sessionId, cwd: workspace, mcpServers: [],
+                    });
+                    assert.equal(loaded.configOptions.find((option) => option.id === "model")?.currentValue,
+                        "test-gpt-5.1-codex", `${label}: explicit model changed`);
+                    const replayed = client.notifications.some((notification) =>
+                        notification.update?.sessionUpdate === "agent_message_chunk" &&
+                        notification.update.content?.text === marker);
+                    assert.equal(replayed, restoreMethod === "load",
+                        `${label}: load must replay history and resume must avoid duplicate messages`);
 
-                const before = mock.requests.length;
-                const result = await client.request("session/prompt", {
-                    sessionId, prompt: [{ type: "text", text: `Continue after ${label}.` }],
-                });
-                assert.equal(result.stopReason, "end_turn");
-                assert.equal(mock.requests.length, before + 1,
-                    `${label}: expected one continuation request`);
-                await client.request("session/close", { sessionId });
-                console.log(`Codex ${label}: listed, replayed, continued and closed ${sessionId}`);
-            } finally {
-                await client.close();
+                    const before = mock.requests.length;
+                    const result = await client.request("session/prompt", {
+                        sessionId, prompt: [{ type: "text", text: `Continue after ${label}.` }],
+                    });
+                    assert.equal(result.stopReason, "end_turn");
+                    assert.equal(mock.requests.length, before + 1,
+                        `${label}: expected one continuation request`);
+                    await client.request("session/close", { sessionId });
+                    console.log(`Codex ${label}: listed, restored, continued and closed ${sessionId}`);
+                } finally {
+                    await client.close();
+                }
             }
         }
     },

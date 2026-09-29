@@ -2,14 +2,15 @@
 edition = "2024"
 license = "Apache-2.0"
 name = "codex-utils-pty"
-version = "0.155.1"
+version = "0.157.1"
 
 [dependencies]
 anyhow = "1"
 portable-pty = "0.9.0"
-tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
+tempfile = "3"
 pretty_assertions = "1.4.1"
 
 [target.'cfg(windows)'.dependencies]

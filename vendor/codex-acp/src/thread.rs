@@ -62,8 +62,8 @@ use codex_protocol::{
     items::TurnItem,
     mcp::CallToolResult,
     models::{
-        ActivePermissionProfile, AdditionalPermissionProfile, PermissionProfile, ResponseItem,
-        WebSearchAction,
+        ActivePermissionProfile, AdditionalPermissionProfile, ImageReference, PermissionProfile,
+        ResponseItem, WebSearchAction,
     },
     openai_models::{ModelPreset, ReasoningEffort},
     parse_command::ParsedCommand,
@@ -5413,22 +5413,22 @@ impl<A: Auth> ThreadActor<A> {
         }
 
         enum PromptSubmission {
-            Operation(Op),
-            Turn(TurnInputRequest),
+            Operation(Box<Op>),
+            Turn(Box<TurnInputRequest>),
         }
 
         let items = build_prompt_items(request.prompt);
         let submission;
         if let Some((name, rest)) = extract_slash_command(&items) {
             match name {
-                "compact" => submission = PromptSubmission::Operation(Op::Compact),
+                "compact" => submission = PromptSubmission::Operation(Box::new(Op::Compact)),
                 "init" => {
-                    submission = PromptSubmission::Turn(TurnInputRequest::user_input(vec![
+                    submission = PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(vec![
                         UserInput::Text {
                             text: INIT_COMMAND_PROMPT.into(),
                             text_elements: vec![],
                         },
-                    ]))
+                    ])))
                 }
                 "fast" => {
                     if !self.fast_mode_available() {
@@ -5505,35 +5505,35 @@ impl<A: Auth> ThreadActor<A> {
                         }
                     };
 
-                    submission = PromptSubmission::Operation(Op::Review {
+                    submission = PromptSubmission::Operation(Box::new(Op::Review {
                         review_request: ReviewRequest {
                             user_facing_hint: Some(user_facing_hint(&target)),
                             target,
                         },
-                    })
+                    }))
                 }
                 "review-branch" if !rest.is_empty() => {
                     let target = ReviewTarget::BaseBranch {
                         branch: rest.trim().to_owned(),
                     };
-                    submission = PromptSubmission::Operation(Op::Review {
+                    submission = PromptSubmission::Operation(Box::new(Op::Review {
                         review_request: ReviewRequest {
                             user_facing_hint: Some(user_facing_hint(&target)),
                             target,
                         },
-                    })
+                    }))
                 }
                 "review-commit" if !rest.is_empty() => {
                     let target = ReviewTarget::Commit {
                         sha: rest.trim().to_owned(),
                         title: None,
                     };
-                    submission = PromptSubmission::Operation(Op::Review {
+                    submission = PromptSubmission::Operation(Box::new(Op::Review {
                         review_request: ReviewRequest {
                             user_facing_hint: Some(user_facing_hint(&target)),
                             target,
                         },
-                    })
+                    }))
                 }
                 "logout" => {
                     self.auth.logout().await?;
@@ -5547,30 +5547,30 @@ impl<A: Auth> ThreadActor<A> {
                     )
                     .map_err(|e| Error::invalid_params().data(e.user_message()))?
                     {
-                        submission = PromptSubmission::Turn(TurnInputRequest::user_input(vec![
+                        submission = PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(vec![
                             UserInput::Text {
                                 text: prompt,
                                 text_elements: vec![],
                             },
-                        ]))
+                        ])))
                     } else {
-                        submission = PromptSubmission::Turn(TurnInputRequest::user_input(items))
+                        submission = PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(items)))
                     }
                 }
             }
         } else {
-            submission = PromptSubmission::Turn(TurnInputRequest::user_input(items))
+            submission = PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(items)))
         }
 
         let submission_id = match submission {
             PromptSubmission::Operation(op) => self
                 .thread
-                .submit(op)
+                .submit(*op)
                 .await
                 .map_err(|e| Error::internal_error().data(e.to_string()))?,
             PromptSubmission::Turn(request) => match self
                 .thread
-                .submit_turn_input(request, TurnInputMode::StartIfIdle)
+                .submit_turn_input(*request, TurnInputMode::StartIfIdle)
                 .await
                 .map_err(|e| Error::internal_error().data(e.to_string()))?
             {
@@ -5958,16 +5958,14 @@ impl<A: Auth> ThreadActor<A> {
                     .await;
             }
             ResponseItem::FunctionCallOutput {
-                call_id, output, ..
+                call_id: Some(call_id), output, ..
             } => {
-                if let Some(call_id) = call_id {
-                    self.client
-                        .send_tool_call_completed(
-                            call_id.clone(),
-                            serde_json::to_value(output).ok(),
-                        )
-                        .await;
-                }
+                self.client
+                    .send_tool_call_completed(
+                        call_id.clone(),
+                        serde_json::to_value(output).ok(),
+                    )
+                    .await;
             }
             ResponseItem::LocalShellCall {
                 call_id: Some(call_id),
@@ -6202,7 +6200,9 @@ fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<UserInput> {
                 text_elements: vec![],
             }),
             ContentBlock::Image(image_block) => Some(UserInput::Image {
-                image_url: format!("data:{};base64,{}", image_block.mime_type, image_block.data),
+                image: ImageReference::Inline {
+                    image_url: format!("data:{};base64,{}", image_block.mime_type, image_block.data),
+                },
                 detail: None,
             }),
             ContentBlock::ResourceLink(ResourceLink { name, uri, .. }) => Some(UserInput::Text {
@@ -6978,6 +6978,7 @@ mod tests {
             title: "Verify identity".into(),
             description: "Native verification required".into(),
             challenge: "opaque-verification-challenge".into(),
+            meta: Some(json!({ "verification_secret": "must-not-reach-acp" })),
         };
         assert_eq!(
             elicitation_request_message(&request),
@@ -7011,6 +7012,7 @@ mod tests {
                         title: "Verify identity".into(),
                         description: "Native verification required".into(),
                         challenge: "opaque-verification-challenge".into(),
+                        meta: Some(json!({ "verification_secret": "must-not-reach-acp" })),
                     },
                 },
             )
@@ -7120,6 +7122,7 @@ mod tests {
         let thread_id = ThreadId::new();
         let (mut state, session_client, client) = prompt_state_for_projection(thread_id);
         let event = GuardianAssessmentEvent {
+            model_context: None,
             review_reason: None,
             id: "guardian-stdin-1".to_string(),
             target_item_id: Some("exec-1".to_string()),
@@ -7889,12 +7892,9 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(matches!(
             &ops[0],
-            RecordedOp::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    service_tier: Some(Some(tier)),
-                    ..
-                },
-            } if tier == ServiceTier::Fast.request_value()
+            RecordedOp::ThreadSettings { thread_settings }
+                if thread_settings.service_tier.as_ref().and_then(Option::as_deref)
+                    == Some(ServiceTier::Fast.request_value())
         ));
 
         Ok(())
@@ -7939,12 +7939,9 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(matches!(
             &ops[0],
-            RecordedOp::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    service_tier: Some(Some(tier)),
-                    ..
-                },
-            } if tier == ServiceTier::Fast.request_value()
+            RecordedOp::ThreadSettings { thread_settings }
+                if thread_settings.service_tier.as_ref().and_then(Option::as_deref)
+                    == Some(ServiceTier::Fast.request_value())
         ));
 
         Ok(())
@@ -8017,21 +8014,14 @@ mod tests {
         assert_eq!(ops.len(), 2);
         assert!(matches!(
             &ops[0],
-            RecordedOp::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    service_tier: Some(Some(tier)),
-                    ..
-                },
-            } if tier == ServiceTier::Fast.request_value()
+            RecordedOp::ThreadSettings { thread_settings }
+                if thread_settings.service_tier.as_ref().and_then(Option::as_deref)
+                    == Some(ServiceTier::Fast.request_value())
         ));
         assert!(matches!(
             &ops[1],
-            RecordedOp::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    service_tier: Some(None),
-                    ..
-                },
-            }
+            RecordedOp::ThreadSettings { thread_settings }
+                if thread_settings.service_tier == Some(None)
         ));
 
         Ok(())
@@ -8681,6 +8671,7 @@ mod tests {
             arguments: invocation.arguments.clone().unwrap_or_default(),
             connector_id: Some("calendar-connector".to_string()),
             mcp_app_resource_uri: Some("app://calendar".to_string()),
+            mcp_app_ui: None,
             link_id: Some("link-1".to_string()),
             app_name: Some("Calendar".to_string()),
             action_name: Some("Create event".to_string()),
@@ -8708,10 +8699,12 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
+                    turn_id: "turn-1".into(),
                     call_id: "mcp-call-1".to_string(),
                     invocation: invocation.clone(),
                     connector_id: Some("calendar-connector".to_string()),
                     mcp_app_resource_uri: Some("app://calendar".to_string()),
+                    mcp_app_ui: None,
                     link_id: Some("link-1".to_string()),
                     app_name: Some("Calendar".to_string()),
                     action_name: Some("Create event".to_string()),
@@ -8724,10 +8717,12 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::McpToolCallEnd(McpToolCallEndEvent {
+                    turn_id: "turn-1".into(),
                     call_id: "mcp-call-1".to_string(),
                     invocation,
                     connector_id: Some("calendar-connector".to_string()),
                     mcp_app_resource_uri: Some("app://calendar".to_string()),
+                    mcp_app_ui: None,
                     link_id: Some("link-1".to_string()),
                     app_name: Some("Calendar".to_string()),
                     action_name: Some("Create event".to_string()),
@@ -8882,6 +8877,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::TurnStarted(TurnStartedEvent {
+                    root_turn_id: None,
                     model_context_window: None,
                     collaboration_mode_kind: ModeKind::default(),
                     turn_id: "turn-1".to_string(),
@@ -9864,6 +9860,7 @@ mod tests {
 
         for event in [
             EventMsg::TurnStarted(TurnStartedEvent {
+                root_turn_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: ModeKind::default(),
                 turn_id: "turn-1".to_string(),
@@ -10358,7 +10355,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_options_include_astra_from_bundled_catalog() -> anyhow::Result<()> {
+    async fn config_options_include_gpt6_models_without_replacing_explicit_selection() -> anyhow::Result<()> {
         let astra = all_model_presets()
             .iter()
             .find(|preset| preset.model == "gpt-6-astra")
@@ -10392,11 +10389,12 @@ mod tests {
             panic!("model options should be ungrouped");
         };
         assert_eq!(select.current_value.0.as_ref(), "gpt-5.6-sol");
-        assert!(
-            models
-                .iter()
-                .any(|model| model.value.0.as_ref() == astra.id.as_str())
-        );
+        for model_id in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+            assert!(
+                models.iter().any(|model| model.value.0.as_ref() == model_id),
+                "bundled {model_id} must remain selectable through ACP"
+            );
+        }
         Ok(())
     }
 
@@ -10539,12 +10537,8 @@ mod tests {
         );
         assert!(matches!(
             conversation.ops.lock().unwrap().last(),
-            Some(RecordedOp::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    permission_profile: Some(_),
-                    ..
-                },
-            })
+            Some(RecordedOp::ThreadSettings { thread_settings })
+                if thread_settings.permission_profile.is_some()
         ));
 
         Ok(())
@@ -11372,7 +11366,7 @@ mod tests {
             review_request: ReviewRequest,
         },
         ThreadSettings {
-            thread_settings: ThreadSettingsOverrides,
+            thread_settings: Box<ThreadSettingsOverrides>,
         },
         ExecApproval {
             id: String,
@@ -11424,7 +11418,7 @@ mod tests {
                         meta,
                         ..
                     } => RecordedOp::ResolveElicitation {
-                        decision: decision.clone(),
+                        decision: *decision,
                         content: content.clone(),
                         meta: meta.clone(),
                     },
@@ -11440,7 +11434,7 @@ mod tests {
                         review_request: review_request.clone(),
                     },
                     Op::ThreadSettings { thread_settings } => RecordedOp::ThreadSettings {
-                        thread_settings: thread_settings.clone(),
+                        thread_settings: Box::new(thread_settings.clone()),
                     },
                     Op::ExecApproval {
                         id,
@@ -11625,6 +11619,7 @@ mod tests {
                             .send(Event {
                                 id: id.to_string(),
                                 msg: EventMsg::TurnStarted(TurnStartedEvent {
+                                    root_turn_id: None,
                                     model_context_window: None,
                                     collaboration_mode_kind: ModeKind::default(),
                                     turn_id: id.to_string(),
