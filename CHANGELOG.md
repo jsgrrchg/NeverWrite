@@ -34,6 +34,13 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.8] - 2026-09-28
+
+### Changed
+
+- Updated the bundled Claude ACP runtime to `0.83.0` and added Claude Sonnet 5.5 to the model selector.
+- Updated the bundled Codex runtime to `0.157.1`, preserving saved conversations and selected models across runtime upgrades and rollbacks.
+
 ## [0.8.7] - 2026-09-28
 
 ### Changed
