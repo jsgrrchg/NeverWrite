@@ -340,6 +340,14 @@ and Electron smoke tests when possible.
 
 The renderer models sidebar content independently from sidebar geometry. `sidebarViews.ts` owns the canonical view catalog, fixed-side policy, movable placement for Files and Agents, ordering, fallbacks, and minimum widths. `layoutStore.ts` owns persistent placement, one active view per side, collapse state, and dimensions.
 
+The default layout places and activates Agents on the left and Files on the
+right. Active selections are stored globally under
+`neverwrite.sidebar.active-views.v1`, while Files and Agents placement is stored
+under `neverwrite.sidebar.movable-placement.v1`. The older
+`neverwrite.sidebar.view` and `neverwrite.rightpanel.view` keys are not used
+during hydration. See [Settings Scope](settings-scope.md) for defaults and
+restoration behavior.
+
 `SidebarShell` and `RightSidebarShell` retain platform-specific chrome and render only the active view available on their side through the shared tab strip and content mapping. Files and Agents are auxiliary launchers that can move between sides; they do not own editor tabs, agent sessions, chat content, or workspace panes. Tags, Bookmarks, and Maps remain fixed to the left, while Outline and Links remain fixed to the right.
 
 The chat pane has its own placement policy: an explicit left or right side, or

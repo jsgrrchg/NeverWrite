@@ -208,10 +208,10 @@ preferences, workspace state, or privacy-relevant local state.
 | `neverwrite.terminal.replay:<terminal-id>` | Per-terminal | None | `terminalRuntimeStore.ts` | Terminal replay buffer snapshot; cache/state, not a setting. |
 | `neverwrite.sidebar.width` | Global layout | `280` | `layoutStore.ts` | Sidebar width. |
 | `neverwrite.sidebar.collapsed` | Global layout | `false` | `layoutStore.ts` | Sidebar collapsed state. |
-| `neverwrite.sidebar.view` | Global layout | `files` | `layoutStore.ts` | Active left sidebar view. |
+| `neverwrite.sidebar.active-views.v1` | Global layout | `{ left: "agents", right: "files" }` | `layoutStore.ts` | Active view for each side, normalized against the current sidebar placement. |
+| `neverwrite.sidebar.movable-placement.v1` | Global layout | `{ files: "right", agents: "left" }` | `layoutStore.ts` | Side assignments for Files and Agents; each can move between left and right. |
 | `neverwrite.rightpanel.width` | Global layout | `280` | `layoutStore.ts` | Right panel width. |
 | `neverwrite.rightpanel.collapsed` | Global layout | `false` | `layoutStore.ts` | Right panel collapsed state. |
-| `neverwrite.rightpanel.view` | Global layout | `outline` | `layoutStore.ts` | Active right panel view. |
 | `neverwrite.editor-pane.sizes` | Global layout | `[1]` | `layoutStore.ts` | Editor pane split ratios. |
 | `neverwrite:sort-mode` | Global file tree preference | `name_asc` | `FileTree.tsx` | File tree sort mode. |
 | `neverwrite:reveal-active` | Global file tree preference | `false` | `FileTree.tsx` | Whether the file tree reveals the active tab. |
@@ -258,6 +258,14 @@ vault id.
   `neverwrite:settings`.
 - `themeStore` migrates `neverwrite:theme` into
   `neverwrite:theme:<vault-path>` if the vault-specific key does not exist.
+- Sidebar hydration reads `neverwrite.sidebar.active-views.v1` and
+  `neverwrite.sidebar.movable-placement.v1`. The older
+  `neverwrite.sidebar.view` and `neverwrite.rightpanel.view` keys are not read
+  or migrated. Without current preferences, Agents is active on the left and
+  Files on the right. Stored selections unavailable on their assigned side
+  fall back to an available view: Outline on the right, or the first view in
+  catalog order on the left. Tags, Bookmarks, and Maps remain fixed to the
+  left; Outline and Links remain fixed to the right.
 - AI auto-context still reads legacy `neverwrite.ai.preferences.autoContextEnabled`
   as a fallback, but new writes go to `neverwrite.ai.auto-context:<vault-path>`
   or `neverwrite.ai.auto-context:__global__`.
