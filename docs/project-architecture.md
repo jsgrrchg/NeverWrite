@@ -90,6 +90,18 @@ app update state. Most feature-specific behavior should live under
 `apps/desktop/src/features/<feature>` or `apps/desktop/src/app/store`, not in
 Electron main.
 
+[`ChatEditorWorkspace.tsx`](../apps/desktop/src/components/layout/ChatEditorWorkspace.tsx)
+composes a dedicated chat pane alongside the editor workspace. The editor owns
+its panes and tabs; chat selection uses `ChatPaneView` (`conversation`,
+`history`, or `empty`) rendered by
+[`AIChatPane.tsx`](../apps/desktop/src/features/ai/components/AIChatPane.tsx).
+Selecting an ACP conversation in Agents reveals it in the chat pane. Pane
+placement, width, and visibility belong to `layoutStore`; navigation belongs to
+the historically named `chatTabsStore`. Retained chat-tab types and persisted
+fields support conversation references and migration from older editor
+workspaces. See [Editor Architecture](editor-architecture.md#chat-pane-and-session-ownership)
+for session lifetime, focus, and compatibility details.
+
 The renderer calls the desktop environment through the runtime facade in
 [`apps/desktop/src/app/runtime`](../apps/desktop/src/app/runtime). In production
 that facade delegates to the Electron preload API; tests can use the test
@@ -330,6 +342,11 @@ The renderer models sidebar content independently from sidebar geometry. `sideba
 
 `SidebarShell` and `RightSidebarShell` retain platform-specific chrome and render only the active view available on their side through the shared tab strip and content mapping. Files and Agents are auxiliary launchers that can move between sides; they do not own editor tabs, agent sessions, chat content, or workspace panes. Tags, Bookmarks, and Maps remain fixed to the left, while Outline and Links remain fixed to the right.
 
+The chat pane has its own placement policy: an explicit left or right side, or
+`follow-agents` to follow the Agents sidebar. Hiding or moving the sidebar does
+not delete a conversation. Chat pane visibility and expansion are handled
+separately from sidebar collapse and editor tab selection.
+
 Reveal and drag flows resolve the current side at runtime. `Reveal in File Tree` activates and mounts Files before emitting its selection intent, and `AppLayout` pins only the peek overlay where a file or agent drag began. Right-side geometry keeps a 200 px minimum for Outline and Links and a 280 px minimum for Files and Agents, with the same 2000 px nominal maximum as the left sidebar.
 
-Last updated: August 14, 2026.
+Last updated: September 29, 2026.

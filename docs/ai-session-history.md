@@ -72,32 +72,38 @@ between promotion and history persistence does not leave an immediately broken
 reference. Deleting or pruning histories removes a managed blob only after its
 last retained history reference is gone.
 
-## Sessions, Sidebar Entries, And Workspace Views
+## Sessions, Sidebar Entries, And The Chat Pane
 
-For ACP chats, the Agents sidebar owns the durable live-session entry. Editor
-tabs and panes are views into that session, so closing a chat tab does not stop
-or delete the agent. The session remains available in the sidebar and can be
-reopened in the focused chat tab, explicitly opened in a new tab, or placed in
-another pane.
+ACP conversations are listed in the Agents sidebar and displayed in a dedicated
+chat pane alongside the editor workspace. Selecting a conversation reveals it
+in that pane. Hiding the pane or selecting another conversation does not stop
+or delete the underlying session; it remains available from the sidebar.
 
-With history-based tab opening enabled, a physical chat tab can hold a local
-Back/Forward history of sessions visited through that view. This workspace
-navigation history is persisted with the editor session, but it is distinct
-from the transcript stored under `.neverwrite/sessions/`.
+The pane has `conversation`, `history`, and `empty` views. Chat History opens in
+the same pane, with a Back action that returns to the previous conversation when
+available. Editor tab-opening preferences and per-tab Back/Forward history do
+not control chat selection.
 
-Deleting a conversation is different from closing a view. Explicit deletion
-removes physical tabs that display the session and prunes it from other chat-tab
-histories. Sidebar pins and folder assignments are local UI metadata rather
-than provider transcript data; they follow session ID migrations so a restored
-or newly durable session keeps its organization.
+Chat navigation is persisted separately from editor tabs and saved transcripts.
+The historical `neverwrite.chat.tabs:<vault-path>` key and `chatTabsStore.ts`
+name are retained. Their current payload includes the pane view, history filter,
+and conversation references in tab-shaped metadata. Older editor chat tabs and
+their navigation entries are migrated into those references before the editor
+tab projections are removed. See [Editor Architecture](editor-architecture.md#chat-pane-and-session-ownership)
+and [Settings Scope](settings-scope.md) for the UI and compatibility boundaries.
 
-Claude Code launched in an integrated terminal is not an ACP chat and does not
-use this durable sidebar ownership model. Its sidebar row is a non-persisted
-projection of the live terminal. Selecting the row focuses that terminal;
-closing the terminal ends the process and removes the row. It has no chat-tab
-Back/Forward history, saved chat view, or `Open in New Tab` action. Terminal tabs
-can be restored as workspace tabs, but their current metadata does not relaunch
-Claude Code or recreate the agent-sidebar projection after an app restart.
+Explicit conversation deletion closes its live runtime when applicable, removes
+its saved history and navigation references, and clears a matching pane selection
+or return-from-history target. Sidebar pins and folder assignments are local UI
+metadata rather than provider transcript data; they follow session ID migrations
+so a restored or newly durable session keeps its organization.
+
+Claude Code launched in an integrated terminal has no ACP chat session. Its
+sidebar row is a non-persisted projection of the live terminal. Selecting the row
+focuses that terminal rather than opening a conversation in the chat pane;
+closing the terminal ends the process and removes the row. Terminal tabs can be
+restored as workspace tabs, but their current metadata does not relaunch Claude
+Code or recreate the agent-sidebar projection after an app restart.
 
 ## Canonical Conversation Rollout And Rollback
 
@@ -187,4 +193,4 @@ send a new message so NeverWrite can continue with the stored transcript.
 - Pasted screenshot drafts and managed blobs are plaintext local image files;
   review them before sharing app data or a vault archive.
 
-Last updated: August 25, 2026.
+Last updated: September 29, 2026.

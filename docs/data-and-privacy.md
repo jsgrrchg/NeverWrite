@@ -241,8 +241,12 @@ Examples include:
 - `neverwrite:lastVaultPath` and `neverwrite:recentVaults`: recent vault paths
   and pinned/recent vault metadata.
 - `neverwrite:bookmarks:<vault-path>`: vault bookmarks.
-- `neverwrite.session.tabs:<vault-path>` and related chat/window keys: workspace,
-  tab, detached-window, and window restore state.
+- `neverwrite.session.tabs:<vault-path>` and related window keys: editor
+  workspace, tab, detached-window, and window restore state.
+- `neverwrite.chat.tabs:<vault-path>`: dedicated chat pane navigation and
+  retained conversation references. The historical key and tab-shaped metadata
+  support restoration and migration rather than a visible chat tab strip.
+- `neverwrite.chat-pane.layout.v1`: chat pane placement, width, and visibility.
 - `neverwrite.ai.preferences` and per-vault AI preference keys: UI preferences
   such as auto-context and diff zoom, plus cached runtime catalog data.
 - `neverwrite:window-operational-state:<label>`: temporary update-safety state
@@ -426,4 +430,4 @@ the contents.
 - Third-party AI runtime CLIs can store their own auth state outside NeverWrite.
   Check that provider's documentation before sharing provider config folders.
 
-Last updated: July 16, 2026.
+Last updated: September 29, 2026.

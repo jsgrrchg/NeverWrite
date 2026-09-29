@@ -108,7 +108,7 @@ Inline or partial review:
 There are three review surfaces:
 
 - Full Review tab: [`AIReviewView.tsx`](../apps/desktop/src/features/ai/components/AIReviewView.tsx) opens from the editor and shows pending changes with global actions, expansion state, zoom, persisted scroll/anchor state, and per-file diff cards.
-- Compact Edits surface: [`EditedFilesBufferPanel.tsx`](../apps/desktop/src/features/ai/components/EditedFilesBufferPanel.tsx) appears in the chat sidebar and offers compact keep/reject/review/undo actions.
+- Compact Edits surface: [`EditedFilesBufferPanel.tsx`](../apps/desktop/src/features/ai/components/EditedFilesBufferPanel.tsx) appears within the selected conversation in the dedicated chat pane and offers compact keep/reject/review/undo actions.
 - Chat activity rows: [`ChangeReviewToolRail.tsx`](../apps/desktop/src/features/ai/components/ChangeReviewToolRail.tsx) renders change-review progress and diff previews in the conversation timeline. It is a navigation and inspection surface; keep/reject state and actions still derive from the same canonical ActionLog projection.
 
 The Review tab and Edits surface are available only while the current vault's
@@ -254,4 +254,4 @@ Manual smoke checks:
 - Reject undo is intentionally shallow: it is valid only until new agent edits arrive or disk state makes the stored snapshot unsafe.
 - The JS fallback exists for availability, but Rust/WASM is the expected engine. Non-zero fallback stats should be treated as diagnostic signal.
 
-Last updated: May 11, 2026.
+Last updated: September 29, 2026.

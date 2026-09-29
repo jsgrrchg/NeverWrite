@@ -200,7 +200,8 @@ preferences, workspace state, or privacy-relevant local state.
 | `neverwrite:bookmarks:<vault-path>` | Per-vault | Empty folders/items | `bookmarkStore.ts` | Bookmark folders and entries for the vault. |
 | `neverwrite.session.tabs` | Global fallback / legacy | None | `editorSession.ts` | Legacy fallback for workspace tabs. |
 | `neverwrite.session.tabs:<vault-path>` | Per-vault | Current workspace | `editorSession.ts` | Editor tabs and workspace restore state. |
-| `neverwrite.chat.tabs:<vault-path>` | Per-vault | Initial chat tab state | `chatTabsStore.ts` | Chat tab workspace for the vault. |
+| `neverwrite.chat.tabs:<vault-path>` | Per-vault | Empty chat pane view, `all` history filter, no conversation references | `chatTabsStore.ts` | Version 2 chat navigation: pane view, history filter, and retained conversation metadata in `tabs` / `activeTabId`. The historical key and field names support registration, restoration, and migration; the UI has no chat tab strip. |
+| `neverwrite.chat-pane.layout.v1` | Global layout | Placement `follow-agents`, width `480`, visible `true` | `layoutStore.ts` | Dedicated chat pane placement (`left`, `right`, or `follow-agents`), preferred width, and visibility. Width is normalized to `320..1600`; rendered width also depends on available workspace space. |
 | `neverwrite.ai.review.view:<vault-or-__global__>:<session-id>` | Per-vault plus session | None | `reviewTabPersistence.ts` | Review tab UI state such as expanded files, scroll, anchors, zoom, and wide mode. |
 | `neverwrite.devtools.terminal.tabs:<vault-path>` | Per-vault legacy migration | Initial terminal tab | `useTerminalTabs.ts` / `legacyTerminalMigration.ts` | Older standalone terminal workspace state, migrated into `neverwrite.session.tabs:<vault-path>`. |
 | `neverwrite.workspace.terminal.legacyMigrated:<vault-path>` | Per-vault migration marker | None | `legacyTerminalMigration.ts` | Marks migration from older terminal workspace state. |
@@ -260,8 +261,17 @@ vault id.
 - AI auto-context still reads legacy `neverwrite.ai.preferences.autoContextEnabled`
   as a fallback, but new writes go to `neverwrite.ai.auto-context:<vault-path>`
   or `neverwrite.ai.auto-context:__global__`.
+- Chat navigation accepts persisted versions 1 and 2 under the historical
+  `neverwrite.chat.tabs:<vault-path>` key. Legacy editor chat tabs and their
+  history entries are preserved as conversation references before their editor
+  projections are removed. `view` selects the current pane content; retained
+  `tabs` and `activeTabId` metadata does not imply visible chat tabs.
+- Chat pane focus and expansion (`focusedSurface`, `chatExpanded`) are transient
+  UI state. Expansion clears on editor focus and is not persisted with pane
+  layout or chat navigation.
 - Removing a vault from recent vaults also removes its vault-scoped settings,
-  theme, editor tabs, chat tabs, and bookmarks.
+  theme, editor tabs, chat navigation, and bookmarks. Global chat pane layout
+  remains an installation preference.
 
 ## Derived State And Caches
 
@@ -278,4 +288,4 @@ when they are persisted or visible in Settings:
 - Review anchors, resolved hunk positions, and transient review synchronization
   state.
 
-Last updated: August 5, 2026.
+Last updated: September 29, 2026.

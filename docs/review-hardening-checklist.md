@@ -44,7 +44,7 @@ back to the agent.
 ## Baseline Smoke
 
 - [ ] Ask the agent to modify one existing text file.
-- [ ] Confirm the Edits panel appears in the chat sidebar with one `Edits` row,
+- [ ] Confirm the Edits panel appears in the chat pane with one `Edits` row,
       the correct file name, and non-zero `+`/`-` stats.
 - [ ] Click `Review` from the Edits panel.
 - [ ] Confirm a Review tab opens for the same session and shows `Pending
@@ -149,6 +149,16 @@ back to the agent.
 
 ## Chat Activity And Change Review
 
+- [ ] Select an ACP conversation from Agents and confirm it appears in the
+      dedicated chat pane without adding an editor tab.
+- [ ] Switch conversations or hide the chat pane and confirm the underlying
+      sessions remain available with their pending review state.
+- [ ] Open Chat History in the same pane and use Back to return to the previous
+      conversation when it is still available.
+- [ ] Move, resize, and expand the chat pane; confirm editor tab selection stays
+      independent and returning focus to the editor clears chat expansion.
+- [ ] Restore a workspace with legacy editor chat tabs and confirm conversation
+      references are preserved before the old tab projections are removed.
 - [ ] Set Tool activity display to `expanded`, `collapsed`, and `hidden` in
       Settings, then confirm each mode produces the expected conversation
       timeline presentation.
@@ -319,4 +329,4 @@ Refer to [Testing and Validation](./testing.md) for full CI parity commands.
 - [ ] Relevant automated tests and smoke commands have passed, or skipped
       commands are documented with a reason.
 
-Last updated: May 11, 2026.
+Last updated: September 29, 2026.

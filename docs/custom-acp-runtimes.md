@@ -62,7 +62,7 @@ Definitions are global application configuration, not vault data. NeverWrite int
 
 At most 32 active and 32 deleted custom definitions are retained. Runtime names, commands, arguments, environment names, and values are length-limited and validated before saving. The setup screen only considers an active definition selectable when its executable is ready.
 
-Deleting a live chat explicitly closes the ACP process NeverWrite launched for that session. Deleting a definition does not close an already-live session. Closing a chat tab only hides the view; it does not delete the chat or terminate the runtime.
+Deleting a live chat explicitly closes the ACP process NeverWrite launched for that session. Deleting a definition does not close an already-live session. Chats are displayed in the dedicated chat pane; hiding that pane or selecting another conversation does not delete the chat or terminate the runtime.
 
 If reconnect reports that the definition is missing, restore it in Settings and retry. If it reports that the definition changed, review the command and environment, then confirm the new fingerprint only if it is expected. If the executable is missing, fix the command or installation and use **Verify executable**. If a runtime exits or rejects the handshake, inspect its own logs and verify that it speaks the current ACP protocol over stdio.
 

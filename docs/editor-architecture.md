@@ -22,7 +22,12 @@ The main renderer boundary is
 - `note` tabs render through [`Editor.tsx`](../apps/desktop/src/features/editor/Editor.tsx), the Markdown/notes CodeMirror editor.
 - `file` tabs render through [`FileTabView.tsx`](../apps/desktop/src/features/editor/FileTabView.tsx), then branch by `FileTab.viewer`.
 - `pdf` tabs render through [`PdfTabView.tsx`](../apps/desktop/src/features/pdf/PdfTabView.tsx), not CodeMirror.
-- AI review/chat, map, graph, and terminal tabs have separate hosts.
+- AI review, map, graph, and terminal tabs have separate hosts.
+
+Chat lives in its own pane alongside the editor workspace, composed by
+[`ChatEditorWorkspace.tsx`](../apps/desktop/src/components/layout/ChatEditorWorkspace.tsx)
+and rendered by
+[`AIChatPane.tsx`](../apps/desktop/src/features/ai/components/AIChatPane.tsx).
 
 Notes and text-like files are intentionally different editor surfaces. Do not
 assume behavior added to `Editor.tsx` automatically applies to arbitrary files,
@@ -42,39 +47,50 @@ resource-backed tab kinds are:
 Only `note`, `pdf`, `file`, and `map` participate in the resource-backed history
 registry in
 [`editorTabRegistry.ts`](../apps/desktop/src/app/store/editorTabRegistry.ts).
-AI review and graph tabs remain outside that model. AI chat tabs implement a
-separate session-navigation history directly on `ChatTab`; they do not use the
-resource registry.
+AI review and graph tabs remain outside that model. Chat navigation belongs to
+the dedicated chat pane. The `ChatTab` and `ChatHistoryEntry` types remain for
+compatibility with older persisted editor workspaces; restoration migrates their
+conversation references into chat navigation before removing the old editor
+tab projections.
 
-### AI Chat Views And Session Ownership
+### Chat Pane And Session Ownership
 
-The Agents sidebar is the durable owner of live ACP chat sessions. An `ai-chat`
-tab is a workspace view of an ACP session, not the session itself. Closing a chat
-tab must therefore close only that physical view; it must not stop, delete, or
-otherwise change the lifetime of the underlying agent. Explicit session deletion
-is the operation that removes matching physical tabs and prunes that session
-from the history of other chat tabs.
+The Agents sidebar lists ACP conversations independently of the chat pane's
+visibility. Selecting a conversation displays it in the dedicated pane without
+creating an editor tab. Hiding the pane or selecting another conversation leaves
+the underlying session available. Explicit session deletion owns runtime and
+saved-history cleanup and removes the corresponding navigation references.
 
-When the configured tab-open behavior is `history`, opening a chat from the
-sidebar reuses the focused chat tab and appends a `ChatHistoryEntry`. Back and
-Forward navigate those entries in place. `Open in New Tab`, pane-targeted opens,
-background opens, and drag/drop placement can create or move a separate physical
-view instead. Each chat history entry stores the live session ID, optional saved
-history session ID, and title; the workspace session serializer persists the
-history and current index.
+The pane displays one of three `ChatPaneView` modes: `conversation`, `history`,
+or `empty`. Chat History opens in that same pane; its Back action returns to the
+previously selected conversation when it still exists. Conversation selection
+is independent of the editor's `tabOpenBehavior`, tab order, and per-tab
+Back/Forward history.
 
-Session IDs can change when a temporary or restored session becomes durable.
-That migration must update every workspace history entry as well as other
-session-keyed sidebar metadata such as pins and folder membership. Likewise,
-deleting a session must clean all panes without leaving stale Back/Forward
-entries or empty panes behind.
+[`layoutStore.ts`](../apps/desktop/src/app/store/layoutStore.ts) owns chat pane
+visibility, width, and placement (`left`, `right`, or `follow-agents`). The pane
+can expand across the workspace; expansion is transient and clears when focus
+returns to the editor. Selecting a conversation reveals the pane.
 
-Claude Code terminal agents are an intentional exception to this ownership
-model. They have no ACP backend session. A live terminal is their durable owner,
+[`chatTabsStore.ts`](../apps/desktop/src/features/ai/store/chatTabsStore.ts)
+retains its historical name, storage key, and `tabs` / `activeTabId` fields for
+conversation registration, persistence, and compatibility. The visible pane is
+selected through `view`; those fields do not describe a visible chat tab strip.
+[`chatWorkspaceRestoration.ts`](../apps/desktop/src/features/ai/chatWorkspaceRestoration.ts)
+preserves legacy conversation references before removing old editor chat tabs.
+
+Session ID migrations must update the selected conversation, retained
+navigation references, and session-keyed sidebar metadata such as pins and
+folder membership. Deletion must clear a matching pane selection and any
+return-from-history reference, as well as related review views and legacy tab
+references.
+
+Claude Code terminal agents use a different session lifecycle. They have no ACP
+backend session. A live terminal is their durable owner,
 and [`claudeTerminalAgentSession.ts`](../apps/desktop/src/features/ai/claudeTerminalAgentSession.ts)
 projects a lightweight, non-persisted pseudo-session into the Agents sidebar.
-Opening that entry focuses its existing terminal tab; it cannot participate in
-chat-tab history or `Open in New Tab`. Closing the terminal tab ends the PTY and
+Opening that entry focuses its existing terminal tab rather than selecting a
+conversation in the chat pane. Closing the terminal tab ends the PTY and
 removes the sidebar entry, while the sidebar's explicit `Close Terminal` action
 confirms before performing the same lifecycle operation.
 
@@ -323,7 +339,8 @@ but it should not become a property of individual tabs.
 
 `EditorPaneContent` keeps the note CodeMirror editor mounted behind non-editor
 tabs when an editable note exists in the pane. This preserves note-local scroll,
-selection, and undo state while the user visits AI review/chat tabs.
+selection, and undo state while the user visits AI review or other editor tabs.
+The chat pane sits alongside this workspace and has its own focus state.
 
 Detached note windows are bootstrapped through
 [`detachedWindows.ts`](../apps/desktop/src/app/detachedWindows.ts) and
@@ -409,11 +426,13 @@ npm run electron:vault-editor:smoke
   sync and wikilink resolution intentionally pass candidate path sets.
 - Do not forget multi-pane focus. Global active-tab selectors can be wrong when
   a secondary pane or detached window owns the interaction.
-- Do not tie an ACP session's lifetime to a workspace tab. Closing a chat tab
-  closes a view; explicit session deletion owns cross-pane and history cleanup.
-  Claude Code terminal agents are the explicit exception because their PTY/tab
-  is the owned session, not a view of an ACP session.
+- Keep ACP session lifetime independent of chat pane visibility and selection.
+  Explicit session deletion owns runtime, history, and navigation cleanup.
+  Claude Code terminal agents depend on their live PTY and terminal tab instead.
+- Treat `ChatTab` and chat-tab-shaped persistence as compatibility structures.
+  Preserve legacy references during migration without restoring chat tabs into
+  the editor workspace.
 - Do not add a file viewer without deciding its text-content, autosave, dirty,
   reload, history, and session-persistence behavior.
 
-Last updated: July 11, 2026.
+Last updated: September 29, 2026.
