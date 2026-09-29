@@ -31,7 +31,7 @@ and rendered by
 
 Notes and text-like files are intentionally different editor surfaces. Do not
 assume behavior added to `Editor.tsx` automatically applies to arbitrary files,
-CSV files, Mermaid diagram files, PDFs, or images.
+CSV files, Mermaid diagram files, HTML previews, PDFs, or images.
 
 ## Tab Model
 
@@ -41,7 +41,7 @@ resource-backed tab kinds are:
 
 - `NoteTab`: Markdown note content keyed by `noteId`.
 - `FileTab`: vault file content keyed by `relativePath`, with `viewer` set to
-  `text`, `csv`, `mermaid`, or `image`.
+  `text`, `csv`, `html`, `mermaid`, or `image`.
 - `PdfTab`: PDF state, including page, zoom, view mode, and scroll position.
 
 Only `note`, `pdf`, `file`, and `map` participate in the resource-backed history
@@ -106,14 +106,22 @@ separate persisted terminal role and launch contract.
 - `viewer === "image"` uses a custom image viewer. Image tabs do not need text
   content and use vault preview URLs.
 - `viewer === "csv"` uses [`CsvFileTabView.tsx`](../apps/desktop/src/features/editor/CsvFileTabView.tsx).
+- `viewer === "html"` uses [`HtmlTabView.tsx`](../apps/desktop/src/features/editor/HtmlTabView.tsx).
+  Files with `.html` or `.htm` extensions open as rendered previews in an
+  iframe using a vault asset URL. This surface does not load the file into a
+  CodeMirror text editor or participate in text autosave and dirty tracking.
+  Its toolbar offers opening the file externally and revealing it in the file
+  manager.
 - `viewer === "mermaid"` uses [`FileTextTabView.tsx`](../apps/desktop/src/features/editor/FileTextTabView.tsx)
   with a Source/Preview switch and [`MermaidFilePreview.tsx`](../apps/desktop/src/features/editor/MermaidFilePreview.tsx)
   for rendered diagrams.
 - other text-like file viewers use [`FileTextTabView.tsx`](../apps/desktop/src/features/editor/FileTextTabView.tsx).
 
-`fileViewerNeedsTextContent(viewer)` returns `viewer !== "image"`, so adding a
-new viewer mode must define whether it participates in text loading, autosave,
-dirty state, reload handling, and review sync.
+`fileViewerNeedsTextContent(viewer)` returns
+`viewer !== "image" && viewer !== "html"`: both image and HTML viewers load
+their rendered content through vault URLs instead of the editor's text-loading
+path. Adding a new viewer mode must define whether it participates in text
+loading, autosave, dirty state, reload handling, and review sync.
 
 ## CodeMirror Extensions
 
