@@ -9,6 +9,7 @@ The short version:
 - Most desktop Settings values are scoped to the current vault and are stored in
   `neverwrite:settings:<vault-path>`.
 - Vim settings are global even though they are shown inside Editor settings.
+- Glass opacity and wikilink hover-preview settings are also global.
 - Theme is vault-scoped after migration, with a global fallback for first run and
   legacy data.
 - AI chat preferences are mostly global, except auto-context, which is
@@ -36,7 +37,7 @@ The main settings store uses these keys:
 
 | Storage key | Scope | Contents |
 | --- | --- | --- |
-| `neverwrite:settings` | Global fallback | Legacy fallback data plus the explicitly global Vim settings. |
+| `neverwrite:settings` | Global fallback | Legacy fallback data plus explicitly global glass opacity, Vim, and hover-preview settings. |
 | `neverwrite:settings:<vault-path>` | Per-vault | Main `Settings` values for the vault, excluding explicitly global keys. |
 | `neverwrite:lastVaultPath` | Global app state | Initial vault path lookup for hydration, not a user-facing setting itself. |
 | `neverwrite:shortcut-overrides` | Global preference | Versioned platform-specific overrides for configurable application shortcuts. |
@@ -45,6 +46,7 @@ The main settings store uses these keys:
 
 | Setting | Scope |
 | --- | --- |
+| `glassOpacity` | Global |
 | `vimModeEnabled` | Global |
 | `vimRelativeLineNumbers` | Global |
 | `hoverPreviewEnabled` | Global |
@@ -67,6 +69,7 @@ the same Settings stores.
 | Appearance / Mode | `mode` | Per-vault, legacy global fallback | `system` | `neverwrite:theme:<vault-path>` | Valid values are `system`, `light`, and `dark`. |
 | Appearance / Mode | `themeName` | Per-vault, legacy global fallback | `default` | `neverwrite:theme:<vault-path>` | `isDark` is derived from `mode` plus OS preference. |
 | Appearance / Interface | `uiFontFamily` | Per-vault | `system` | `neverwrite:settings:<vault-path>` | Font used for app controls and navigation. Editor, chat, composer, terminal, and code surfaces keep their own font settings. |
+| Appearance / Interface | `glassOpacity` | Global | `40` | `neverwrite:settings` | Opacity percentage for translucent interface surfaces such as the composer and menus; clamped to `10..100`. The UI slider uses 5-point steps. |
 | Appearance / Navigation | `fileTreeScale` | Per-vault | `114` | `neverwrite:settings:<vault-path>` | Clamped to `90..140`. |
 | Appearance / Navigation | `agentsSidebarScale` | Per-vault | `100` | `neverwrite:settings:<vault-path>` | Clamped to `90..140`. |
 | Appearance / Navigation | `fileTreeStickyFolders` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Controls sticky parent folders in the file tree. |
@@ -86,6 +89,7 @@ the same Settings stores.
 | Editor / Preview | `hoverPreviewEnabled` | Global | `true` | `neverwrite:settings` | Toggles the wikilink hover preview across all vaults. |
 | Editor / Preview | `hoverPreviewDelayMs` | Global | `300` | `neverwrite:settings` | Open delay for the hover preview; clamped to `0..2000`. |
 | Editor / Layout | `editorContentWidth` | Per-vault | `940` | `neverwrite:settings:<vault-path>` | Clamped to `600..1200`. |
+| Editor / PDF | `pdfDefaultZoom` | Per-vault | `fit-width` | `neverwrite:settings:<vault-path>` | Initial zoom for newly opened PDF tabs. Valid values are `fit-width`, `0.5`, `0.75`, `1`, `1.25`, `1.5`, and `2`; existing tabs retain their own zoom and fit-width state. |
 | PDF toolbar | `pdfFilter` | Per-vault | `none` | `neverwrite:settings:<vault-path>` | Cycled from the PDF tab toolbar. Valid values are `none`, `dark`, `sepia`, and `grayscale`. |
 | AI / Context | `aiReviewEnabled` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Tracks AI changes for Edits, Review tabs, and inline controls. Disabling it accepts and clears pending review state; chat diff updates remain visible. |
 | AI / Context | `inlineReviewEnabled` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Gates inline review in source mode when AI change review is enabled. This is a review-system correctness setting. |
@@ -112,12 +116,14 @@ the same Settings stores.
 | Spellcheck / Grammar Check | `grammarCheckServerUrl` | Per-vault | `""` | `neverwrite:settings:<vault-path>` | Trimmed on load; empty means the built-in/public default path used by the feature. |
 | Terminal / Font | `terminalFontFamily` | Per-vault | `""` | `neverwrite:settings:<vault-path>` | Empty string means use the built-in terminal font stack. |
 | Terminal / Font | `terminalFontSize` | Per-vault | `13` | `neverwrite:settings:<vault-path>` | Clamped to `8..24`. |
+| AI Providers / Claude Code | `claudeCodeEnabled` | Per-vault | `false` | `neverwrite:settings:<vault-path>` | Adds the installed Claude Code CLI as an explicit option when creating an agent for this vault. This controls the terminal integration separately from Claude ACP. |
 | Terminal / Shell Environment | `claudeCodeOptimized` | Per-vault | `false` | `neverwrite:settings:<vault-path>` | Adds `CLAUDE_CODE_NO_FLICKER=1` to newly opened Claude Code terminals. |
 | Terminal / Claude Code | `claudeCodeSkipPermissions` | Per-vault | `false` | `neverwrite:settings:<vault-path>` | Enables the Claude Code skip-permissions launch flag. |
 | Terminal / Claude Code | `claudeCodeModel` | Per-vault | `""` | `neverwrite:settings:<vault-path>` | Empty string means Claude Code default. |
 | Terminal / Claude Code | `claudeCodeContinueSession` | Per-vault | `false` | `neverwrite:settings:<vault-path>` | Adds continue/resume behavior for new Claude Code terminal launches. |
 | File Tree | `fileTreeContentMode` | Per-vault | `notes_only` | `neverwrite:settings:<vault-path>` | Valid values are `notes_only` and `all_files`. Affects file tree, file pickers, mentions, and wikilink suggestions. |
 | File Tree | `fileTreeShowExtensions` | Per-vault | `false` | `neverwrite:settings:<vault-path>` | Shows full filenames with extensions. |
+| File Tree | `fileTreeShowDocumentStatus` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Shows frontmatter status dots in the file tree. Editor status badges and trust banners remain visible independently; see [Open Knowledge Format](okf.md). |
 | File Tree | `fileTreeExtensionFilter` | Per-vault | `[]` | `neverwrite:settings:<vault-path>` | Lowercase extension allowlist; normalized by stripping leading dots and duplicates. |
 | Vault | Recent vaults | Global | `[]` | `neverwrite:recentVaults` | Recent and pinned vault metadata. The main process also mirrors a shortened list to `<app-data>/recent_vaults.json`. |
 | Vault | Last vault path | Global | `null` | `neverwrite:lastVaultPath` | Used for startup and initial settings/theme hydration. |
@@ -199,25 +205,27 @@ preferences, workspace state, or privacy-relevant local state.
 | `neverwrite:theme:<vault-path>` | Per-vault | Global theme or default | `themeStore.ts` | Active theme preference for the vault. |
 | `neverwrite:bookmarks:<vault-path>` | Per-vault | Empty folders/items | `bookmarkStore.ts` | Bookmark folders and entries for the vault. |
 | `neverwrite.session.tabs` | Global fallback / legacy | None | `editorSession.ts` | Legacy fallback for workspace tabs. |
-| `neverwrite.session.tabs:<vault-path>` | Per-vault | Current workspace | `editorSession.ts` | Editor tabs and workspace restore state. |
-| `neverwrite.chat.tabs:<vault-path>` | Per-vault | Initial chat tab state | `chatTabsStore.ts` | Chat tab workspace for the vault. |
+| `neverwrite.session.tabs:<vault-path>` | Per-vault | Current workspace | `editorSession.ts` | Version 2 editor session: pane state, focused pane, tabs, and `layoutTree` with nested row/column splits and their proportions. Legacy sessions without a valid tree restore as a row using pane order and legacy sizes. |
+| `neverwrite.chat.tabs:<vault-path>` | Per-vault | Empty chat pane view, `all` history filter, no conversation references | `chatTabsStore.ts` | Version 2 chat navigation: pane view, history filter, and retained conversation metadata in `tabs` / `activeTabId`. The historical key and field names support registration, restoration, and migration; the UI has no chat tab strip. |
+| `neverwrite.chat-pane.layout.v1` | Global layout | Placement `follow-agents`, width `480`, visible `true` | `layoutStore.ts` | Dedicated chat pane placement (`left`, `right`, or `follow-agents`), preferred width, and visibility. Width is normalized to `320..1600`; rendered width also depends on available workspace space. |
 | `neverwrite.ai.review.view:<vault-or-__global__>:<session-id>` | Per-vault plus session | None | `reviewTabPersistence.ts` | Review tab UI state such as expanded files, scroll, anchors, zoom, and wide mode. |
 | `neverwrite.devtools.terminal.tabs:<vault-path>` | Per-vault legacy migration | Initial terminal tab | `useTerminalTabs.ts` / `legacyTerminalMigration.ts` | Older standalone terminal workspace state, migrated into `neverwrite.session.tabs:<vault-path>`. |
 | `neverwrite.workspace.terminal.legacyMigrated:<vault-path>` | Per-vault migration marker | None | `legacyTerminalMigration.ts` | Marks migration from older terminal workspace state. |
 | `neverwrite.terminal.replay:<terminal-id>` | Per-terminal | None | `terminalRuntimeStore.ts` | Terminal replay buffer snapshot; cache/state, not a setting. |
 | `neverwrite.sidebar.width` | Global layout | `280` | `layoutStore.ts` | Sidebar width. |
 | `neverwrite.sidebar.collapsed` | Global layout | `false` | `layoutStore.ts` | Sidebar collapsed state. |
-| `neverwrite.sidebar.view` | Global layout | `files` | `layoutStore.ts` | Active left sidebar view. |
+| `neverwrite.sidebar.active-views.v1` | Global layout | `{ left: "agents", right: "files" }` | `layoutStore.ts` | Active view for each side, normalized against the current sidebar placement. |
+| `neverwrite.sidebar.movable-placement.v1` | Global layout | `{ files: "right", agents: "left" }` | `layoutStore.ts` | Side assignments for Files and Agents; each can move between left and right. |
 | `neverwrite.rightpanel.width` | Global layout | `280` | `layoutStore.ts` | Right panel width. |
 | `neverwrite.rightpanel.collapsed` | Global layout | `false` | `layoutStore.ts` | Right panel collapsed state. |
-| `neverwrite.rightpanel.view` | Global layout | `outline` | `layoutStore.ts` | Active right panel view. |
-| `neverwrite.editor-pane.sizes` | Global layout | `[1]` | `layoutStore.ts` | Editor pane split ratios. |
+| `neverwrite.editor-pane.sizes` | Global layout | `[1]` | `layoutStore.ts` | Legacy flat pane proportions and fallback input for session persistence. Nested split proportions are stored on each split node in the per-vault editor session's `layoutTree`. |
 | `neverwrite:sort-mode` | Global file tree preference | `name_asc` | `FileTree.tsx` | File tree sort mode. |
 | `neverwrite:reveal-active` | Global file tree preference | `false` | `FileTree.tsx` | Whether the file tree reveals the active tab. |
 | `neverwrite:file-tree-expanded-folders:<vault-path>` | Per-vault file tree state | None | `FileTree.tsx` | Expanded folder paths. |
 | `neverwrite.fileTree.clipboard` | Global transient state | None | `fileTreeClipboard.ts` | File tree copy/cut payload. |
 | `neverwrite.search.history` | Global preference/state | `[]` | `searchHistory.ts` | Recent search queries. |
 | `neverwrite.chats.pinnedIds` | Global preference/state | `[]` | `pinnedChatsStore.ts` | Pinned chat session ids. |
+| `neverwrite.chats.archived:<vault-path>` | Per-vault UI state | `{ version: 1, entries: {} }` | `archivedChatsStore.ts` | Root conversation identities mapped to `{ archivedAt }` timestamps. Subagents inherit their root's archive state. This metadata is separate from backend transcripts and history storage scope. |
 | `neverwrite.chats.folders` | Global preference/state | Empty folders, order, assignments, and collapsed state | `chatFoldersStore.ts` | Agents sidebar folder definitions, manual folder order, root-session-to-folder assignments, and collapsed folder ids. Folder names are global; assignments are reconciled against the root sessions available in the active vault. A Claude Code terminal pseudo-session can be assigned while live, but the assignment is removed when its terminal ends. |
 | `neverwrite.ai.agentsSidebar.collapsedParents` | Global UI state | `[]` | `AgentsSidebarPanel.tsx` | Collapsed parent groups in the agents sidebar. |
 | `neverwrite.ai.runtime-catalog` | Global cache | `{}` | `chatStore.ts` | Cached runtime models, modes, and config option catalogs. |
@@ -257,11 +265,28 @@ vault id.
   `neverwrite:settings`.
 - `themeStore` migrates `neverwrite:theme` into
   `neverwrite:theme:<vault-path>` if the vault-specific key does not exist.
+- Sidebar hydration reads `neverwrite.sidebar.active-views.v1` and
+  `neverwrite.sidebar.movable-placement.v1`. The older
+  `neverwrite.sidebar.view` and `neverwrite.rightpanel.view` keys are not read
+  or migrated. Without current preferences, Agents is active on the left and
+  Files on the right. Stored selections unavailable on their assigned side
+  fall back to an available view: Outline on the right, or the first view in
+  catalog order on the left. Tags, Bookmarks, and Maps remain fixed to the
+  left; Outline and Links remain fixed to the right.
 - AI auto-context still reads legacy `neverwrite.ai.preferences.autoContextEnabled`
   as a fallback, but new writes go to `neverwrite.ai.auto-context:<vault-path>`
   or `neverwrite.ai.auto-context:__global__`.
+- Chat navigation accepts persisted versions 1 and 2 under the historical
+  `neverwrite.chat.tabs:<vault-path>` key. Legacy editor chat tabs and their
+  history entries are preserved as conversation references before their editor
+  projections are removed. `view` selects the current pane content; retained
+  `tabs` and `activeTabId` metadata does not imply visible chat tabs.
+- Chat pane focus and expansion (`focusedSurface`, `chatExpanded`) are transient
+  UI state. Expansion clears on editor focus and is not persisted with pane
+  layout or chat navigation.
 - Removing a vault from recent vaults also removes its vault-scoped settings,
-  theme, editor tabs, chat tabs, and bookmarks.
+  theme, editor tabs, chat navigation, and bookmarks. Global chat pane layout
+  remains an installation preference.
 
 ## Derived State And Caches
 
@@ -278,4 +303,4 @@ when they are persisted or visible in Settings:
 - Review anchors, resolved hunk positions, and transient review synchronization
   state.
 
-Last updated: August 5, 2026.
+Last updated: September 29, 2026.
