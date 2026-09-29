@@ -16,11 +16,11 @@ polish and hardening.
 
 ## AI And Change Control
 
-- [AI Change Control](ai-change-control.md): the ActionLog model, tracked files, pending review, keep/reject flows, inline review, conflicts, persistence, and known limits.
+- [AI Change Control](ai-change-control.md): the ActionLog model, tracked files, pending review, keep/reject flows, inline review, conflicts, persistence boundaries, and known limits.
 - [Review Hardening Checklist](review-hardening-checklist.md): manual QA checklist for inline review, Review tab, Edits surface, keep/reject, lifecycle cases, multi-session, reload/recovery, conflicts, performance, and release sign-off.
-- [AI Runtime Setup](ai-runtime-setup.md): ACP providers, runtime discovery, authentication methods, `NEVERWRITE_*` overrides, release bundling, and troubleshooting for Codex, Claude, Grok, Kilo, and OpenCode.
+- [AI Runtime Setup](ai-runtime-setup.md): ACP providers, runtime discovery, authentication methods, `NEVERWRITE_*` overrides, release bundling, and troubleshooting for Codex, Claude, Grok, Kilo, OpenCode, and Pi. Pi uses a bundled adapter with a user-installed CLI.
 - [Configurable Custom ACP Runtimes](custom-acp-runtimes.md): local adapter registration, isolated execution, capability negotiation, continuation, history identity, and recovery.
-- [AI Session History And Crash Recovery](ai-session-history.md): where chat transcripts are stored, how restore/fork/reconnect works, and what to check after a crash.
+- [AI Session History And Crash Recovery](ai-session-history.md): where chat transcripts are stored, archiving, export to Markdown notes, restore/fork/reconnect, and review-state limits after a crash.
 
 Read these before changing AI editing behavior, provider setup, session
 persistence, runtime packaging, or anything that can affect whether agent edits
@@ -28,7 +28,7 @@ remain reviewable.
 
 ## Editor And Workspace
 
-- [Editor Architecture](editor-architecture.md): CodeMirror, live preview, Mermaid rendering, wikilinks, frontmatter/properties, autosave, dirty tabs, merge view, inline review overlays, the dedicated chat pane, and legacy chat-tab migration.
+- [Editor Architecture](editor-architecture.md): CodeMirror, live preview, Mermaid rendering, wikilinks, frontmatter/properties, autosave, dirty tabs, merge view, inline review overlays, nested workspace splits, the dedicated chat pane, and legacy chat-tab migration.
 - [Open Knowledge Format (OKF)](okf.md): the `status` and `type` frontmatter fields, canonical status values, where status appears (file tree dot, editor badge/banner), the "Show document status" setting, and `okf_version` vault detection.
 - [Terminal Architecture](terminal-integration.md): PTY sidecar boundary, xterm rendering, terminal persistence, Claude Code integration, and validation notes.
 - [Subagents Working State Map](concept-maps/codex-subagents-working-state-map.excalidraw): visual working map for subagent state and coordination.

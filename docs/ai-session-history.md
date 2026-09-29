@@ -105,6 +105,54 @@ closing the terminal ends the process and removes the row. Terminal tabs can be
 restored as workspace tabs, but their current metadata does not relaunch Claude
 Code or recreate the agent-sidebar projection after an app restart.
 
+## Archiving Conversations
+
+`Archive` and `Unarchive` are available for root ACP conversations in the
+Agents sidebar and Chat History. A root's subagents inherit its archive state;
+they are not archived independently. Claude Code terminal entries do not offer
+these actions.
+
+Archiving preserves the conversation, saved transcript, pending review state
+in memory, and any active runtime process. It removes the root's pin and moves
+the group into the sidebar's Archived section. If the pane currently displays
+the root or one of its subagents, archiving clears that selection, hides the
+chat pane, and returns focus to the editor. It does not cancel a running turn.
+The temporary archive notice offers Undo; it restores the prior conversation
+selection only if navigation has not changed in the meantime. Unarchiving does
+not restore the removed pin.
+
+Chat History offers `All`, `Active`, and `Archived` filters. `Unarchive and
+continue` removes the archive marker and opens the selected conversation in the
+chat pane. History retention applies to both active and archived conversations;
+archiving does not exempt a transcript from pruning.
+
+Archive metadata is per-vault renderer state under
+`neverwrite.chats.archived:<vault-path>`, stored as version 1 entries mapping
+root conversation identities to `{ archivedAt }` timestamps. It is separate
+from backend history storage and follows conversation ID migrations. See
+[`chatArchiving.ts`](../apps/desktop/src/features/ai/chatArchiving.ts),
+[`archivedChatsStore.ts`](../apps/desktop/src/features/ai/store/archivedChatsStore.ts),
+and [Settings Scope](settings-scope.md).
+
+## Export To A Markdown Note
+
+`Export to note` in Chat History loads the full saved transcript, creates a
+Markdown note in the current vault, saves it, and opens it in the editor. The
+name starts with `Exported chat - <title>`; invalid filename characters are
+sanitized and numeric suffixes avoid collisions with existing notes.
+
+The export includes the conversation title, export time, runtime, session and
+history IDs, status, attached-context descriptions, and messages with role,
+kind, timestamps, and content. Attachment entries describe their references;
+this operation does not copy attachment bytes into the note.
+
+The resulting file is an ordinary editable vault note and a snapshot of the
+conversation at export time. Later chat messages do not update it, and deleting
+or pruning the chat history does not delete the exported note. Exporting does
+not fork or reconnect the runtime and does not preserve pending review or
+Reject undo state. See
+[`chatExport.ts`](../apps/desktop/src/features/ai/chatExport.ts).
+
 ## Canonical Conversation Rollout And Rollback
 
 Canonical ACP conversations are a normal data-model upgrade, not a Beta setting or runtime feature flag. A conversation keeps one durable transcript while each ACP provider has an independent binding; switching A -> B -> A can resume or load the previous binding when the provider supports it, and otherwise starts an isolated runtime session with a bounded transcript handoff.
@@ -150,6 +198,20 @@ When a provider supports native session loading, NeverWrite reconnects the
 runtime session directly. When native loading is unavailable or unsafe,
 NeverWrite creates a fresh runtime session and sends the saved transcript as
 context with the next prompt.
+
+### Review State After Reload Or Restart
+
+Transcript recovery does not recover the pending edits buffer. `ActionLog`,
+its pending tracked files, and `lastRejectUndo` snapshots are in-memory session
+state and are excluded from saved history. After a renderer reload or app
+restart, restoring a conversation can show its saved messages and diff previews,
+but does not recreate the former pending Keep/Reject state or Undo Last Reject
+buffer. File changes already written to the vault remain on disk.
+
+A runtime disconnect while the renderer remains alive is a different boundary:
+review state still held in memory is distinct from the saved transcript used
+for reconnection. See [AI Change Control](ai-change-control.md#persistence-and-recovery)
+for normalization and undo behavior within a live session.
 
 ## Transaction Diagnostics
 

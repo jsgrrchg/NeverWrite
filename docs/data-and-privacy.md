@@ -113,6 +113,18 @@ hash the logical session id, but the transcript content itself is not encrypted.
 Deleting a conversation from Chat History deletes its saved history from the
 active scope. Retention pruning operates on that same canonical scope.
 
+Archiving a conversation stores a per-vault renderer marker rather than
+deleting its transcript or moving its backend history. Archived conversations
+remain subject to retention. `Export to note` creates a separate Markdown file
+with transcript content and metadata in the vault; it remains after the
+conversation is deleted or pruned. See
+[AI Session History](ai-session-history.md#export-to-a-markdown-note).
+
+Saved history excludes the in-memory ActionLog edits buffer and Reject undo
+snapshots. Restoring a transcript after a renderer reload or app restart does
+not restore pending review, even though saved diff previews can remain in
+messages and applied edits remain in vault files.
+
 The device namespace is derived by the native backend from the canonical vault
 path. It is not encryption and it is local to one app-data installation.
 Renaming or moving a vault therefore uses a visible import/recovery flow rather
@@ -247,6 +259,8 @@ Examples include:
   retained conversation references. The historical key and tab-shaped metadata
   support restoration and migration rather than a visible chat tab strip.
 - `neverwrite.chat-pane.layout.v1`: chat pane placement, width, and visibility.
+- `neverwrite.chats.archived:<vault-path>`: root conversation archive markers
+  and timestamps, inherited by their subagents and separate from transcripts.
 - `neverwrite.ai.preferences` and per-vault AI preference keys: UI preferences
   such as auto-context and diff zoom, plus cached runtime catalog data.
 - `neverwrite:window-operational-state:<label>`: temporary update-safety state

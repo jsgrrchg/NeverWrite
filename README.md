@@ -25,7 +25,7 @@ NeverWrite is an agentic markdown workspace for people who work with a local vau
 
 - **Write in the format that fits.** Edit Markdown, Mermaid, CSV, text/code files, PDFs, images, and Excalidraw concept maps in the same workspace.
 - **Navigate connected knowledge.** Follow wikilinks, backlinks, tags, advanced search, bookmarks, and 2D or 3D graph views.
-- **Work with your preferred agent.** Run Codex, Claude, Grok, Kilo, or OpenCode sessions with attachments, saved transcripts, and local history.
+- **Work with your preferred agent.** Run Codex, Claude, Grok, Kilo, OpenCode, or Pi sessions with attachments, saved transcripts, and local history.
 - **Review AI changes deliberately.** Inspect tracked edits inline, in chat, or in a dedicated review tab, then keep or reject complete files and individual hunks.
 - **Capture the web into your vault.** Use the companion browser extension to clip pages, selections, or URLs directly to the desktop app.
 
@@ -50,6 +50,9 @@ npm run dev
 Local development runs as **NeverWrite Dev** with its own application profile, so an installed NeverWrite release can remain open at the same time. Files and hidden state inside a vault remain shared when both variants open that vault; use a disposable vault when testing write or review flows concurrently.
 
 The first start builds the native backend. Configure your preferred agent from the app settings; some providers require their own CLI login or API key.
+
+For Pi, NeverWrite bundles the ACP adapter; install the Pi CLI separately and
+configure its models and credentials through Pi. See [AI Runtime Setup](docs/ai-runtime-setup.md#pi).
 
 ## Development
 

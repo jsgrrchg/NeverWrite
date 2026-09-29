@@ -336,6 +336,29 @@ should use pane-aware selectors such as `selectEditorPaneState`,
 `selectEditorPaneActiveTab`, `selectEditorWorkspaceTabs`, and
 `selectFocusedEditorTab`.
 
+Pane geometry is represented by `layoutTree` in
+[`workspaceLayoutTree.ts`](../apps/desktop/src/app/store/workspaceLayoutTree.ts).
+Leaves identify panes; split nodes contain a direction, ordered children, and
+normalized proportions. A `row` arranges children side by side, while a `column`
+arranges them vertically. Splits can nest to combine both directions.
+[`MultiPaneWorkspace.tsx`](../apps/desktop/src/features/editor/MultiPaneWorkspace.tsx)
+renders the tree through
+[`WorkspaceSplitContainer.tsx`](../apps/desktop/src/features/editor/WorkspaceSplitContainer.tsx),
+whose dividers update the corresponding split's proportions.
+
+The tab context menu offers `Move to New Right Split` and
+`Move to New Down Split`, implemented by `moveTabToNewSplit()` with `row` and
+`column` respectively. These actions move the selected tab into a new pane.
+Split panes and the stacked-tab display mode below are separate layout choices.
+
+[`editorSession.ts`](../apps/desktop/src/app/store/editorSession.ts) persists
+the tree, pane state, focused pane, and tabs in the version 2 per-vault editor
+session. Restoration normalizes the tree and checks its pane IDs against the
+restored panes. Legacy sessions without a valid tree use a row layout built
+from their pane order and legacy proportions. Nested split proportions belong
+to the tree; the global `neverwrite.editor-pane.sizes` key supplies legacy flat
+proportions and fallback input for persistence.
+
 Each pane can render tabs in the classic `"default"` mode or in `"stacked"`
 mode, where open tabs are shown as side-by-side columns for scanning several
 documents within one pane. The mode is stored as `tabDisplayMode` on

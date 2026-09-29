@@ -217,22 +217,25 @@ back to the agent.
 ## Reload, Restart, And Crash Recovery
 
 - [ ] With pending AI edits visible, reload the renderer.
-- [ ] Confirm the chat session, ActionLog, Review tab state, Edits panel, and
-      open editor content recover consistently.
+- [ ] Confirm saved chat messages and historical diff previews recover, while
+      the old ActionLog buffer and Undo Last Reject snapshots do not reappear.
+- [ ] Confirm agent changes already written to vault files remain on disk and
+      open editors reload the current content.
 - [ ] Quit and restart the app with the same vault.
 - [ ] Restore the chat from Chat History as described in
       [AI Session History And Crash Recovery](./ai-session-history.md).
-- [ ] Confirm pending tracked files reappear for the restored session when they
-      were persisted.
-- [ ] Confirm Review tab scroll/anchor persistence is separate from ActionLog
-      persistence; losing scroll state must not lose pending review state.
+- [ ] Confirm restoring the transcript does not recreate prior pending review
+      state or the Reject undo buffer.
+- [ ] Confirm persisted Review tab scroll/anchor preferences do not recreate
+      tracked files or enable stale Keep/Reject/Undo actions.
 - [ ] Force an AI runtime disconnect or crash during/after file edits.
-- [ ] Confirm the app either reconnects with saved context or asks the user to
-      restore/fork without losing already-tracked review state.
-- [ ] Reject after recovery and confirm native restore still uses the correct
-      vault and path.
-- [ ] Undo last reject after recovery and confirm snapshots restore only when
-      disk still matches a safe restore condition.
+- [ ] With the renderer still alive, confirm the app reconnects with saved
+      context or asks the user to restore/fork; inspect review state retained
+      in memory separately from transcript recovery.
+- [ ] For tracked files still held in memory after a runtime disconnect,
+      confirm Reject uses the correct vault/path and Undo only restores safe
+      snapshots. After a renderer reload or app restart, confirm those former
+      undo snapshots are unavailable.
 
 ## Conflict Cases
 
@@ -322,8 +325,8 @@ Refer to [Testing and Validation](./testing.md) for full CI parity commands.
       same pending files and hunks.
 - [ ] Multi-session and multi-window flows do not leak review state across
       sessions, vaults, or tracked versions.
-- [ ] Reload/restart recovery preserves pending review state or degrades with a
-      clear, safe user path.
+- [ ] Reload/restart restores saved transcripts without presenting historical
+      diffs or persisted view preferences as recovered pending review state.
 - [ ] Non-text and irreversible diffs are visibly limited and cannot be
       partially resolved as text.
 - [ ] Relevant automated tests and smoke commands have passed, or skipped
