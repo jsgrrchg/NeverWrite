@@ -93,6 +93,8 @@ use uuid::Uuid;
 use crate::prompt_args::{CustomPrompt, expand_custom_prompt, parse_slash_name};
 use crate::subagents::{self, SubagentProjection};
 
+mod paginated_history;
+
 /// Abstraction over the ACP connection for sending notifications and requests
 /// back to the client.
 trait ClientSender: Send + Sync + 'static {
@@ -255,6 +257,21 @@ pub trait CodexThreadImpl: Send + Sync {
     fn submit(&self, op: Op)
     -> Pin<Box<dyn Future<Output = Result<String, CodexErr>> + Send + '_>>;
 
+    fn update_thread_settings(
+        &self,
+        thread_settings: ThreadSettingsOverrides,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CodexErr>> + Send + '_>> {
+        Box::pin(async move {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.submit(Op::ThreadSettings {
+                thread_settings,
+                reply: Some(reply_tx),
+            })
+            .await?;
+            reply_rx.await.map_err(|_| CodexErr::InternalAgentDied)?
+        })
+    }
+
     fn submit_turn_input(
         &self,
         request: TurnInputRequest,
@@ -366,6 +383,10 @@ enum ThreadMessage {
     },
     ReplayHistory {
         history: Vec<RolloutItem>,
+        response_tx: oneshot::Sender<Result<(), Error>>,
+    },
+    ReplayStoredHistory {
+        items: Vec<codex_thread_store::StoredThreadItem>,
         response_tx: oneshot::Sender<Result<(), Error>>,
     },
     PermissionRequestResolved {
@@ -532,6 +553,17 @@ impl Thread {
         response_rx
             .await
             .map_err(|e| Error::internal_error().data(e.to_string()))?
+    }
+
+    pub async fn replay_stored_history(
+        &self,
+        items: Vec<codex_thread_store::StoredThreadItem>,
+    ) -> Result<(), Error> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.message_tx
+            .send(ThreadMessage::ReplayStoredHistory { items, response_tx })
+            .map_err(Error::into_internal_error)?;
+        response_rx.await.map_err(Error::into_internal_error)?
     }
 }
 
@@ -3048,6 +3080,7 @@ impl PromptState {
             EventMsg::TurnAborted(TurnAbortedEvent {
                 reason,
                 turn_id,
+                error,
                 ..
             }) => {
                 info!("Turn {turn_id:?} aborted: {reason:?}");
@@ -3055,7 +3088,33 @@ impl PromptState {
                     .send_turn_lifecycle(CODEX_ACP_TURN_ABORTED_EVENT_TYPE, turn_id.as_deref())
                     .await;
                 self.detach_pending_interactions();
-                if let Some(response_tx) = self.response_tx.take() {
+                if let Some(turn_error) = error {
+                    self.send_status_tool_call(
+                        client,
+                        StatusToolCall {
+                            call_id: format!(
+                                "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}turn_error:{}",
+                                turn_id.as_deref().unwrap_or(&self.submission_id)
+                            )
+                            .into(),
+                            kind: "turn_error",
+                            title: "Turn failed".to_string(),
+                            detail: Some(turn_error.message.clone()),
+                            emphasis: "error",
+                            status: ToolCallStatus::Failed,
+                        },
+                    )
+                    .await;
+                    if let Some(response_tx) = self.response_tx.take() {
+                        response_tx
+                            .send(Err(Error::internal_error().data(json!({
+                                "message": turn_error.message,
+                                "codex_error_info": turn_error.codex_error_info,
+                                "misalignment": turn_error.misalignment,
+                            }))))
+                            .ok();
+                    }
+                } else if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::Cancelled)).ok();
                 }
             }
@@ -4817,6 +4876,8 @@ struct ThreadActor<A> {
     submissions: HashMap<String, SubmissionState>,
     /// Drain-only projections for Codex turns created outside ACP prompt calls.
     event_projections: HashMap<String, PromptState>,
+    /// Replay is ordered by creation; retain only the current turn across pages.
+    stored_history_projection: Option<(String, PromptState)>,
     /// Recently closed external turns. This lifecycle-only tombstone prevents
     /// late events from recreating activities after their projection ended.
     closed_event_projections: HashSet<String>,
@@ -4851,6 +4912,7 @@ impl<A: Auth> ThreadActor<A> {
             resolution_tx,
             submissions: HashMap::new(),
             event_projections: HashMap::new(),
+            stored_history_projection: None,
             closed_event_projections: HashSet::new(),
             closed_event_projection_order: VecDeque::new(),
             message_rx,
@@ -4977,6 +5039,9 @@ impl<A: Auth> ThreadActor<A> {
             } => {
                 let result = self.handle_replay_history(history).await;
                 drop(response_tx.send(result));
+            }
+            ThreadMessage::ReplayStoredHistory { items, response_tx } => {
+                drop(response_tx.send(self.handle_replay_stored_history(items).await));
             }
             ThreadMessage::PermissionRequestResolved {
                 submission_id,
@@ -5308,12 +5373,10 @@ impl<A: Auth> ThreadActor<A> {
         };
 
         self.thread
-            .submit(Op::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    model: Some(model_to_use.clone()),
-                    effort: Some(effort_to_use.clone()),
-                    ..Default::default()
-                },
+            .update_thread_settings(ThreadSettingsOverrides {
+                model: Some(model_to_use.clone()),
+                effort: Some(effort_to_use.clone()),
+                ..Default::default()
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -5349,11 +5412,9 @@ impl<A: Auth> ThreadActor<A> {
         }
 
         self.thread
-            .submit(Op::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    effort: Some(Some(effort.clone())),
-                    ..Default::default()
-                },
+            .update_thread_settings(ThreadSettingsOverrides {
+                effort: Some(Some(effort.clone())),
+                ..Default::default()
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -5375,11 +5436,9 @@ impl<A: Auth> ThreadActor<A> {
         };
 
         self.thread
-            .submit(Op::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    service_tier: Some(service_tier.map(|tier| tier.request_value().to_string())),
-                    ..Default::default()
-                },
+            .update_thread_settings(ThreadSettingsOverrides {
+                service_tier: Some(service_tier.map(|tier| tier.request_value().to_string())),
+                ..Default::default()
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -5423,12 +5482,13 @@ impl<A: Auth> ThreadActor<A> {
             match name {
                 "compact" => submission = PromptSubmission::Operation(Box::new(Op::Compact)),
                 "init" => {
-                    submission = PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(vec![
-                        UserInput::Text {
-                            text: INIT_COMMAND_PROMPT.into(),
-                            text_elements: vec![],
-                        },
-                    ])))
+                    submission =
+                        PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(vec![
+                            UserInput::Text {
+                                text: INIT_COMMAND_PROMPT.into(),
+                                text_elements: vec![],
+                            },
+                        ])))
                 }
                 "fast" => {
                     if !self.fast_mode_available() {
@@ -5547,14 +5607,16 @@ impl<A: Auth> ThreadActor<A> {
                     )
                     .map_err(|e| Error::invalid_params().data(e.user_message()))?
                     {
-                        submission = PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(vec![
-                            UserInput::Text {
-                                text: prompt,
-                                text_elements: vec![],
-                            },
-                        ])))
+                        submission =
+                            PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(vec![
+                                UserInput::Text {
+                                    text: prompt,
+                                    text_elements: vec![],
+                                },
+                            ])))
                     } else {
-                        submission = PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(items)))
+                        submission =
+                            PromptSubmission::Turn(Box::new(TurnInputRequest::user_input(items)))
                     }
                 }
             }
@@ -5609,14 +5671,12 @@ impl<A: Auth> ThreadActor<A> {
             .ok_or_else(Error::invalid_params)?;
 
         self.thread
-            .submit(Op::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    approval_policy: Some(preset.approval),
-                    permission_profile: Some(preset.permission_profile.clone()),
-                    active_permission_profile: active_profile_id_for_session_mode(preset.id)
-                        .map(ActivePermissionProfile::new),
-                    ..Default::default()
-                },
+            .update_thread_settings(ThreadSettingsOverrides {
+                approval_policy: Some(preset.approval),
+                permission_profile: Some(preset.permission_profile.clone()),
+                active_permission_profile: active_profile_id_for_session_mode(preset.id)
+                    .map(ActivePermissionProfile::new),
+                ..Default::default()
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -5958,13 +6018,12 @@ impl<A: Auth> ThreadActor<A> {
                     .await;
             }
             ResponseItem::FunctionCallOutput {
-                call_id: Some(call_id), output, ..
+                call_id: Some(call_id),
+                output,
+                ..
             } => {
                 self.client
-                    .send_tool_call_completed(
-                        call_id.clone(),
-                        serde_json::to_value(output).ok(),
-                    )
+                    .send_tool_call_completed(call_id.clone(), serde_json::to_value(output).ok())
                     .await;
             }
             ResponseItem::LocalShellCall {
@@ -6201,7 +6260,10 @@ fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<UserInput> {
             }),
             ContentBlock::Image(image_block) => Some(UserInput::Image {
                 image: ImageReference::Inline {
-                    image_url: format!("data:{};base64,{}", image_block.mime_type, image_block.data),
+                    image_url: format!(
+                        "data:{};base64,{}",
+                        image_block.mime_type, image_block.data
+                    ),
                 },
                 detail: None,
             }),
@@ -7656,6 +7718,136 @@ mod tests {
         Ok(())
     }
 
+    fn stored_history_item(
+        item: codex_app_server_protocol::ThreadItem,
+    ) -> codex_thread_store::StoredThreadItem {
+        codex_thread_store::StoredThreadItem {
+            turn_id: "stored-turn".to_string(),
+            item_id: item.id().to_string(),
+            updated_at_ordinal: 1,
+            created_at_ms: 1000,
+            started_at_ms: Some(1000),
+            completed_at_ms: Some(2000),
+            item_json: serde_json::to_vec(&item).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn paginated_replay_preserves_messages_diff_metadata_and_wait_identity_across_pages()
+    -> anyhow::Result<()> {
+        use codex_app_server_protocol::{
+            CollabAgentState, CollabAgentStatus, CollabAgentTool, CollabAgentToolCallStatus,
+            FileUpdateChange, PatchChangeKind, ThreadItem as StoredItem,
+        };
+        let (mut actor, client, _) = setup_actor(|_| {}).await?;
+        let sender = ThreadId::new().to_string();
+        let receiver = ThreadId::new().to_string();
+        let wait = |id: &str, terminal: bool| {
+            stored_history_item(StoredItem::CollabAgentToolCall {
+                id: id.to_string(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender.clone(),
+                receiver_thread_ids: vec![receiver.clone()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    receiver.clone(),
+                    CollabAgentState {
+                        status: if terminal {
+                            CollabAgentStatus::Completed
+                        } else {
+                            CollabAgentStatus::Running
+                        },
+                        message: None,
+                    },
+                )]),
+            })
+        };
+        let message: StoredItem = serde_json::from_value(json!({
+            "type": "agentMessage", "id": "message-1", "text": "Persisted reply", "phase": null, "memoryCitation": null
+        }))?;
+        actor
+            .handle_replay_stored_history(vec![
+                stored_history_item(message),
+                stored_history_item(StoredItem::FileChange {
+                    id: "patch-1".into(),
+                    status: codex_app_server_protocol::PatchApplyStatus::Completed,
+                    changes: vec![FileUpdateChange {
+                        path: "/tmp/paginated-new.txt".into(),
+                        kind: PatchChangeKind::Add,
+                        diff: "hello\n".into(),
+                    }],
+                }),
+                wait("wait-1", false),
+            ])
+            .await?;
+        // A page boundary must not create another activity for an equivalent wait.
+        actor
+            .handle_replay_stored_history(vec![wait("wait-2", false), wait("wait-3", true)])
+            .await?;
+        let notifications = client.notifications.lock().unwrap();
+        assert_eq!(notifications.iter().filter(|notification| matches!(&notification.update,
+            SessionUpdate::AgentMessageChunk(ContentChunk { content: ContentBlock::Text(TextContent { text, .. }), .. }) if text == "Persisted reply"
+        )).count(), 1);
+        let calls = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let patch = calls
+            .iter()
+            .find(|call| call.tool_call_id.0.as_ref() == "patch-1")
+            .expect("replayed patch");
+        assert!(patch.content.iter().any(|content| matches!(content, ToolCallContent::Diff(diff)
+            if diff.new_text == "hello\n" && diff.meta.as_ref().is_some_and(|meta| meta.contains_key(NEVERWRITE_DIFF_HUNKS_KEY))
+        )));
+        let waits = calls
+            .iter()
+            .filter(|call| {
+                call.meta.as_ref().is_some_and(|meta| {
+                    meta.get("codexAcpSubagentEventType") == Some(&json!("waiting_end"))
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            waits.len(),
+            1,
+            "equivalent waits must materialize one activity"
+        );
+        assert_eq!(
+            waits[0].status,
+            ToolCallStatus::InProgress,
+            "running agents cannot complete a wait"
+        );
+        assert!(notifications.iter().any(|notification| matches!(&notification.update, SessionUpdate::ToolCallUpdate(update)
+            if update.tool_call_id == waits[0].tool_call_id && update.fields.status == Some(ToolCallStatus::Completed)
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn paginated_replay_rejects_a_corrupt_page_before_emitting_it() -> anyhow::Result<()> {
+        let (mut actor, client, _) = setup_actor(|_| {}).await?;
+        let item = stored_history_item(serde_json::from_value(json!({
+            "type": "agentMessage", "id": "valid", "text": "Must not be partially replayed", "phase": null, "memoryCitation": null
+        }))?);
+        let mut corrupt = item.clone();
+        corrupt.item_id = "corrupt".into();
+        corrupt.item_json = b"{invalid".to_vec();
+        assert!(
+            actor
+                .handle_replay_stored_history(vec![item, corrupt])
+                .await
+                .is_err()
+        );
+        assert!(client.notifications.lock().unwrap().is_empty());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_config_options_include_fast_mode() -> anyhow::Result<()> {
         let (_session_id, _client, _thread, message_tx, local_set) = setup(vec![]).await?;
@@ -9027,6 +9219,7 @@ mod tests {
                 EventMsg::TurnAborted(TurnAbortedEvent {
                     turn_id: Some("turn-cancelled".to_string()),
                     reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                    error: None,
                     started_at: Some(10),
                     completed_at: Some(11),
                     duration_ms: Some(1_000),
@@ -9053,6 +9246,67 @@ mod tests {
                     )
                 })
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn turn_abort_error_is_visible_and_preserves_its_classification() -> anyhow::Result<()> {
+        use codex_protocol::protocol::{CodexErrorInfo, TurnAbortReason};
+        for (classification, expected) in [
+            (CodexErrorInfo::TooManyDenials, "too_many_denials"),
+            (CodexErrorInfo::FlexUnavailable, "flex_unavailable"),
+        ] {
+            for turn_id in [Some("turn-denied".to_string()), None] {
+                let client = Arc::new(StubClient::new());
+                let session_client = SessionClient::with_client(
+                    SessionId::new("test"),
+                    client.clone(),
+                    Arc::default(),
+                );
+                let (resolution_tx, _) = mpsc::unbounded_channel();
+                let (response_tx, response_rx) = oneshot::channel();
+                let mut state = PromptState::new(
+                    "submission-1".to_string(),
+                    Arc::new(StubCodexThread::new()),
+                    resolution_tx,
+                    response_tx,
+                );
+                state
+                    .handle_event(
+                        &session_client,
+                        EventMsg::TurnAborted(TurnAbortedEvent {
+                            turn_id: turn_id.clone(),
+                            reason: TurnAbortReason::Interrupted,
+                            error: Some(ErrorEvent {
+                                message: "Guardian stopped the turn after repeated denials"
+                                    .to_string(),
+                                codex_error_info: Some(classification.clone()),
+                                misalignment: None,
+                            }),
+                            started_at: None,
+                            completed_at: None,
+                            duration_ms: None,
+                        }),
+                    )
+                    .await;
+                let error = response_rx
+                    .await?
+                    .expect_err("an error abort must fail the prompt");
+                assert_eq!(error.data.as_ref().unwrap()["codex_error_info"], expected);
+                let notifications = client.notifications.lock().unwrap();
+                assert!(notifications.iter().any(|notification| matches!(
+                &notification.update, SessionUpdate::ToolCall(call)
+                    if call.status == ToolCallStatus::Failed && call.content.iter().any(|content| matches!(
+                        content, ToolCallContent::Content(Content { content: ContentBlock::Text(TextContent { text, .. }), .. })
+                            if text.contains("repeated denials")
+                    ))
+            )));
+                assert!(notifications.iter().any(|notification| matches!(
+                &notification.update, SessionUpdate::SessionInfoUpdate(update)
+                    if update.meta.as_ref().is_some_and(|meta| meta.get(CODEX_ACP_TURN_EVENT_TYPE_KEY) == Some(&json!(CODEX_ACP_TURN_ABORTED_EVENT_TYPE)))
+            )));
+            }
+        }
         Ok(())
     }
 
@@ -9879,6 +10133,7 @@ mod tests {
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-2".to_string()),
                 reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                error: None,
                 started_at: None,
                 completed_at: None,
                 duration_ms: None,
@@ -10355,7 +10610,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_options_include_gpt6_models_without_replacing_explicit_selection() -> anyhow::Result<()> {
+    async fn config_options_include_gpt6_models_without_replacing_explicit_selection()
+    -> anyhow::Result<()> {
         let astra = all_model_presets()
             .iter()
             .find(|preset| preset.model == "gpt-6-astra")
@@ -10391,7 +10647,9 @@ mod tests {
         assert_eq!(select.current_value.0.as_ref(), "gpt-5.6-sol");
         for model_id in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
             assert!(
-                models.iter().any(|model| model.value.0.as_ref() == model_id),
+                models
+                    .iter()
+                    .any(|model| model.value.0.as_ref() == model_id),
                 "bundled {model_id} must remain selectable through ACP"
             );
         }
@@ -11117,6 +11375,93 @@ mod tests {
         Ok((actor, client, conversation))
     }
 
+    #[tokio::test]
+    async fn configuration_waits_for_runtime_acceptance_and_keeps_state_on_rejection()
+    -> anyhow::Result<()> {
+        for setting in ["model", "reasoning_effort", "service_tier", "mode"] {
+            for dropped_reply in [false, true] {
+                let preset = all_model_presets()
+                    .iter()
+                    .find(|preset| preset.show_in_picker)
+                    .unwrap()
+                    .clone();
+                let (mut actor, client, thread) = setup_actor(|config| {
+                    config.model = Some(preset.model.clone());
+                    config.model_reasoning_effort = None;
+                    config.service_tier = None;
+                })
+                .await?;
+                let before = (
+                    actor.config.model.clone(),
+                    actor.config.model_reasoning_effort.clone(),
+                    actor.config.service_tier.clone(),
+                    actor.config.permissions.permission_profile().clone(),
+                    actor.config.permissions.approval_policy.value(),
+                );
+                let (observer_tx, mut observer_rx) = mpsc::unbounded_channel();
+                *thread.settings_reply_observer.lock().unwrap() = Some(observer_tx);
+                let mut pending = Box::pin(async {
+                    match setting {
+                        "model" => {
+                            actor
+                                .handle_set_config_model(SessionConfigValueId::new(
+                                    "unlisted-test-model",
+                                ))
+                                .await
+                        }
+                        "reasoning_effort" => {
+                            actor
+                                .handle_set_config_reasoning_effort(SessionConfigValueId::new(
+                                    preset.default_reasoning_effort.to_string(),
+                                ))
+                                .await
+                        }
+                        "service_tier" => {
+                            actor
+                                .handle_set_config_service_tier(SessionConfigValueId::new("fast"))
+                                .await
+                        }
+                        "mode" => {
+                            actor
+                                .handle_set_mode(SessionModeId::new("full-access"))
+                                .await
+                        }
+                        _ => unreachable!(),
+                    }
+                });
+                let reply = tokio::select! {
+                    result = &mut pending => panic!("{setting} completed before runtime validation: {result:?}"),
+                    reply = observer_rx.recv() => reply.expect("settings must request an acknowledgement"),
+                };
+                // The pending future must still wait after the operation is admitted.
+                tokio::select! {
+                    biased;
+                    result = &mut pending => panic!("{setting} completed without acknowledgement: {result:?}"),
+                    () = tokio::task::yield_now() => {},
+                }
+                assert!(client.notifications.lock().unwrap().is_empty());
+                if dropped_reply {
+                    drop(reply);
+                } else {
+                    drop(reply.send(Err(CodexErr::InternalAgentDied)));
+                }
+                assert!(
+                    pending.await.is_err(),
+                    "{setting} must expose runtime rejection"
+                );
+                let after = (
+                    actor.config.model.clone(),
+                    actor.config.model_reasoning_effort.clone(),
+                    actor.config.service_tier.clone(),
+                    actor.config.permissions.permission_profile().clone(),
+                    actor.config.permissions.approval_policy.value(),
+                );
+                assert_eq!(after, before, "{setting} changed despite failed validation");
+            }
+        }
+        Ok(())
+    }
+
     fn thread_settings_applied_event(
         config: &Config,
         reasoning_effort: Option<ReasoningEffort>,
@@ -11376,10 +11721,13 @@ mod tests {
         Other(String),
     }
 
+    type SettingsReply = oneshot::Sender<Result<(), CodexErr>>;
+
     struct StubCodexThread {
         current_id: AtomicUsize,
         ops: std::sync::Mutex<Vec<RecordedOp>>,
         next_turn_submission: std::sync::Mutex<Option<TurnInputSubmission>>,
+        settings_reply_observer: std::sync::Mutex<Option<mpsc::UnboundedSender<SettingsReply>>>,
         op_tx: mpsc::UnboundedSender<Event>,
         op_rx: Mutex<mpsc::UnboundedReceiver<Event>>,
     }
@@ -11391,6 +11739,7 @@ mod tests {
                 current_id: AtomicUsize::new(0),
                 ops: std::sync::Mutex::default(),
                 next_turn_submission: std::sync::Mutex::default(),
+                settings_reply_observer: std::sync::Mutex::default(),
                 op_tx,
                 op_rx: Mutex::new(op_rx),
             }
@@ -11433,7 +11782,9 @@ mod tests {
                     Op::Review { review_request } => RecordedOp::Review {
                         review_request: review_request.clone(),
                     },
-                    Op::ThreadSettings { thread_settings } => RecordedOp::ThreadSettings {
+                    Op::ThreadSettings {
+                        thread_settings, ..
+                    } => RecordedOp::ThreadSettings {
                         thread_settings: Box::new(thread_settings.clone()),
                     },
                     Op::ExecApproval {
@@ -11702,7 +12053,18 @@ mod tests {
                             })
                             .unwrap();
                     }
-                    Op::ThreadSettings { .. } | Op::ExecApproval { .. } => {}
+                    Op::ThreadSettings { reply, .. } => {
+                        if let Some(reply) = reply {
+                            if let Some(observer) =
+                                self.settings_reply_observer.lock().unwrap().as_ref()
+                            {
+                                drop(observer.send(reply));
+                            } else {
+                                drop(reply.send(Ok(())));
+                            }
+                        }
+                    }
+                    Op::ExecApproval { .. } => {}
                     Op::ResolveElicitation { .. } => {}
                     _ => {
                         unimplemented!()
