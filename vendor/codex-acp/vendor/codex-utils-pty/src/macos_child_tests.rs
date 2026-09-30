@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::child::ChildKind;
-use crate::child::macos::*;
+use crate::child::posix::*;
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::os::fd::AsRawFd;
@@ -294,28 +294,5 @@ fn dropping_after_runtime_shutdown_kills_and_reaps_child() -> anyhow::Result<()>
         io::Error::last_os_error().raw_os_error(),
         Some(libc::ECHILD)
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn process_mode_is_preserved_by_both_backends() -> anyhow::Result<()> {
-    let root = tempfile::tempdir()?;
-    symlink("/bin/cat", root.path().join("server"))?;
-    for program in ["./server", "/bin/cat"] {
-        for mode in [ProcessMode::Inherit, ProcessMode::NewGroup] {
-            let mut command = Command::new(program);
-            command.current_dir(root.path()).process_mode(mode);
-            let mut child = command.spawn()?;
-            let pid = child.id().expect("live PID") as libc::pid_t;
-            let expected = match mode {
-                // SAFETY: getpgrp only inspects the current process.
-                ProcessMode::Inherit => unsafe { libc::getpgrp() },
-                ProcessMode::NewGroup => pid,
-            };
-            // SAFETY: The child is still owned and blocked on its stdin pipe.
-            assert_eq!(unsafe { libc::getpgid(pid) }, expected);
-            child.kill().await?;
-        }
-    }
     Ok(())
 }

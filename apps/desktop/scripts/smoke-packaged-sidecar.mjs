@@ -648,7 +648,7 @@ async function smokeCodexAcpCodeMode(acpPath, hostPath) {
     });
 }
 
-async function smokeMissingCodeModeHostFailsClosed(acpPath, packagedHostPath) {
+export async function smokeMissingCodeModeHostFailsClosed(acpPath, packagedHostPath) {
     const isolatedRuntimeDir = await fs.mkdtemp(
         path.join(os.tmpdir(), "neverwrite-missing-code-mode-host-"),
     );
