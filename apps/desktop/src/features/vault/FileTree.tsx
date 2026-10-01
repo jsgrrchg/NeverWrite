@@ -860,6 +860,7 @@ function SortMenu({
         <div
             ref={ref}
             role="menu"
+            className="nw-glass-menu"
             aria-label="Sort order"
             onKeyDown={handleKeyDown}
             style={{
@@ -870,7 +871,6 @@ function SortMenu({
                 zIndex: 9999,
                 marginTop: 2,
                 borderRadius: 8,
-                backgroundColor: "var(--bg-secondary)",
                 border: "1px solid var(--border)",
                 boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
                 padding: 4,
@@ -2058,6 +2058,7 @@ function MoveDestinationPicker({
             ref={ref}
             role="dialog"
             aria-label="Move to Folder"
+            className="nw-glass-menu"
             style={{
                 position: "fixed",
                 top: position.y,
@@ -2070,7 +2071,6 @@ function MoveDestinationPicker({
                 gap: 6,
                 padding: 8,
                 borderRadius: 10,
-                backgroundColor: "var(--bg-secondary)",
                 border: "1px solid var(--border)",
                 boxShadow: "0 10px 28px rgba(0,0,0,0.28)",
             }}

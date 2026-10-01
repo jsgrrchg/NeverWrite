@@ -1805,9 +1805,14 @@ body.dragging-tab * {
         0 16px 38px -22px color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
-/* Portalled menus use a slightly denser recipe than the composer. The extra
-   popover tint keeps labels legible over arbitrary editor and diff content. */
-.nw-chat-glass-menu {
+/* Menus share the composer's denser glass recipe. The extra popover tint
+   keeps labels legible over arbitrary editor and diff content. Keep the chat
+   class as an alias so existing composer surfaces use the same material. */
+.nw-glass-menu,
+.nw-chat-glass-menu,
+.dsg-context-menu,
+:root .excalidraw .context-menu,
+:root .excalidraw .dropdown-menu .dropdown-menu-container {
     background-color: color-mix(
         in srgb,
         var(--bg-elevated) 18%,
@@ -1913,14 +1918,22 @@ body.dragging-tab * {
 
 @supports not (backdrop-filter: blur(1px)) {
     .nw-chat-translucent-surface,
-    .nw-chat-glass-menu {
+    .nw-glass-menu,
+    .nw-chat-glass-menu,
+    .dsg-context-menu,
+    :root .excalidraw .context-menu,
+    :root .excalidraw .dropdown-menu .dropdown-menu-container {
         background-color: var(--bg-elevated);
     }
 }
 
 @media (prefers-reduced-transparency: reduce) {
     .nw-chat-translucent-surface,
-    .nw-chat-glass-menu {
+    .nw-glass-menu,
+    .nw-chat-glass-menu,
+    .dsg-context-menu,
+    :root .excalidraw .context-menu,
+    :root .excalidraw .dropdown-menu .dropdown-menu-container {
         background-color: var(--bg-elevated);
         backdrop-filter: none;
     }
@@ -2228,7 +2241,6 @@ body.dragging-tab * {
 
 /* Override react-datasheet-grid context menu to match app ContextMenu style */
 .dsg-context-menu {
-    background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
