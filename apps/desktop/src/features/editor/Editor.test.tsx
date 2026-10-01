@@ -22,6 +22,8 @@ import type { TrackedFile } from "../ai/diff/actionLogTypes";
 import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { Editor, REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
+import { SidebarViewContent } from "../../components/layout/SidebarViewContent";
+import { lineFlashField } from "./extensions/livePreviewHelpers";
 import { activateWikilinkSuggesterAnnotation } from "./extensions/markdownAutopair";
 import {
     flushPromises,
@@ -804,6 +806,44 @@ describe("Editor", () => {
         expect(useEditorStore.getState().tabs[0]?.title).toBe(
             "Frontmatter title",
         );
+    });
+
+    it("jumps from the outline sidebar with a line flash and clears the formatting toolbar", async () => {
+        const content = "# Root\n\n## Target\nBody";
+        setEditorTabs([
+            { id: "tab-1", noteId: "notes/current", title: "Current", content },
+        ]);
+
+        renderComponent(
+            <>
+                <SidebarViewContent view="outline" />
+                <Editor />
+            </>,
+        );
+
+        const view = getEditorView();
+        vi.spyOn(view, "coordsAtPos").mockImplementation(
+            () => ({ left: 40, right: 180, top: 20, bottom: 40 }) as DOMRect,
+        );
+        await act(async () => {
+            view.focus();
+            view.dispatch({ selection: { anchor: 0, head: 6 } });
+        });
+        expect(await screen.findByRole("button", { name: "Bold" })).toBeInTheDocument();
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Target" }));
+            await flushPromises();
+        });
+
+        expect(view.state.selection.main.anchor).toBe(content.indexOf("## Target"));
+        expect(view.state.selection.main.empty).toBe(true);
+        expect(view.state.field(lineFlashField).size).toBe(1);
+        expect(view.hasFocus).toBe(true);
+        expect(screen.queryByRole("button", { name: "Bold" })).not.toBeInTheDocument();
+        expect(useEditorStore.getState().currentSelection).toBeNull();
+        expect(useEditorStore.getState().pendingSelectionReveal).toBeNull();
+        expect(view.state.doc.toString()).toBe(content);
     });
 
     it("applies heading actions from the floating selection toolbar", async () => {

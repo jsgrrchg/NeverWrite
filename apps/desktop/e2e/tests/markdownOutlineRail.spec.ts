@@ -15,11 +15,13 @@ async function mount(page: Page, doc = content) {
     await expect(rail(page)).toBeVisible();
 }
 
-async function expectSelection(page: Page, title: string) {
+async function expectHeadingJump(page: Page, title: string) {
     await expect.poll(() => page.evaluate(() => {
         const view = window.editorFixture.getView();
-        return view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to);
+        const selection = view.state.selection.main;
+        return selection.empty ? view.state.doc.lineAt(selection.anchor).text : null;
     })).toBe(title);
+    await expect(page.getByRole("button", { name: "Bold", exact: true })).toHaveCount(0);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -36,7 +38,7 @@ test("jumps to virtualized headings and back to the collapsed leading H1", async
     await button(page).press("End");
     await expect(button(page)).toHaveAccessibleName("Jump to heading: Section 29 (H2)");
     await button(page).press("Enter");
-    await expectSelection(page, "## Section 29");
+    await expectHeadingJump(page, "## Section 29");
     await expect.poll(() => page.evaluate(() => window.editorFixture.snapshot().scrollTop)).toBeGreaterThan(1000);
     await expect(page.locator(".cm-content")).toContainText("Section 29");
     await expect(page.locator(".cm-lp-line-flash")).toBeVisible();
@@ -44,7 +46,7 @@ test("jumps to virtualized headings and back to the collapsed leading H1", async
     await button(page).focus();
     await button(page).press("Home");
     await button(page).press("Enter");
-    await expectSelection(page, "# Root");
+    await expectHeadingJump(page, "# Root");
     await expect.poll(() => page.evaluate(() => window.editorFixture.snapshot().scrollTop)).toBeLessThan(300);
     expect(errors).toEqual([]);
 });
@@ -58,7 +60,7 @@ test("uses fresh heading offsets after editing and external document replacement
     await button(page).focus();
     await button(page).press("End");
     await button(page).press("Enter");
-    await expectSelection(page, "## Target");
+    await expectHeadingJump(page, "## Target");
 
     await page.evaluate(() => {
         const view = window.editorFixture.getView();
@@ -67,7 +69,7 @@ test("uses fresh heading offsets after editing and external document replacement
     await button(page).focus();
     await button(page).press("End");
     await button(page).press("Enter");
-    await expectSelection(page, "### New destination");
+    await expectHeadingJump(page, "### New destination");
 });
 
 test("keeps a long section active when its heading is no longer rendered", async ({ page }) => {
@@ -144,7 +146,7 @@ test("hides in source mode and refreshes on tab switches", async ({ page }) => {
     await button(page).focus();
     await button(page).press("End");
     await button(page).press("Enter");
-    await expectSelection(page, "## Destination");
+    await expectHeadingJump(page, "## Destination");
     await page.getByRole("button", { name: "Plain", exact: true }).click();
     await expect(rail(page)).toHaveCount(0);
 });
@@ -175,7 +177,7 @@ test("navigates inside stacked columns", async ({ page }) => {
     await expect(target).toBeVisible();
     const box = await target.boundingBox();
     await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height - 1);
-    await expectSelection(page, "## Section 29");
+    await expectHeadingJump(page, "## Section 29");
 });
 
 test("jumps correctly after an image changes height above a table", async ({ page }) => {
@@ -193,7 +195,7 @@ test("jumps correctly after an image changes height above a table", async ({ pag
     await button(page).focus();
     await button(page).press("End");
     await button(page).press("Enter");
-    await expectSelection(page, "## After widgets");
+    await expectHeadingJump(page, "## After widgets");
     await expect.poll(() => page.evaluate(() => {
         const view = window.editorFixture.getView();
         const rect = view.coordsAtPos(view.state.selection.main.from);

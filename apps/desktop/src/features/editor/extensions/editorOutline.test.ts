@@ -27,7 +27,7 @@ describe("editor outline bridge", () => {
         expect(heading.anchor).toBe(view.state.doc.toString().indexOf("## Target"));
         bridge.select(heading);
         expect(view.state.selection.main.from).toBe(heading.anchor);
-        expect(view.state.selection.main.to).toBe(heading.head);
+        expect(view.state.selection.main.empty).toBe(true);
         expect(view.state.field(lineFlashField).size).toBe(1);
         bridge.select(oldHeading);
         expect(view.state.selection.main.from).toBe(heading.anchor);
