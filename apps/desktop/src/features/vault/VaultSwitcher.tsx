@@ -122,6 +122,7 @@ export function VaultSwitcher({
             {/* Dropdown — opens above the trigger */}
             {isOpen && (
                 <div
+                    className="nw-glass-menu"
                     style={{
                         position: "absolute",
                         bottom: "100%",
@@ -130,7 +131,6 @@ export function VaultSwitcher({
                         marginBottom: 4,
                         zIndex: 9999,
                         borderRadius: 8,
-                        backgroundColor: "var(--bg-secondary)",
                         border: "1px solid var(--border)",
                         boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
                         padding: 4,

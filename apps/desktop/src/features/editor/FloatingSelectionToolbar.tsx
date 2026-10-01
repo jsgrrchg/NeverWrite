@@ -213,6 +213,7 @@ export function FloatingSelectionToolbar({
     return createPortal(
         <div
             ref={ref}
+            className="nw-glass-menu"
             style={{
                 position: "fixed",
                 top: position.y,
@@ -224,10 +225,7 @@ export function FloatingSelectionToolbar({
                 padding: 4,
                 borderRadius: 999,
                 border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
-                background:
-                    "color-mix(in srgb, var(--bg-elevated) 94%, transparent)",
                 boxShadow: "0 8px 18px rgba(15, 23, 42, 0.1)",
-                backdropFilter: "blur(10px)",
             }}
             data-placement={position.placement}
         >

@@ -216,6 +216,7 @@ export function Dropdown<T extends string>({
                 createPortal(
                     <div
                         ref={menuRef}
+                        className="nw-glass-menu"
                         style={{
                             position: "fixed",
                             top: pos.top,
@@ -227,7 +228,6 @@ export function Dropdown<T extends string>({
                             minWidth: 120,
                             padding: 4,
                             borderRadius: 8,
-                            backgroundColor: "var(--bg-secondary)",
                             border: "1px solid var(--border)",
                             boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
                         }}

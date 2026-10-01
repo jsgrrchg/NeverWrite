@@ -424,6 +424,7 @@ function DateField({
             </button>
             {open && (
                 <div
+                    className="nw-glass-menu"
                     style={{
                         position: "absolute",
                         top: "calc(100% + 8px)",
@@ -433,10 +434,7 @@ function DateField({
                         padding: 10,
                         borderRadius: 12,
                         border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-                        background:
-                            "color-mix(in srgb, var(--bg-primary) 94%, var(--bg-secondary))",
                         boxShadow: "0 18px 40px rgba(0,0,0,0.14)",
-                        backdropFilter: "blur(12px)",
                     }}
                 >
                     <div

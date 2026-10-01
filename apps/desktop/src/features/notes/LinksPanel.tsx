@@ -236,6 +236,7 @@ function BacklinksContextMenu({
     return (
         <div
             ref={ref}
+            className="nw-glass-menu"
             style={{
                 position: "fixed",
                 top: position.y,
@@ -244,7 +245,6 @@ function BacklinksContextMenu({
                 minWidth: 190,
                 padding: 4,
                 borderRadius: 8,
-                backgroundColor: "var(--bg-secondary)",
                 border: "1px solid var(--border)",
                 boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
             }}
@@ -343,6 +343,7 @@ function OutgoingLinksContextMenu({
     return (
         <div
             ref={ref}
+            className="nw-glass-menu"
             style={{
                 position: "fixed",
                 top: position.y,
@@ -351,7 +352,6 @@ function OutgoingLinksContextMenu({
                 minWidth: 190,
                 padding: 4,
                 borderRadius: 8,
-                backgroundColor: "var(--bg-secondary)",
                 border: "1px solid var(--border)",
                 boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
             }}
