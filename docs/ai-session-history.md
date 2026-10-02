@@ -72,32 +72,86 @@ between promotion and history persistence does not leave an immediately broken
 reference. Deleting or pruning histories removes a managed blob only after its
 last retained history reference is gone.
 
-## Sessions, Sidebar Entries, And Workspace Views
+## Sessions, Sidebar Entries, And The Chat Pane
 
-For ACP chats, the Agents sidebar owns the durable live-session entry. Editor
-tabs and panes are views into that session, so closing a chat tab does not stop
-or delete the agent. The session remains available in the sidebar and can be
-reopened in the focused chat tab, explicitly opened in a new tab, or placed in
-another pane.
+ACP conversations are listed in the Agents sidebar and displayed in a dedicated
+chat pane alongside the editor workspace. Selecting a conversation reveals it
+in that pane. Hiding the pane or selecting another conversation does not stop
+or delete the underlying session; it remains available from the sidebar.
 
-With history-based tab opening enabled, a physical chat tab can hold a local
-Back/Forward history of sessions visited through that view. This workspace
-navigation history is persisted with the editor session, but it is distinct
-from the transcript stored under `.neverwrite/sessions/`.
+The pane has `conversation`, `history`, and `empty` views. Chat History opens in
+the same pane, with a Back action that returns to the previous conversation when
+available. Editor tab-opening preferences and per-tab Back/Forward history do
+not control chat selection.
 
-Deleting a conversation is different from closing a view. Explicit deletion
-removes physical tabs that display the session and prunes it from other chat-tab
-histories. Sidebar pins and folder assignments are local UI metadata rather
-than provider transcript data; they follow session ID migrations so a restored
-or newly durable session keeps its organization.
+Chat navigation is persisted separately from editor tabs and saved transcripts.
+The historical `neverwrite.chat.tabs:<vault-path>` key and `chatTabsStore.ts`
+name are retained. Their current payload includes the pane view, history filter,
+and conversation references in tab-shaped metadata. Older editor chat tabs and
+their navigation entries are migrated into those references before the editor
+tab projections are removed. See [Editor Architecture](editor-architecture.md#chat-pane-and-session-ownership)
+and [Settings Scope](settings-scope.md) for the UI and compatibility boundaries.
 
-Claude Code launched in an integrated terminal is not an ACP chat and does not
-use this durable sidebar ownership model. Its sidebar row is a non-persisted
-projection of the live terminal. Selecting the row focuses that terminal;
-closing the terminal ends the process and removes the row. It has no chat-tab
-Back/Forward history, saved chat view, or `Open in New Tab` action. Terminal tabs
-can be restored as workspace tabs, but their current metadata does not relaunch
-Claude Code or recreate the agent-sidebar projection after an app restart.
+Explicit conversation deletion closes its live runtime when applicable, removes
+its saved history and navigation references, and clears a matching pane selection
+or return-from-history target. Sidebar pins and folder assignments are local UI
+metadata rather than provider transcript data; they follow session ID migrations
+so a restored or newly durable session keeps its organization.
+
+Claude Code launched in an integrated terminal has no ACP chat session. Its
+sidebar row is a non-persisted projection of the live terminal. Selecting the row
+focuses that terminal rather than opening a conversation in the chat pane;
+closing the terminal ends the process and removes the row. Terminal tabs can be
+restored as workspace tabs, but their current metadata does not relaunch Claude
+Code or recreate the agent-sidebar projection after an app restart.
+
+## Archiving Conversations
+
+`Archive` and `Unarchive` are available for root ACP conversations in the
+Agents sidebar and Chat History. A root's subagents inherit its archive state;
+they are not archived independently. Claude Code terminal entries do not offer
+these actions.
+
+Archiving preserves the conversation, saved transcript, pending review state
+in memory, and any active runtime process. It removes the root's pin and moves
+the group into the sidebar's Archived section. If the pane currently displays
+the root or one of its subagents, archiving clears that selection, hides the
+chat pane, and returns focus to the editor. It does not cancel a running turn.
+The temporary archive notice offers Undo; it restores the prior conversation
+selection only if navigation has not changed in the meantime. Unarchiving does
+not restore the removed pin.
+
+Chat History offers `All`, `Active`, and `Archived` filters. `Unarchive and
+continue` removes the archive marker and opens the selected conversation in the
+chat pane. History retention applies to both active and archived conversations;
+archiving does not exempt a transcript from pruning.
+
+Archive metadata is per-vault renderer state under
+`neverwrite.chats.archived:<vault-path>`, stored as version 1 entries mapping
+root conversation identities to `{ archivedAt }` timestamps. It is separate
+from backend history storage and follows conversation ID migrations. See
+[`chatArchiving.ts`](../apps/desktop/src/features/ai/chatArchiving.ts),
+[`archivedChatsStore.ts`](../apps/desktop/src/features/ai/store/archivedChatsStore.ts),
+and [Settings Scope](settings-scope.md).
+
+## Export To A Markdown Note
+
+`Export to note` in Chat History loads the full saved transcript, creates a
+Markdown note in the current vault, saves it, and opens it in the editor. The
+name starts with `Exported chat - <title>`; invalid filename characters are
+sanitized and numeric suffixes avoid collisions with existing notes.
+
+The export includes the conversation title, export time, runtime, session and
+history IDs, status, attached-context descriptions, and messages with role,
+kind, timestamps, and content. Attachment entries describe their references;
+this operation does not copy attachment bytes into the note.
+
+The resulting file is an ordinary editable vault note and a snapshot of the
+conversation at export time. Later chat messages do not update it, and deleting
+or pruning the chat history does not delete the exported note. Exporting does
+not fork or reconnect the runtime and does not preserve pending review or
+Reject undo state. See
+[`chatExport.ts`](../apps/desktop/src/features/ai/chatExport.ts).
 
 ## Canonical Conversation Rollout And Rollback
 
@@ -145,6 +199,20 @@ runtime session directly. When native loading is unavailable or unsafe,
 NeverWrite creates a fresh runtime session and sends the saved transcript as
 context with the next prompt.
 
+### Review State After Reload Or Restart
+
+Transcript recovery does not recover the pending edits buffer. `ActionLog`,
+its pending tracked files, and `lastRejectUndo` snapshots are in-memory session
+state and are excluded from saved history. After a renderer reload or app
+restart, restoring a conversation can show its saved messages and diff previews,
+but does not recreate the former pending Keep/Reject state or Undo Last Reject
+buffer. File changes already written to the vault remain on disk.
+
+A runtime disconnect while the renderer remains alive is a different boundary:
+review state still held in memory is distinct from the saved transcript used
+for reconnection. See [AI Change Control](ai-change-control.md#persistence-and-recovery)
+for normalization and undo behavior within a live session.
+
 ## Transaction Diagnostics
 
 Scope moves emit lifecycle diagnostics with an opaque vault key and operation
@@ -187,4 +255,4 @@ send a new message so NeverWrite can continue with the stored transcript.
 - Pasted screenshot drafts and managed blobs are plaintext local image files;
   review them before sharing app data or a vault archive.
 
-Last updated: August 25, 2026.
+Last updated: September 29, 2026.

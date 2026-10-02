@@ -1,6 +1,6 @@
 [package]
 name = "neverwrite-native-backend"
-version = "0.8.7"
+version = "0.8.9"
 edition = "2021"
 
 [dependencies]

@@ -111,27 +111,25 @@ NeverWrite:
 transcript-derived title/preview are intentionally disabled in that mode rather
 than guessed from another terminal's JSONL.
 
-### Sidebar Ownership Exception
+### Terminal Session Ownership
 
-The durable Agents-sidebar ownership model applies to ACP chat sessions, not to
-Claude Code running inside a terminal. Claude Code has no ACP backend session in
-this integration: the live PTY and its `TerminalTab` own the lifecycle, while
-`claudeTerminalAgentSession.ts` exposes only a lightweight pseudo-session for
-sidebar discovery and organization.
+ACP chat sessions remain available through the Agents sidebar independently of
+the dedicated chat pane's visibility. Claude Code running inside a terminal has
+no ACP backend session in this integration: the live PTY and its `TerminalTab`
+own the lifecycle, while `claudeTerminalAgentSession.ts` exposes only a
+lightweight pseudo-session for sidebar discovery and organization.
 
 As a result:
 
-- selecting the sidebar row focuses the existing terminal instead of opening an
-  `ai-chat` view;
-- the row does not offer `Open in New Tab` or participate in chat Back/Forward
-  history;
+- selecting the sidebar row focuses the existing terminal rather than selecting
+  a conversation in the dedicated chat pane;
 - closing the terminal tab closes the PTY and removes the sidebar row;
 - `Close Terminal` in the sidebar confirms before closing the terminal, whereas
   ordinary tab-close paths follow terminal tab semantics;
 - pin, rename, and folder metadata apply only while that terminal agent remains
   live and are cleaned up when it disappears; and
 - dragging the row onto the workspace focuses the existing terminal rather than
-  creating or moving an ACP chat view.
+  selecting an ACP conversation in the chat pane.
 
 The pseudo-session registry is memory-only. Although the workspace persists a
 generic `TerminalTab`, that tab currently has no terminal-role or launch metadata
@@ -167,4 +165,4 @@ npm run electron:ai-runtime:smoke
 For packaging-sensitive terminal changes, also run the packaged app and sidecar
 smokes described in [Testing and Validation](./testing.md).
 
-Last updated: July 11, 2026.
+Last updated: September 29, 2026.

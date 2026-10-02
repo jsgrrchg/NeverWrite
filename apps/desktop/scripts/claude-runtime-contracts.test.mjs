@@ -16,10 +16,10 @@ const baseline = JSON.parse(await fs.readFile(
 ));
 const execute = promisify(execFile);
 
-test("runtime JavaScript matches the published dependency baseline", async () => {
+test("runtime JavaScript matches the published baseline and verified local patches", async () => {
     const manifest = JSON.parse(await fs.readFile(path.join(runtimeRoot, "package.json"), "utf8"));
     assert.equal(manifest.version, baseline.version);
-    for (const [relative, expected] of Object.entries(baseline.runtimeFiles)) {
+    for (const [relative, expected] of Object.entries({ ...baseline.runtimeFiles, ...baseline.patchedRuntimeFiles })) {
         const text = await fs.readFile(path.join(runtimeRoot, relative), "utf8");
         const normalized = text.trimEnd().split(/\r?\n/).map((line) => line.trimEnd()).join("\n") + "\n";
         assert.equal(createHash("sha256").update(normalized).digest("hex"), expected, relative);
@@ -40,8 +40,10 @@ test("shell permission titles preserve the exact command", async () => {
             toolUseID: `tool-${toolName}`,
         });
         assert.equal(presentation.toolCall.title, command);
-        assert.equal(presentation._meta.permission.title, command);
-        assert.notEqual(presentation._meta.permission.title, "Model-authored summary");
+        assert.notEqual(presentation.toolCall.title, "Model-authored summary");
+        // ACP 0.83.0 scopes permission presentation metadata to AIR clients.
+        // NeverWrite consumes the standard toolCall.title without AIR support.
+        assert.equal(presentation._meta, undefined);
     }
 });
 

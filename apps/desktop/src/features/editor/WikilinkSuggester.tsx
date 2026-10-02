@@ -76,6 +76,7 @@ export function WikilinkSuggester({
     return createPortal(
         <div
             ref={ref}
+            className="nw-glass-menu"
             style={{
                 position: "fixed",
                 top: position.y,
@@ -87,10 +88,7 @@ export function WikilinkSuggester({
                 overflow: "hidden",
                 borderRadius: 10,
                 border: "1px solid color-mix(in srgb, var(--border) 86%, transparent)",
-                background:
-                    "color-mix(in srgb, var(--bg-elevated) 97%, transparent)",
                 boxShadow: "0 8px 24px rgba(15, 23, 42, 0.12)",
-                backdropFilter: "blur(10px)",
             }}
         >
             <div

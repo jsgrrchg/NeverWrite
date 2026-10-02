@@ -133,9 +133,9 @@ test("rejects a mixed runtime source baseline before staging", () => {
                 adapterManifest:
                     '[dependencies]\ncodex-core = { tag = "rust-v0.149.0" }',
                 lockfile: "",
-                ptyManifest: '[package]\nversion = "0.155.1"',
+                ptyManifest: '[package]\nversion = "0.159.0"',
             }),
-        /must all use tag = "rust-v0\.155\.1"/,
+        /must all use tag = "rust-v0\.159\.0"/,
     );
 });
 

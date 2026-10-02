@@ -21,9 +21,9 @@ use codex_core::{
     find_thread_path_by_id_str, init_state_db, local_agent_graph_store_from_state_db,
     passthrough_image_store, resolve_installation_id, thread_store_from_config,
 };
-use codex_exec_server::{EnvironmentManager, ExecServerRuntimePaths};
+use codex_exec_server::{EnvironmentManager, ExecServerRuntimeOptions};
 use codex_extension_api::{
-    LoadUserInstructionsFuture, LoadedUserInstructions, UserInstructionsProvider,
+    LoadInstructionsFuture, LoadedUserInstructions, UserInstructionsProvider,
     empty_extension_registry,
 };
 use codex_features::Feature;
@@ -37,12 +37,13 @@ use codex_login::{
 use codex_protocol::{
     ThreadId,
     mcp::ClientMcpExtensions,
-    protocol::{SessionConfiguredEvent, SessionSource},
+    protocol::{SessionConfiguredEvent, SessionSource, ThreadHistoryMode},
 };
-use codex_rollout::InitialHistory;
+use codex_rollout::{InitialHistory, ResumedHistory};
 use codex_thread_store::{
-    ListThreadsParams, SortDirection as StoreSortDirection, ThreadSortKey as StoreThreadSortKey,
-    ThreadStore,
+    ItemSortKey, ListItemsParams, ListItemsPosition, ListThreadsParams, LoadThreadHistoryParams,
+    ReadThreadByRolloutPathParams, SortDirection as StoreSortDirection,
+    ThreadSortKey as StoreThreadSortKey, ThreadStore,
 };
 use std::{
     collections::HashMap,
@@ -62,7 +63,7 @@ use crate::thread::Thread;
 struct EmptyUserInstructionsProvider;
 
 impl UserInstructionsProvider for EmptyUserInstructionsProvider {
-    fn load_user_instructions(&self) -> LoadUserInstructionsFuture<'_> {
+    fn load_user_instructions(&self) -> LoadInstructionsFuture<'_> {
         Box::pin(async { LoadedUserInstructions::default() })
     }
 }
@@ -148,7 +149,7 @@ impl CodexAgent {
         let session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>> = Arc::default();
         let state_db = init_state_db(&config).await;
         let local_runtime_paths =
-            ExecServerRuntimePaths::new(std::env::current_exe()?, codex_linux_sandbox_exe)?;
+            ExecServerRuntimeOptions::new(std::env::current_exe()?, codex_linux_sandbox_exe)?;
         let environment_manager = Arc::new(
             EnvironmentManager::from_codex_home(
                 &config.codex_home,
@@ -535,6 +536,8 @@ impl CodexAgent {
                             oauth_resource: None,
                             tools: Default::default(),
                             environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+                            startup_readiness: Default::default(),
+                            tool_input_schema_max_bytes: None,
                             supports_parallel_tool_calls: false,
                             omit_tools_from: None,
                             default_tools_approval_mode: None,
@@ -579,6 +582,8 @@ impl CodexAgent {
                             oauth_resource: None,
                             tools: Default::default(),
                             environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+                            startup_readiness: Default::default(),
+                            tool_input_schema_max_bytes: None,
                             supports_parallel_tool_calls: false,
                             omit_tools_from: None,
                             default_tools_approval_mode: None,
@@ -1024,7 +1029,17 @@ impl CodexAgent {
         .map_err(|e| Error::internal_error().data(e.to_string()))?
         .ok_or_else(|| Error::resource_not_found(None))?;
 
-        let rollout_items = if restore_kind.replays_history() {
+        let stored_thread = self
+            .thread_store
+            .read_thread_by_rollout_path(ReadThreadByRolloutPathParams {
+                rollout_path: rollout_path.clone(),
+                include_archived: true,
+                include_history: false,
+            })
+            .await
+            .map_err(Error::into_internal_error)?;
+        let paginated = stored_thread.history_mode == ThreadHistoryMode::Paginated;
+        let rollout_items = if restore_kind.replays_history() && !paginated {
             let history = RolloutRecorder::get_rollout_history(&rollout_path)
                 .await
                 .map_err(|e| Error::internal_error().data(e.to_string()))?;
@@ -1040,19 +1055,43 @@ impl CodexAgent {
 
         let mut config = Self::build_session_config(&self.config, &cwd, mcp_servers)?;
 
+        let restored = if paginated {
+            let context = self
+                .thread_store
+                .load_latest_model_context(LoadThreadHistoryParams {
+                    thread_id: stored_thread.thread_id,
+                    include_archived: true,
+                })
+                .await
+                .map_err(Error::into_internal_error)?;
+            Box::pin(self.thread_manager.resume_thread_with_history(
+                config.clone(),
+                InitialHistory::Resumed(ResumedHistory {
+                    conversation_id: stored_thread.thread_id,
+                    history: Arc::new(context.items),
+                    rollout_path: Some(rollout_path),
+                }),
+                self.auth_manager.clone(),
+                None,
+                client_mcp_extensions(),
+            ))
+            .await
+        } else {
+            Box::pin(self.thread_manager.resume_legacy_thread_from_rollout(
+                config.clone(),
+                rollout_path,
+                self.auth_manager.clone(),
+                None,
+                client_mcp_extensions(),
+            ))
+            .await
+        }
+        .map_err(Error::into_internal_error)?;
         let NewThread {
             thread_id,
             thread,
             session_configured,
-        } = Box::pin(self.thread_manager.resume_thread_from_rollout(
-            config.clone(),
-            rollout_path,
-            self.auth_manager.clone(),
-            None,
-            client_mcp_extensions(),
-        ))
-        .await
-        .map_err(|e| Error::internal_error().data(e.to_string()))?;
+        } = restored;
 
         Self::sync_config_with_session(&mut config, &session_configured)?;
 
@@ -1067,11 +1106,48 @@ impl CodexAgent {
             cx,
         ));
 
-        if restore_kind.replays_history() {
-            thread.replay_history(rollout_items).await?;
-        }
+        let loaded = async {
+            if restore_kind.replays_history() {
+                if paginated {
+                    let mut position = None;
+                    loop {
+                        let page = self
+                            .thread_store
+                            .list_items(ListItemsParams {
+                                thread_id,
+                                turn_id: None,
+                                include_archived: true,
+                                position,
+                                page_size: 100,
+                                sort_direction: StoreSortDirection::Asc,
+                                sort_key: ItemSortKey::CreatedAtOrdinal,
+                                after_updated_at_ordinal: None,
+                            })
+                            .await
+                            .map_err(Error::into_internal_error)?;
+                        thread.replay_stored_history(page.items).await?;
+                        let Some(cursor) = page.next_cursor else {
+                            break;
+                        };
+                        position = Some(ListItemsPosition::Cursor(cursor));
+                    }
+                } else {
+                    thread.replay_history(rollout_items).await?;
+                }
+            }
 
-        let load = thread.load().await?;
+            thread.load().await
+        }
+        .await;
+        let load = match loaded {
+            Ok(load) => load,
+            Err(error) => {
+                // A replay failure must not leave an unregistered live runtime.
+                drop(thread.shutdown().await);
+                self.thread_manager.remove_thread(&thread_id).await;
+                return Err(error);
+            }
+        };
 
         self.session_roots
             .lock()
@@ -1504,6 +1580,8 @@ mod tests {
             environment_id: "base-environment".to_string(),
             enabled: true,
             required: true,
+            startup_readiness: Default::default(),
+            tool_input_schema_max_bytes: None,
             supports_parallel_tool_calls: true,
             omit_tools_from: None,
             disabled_reason: None,

@@ -163,6 +163,7 @@ export function ContextMenu<T>({
     return createPortal(
         <div
             ref={ref}
+            className="nw-glass-menu"
             style={{
                 position: "fixed",
                 top: position.y,
@@ -175,7 +176,6 @@ export function ContextMenu<T>({
                 minWidth,
                 padding: 4,
                 borderRadius: 8,
-                backgroundColor: "var(--bg-secondary)",
                 border: "1px solid var(--border)",
                 boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
                 ...(maxHeight ? { maxHeight, overflowY: "auto" as const } : {}),
@@ -326,6 +326,7 @@ export function ContextMenu<T>({
                                 }}
                             >
                                 <div
+                                    className="nw-glass-menu"
                                     style={{
                                         display: "inline-flex",
                                         flexDirection: "column",
@@ -334,7 +335,6 @@ export function ContextMenu<T>({
                                         minWidth,
                                         padding: 4,
                                         borderRadius: 8,
-                                        backgroundColor: "var(--bg-secondary)",
                                         border: "1px solid var(--border)",
                                         boxShadow:
                                             "0 4px 16px rgba(0,0,0,0.25)",

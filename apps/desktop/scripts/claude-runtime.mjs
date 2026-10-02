@@ -56,7 +56,7 @@ export function runRuntimeCommand(command, args, cwd) {
 
 export async function claudeInputs(target) {
     requiredClaudePlatformPackages(target);
-    const files = ["package.json", "package-lock.json", "baseline.json"];
+    const files = ["package.json", "package-lock.json", "baseline.json", "patches.json"];
     const contents = await Promise.all(files.map((name) => fs.readFile(path.join(claudeDefinitionRoot, name))));
     const definition = JSON.parse(contents[0]);
     const version = definition.dependencies?.[claudePackage];
@@ -65,7 +65,26 @@ export async function claudeInputs(target) {
     contents.push(await fs.readFile(fileURLToPath(import.meta.url)));
     contents.push(await fs.readFile(new URL("./stage-electron-sidecar-helpers.mjs", import.meta.url)));
     const fingerprint = sha256(Buffer.concat([Buffer.from(target), ...contents]));
-    return { fingerprint, lock: JSON.parse(contents[1]), baseline: JSON.parse(contents[2]) };
+    return { fingerprint, lock: JSON.parse(contents[1]), baseline: JSON.parse(contents[2]), patches: JSON.parse(contents[3]) };
+}
+
+export async function applyClaudeRuntimePatches(root, inputs) {
+    for (const patch of inputs.patches) {
+        const file = path.join(root, patch.file);
+        const source = await fs.readFile(file, "utf8");
+        if (normalizedRuntimeHash(source) !== inputs.baseline.runtimeFiles[patch.file]) {
+            throw new Error(`Claude patch source does not match published baseline: ${patch.file}`);
+        }
+        const before = patch.before.join("\n");
+        if (!before || source.split(before).length !== 2) {
+            throw new Error(`Claude patch must match exactly once: ${patch.file}`);
+        }
+        const patched = source.replace(before, () => patch.after.join("\n"));
+        if (normalizedRuntimeHash(patched) !== inputs.baseline.patchedRuntimeFiles?.[patch.file]) {
+            throw new Error(`Claude patch output does not match baseline: ${patch.file}`);
+        }
+        await fs.writeFile(file, patched);
+    }
 }
 
 export async function validateClaudeRuntime(root, target, inputs, { requireStamp = false } = {}) {
@@ -81,7 +100,7 @@ export async function validateClaudeRuntime(root, target, inputs, { requireStamp
             throw new Error(`Stale or wrong-target Claude runtime at ${root}`);
         }
     }
-    for (const [relative, expected] of Object.entries(baseline.runtimeFiles)) {
+    for (const [relative, expected] of Object.entries({ ...baseline.runtimeFiles, ...baseline.patchedRuntimeFiles })) {
         if (normalizedRuntimeHash(await fs.readFile(path.join(root, relative), "utf8")) !== expected) {
             throw new Error(`Claude runtime does not match its published baseline: ${relative}`);
         }
@@ -172,6 +191,7 @@ export async function prepareClaudeRuntime(target = claudeHostTarget(), { force 
                 await fs.rm(path.join(output, relative), { recursive: true, force: true });
             }
         }
+        await applyClaudeRuntimePatches(output, inputs);
         await validateClaudeRuntime(output, target, inputs);
         await fs.writeFile(path.join(output, ".neverwrite-runtime.json"), JSON.stringify({
             target, fingerprint: inputs.fingerprint, version: inputs.baseline.version,

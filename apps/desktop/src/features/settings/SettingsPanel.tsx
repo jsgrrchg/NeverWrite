@@ -351,6 +351,7 @@ function SelectField<T extends string | number | null>({
                 createPortal(
                     <div
                         ref={menuRef}
+                        className="nw-glass-menu"
                         style={{
                             position: "fixed",
                             left: menuPosition?.x ?? 8,
@@ -359,7 +360,6 @@ function SelectField<T extends string | number | null>({
                             minWidth: menuPosition?.minWidth ?? 0,
                             padding: 4,
                             borderRadius: 8,
-                            backgroundColor: "var(--bg-secondary)",
                             border: "1px solid var(--border)",
                             boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
                             maxHeight: 280,

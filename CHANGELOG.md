@@ -34,6 +34,27 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.9] - 2026-09-29
+
+### Changed
+
+- Updated the bundled Codex runtime to `0.159.0`, preserving saved conversations across runtime upgrades and rollbacks and supporting paginated conversation history.
+
+### Fixed
+
+- Fixed Codex model, reasoning effort, service tier, and permission selections reporting success before the runtime accepts them, and surfaced runtime abort errors as failed turns.
+
+### Security
+
+- Patched `brace-expansion` vulnerabilities in desktop dependencies.
+
+## [0.8.8] - 2026-09-28
+
+### Changed
+
+- Updated the bundled Claude ACP runtime to `0.83.0` and added Claude Sonnet 5.5 to the model selector.
+- Updated the bundled Codex runtime to `0.157.1`, preserving saved conversations and selected models across runtime upgrades and rollbacks.
+
 ## [0.8.7] - 2026-09-28
 
 ### Changed

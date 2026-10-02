@@ -16,11 +16,11 @@ per session, keyed by stable `identityKey`.
 
 Key source files:
 
-- [`apps/desktop/src/features/ai/diff/actionLogTypes.ts`](../apps/desktop/src/features/ai/diff/actionLogTypes.ts) defines the persisted domain shape.
+- [`apps/desktop/src/features/ai/diff/actionLogTypes.ts`](../apps/desktop/src/features/ai/diff/actionLogTypes.ts) defines the in-memory review domain shape.
 - [`apps/desktop/src/features/ai/store/actionLogModel.ts`](../apps/desktop/src/features/ai/store/actionLogModel.ts) owns pure tracked-file operations and invariants.
 - [`apps/desktop/src/features/ai/store/actionLogRustEngine.ts`](../apps/desktop/src/features/ai/store/actionLogRustEngine.ts) calls the Rust/WASM engine with JS fallback.
 - [`crates/diff/src/action_log.rs`](../crates/diff/src/action_log.rs) implements the shared diff/review algorithms.
-- [`apps/desktop/src/features/ai/store/chatStore.ts`](../apps/desktop/src/features/ai/store/chatStore.ts) wires ActionLog updates, user decisions, disk conflict checks, and persistence.
+- [`apps/desktop/src/features/ai/store/chatStore.ts`](../apps/desktop/src/features/ai/store/chatStore.ts) wires ActionLog updates, user decisions, and disk conflict checks, and saves transcripts separately from the review buffer.
 
 ## Data Model
 
@@ -108,7 +108,7 @@ Inline or partial review:
 There are three review surfaces:
 
 - Full Review tab: [`AIReviewView.tsx`](../apps/desktop/src/features/ai/components/AIReviewView.tsx) opens from the editor and shows pending changes with global actions, expansion state, zoom, persisted scroll/anchor state, and per-file diff cards.
-- Compact Edits surface: [`EditedFilesBufferPanel.tsx`](../apps/desktop/src/features/ai/components/EditedFilesBufferPanel.tsx) appears in the chat sidebar and offers compact keep/reject/review/undo actions.
+- Compact Edits surface: [`EditedFilesBufferPanel.tsx`](../apps/desktop/src/features/ai/components/EditedFilesBufferPanel.tsx) appears within the selected conversation in the dedicated chat pane and offers compact keep/reject/review/undo actions.
 - Chat activity rows: [`ChangeReviewToolRail.tsx`](../apps/desktop/src/features/ai/components/ChangeReviewToolRail.tsx) renders change-review progress and diff previews in the conversation timeline. It is a navigation and inspection surface; keep/reject state and actions still derive from the same canonical ActionLog projection.
 
 The Review tab and Edits surface are available only while the current vault's
@@ -200,21 +200,33 @@ the accepted content is already on disk, but partial reject must write the new
 
 ## Persistence And Recovery
 
-ActionLog state is persisted inside `AIChatSession`.
+ActionLog is held in memory inside `AIChatSession` and survives work cycles
+while that session remains in the renderer. `toPersistedHistory()` explicitly
+excludes the edits buffer from saved chat history. Pending tracked files,
+work-cycle review state, and `lastRejectUndo` snapshots are not durable
+transcript data. The store test `does not persist the edited files buffer as
+part of session history` verifies this boundary in
+[`chatStore.test.ts`](../apps/desktop/src/features/ai/store/chatStore.test.ts).
 
-Storage model:
+In-memory storage model:
 
-- `trackedFilesByIdentityKey` is authoritative normalized session storage.
+- `trackedFilesByIdentityKey` is authoritative normalized review state.
 - `trackedFileIdsByWorkCycleId` records which identities belong to each work cycle.
 - `trackedFilesByWorkCycleId` is legacy compatibility storage and is rebuilt/normalized on read.
 - `lastRejectUndo` stores per-file undo buffers plus full tracked-file snapshots.
 
-Recovery behavior:
+Normalization and undo within a live session:
 
-- `normalizeActionLogStorage()` merges legacy and normalized state, preferring newer/higher-version/pending files.
+- `normalizeActionLogStorage()` merges legacy and normalized in-memory representations, preferring newer/higher-version/pending files. It does not restore the buffer from saved transcripts.
 - `syncDerivedLinePatch()` repairs missing/stale derived fields and legacy missing range/hash metadata.
 - `undoLastReject()` restores snapshots only when disk still matches a safe restore condition, then re-tracks restored files and leaves failed snapshots in undo.
-- Review tab scroll/anchor state is stored separately by `reviewTabPersistence` and does not affect the ActionLog domain.
+- Review tab scroll/anchor state is stored separately by `reviewTabPersistence`; those UI preferences do not contain tracked files or undo snapshots.
+
+After a renderer reload or app restart, restoring the transcript can restore
+messages and historical diff previews, but does not recreate pending review
+state or Undo Last Reject. Agent changes already written to vault files remain
+on disk. A runtime disconnect with the renderer still alive can retain its
+existing in-memory review state; that is separate from transcript recovery.
 
 ## Validation Checklist
 
@@ -252,6 +264,7 @@ Manual smoke checks:
 - Inline controls degrade to panel-only for conflicts and invalid projections.
 - Exact decisions are span-based, but visual grouping can merge nearby or overlapping spans for clarity.
 - Reject undo is intentionally shallow: it is valid only until new agent edits arrive or disk state makes the stored snapshot unsafe.
+- Pending review and Reject undo are not recovered from saved chat history after a renderer reload or app restart.
 - The JS fallback exists for availability, but Rust/WASM is the expected engine. Non-zero fallback stats should be treated as diagnostic signal.
 
-Last updated: May 11, 2026.
+Last updated: September 29, 2026.

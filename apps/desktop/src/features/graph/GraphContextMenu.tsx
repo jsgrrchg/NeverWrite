@@ -69,6 +69,7 @@ export function GraphContextMenu({
     return (
         <div
             ref={ref}
+            className="nw-glass-menu"
             style={{
                 position: "fixed",
                 left: menu.x,
@@ -77,7 +78,6 @@ export function GraphContextMenu({
                 minWidth: 180,
                 padding: "4px 0",
                 borderRadius: 8,
-                background: "var(--bg-secondary)",
                 border: "1px solid var(--border)",
                 boxShadow: "0 4px 16px rgba(0, 0, 0, 0.4)",
             }}
