@@ -13,6 +13,7 @@ import { claudeHostTarget, claudeRuntimePath, validateClaudeRuntime } from "./cl
 
 const execute = promisify(execFile);
 const marker = "NEVERWRITE_CLAUDE_SMOKE";
+const selectedModelOption = "sonnet";
 const selectedModel = "claude-sonnet-5-5";
 const fixtureContent = "NeverWrite packaged Claude read this fixture.";
 
@@ -227,13 +228,13 @@ export async function smokeClaudeRuntime({ runtimeRoot, nodeBinary, target = cla
         const session = await client.request("session/new", { cwd: workspace, mcpServers: [] });
         assert.ok(session.sessionId);
         const modelConfig = session.configOptions?.find((option) => option.id === "model");
-        assert.ok(modelConfig?.options.some((option) => option.value === selectedModel),
-            `ACP must offer ${selectedModel}: ${JSON.stringify(modelConfig)}`);
-        assert.notEqual(modelConfig.currentValue, selectedModel, "Smoke must exercise a model switch");
+        assert.ok(modelConfig?.options.some((option) => option.value === selectedModelOption && option.name === "Sonnet 5.5"),
+            `ACP must offer Sonnet 5.5 as ${selectedModelOption}: ${JSON.stringify(modelConfig)}`);
+        assert.notEqual(modelConfig.currentValue, selectedModelOption, "Smoke must exercise a model switch");
         const selected = await client.request("session/set_config_option", {
-            sessionId: session.sessionId, configId: "model", value: selectedModel,
+            sessionId: session.sessionId, configId: "model", value: selectedModelOption,
         });
-        assert.equal(selected.configOptions.find((option) => option.id === "model")?.currentValue, selectedModel);
+        assert.equal(selected.configOptions.find((option) => option.id === "model")?.currentValue, selectedModelOption);
         const result = await client.request("session/prompt", {
             sessionId: session.sessionId, prompt: [{ type: "text", text: `${marker}: read fixture.txt then finish.` }],
         });
@@ -260,7 +261,7 @@ export async function smokeClaudeRuntime({ runtimeRoot, nodeBinary, target = cla
         } finally { clearTimeout(waitTimer); }
         if (mock.state.error) throw mock.state.error;
         assert.ok(mock.state.turnModels.length >= 3, "Provider must receive the Read, followup and cancellation requests");
-        console.log(`Claude ACP ${runtimeVersion} selected ${selectedModel} and completed a real Read turn and cancellation (${target}, CLI ${cliVersion}).`);
+        console.log(`Claude ACP ${runtimeVersion} selected ${selectedModelOption}, resolved provider model ${selectedModel}, and completed a real Read turn and cancellation (${target}, CLI ${cliVersion}).`);
     } finally {
         try { if (client) await client.close(); }
         finally {

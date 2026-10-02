@@ -1,24 +1,24 @@
 {
-  "version": "0.83.0",
-  "upstreamCommit": "691328a9190d8729387149afad9bdb012450028b",
+  "version": "0.85.1",
+  "upstreamCommit": "686c0c99b3b89217b74d1f5de8272e7c9ef1aab4",
   "normalization": "Trim trailing whitespace on each line and terminate with one newline.",
   "runtimeFiles": {
-    "dist/acp-agent.js": "7632ea73ec3c221ee4ba12a9b052f85d7fd219250ccef8fdc68c33692ba70a42",
+    "dist/acp-agent.js": "293b2521a1e8acb53c4739991cdb7ec5e4cef23c3f72d2faded99c5aac7ff2c9",
     "dist/acp-subagents.js": "aeb9fca26d4118bd20bb4661fb8311259b62ce332b131fa47e54f745cab09156",
-    "dist/air-extension.js": "15223e5390bab2a177f42ad3e19c69b827f2aae45a2ec0b8ce04483255b0d537",
+    "dist/air-extension.js": "367126919c252609e28cc73f39f41c67173e4493242f663b128281e448a7c282",
     "dist/async-tasks.js": "e838516140c57a9cd795d5e7c48e8325046b8a2649b8210d0891c7ac2323f92e",
     "dist/auth-status.js": "0cc5054336b3849cf5987f01e296dece1ecaeb023f236d6698780f6a42cbb24a",
     "dist/clear-context-coordinator.js": "05b2975cb34869dfff18f26d728aef9f43e681af50600bd46bc0de0939450b7b",
     "dist/context-compaction-meta.js": "072320ff55f285e36ddef677ba6328835c34ef9c5ed2afcd648cf066d3fbdae6",
     "dist/context-compaction.js": "345fe4cd3970bd7acddb6156b384310c82144c07209866c306802bb7f27368ab",
     "dist/diff.js": "6e9d35bbe5759f2484bf5907e7d0b3df241a98e4c47f06e877dc36fdbf135874",
-    "dist/elicitation.js": "cfe2844aff98a8b5018291b309760abdd4a647dd637ede09c62d69500524c6dc",
+    "dist/elicitation.js": "5bf7ad25cd4e70090ef8cb3186ca17028b7ee5213f16d05122446882df420a36",
     "dist/exit-plan.js": "87c78428f2bd3ce73e7f6c8b0476a4b46984db8b43580393124807b219c7122b",
     "dist/file-change-audit.js": "716c24e6b6fb289dfc3ecf98c2d9832ecaafe7c3e24b169d44ef4148aaae9527",
     "dist/fork-session.js": "70da6567b5d9f76dedef4aa02dc1c53e4bdb5e7f4bc28e374d1ad680e6287c2a",
     "dist/goal-extension.js": "822a8e90ac4eaf4b7ffb866abd3de531498e9c9a5ad72ec582dc232e814cbb1a",
     "dist/hide-claude-auth.js": "6fcd554c58bc380efe11896337cd8c104ecd7f072111d82daf46941160cfb827",
-    "dist/index.js": "ecfa6ff948a4241090934979179a5ba035bb0a7c3ef543752f4a304d44a267fb",
+    "dist/index.js": "4a1f0fff5cdd26b8c9adb5f9b3d314640e06f876cfff97cac437159b4551ec27",
     "dist/lib.js": "a39ff2411f35100442ba9092fe9628ab551f470bfa5d672969d349e376a85e02",
     "dist/managed-policy.js": "7371dcd3aa94c29b72061521269b5cbe3473ca8e838dc32e303bc2b7f22d5756",
     "dist/native-subagents.js": "ff07b9de504798da7ff84deab1c03c51a8c30ea45287929b076eea7b45033329",
@@ -34,8 +34,9 @@
     "dist/permissions/presentation.js": "7ca28732ed9387ea92766f9408eb0e3504928df1fff85f1542844931c5873773",
     "dist/permissions/response.js": "c31060b84387cc7f1dc48985c75ffd72cf3662e78e457aca21ecb656edac8020",
     "dist/resumed-session.js": "28508e1a3229ef97a106144ac07c8a51d812fc3f7bc665110c16b760471d597a",
+    "dist/serve.js": "95b3592750f020d63f59f08d13d14c3c0b5caf897f5183f57ed5d38935a12bbf",
     "dist/session-config-ids.js": "bff9f94e2ed873fe8c3348b4ca33445b0921dff03e85c6b9b127f93de6ae8f3b",
-    "dist/session-effort.js": "a89fb974c4fb454a27fcf7f11aee0c44dd07fda14a2932fd4f93e66ebea0b556",
+    "dist/session-effort.js": "73b21951b7e1dc3baa9aa6861221d7e136bebb4efc8133941d97bd004f9069fc",
     "dist/session-failure-extension.js": "79661ca0cbd893849d0610e5ed730c903117139d319ee010a4a851844028a068",
     "dist/session-mode.js": "858d468557dca54aada5e51a094966d08429f5db8d7cfde911de2f8f2ac41b04",
     "dist/session-model.js": "b54f68d0a26e279729bc7761c8fa4ac21bb918f9d3a4e865e48f8d101b01f310",
@@ -63,72 +64,74 @@
     "dist/tool-result-meta.js": "2c3301104d4b4066244631a0c52cdd0f7e99b5d3189d2318762ee88110f6c0a9",
     "dist/tools.js": "d8c51a3f0cff5086cb6ee2c2caafe8d23bf263b33eb817847621369c5b7842d9",
     "dist/usage-markdown.js": "d312bc826aaf24252b86dcac6a39e7d24c62536672e4469d23c8bb4d690a8beb",
-    "dist/utils.js": "e99a776cda7f84f00884fc6be8d754f545cd21346ba9a4d326aeea1dc422d8f2"
+    "dist/utils.js": "e99a776cda7f84f00884fc6be8d754f545cd21346ba9a4d326aeea1dc422d8f2",
+    "dist/v2/agent.js": "4a75d0f63bc73148ddc7482f56bfecee188d72b0f9917754a50dd1cc33a946be",
+    "dist/v2/initialize.js": "ea5410d88a855c977a34ffc67d7e298feee4d16b7a04eaf0735dbce88dcfdd07"
   },
   "productionPackages": {
     "node_modules/@agentclientprotocol/sdk": {
-      "version": "1.5.1",
-      "integrity": "sha512-nSUIrC1fOR9+ppKfx9KdwjBBND2sAPzFHo4yVQrGbXZHnayUYpwL8CDVR5LSxbapY/oKMOzNP0wvwfyx3PS2KA=="
+      "version": "1.6.0",
+      "integrity": "sha512-XxXrmX7aZkDgOB0Rg9cu+ZFyiUUc5lF2n9seO3Gc4OR+MTdfZOwIqF6m3LvsmmM8K3qgPmXkDH8/IFM2u9vdcQ=="
     },
     "node_modules/@anthropic-ai/claude-agent-sdk": {
-      "version": "0.3.284",
-      "integrity": "sha512-NSoJwEq6nFSf8dtaacYx37QdGgqApI3eHFUlxclMLYi8irb6ZJwEaUnPnLUCyAyg9W/tMkgZC0GXWLRCc01I0w=="
+      "version": "0.3.286",
+      "integrity": "sha512-InL/UNmRGSwBM/81PME0J0TZDsDBBlweWqRZgq2XSViSIg2hBi8nIL8j9Hm6MHRH85wgDJQE5n6Vo/r9hIO0NQ=="
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64": {
-      "version": "0.3.284",
-      "integrity": "sha512-gKY9MUjY83398uCiPLHsd87kyzu7agIM7ApqWpJkpSINep6hxx4rNoR8bUbNWg49Aoe/PW/DJkQByAQuNzR9rg==",
+      "version": "0.3.286",
+      "integrity": "sha512-gkxWcJ+Z23UxwghI1V3dL09PkELIZmB2vPelR8XsdfhS+yP1KvoW7FThvRLojcxXb3fj0ddYawjQSQYIkXFbxw==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64": {
-      "version": "0.3.284",
-      "integrity": "sha512-P+q6Z7sKeYz99uE7RJc4au1IK+4SiWe69pyHY3QXMnjZq8hSFU/5Mo8iSurLk9jRlihsMltV1rLA5naouYyCAQ==",
+      "version": "0.3.286",
+      "integrity": "sha512-eMdni7sy1ud2IISI4QSsfVBCxotzSe62zCGdXISejL9MxDIwcRgEGZpO5OV+j7t8mNGMTe6Opl1t/3Z/1RUJaQ==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64": {
-      "version": "0.3.284",
-      "integrity": "sha512-LDpuYDaz+pCdG29iy1pw4P1D2YVtpZOb4rWOPxxSpg2fFyUeQ5WrfnuszOxhDWpNh1k1ekDiKm3A9OzGcrkdtA==",
+      "version": "0.3.286",
+      "integrity": "sha512-3h+WWGek9beZ6i1qbIjjwYEFbs46D6qumjSBc6cLsEvnufcoi7mc0iBwbFSh9yRb3upxoi4ZTJdl53T3gLTdUQ==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl": {
-      "version": "0.3.284",
-      "integrity": "sha512-U3/uAv1TS8sMWsgWQSxYbdND5AaRXXpP5RxHU1oYC5ZizlZE8/xAVum9dj1QX3rVZJg8EzsqZveq/AkEv5ABfQ==",
+      "version": "0.3.286",
+      "integrity": "sha512-fG8Cqx53jkFyEL86ETA0tdLH3p06yFQKHcoxnMpiU+VmJ5g6uGFhsUZbJ6gFvuT3EgyMcNI2kZwhCCDF/DTnpQ==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64": {
-      "version": "0.3.284",
-      "integrity": "sha512-yGytBCCwJvWeg1FzFpgnLM9BOM2vKVExtv6pMJHMtF82J5yhKHcxodRaYlQVd/HzJJ2nruKb9EnrhRBZ//4yRw==",
+      "version": "0.3.286",
+      "integrity": "sha512-kNczbWhWJ1G8sPRZd4Nsx/Ozr/kx16lT2NGp/EEmTV4Hn732xfLkUOlg+tFcS78i6lOPBknjDB/cz/J5Ha4wDQ==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl": {
-      "version": "0.3.284",
-      "integrity": "sha512-4x0Q8CFkCNbeENE7pRhuUmkwh/sQfTq1yWi4ZE56stve9pgoKzu6ZDa1SEtvK1YIooGE/qM5rVS8xFLE1gbQ0w==",
+      "version": "0.3.286",
+      "integrity": "sha512-WeO/wG2uPh95BhOQi1IsIECdW5gJgC1Q9xtGw4RjV04it1fBMAbUe7aVwP4DQgH8PHnmduA7dRnLtbnZnrGsjg==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-win32-arm64": {
-      "version": "0.3.284",
-      "integrity": "sha512-zOXkdPHhElyxyFJ6eY5R+YGUswqBDZ+ZHNaRmQGJ28RkQYgwG5imNy/nfFR+/CPGlMnH9ZzbGc2rKYApm1K4Tg==",
+      "version": "0.3.286",
+      "integrity": "sha512-N4p7Gw5Qg3q9+Y5sEht1cIHHZkmBAUfWXJnqfmDD7N8twqF3XNVK3w65hDLqli4i0ttuZu79bGmRGkgNGm9Imw==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64": {
-      "version": "0.3.284",
-      "integrity": "sha512-VGaFRDCOPloj5IjvJTyy5JsSl9sE2HR3W+A6f/cjgh23/7Y5vK7/ka+1JQD+AkoGO9tbHqP2O6god3IBrLvOaw==",
+      "version": "0.3.286",
+      "integrity": "sha512-pg35GRPBKyviod0i8Z3EVMzDnTiiiucuWUbyH1bVIFFN0UWCQQ+PRUJ15qrPKjL6+vlFxOX2ei9FfsWYjGYZwA==",
       "optional": true
     },
     "node_modules/@anthropic-ai/sdk": {
-      "version": "0.129.0",
-      "integrity": "sha512-MH7LB20kNpGLUpPTe2OG5XvL/KhX8HUO9XyBaFjgFk6TLS4Xjt0VPIuMKywe7POKKPslX+QxSlVok9e+8kG5Nw=="
+      "version": "0.131.0",
+      "integrity": "sha512-9+PepoU7qVMmM70jSahdnfcMHAvAnzhMOLv2W9WjRLO+OG/MAiBETkwKZqv7KIJ1Cj5h8eZ019bHzZaq+Mbepw=="
     },
     "node_modules/@babel/runtime": {
       "version": "7.29.7",
       "integrity": "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="
     },
     "node_modules/@hono/node-server": {
-      "version": "2.1.1",
-      "integrity": "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="
+      "version": "2.1.3",
+      "integrity": "sha512-TA//nWMqPhbfdfneACk6t5a9eqbS9lABEPyKn0/xZTah3H3U2XaVg85rJFl0/Fyit0I552YDHgXGVSf3GwqbUw=="
     },
     "node_modules/@modelcontextprotocol/sdk": {
-      "version": "1.30.1",
-      "integrity": "sha512-H2HxLvC3HDNybePJaLdSrU1hhUK5iQw+WvV1b01myFyI7sdVGe1u/IPTE5D9fGCiJDVtgMV/lmFkQXLmQyIFYA=="
+      "version": "1.32.0",
+      "integrity": "sha512-8BviX/hK4Gd2eL1KdTwm0gfl4d3wdoErW0Jd00h6nomUAtk6IJk5vwQJc6kfWtJTzN5OEV/lgIiJKI8fiDGAlA=="
     },
     "node_modules/@stablelib/base64": {
       "version": "1.0.1",
@@ -299,8 +302,8 @@
       "integrity": "sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A=="
     },
     "node_modules/hono": {
-      "version": "4.13.10",
-      "integrity": "sha512-dQuLsa5oO+47QVMVMaaD9cIv8ctmVtK1iRvwWngkfloFJMeFeuoUFDswIqZGxmGX3hrRzREgEArjkK9OgsQEhA=="
+      "version": "4.13.12",
+      "integrity": "sha512-6E2QDAc9Ick9Sq77ZrGS/dk2WUYni91aufTw6LJKpV7w8kW5/GxVUc650FOADOmlwg3K+f7Pun6XlV+pYmW6gw=="
     },
     "node_modules/http-errors": {
       "version": "2.0.1",
@@ -315,8 +318,8 @@
       "integrity": "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ=="
     },
     "node_modules/ip-address": {
-      "version": "10.7.2",
-      "integrity": "sha512-7H/2gFSIitxc0hG3nOI1glS8QLo/EHBFFLk8vEUjXY/xu0AdL8jZ9U1IzO2PUm0d2D/ofQcAifb0g6OBkt8U7w=="
+      "version": "10.7.3",
+      "integrity": "sha512-A1kdq/tSb5QjvKvAMgIoEvDBIgL7qaqVP/jkvSwYYRZ9iEzvPpopxp2wQfu3SuZRHtpHNxMn8Fs0bS+gf5Xmwg=="
     },
     "node_modules/ipaddr.js": {
       "version": "1.9.1",
@@ -522,8 +525,5 @@
       "version": "3.25.2",
       "integrity": "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="
     }
-  },
-  "patchedRuntimeFiles": {
-    "dist/acp-agent.js": "cc6d7016aa784d24a9351b25cf1e2f507ee80f6eb9b446503eaaf2a02cce2c6e"
   }
 }
