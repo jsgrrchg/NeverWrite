@@ -15,6 +15,7 @@ import {
 import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import katex from "katex";
+import { getMathRanges, mathRenderingChanged } from "./mathRanges";
 import {
     buildVaultPreviewUrlFromAbsolutePath,
     isAuthorizedVaultPreviewPath,
@@ -1406,37 +1407,49 @@ export function createCodeBlockLivePreviewExtension() {
     });
 }
 
+function renderMath(element: HTMLElement, tex: string, displayMode: boolean) {
+    element.setAttribute("contenteditable", "false");
+    element.title = "Click to edit formula";
+    try {
+        katex.render(tex, element, {
+            displayMode,
+            output: "htmlAndMathml",
+            throwOnError: true,
+            trust: false,
+            maxExpand: 1000,
+            maxSize: 20,
+        });
+    } catch (error) {
+        // A broken formula stays readable and editable without disrupting the editor.
+        element.textContent = tex;
+        element.classList.add("cm-katex-error");
+        element.title = error instanceof Error ? error.message : "Invalid formula";
+    }
+}
+
 export class InlineMathWidget extends WidgetType {
     private tex: string;
+    private display: boolean;
 
-    constructor(tex: string) {
+    constructor(tex: string, display = false) {
         super();
         this.tex = tex;
+        this.display = display;
     }
 
     eq(other: InlineMathWidget) {
-        return this.tex === other.tex;
+        return this.tex === other.tex && this.display === other.display;
     }
 
     toDOM() {
         const span = document.createElement("span");
         span.className = "cm-katex-inline";
-        span.setAttribute("contenteditable", "false");
-        try {
-            katex.render(this.tex, span, {
-                throwOnError: false,
-                displayMode: false,
-                output: "htmlAndMathml",
-            });
-        } catch {
-            span.textContent = this.tex;
-            span.classList.add("cm-katex-error");
-        }
+        renderMath(span, this.tex, this.display);
         return span;
     }
 
     ignoreEvent() {
-        return true;
+        return false;
     }
 }
 
@@ -1455,40 +1468,19 @@ class BlockMathWidget extends WidgetType {
     toDOM() {
         const div = document.createElement("div");
         div.className = "cm-katex-block";
-        div.setAttribute("contenteditable", "false");
-        try {
-            katex.render(this.tex, div, {
-                throwOnError: false,
-                displayMode: true,
-            });
-        } catch {
-            div.textContent = this.tex;
-            div.classList.add("cm-katex-error");
-        }
+        renderMath(div, this.tex, true);
         return div;
     }
 
     ignoreEvent() {
-        return true;
+        return false;
     }
 }
 
-const BLOCK_MATH_RE = /\$\$([\s\S]+?)\$\$/g;
-
 function buildBlockMathDecorations(state: EditorState): DecorationSet {
     const decos: DecoEntry[] = [];
-    const text = state.doc.toString();
-
-    BLOCK_MATH_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = BLOCK_MATH_RE.exec(text)) !== null) {
-        const from = match.index;
-        const to = from + match[0].length;
-        const tex = match[1].trim();
-
-        if (!tex || !match[0].includes("\n")) continue;
-        if (selectionTouchesRange(state, from, to)) continue;
-
+    for (const { from, to, tex, block } of getMathRanges(state)) {
+        if (!block || selectionTouchesRange(state, from, to)) continue;
         decos.push({
             from,
             to,
@@ -1511,14 +1503,10 @@ function buildBlockMathDecorations(state: EditorState): DecorationSet {
 
 export function createBlockMathLivePreviewExtension() {
     return StateField.define<DecorationSet>({
-        create(state) {
-            return buildBlockMathDecorations(state);
-        },
+        create: buildBlockMathDecorations,
         update(decorations, transaction) {
-            if (!needsBlockRebuild(transaction)) {
-                return transaction.docChanged
-                    ? decorations.map(transaction.changes)
-                    : decorations;
+            if (!mathRenderingChanged(transaction.startState, transaction.state, true)) {
+                return transaction.docChanged ? decorations.map(transaction.changes) : decorations;
             }
             return buildBlockMathDecorations(transaction.state);
         },

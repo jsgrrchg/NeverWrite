@@ -15,7 +15,7 @@ viewport, scroll, selection, and DOM snapshots before and after clicking the bla
 area. CodeMirror coordinate helpers are deliberately avoided in the assertions:
 they can force a measure and hide the regression.
 
-The editor tab and live-preview list suites run in CI's **Editor browser
+The editor tab, live-preview list, and math suites run in CI's **Editor browser
 regressions** job. It uploads Playwright traces and failure snapshots as artifacts.
 
 Run the dedicated chat pane smoke tests from `apps/desktop`:
@@ -28,3 +28,13 @@ npx playwright test --config e2e/playwright.config.ts e2e/tests/chatPane.spec.ts
 `harness/chat.html` mounts the production sidebar, chat pane, composer and history components with an in-memory conversation and a simulated runtime bridge. The tests check composer identity and drafts across movement/hiding, Archive/Undo, document preservation, and narrow history navigation. Light, dark and narrow screenshots are saved in Playwright's test output directory.
 
 This harness does not exercise native windows or a live provider. Session migration, vault isolation, runtime events and editor integration are covered by Vitest; live streaming and native window restoration still require a desktop smoke test.
+
+Run the math live-preview regressions from `apps/desktop`:
+
+```sh
+npx playwright test --config e2e/playwright.config.ts e2e/tests/mathLivePreview.spec.ts
+```
+
+These use the production editor fixture to check formula editing, source/preview
+switching, tab restoration, error recovery, horizontal overflow and long notes.
+See [Markdown Math](../../../docs/markdown-math.md) for syntax and limitations.
