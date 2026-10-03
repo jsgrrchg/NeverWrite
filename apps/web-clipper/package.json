@@ -26,7 +26,7 @@
     },
     "dependencies": {
         "defuddle": "^0.19.1",
-        "dompurify": "^3.4.13",
+        "dompurify": "^3.4.16",
         "react": "^19.2.5",
         "react-dom": "^19.2.5"
     },
