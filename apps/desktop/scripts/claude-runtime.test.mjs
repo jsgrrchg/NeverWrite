@@ -31,13 +31,15 @@ test("each release target explicitly selects its native packages", () => {
     assert.throws(() => requiredClaudePlatformPackages("unknown"), /Unsupported/);
 });
 
-test("Sonnet 5.5 override keeps the SDK and every native package on one version", async () => {
-    const { lock } = await claudeInputs("x86_64-unknown-linux-gnu");
+test("published ACP dependency keeps the SDK and every native package on one version", async () => {
+    const { lock, baseline, patches } = await claudeInputs("x86_64-unknown-linux-gnu");
     const sdkName = "@anthropic-ai/claude-agent-sdk";
     const manifest = JSON.parse(await fs.readFile(new URL("../runtimes/claude/package.json", import.meta.url), "utf8"));
-    assert.equal(manifest.overrides[sdkName], "0.3.284");
+    assert.equal(manifest.overrides, undefined);
+    assert.deepEqual(patches, []);
+    assert.equal(baseline.patchedRuntimeFiles, undefined);
     const sdk = lock.packages[`node_modules/${sdkName}`];
-    assert.equal(sdk.version, "0.3.284");
+    assert.equal(sdk.version, lock.packages[`node_modules/${claudePackage}`].dependencies[sdkName]);
     const suffixes = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-arm64-musl",
         "linux-x64", "linux-x64-musl", "win32-arm64", "win32-x64"];
     assert.deepEqual(Object.keys(sdk.optionalDependencies).sort(), suffixes.map((suffix) => `${sdkName}-${suffix}`).sort());

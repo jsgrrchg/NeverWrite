@@ -325,16 +325,17 @@ jobs:
               run: npm run electron:sidecar:smoke:packaged
 
             - name: Verify packaged Codex runtime files
-              shell: bash
+              shell: pwsh
               run: |
-                  for binary in codex-acp.exe codex-code-mode-host.exe; do
-                    mapfile -t matches < <(find "$NEVERWRITE_ELECTRON_OUTPUT_DIR" -type f -path "*/resources/native-backend/binaries/$binary")
-                    if [[ "${#matches[@]}" -ne 1 ]]; then
-                      echo "Expected one packaged $binary, found ${#matches[@]}." >&2
-                      exit 1
-                    fi
-                    echo "Packaged $binary: ${matches[0]}"
-                  done
+                  foreach ($binaryName in @('codex-acp.exe', 'codex-code-mode-host.exe')) {
+                    $pathPattern = '[\\/]resources[\\/]native-backend[\\/]binaries[\\/]' + [regex]::Escape($binaryName) + '$'
+                    $packagedBinaries = @(Get-ChildItem -LiteralPath $env:NEVERWRITE_ELECTRON_OUTPUT_DIR -Recurse -File -Filter $binaryName -ErrorAction Stop |
+                      Where-Object { $_.FullName -match $pathPattern })
+                    if ($packagedBinaries.Count -ne 1) {
+                      throw "Expected one packaged $binaryName, found $($packagedBinaries.Count)."
+                    }
+                    Write-Host "Packaged ${binaryName}: $($packagedBinaries[0].FullName)"
+                  }
 
     linux:
         name: ${{ matrix.name }}

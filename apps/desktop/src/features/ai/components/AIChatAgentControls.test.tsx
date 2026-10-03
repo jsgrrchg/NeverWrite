@@ -103,7 +103,7 @@ describe("AIChatAgentControls", () => {
     expect(onProviderChange).toHaveBeenCalledWith("codex-acp", "gpt-5");
   });
 
-  it("selects Claude Sonnet 5.5 with its concrete runtime model ID", async () => {
+  it("selects Claude Sonnet 5.5 with the published runtime alias", async () => {
     const user = userEvent.setup();
     const onProviderModelChange = vi.fn();
     renderComponent(
@@ -122,7 +122,7 @@ describe("AIChatAgentControls", () => {
           defaultModelId: "claude-sonnet-4-6",
           models: [
             { modelId: "claude-sonnet-4-6", label: "Sonnet 4.6", disabledReason: null },
-            { modelId: "claude-sonnet-5-5", label: "Sonnet 5.5", disabledReason: null },
+            { modelId: "sonnet", label: "Sonnet 5.5", disabledReason: null },
           ],
         }]}
         onProviderModelChange={onProviderModelChange}
@@ -134,7 +134,7 @@ describe("AIChatAgentControls", () => {
     await user.click(screen.getByTitle("Provider and model"));
     await user.type(screen.getByLabelText("Provider and model search"), "Sonnet 5.5");
     await user.click(screen.getByRole("button", { name: "Claude · Sonnet 5.5" }));
-    expect(onProviderModelChange).toHaveBeenCalledWith("claude-acp", "claude-sonnet-5-5");
+    expect(onProviderModelChange).toHaveBeenCalledWith("claude-acp", "sonnet");
     expect(screen.queryByRole("dialog", { name: "Provider and model" })).not.toBeInTheDocument();
   });
 
