@@ -128,6 +128,25 @@ for (const theme of ["light", "dark"]) {
     });
 }
 
+for (const selector of [".cm-katex-inline", ".cm-katex-block"]) {
+    test(`scrolls ${selector} from its scrollbar without revealing its source`, async ({ page }) => {
+        await page.setViewportSize({ width: 760, height: 900 });
+        const wide = String.raw`\underbrace{${Array(80).fill("a").join("+")}}_{n}`;
+        await mount(page, `# Formulas\n\nInline $${wide}$.\n\n$$${wide}$$\n\nEnd`);
+        const math = page.locator(selector);
+        const box = await math.evaluate((element) => {
+            const rect = element.getBoundingClientRect();
+            return { right: rect.right, bottom: rect.bottom, bar: element.offsetHeight - element.clientHeight };
+        });
+        expect(box.bar).toBeGreaterThan(0);
+        // Pressing the track near its end pages the formula horizontally.
+        await page.mouse.click(box.right - 30, box.bottom - box.bar / 2);
+        await expect.poll(() => math.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+        await expect(math).toHaveCount(1);
+        expect(await page.evaluate(() => window.editorFixture.getView().state.selection.main.head)).toBe(0);
+    });
+}
+
 test("types delimiters incrementally and undoes/redoes the source", async ({ page }) => {
     const original = "# Formulas\n\nFormula ";
     await mount(page, original);

@@ -1407,6 +1407,22 @@ export function createCodeBlockLivePreviewExtension() {
     });
 }
 
+/** A press on a wide formula's own scrollbar scrolls it instead of revealing the source. */
+function isFormulaScrollbarEvent(event: Event): boolean {
+    const target = event.target;
+    if (
+        event.type !== "mousedown" ||
+        !(event instanceof MouseEvent) ||
+        !(target instanceof HTMLElement) ||
+        !target.matches(".cm-katex-inline, .cm-katex-block") ||
+        target.scrollWidth <= target.clientWidth
+    ) {
+        return false;
+    }
+    const { top } = target.getBoundingClientRect();
+    return event.clientY >= top + target.clientTop + target.clientHeight;
+}
+
 function renderMath(element: HTMLElement, tex: string, displayMode: boolean) {
     element.setAttribute("contenteditable", "false");
     element.title = "Click to edit formula";
@@ -1448,8 +1464,8 @@ export class InlineMathWidget extends WidgetType {
         return span;
     }
 
-    ignoreEvent() {
-        return false;
+    ignoreEvent(event: Event) {
+        return isFormulaScrollbarEvent(event);
     }
 }
 
@@ -1472,8 +1488,8 @@ class BlockMathWidget extends WidgetType {
         return div;
     }
 
-    ignoreEvent() {
-        return false;
+    ignoreEvent(event: Event) {
+        return isFormulaScrollbarEvent(event);
     }
 }
 

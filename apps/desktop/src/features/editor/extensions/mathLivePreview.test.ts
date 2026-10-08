@@ -118,6 +118,28 @@ describe("math live preview integration", () => {
         expect(view.state.doc.sliceString(view.state.selection.main.head, view.state.selection.main.head + 1)).toMatch(/[x\n]/);
     });
 
+    it.each(["Start $x$ end", "Start\n\n$$x$$\n\nEnd"])(
+        "scrolls a wide formula from its scrollbar without revealing the source: %j",
+        (doc) => {
+            const view = mount(doc);
+            const math = view.dom.querySelector<HTMLElement>(".cm-katex-inline, .cm-katex-block")!;
+            // A horizontal scrollbar occupies the 10px below the 20px client area.
+            Object.defineProperties(math, {
+                scrollWidth: { value: 300 }, clientWidth: { value: 100 },
+                clientHeight: { value: 20 }, clientTop: { value: 0 },
+            });
+            math.getBoundingClientRect = () => new DOMRect(0, 0, 100, 30);
+            const press = (clientY: number) => math.dispatchEvent(
+                new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientY }),
+            );
+            press(25);
+            expect(view.dom.querySelector(".katex")).not.toBeNull();
+            expect(view.state.selection.main.head).toBe(0);
+            press(10);
+            expect(view.dom.querySelector(".katex")).toBeNull();
+        },
+    );
+
     it("maps reveal ranges when preceding text changes", () => {
         const view = mount("Start $x$ end");
         view.dispatch({ changes: { from: 0, insert: "prefix" } });
