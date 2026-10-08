@@ -1,16 +1,1 @@
-[
-  {
-    "file": "dist/acp-agent.js",
-    "before": [
-      "            const settingsAvailableModels = settingsManager.getSettings().availableModels;"
-    ],
-    "after": [
-      "            // NeverWrite: pin the SDK Sonnet 5.5 alias before applying user allowlists.",
-      "            // Preserve provider-specific IDs, context lanes and all capability metadata.",
-      "            initializationResult.models = initializationResult.models.map((model) =>",
-      "                model.value === \"sonnet\" && model.resolvedModel === \"claude-sonnet-5-5\"",
-      "                    ? { ...model, value: model.resolvedModel } : model);",
-      "            const settingsAvailableModels = settingsManager.getSettings().availableModels;"
-    ]
-  }
-]
+[]

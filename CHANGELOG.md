@@ -34,6 +34,28 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.11] - 2026-10-08
+
+### Changed
+
+- Updated the bundled Claude ACP runtime to `0.88.0`, adding Haiku 5.5 to the chat model selector and `/mcp` commands for checking and reconnecting MCP servers.
+
+### Fixed
+
+- Fixed restored Codex conversations silently switching to the default model; resumed chats now use their recorded model and reasoning effort when the model provider matches.
+- Fixed Claude cancellation leaving queued prompts or pending turns active, and prevented background-task notifications and abandoned tool calls from leaving chats running or reporting false failures.
+
+## [0.8.10] - 2026-10-03
+
+### Changed
+
+- Applied the chat composer's glass transparency styling consistently across menus and popovers, including spreadsheet and drawing menus, while respecting reduced-transparency preferences.
+- Updated the bundled Claude ACP runtime to `0.85.1`, using its native Sonnet 5.5 support in place of the temporary compatibility workaround.
+
+### Fixed
+
+- Fixed Markdown outline navigation selecting heading text and opening the formatting toolbar; destination headings now receive a temporary highlight without selecting text.
+
 ## [0.8.9] - 2026-09-29
 
 ### Changed

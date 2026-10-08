@@ -37,6 +37,7 @@ use codex_login::{
 use codex_protocol::{
     ThreadId,
     mcp::ClientMcpExtensions,
+    openai_models::ReasoningEffort,
     protocol::{SessionConfiguredEvent, SessionSource, ThreadHistoryMode},
 };
 use codex_rollout::{InitialHistory, ResumedHistory};
@@ -603,6 +604,29 @@ impl CodexAgent {
         Ok(config)
     }
 
+    /// Resume with the model the thread last ran with instead of the global
+    /// default, mirroring the Codex app-server. Otherwise codex-core resumes on
+    /// the default model and emits a "recorded with model" warning.
+    fn apply_persisted_model_settings(
+        config: &mut Config,
+        model_provider: &str,
+        model: Option<&str>,
+        reasoning_effort: Option<ReasoningEffort>,
+    ) {
+        // Switching providers would also require swapping the provider info,
+        // so only restore models recorded under the configured provider.
+        let Some(model) = model.filter(|model| !model.is_empty()) else {
+            return;
+        };
+        if model_provider != config.model_provider_id {
+            return;
+        }
+        config.model = Some(model.to_string());
+        if let Some(reasoning_effort) = reasoning_effort {
+            config.model_reasoning_effort = Some(reasoning_effort);
+        }
+    }
+
     fn sync_config_with_session(
         config: &mut Config,
         session_configured: &SessionConfiguredEvent,
@@ -1054,6 +1078,12 @@ impl CodexAgent {
         };
 
         let mut config = Self::build_session_config(&self.config, &cwd, mcp_servers)?;
+        Self::apply_persisted_model_settings(
+            &mut config,
+            &stored_thread.model_provider,
+            stored_thread.model.as_deref(),
+            stored_thread.reasoning_effort.clone(),
+        );
 
         let restored = if paginated {
             let context = self
@@ -1562,6 +1592,52 @@ mod tests {
         assert_eq!(config.model_reasoning_effort, None);
         assert_eq!(config.service_tier, None);
         assert_eq!(config.approvals_reviewer, ApprovalsReviewer::User);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resume_restores_model_recorded_under_the_configured_provider() -> anyhow::Result<()> {
+        let (mut config, _codex_home) = test_config().await?;
+        config.model = Some("default-model".to_string());
+        config.model_reasoning_effort = Some(ReasoningEffort::Low);
+        let provider = config.model_provider_id.clone();
+
+        CodexAgent::apply_persisted_model_settings(
+            &mut config,
+            &provider,
+            Some("recorded-model"),
+            Some(ReasoningEffort::High),
+        );
+        assert_eq!(config.model.as_deref(), Some("recorded-model"));
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(config.model_provider_id, provider);
+
+        // A missing recorded effort keeps the configured one.
+        CodexAgent::apply_persisted_model_settings(
+            &mut config,
+            &provider,
+            Some("other-recorded-model"),
+            None,
+        );
+        assert_eq!(config.model.as_deref(), Some("other-recorded-model"));
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+
+        // Unknown models and models from other providers keep the defaults.
+        CodexAgent::apply_persisted_model_settings(
+            &mut config,
+            &provider,
+            None,
+            Some(ReasoningEffort::Low),
+        );
+        CodexAgent::apply_persisted_model_settings(
+            &mut config,
+            "other-provider",
+            Some("foreign-model"),
+            Some(ReasoningEffort::Low),
+        );
+        assert_eq!(config.model.as_deref(), Some("other-recorded-model"));
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(config.model_provider_id, provider);
         Ok(())
     }
 

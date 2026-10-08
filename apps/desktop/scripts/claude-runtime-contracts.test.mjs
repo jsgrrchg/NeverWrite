@@ -16,10 +16,11 @@ const baseline = JSON.parse(await fs.readFile(
 ));
 const execute = promisify(execFile);
 
-test("runtime JavaScript matches the published baseline and verified local patches", async () => {
+test("runtime JavaScript matches the unmodified published baseline", async () => {
     const manifest = JSON.parse(await fs.readFile(path.join(runtimeRoot, "package.json"), "utf8"));
     assert.equal(manifest.version, baseline.version);
-    for (const [relative, expected] of Object.entries({ ...baseline.runtimeFiles, ...baseline.patchedRuntimeFiles })) {
+    assert.equal(baseline.patchedRuntimeFiles, undefined);
+    for (const [relative, expected] of Object.entries(baseline.runtimeFiles)) {
         const text = await fs.readFile(path.join(runtimeRoot, relative), "utf8");
         const normalized = text.trimEnd().split(/\r?\n/).map((line) => line.trimEnd()).join("\n") + "\n";
         assert.equal(createHash("sha256").update(normalized).digest("hex"), expected, relative);
