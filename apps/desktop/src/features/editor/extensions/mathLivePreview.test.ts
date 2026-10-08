@@ -60,6 +60,22 @@ describe("math live preview integration", () => {
         expect(view.dom.querySelector(".cm-lp-italic")).toBeNull();
     });
 
+    it("renders inline tokens that contain a whole formula", () => {
+        const doc = "Intro ==see $x$ here== and <kbd>Key $y$ up</kbd> end\n\nEnd";
+        const view = mount(doc, doc.length);
+        expect(view.dom.querySelector(".cm-lp-highlight .katex annotation")?.textContent).toBe("x");
+        expect(view.dom.querySelector(".cm-lp-kbd .katex annotation")?.textContent).toBe("y");
+    });
+
+    it.each(["Intro $a ==b== c$ end", "Intro ==a $b== c$ end"])(
+        "does not apply inline tokens inside or across a formula: %s",
+        (line) => {
+            const view = mount(`${line}\n\nEnd`, line.length + 2);
+            expect(view.dom.querySelectorAll(".katex")).toHaveLength(1);
+            expect(view.dom.querySelector(".cm-lp-highlight")).toBeNull();
+        },
+    );
+
     it("reveals only the selected inline formula and keeps its full source", () => {
         const doc = "Text $x_1$ and $y^2$ end";
         const view = mount(doc);

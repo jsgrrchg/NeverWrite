@@ -1232,8 +1232,11 @@ function applyNodeRules(context: BuildContext) {
 }
 
 function rangeOverlapsBlock(context: BuildContext, from: number, to: number) {
-    return context.blockRanges.some(
-        (range) => to >= range.from && from <= range.to,
+    return (
+        crossesMathRange(context.mathRanges, from, to) ||
+        context.blockRanges.some(
+            (range) => to >= range.from && from <= range.to,
+        )
     );
 }
 
@@ -1780,7 +1783,7 @@ function buildInlineDecorations(
         state,
         decos: [],
         lineDecos: new Map<number, LineDecoEntry>(),
-        blockRanges: [...mathRanges],
+        blockRanges: [],
         mathRanges,
         orderedListMarkerWidths: new Map<string, string>(),
         linkReferences: state.field(linkReferenceField),
