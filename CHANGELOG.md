@@ -34,6 +34,17 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.11] - 2026-10-08
+
+### Changed
+
+- Updated the bundled Claude ACP runtime to `0.88.0`, adding Haiku 5.5 to the chat model selector and `/mcp` commands for checking and reconnecting MCP servers.
+
+### Fixed
+
+- Fixed restored Codex conversations silently switching to the default model; resumed chats now use their recorded model and reasoning effort when the model provider matches.
+- Fixed Claude cancellation leaving queued prompts or pending turns active, and prevented background-task notifications and abandoned tool calls from leaving chats running or reporting false failures.
+
 ## [0.8.10] - 2026-10-03
 
 ### Changed
