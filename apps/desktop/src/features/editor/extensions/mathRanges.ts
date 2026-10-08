@@ -17,6 +17,8 @@ const excludedNodes = new Set([
     "URL", "LinkTitle", "LinkReference", "LinkLabel", "Autolink", "Image", "Table",
 ]);
 
+const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
+
 function escaped(text: string, at: number): boolean {
     let slashes = 0;
     while (at > 0 && text[--at] === "\\") slashes++;
@@ -30,6 +32,10 @@ export function parseMathRanges(state: EditorState): MathRange[] {
     const excluded: Array<{ from: number; to: number }> = [];
     const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(text);
     if (frontmatter) excluded.push({ from: 0, to: frontmatter[0].length });
+    // Wikilink targets are note names, which may contain literal dollars.
+    for (const wikilink of text.matchAll(WIKILINK_RE)) {
+        excluded.push({ from: wikilink.index, to: wikilink.index + wikilink[0].length });
+    }
     tree.iterate({
         enter(node) {
             if (excludedNodes.has(node.name)) {

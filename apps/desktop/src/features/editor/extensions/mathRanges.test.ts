@@ -28,7 +28,8 @@ describe("Markdown math delimiters", () => {
         "    $x$", "[link](https://example.com/$x$)", '[link](url "$x$")',
         "[id]: https://example.com/$x$", "![image $x$](image.png)",
         "---\nformula: $x$\n---", "<div>\n$x$\n</div>",
-        "| Formula |\n| --- |\n| $x$ |",
+        "| Formula |\n| --- |\n| $x$ |", "[[Cost $5 and $x$]]", "![[chart $x$.png]]",
+        "[[Note|alias $x$]]",
     ])("leaves non-math or excluded content literal: %s", (doc) => {
         expect(parse(doc)).toEqual([]);
     });
@@ -36,6 +37,11 @@ describe("Markdown math delimiters", () => {
     it("gives display delimiters precedence over an unmatched inline opener", () => {
         expect(parse("Text $unfinished $$y$$ trailing$").map(({ tex, display }) => ({ tex, display })))
             .toEqual([{ tex: "y", display: true }]);
+    });
+
+    it("keeps wikilinks literal next to a real formula", () => {
+        expect(parse("See [[Note $a$]] and $x$, then ![[img $b$.png]].").map((range) => range.tex))
+            .toEqual(["x"]);
     });
 
     it("keeps prices literal next to a real formula", () => {
