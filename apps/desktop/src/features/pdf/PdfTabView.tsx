@@ -29,6 +29,7 @@ import {
 } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { buildVaultPreviewUrlFromAbsolutePath } from "../../app/utils/filePreviewUrl";
+import { logError } from "../../app/utils/runtimeLog";
 import { formatZoomPercentage } from "../../app/utils/zoom";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -99,7 +100,11 @@ const PINCH_GESTURE_EVENTS = [
     "gestureend",
 ] as const;
 
+const PDF_OUTSIDE_VAULT_MESSAGE =
+    "This PDF can no longer be previewed because it is outside the active vault.";
+
 function classifyPdfError(raw: string): string {
+    if (raw === PDF_OUTSIDE_VAULT_MESSAGE) return raw;
     const lower = raw.toLowerCase();
     if (lower.includes("password") || lower.includes("encrypted"))
         return "This PDF is password-protected and cannot be opened in the viewer.";
@@ -546,6 +551,10 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
     const setPdfError = useCallback(
         (message: string) => {
+            logError("pdf", "Failed to load PDF", {
+                path: tab.path,
+                error: message,
+            });
             setErrorState({
                 path: tab.path,
                 retryCount,
@@ -710,9 +719,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         if (!previewUrl) {
             queueMicrotask(() => {
                 setLoadedPdf(null);
-                setPdfError(
-                    "This PDF can no longer be previewed because it is outside the active vault.",
-                );
+                setPdfError(PDF_OUTSIDE_VAULT_MESSAGE);
             });
             return;
         }
@@ -1480,77 +1487,13 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     }
 
     if (error) {
-        const friendlyMessage = classifyPdfError(error);
         return (
-            <div
-                className="h-full flex flex-col items-center justify-center gap-3 px-8"
-                style={{ color: "var(--text-secondary)" }}
-            >
-                <svg
-                    width="32"
-                    height="32"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    style={{ opacity: 0.4 }}
-                >
-                    <path d="M4 1h6l4 4v9a1 1 0 01-1 1H4a1 1 0 01-1-1V2a1 1 0 011-1z" />
-                    <path d="M10 1v4h4" />
-                    <path d="M6 10l4-4M6 6l4 4" />
-                </svg>
-                <span
-                    className="text-[13px] font-medium"
-                    style={{ color: "var(--text-primary)" }}
-                >
-                    Failed to load PDF
-                </span>
-                <span className="text-[12px] text-center max-w-sm">
-                    {friendlyMessage}
-                </span>
-                <div className="flex items-center gap-2 mt-1">
-                    <button
-                        onClick={() => setRetryCount((count) => count + 1)}
-                        className="px-3 py-1 rounded text-[12px] transition-colors"
-                        style={{
-                            backgroundColor: "var(--bg-secondary)",
-                            border: "1px solid var(--border)",
-                            color: "var(--text-primary)",
-                        }}
-                        onMouseEnter={(event) => {
-                            event.currentTarget.style.borderColor =
-                                "var(--accent)";
-                        }}
-                        onMouseLeave={(event) => {
-                            event.currentTarget.style.borderColor =
-                                "var(--border)";
-                        }}
-                    >
-                        Retry
-                    </button>
-                    <button
-                        onClick={() => void openPath(tab.path)}
-                        className="px-3 py-1 rounded text-[12px] transition-colors"
-                        style={{
-                            backgroundColor: "var(--bg-secondary)",
-                            border: "1px solid var(--border)",
-                            color: "var(--text-primary)",
-                        }}
-                        onMouseEnter={(event) => {
-                            event.currentTarget.style.borderColor =
-                                "var(--accent)";
-                        }}
-                        onMouseLeave={(event) => {
-                            event.currentTarget.style.borderColor =
-                                "var(--border)";
-                        }}
-                    >
-                        Open Externally
-                    </button>
-                </div>
-            </div>
+            <PdfErrorView
+                key={error}
+                rawError={error}
+                onRetry={() => setRetryCount((count) => count + 1)}
+                onOpenExternally={() => void openPath(tab.path)}
+            />
         );
     }
 
@@ -1815,6 +1758,129 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                     onClose={() => setContextMenu(null)}
                 />
             ) : null}
+        </div>
+    );
+}
+
+function PdfErrorButton({
+    onClick,
+    children,
+}: {
+    onClick: () => void;
+    children: React.ReactNode;
+}) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            className="px-3 py-1 rounded text-[12px] transition-colors"
+            style={{
+                backgroundColor: "var(--bg-secondary)",
+                border: "1px solid var(--border)",
+                color: "var(--text-primary)",
+            }}
+            onMouseEnter={(event) => {
+                event.currentTarget.style.borderColor = "var(--accent)";
+            }}
+            onMouseLeave={(event) => {
+                event.currentTarget.style.borderColor = "var(--border)";
+            }}
+        >
+            {children}
+        </button>
+    );
+}
+
+function PdfErrorView({
+    rawError,
+    onRetry,
+    onOpenExternally,
+}: {
+    rawError: string;
+    onRetry: () => void;
+    onOpenExternally: () => void;
+}) {
+    const [showDetails, setShowDetails] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const friendlyMessage = classifyPdfError(rawError);
+    // The raw error only adds information when the friendly message hides it.
+    const hasDetails = friendlyMessage !== rawError;
+
+    const copyDetails = useCallback(() => {
+        void navigator.clipboard
+            .writeText(rawError)
+            .then(() => setCopied(true))
+            .catch(() => {
+                /* the details stay selectable for manual copying */
+            });
+    }, [rawError]);
+
+    return (
+        <div
+            className="h-full flex flex-col items-center justify-center gap-3 px-8"
+            style={{ color: "var(--text-secondary)" }}
+        >
+            <svg
+                width="32"
+                height="32"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ opacity: 0.4 }}
+            >
+                <path d="M4 1h6l4 4v9a1 1 0 01-1 1H4a1 1 0 01-1-1V2a1 1 0 011-1z" />
+                <path d="M10 1v4h4" />
+                <path d="M6 10l4-4M6 6l4 4" />
+            </svg>
+            <span
+                className="text-[13px] font-medium"
+                style={{ color: "var(--text-primary)" }}
+            >
+                Failed to load PDF
+            </span>
+            <span className="text-[12px] text-center max-w-sm">
+                {friendlyMessage}
+            </span>
+            <div className="flex items-center gap-2 mt-1">
+                <PdfErrorButton onClick={onRetry}>Retry</PdfErrorButton>
+                <PdfErrorButton onClick={onOpenExternally}>
+                    Open Externally
+                </PdfErrorButton>
+                {hasDetails && (
+                    <PdfErrorButton
+                        onClick={() => setShowDetails((current) => !current)}
+                    >
+                        {showDetails ? "Hide Details" : "Show Details"}
+                    </PdfErrorButton>
+                )}
+            </div>
+            {hasDetails && showDetails && (
+                <div
+                    className="flex w-full max-w-lg flex-col gap-2 rounded p-3"
+                    style={{
+                        backgroundColor: "var(--bg-secondary)",
+                        border: "1px solid var(--border)",
+                    }}
+                >
+                    <pre
+                        className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-all text-[11px] select-text"
+                        style={{
+                            color: "var(--text-primary)",
+                            fontFamily: "var(--font-mono, monospace)",
+                        }}
+                    >
+                        {rawError}
+                    </pre>
+                    <div className="flex justify-end">
+                        <PdfErrorButton onClick={copyDetails}>
+                            {copied ? "Copied" : "Copy"}
+                        </PdfErrorButton>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
