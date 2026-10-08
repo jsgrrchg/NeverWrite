@@ -19,24 +19,45 @@ const excludedNodes = new Set([
 
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 
+interface TextRegion {
+    from: number;
+    to: number;
+}
+
 function escaped(text: string, at: number): boolean {
     let slashes = 0;
     while (at > 0 && text[--at] === "\\") slashes++;
     return slashes % 2 === 1;
 }
 
-/** Recognize math in parsed Markdown only; background parsing fills later ranges. */
+/** Excluded syntax that the Markdown tree does not model, sorted by position. */
+function excludedTextRegions(text: string): TextRegion[] {
+    const regions: TextRegion[] = [];
+    const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(text);
+    if (frontmatter) regions.push({ from: 0, to: frontmatter[0].length });
+    // Wikilink targets are note names, which may contain literal dollars.
+    for (const wikilink of text.matchAll(WIKILINK_RE)) {
+        regions.push({ from: wikilink.index, to: wikilink.index + wikilink[0].length });
+    }
+    return regions;
+}
+
+/**
+ * Recognize math in parsed Markdown only; background parsing fills later ranges.
+ * The syntax walk is limited to the span holding dollars and the scan jumps
+ * between them, so reparsing on every keystroke stays cheap in long notes.
+ */
 export function parseMathRanges(state: EditorState): MathRange[] {
     const tree = syntaxTree(state);
     const text = state.doc.sliceString(0, tree.length);
-    const excluded: Array<{ from: number; to: number }> = [];
-    const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(text);
-    if (frontmatter) excluded.push({ from: 0, to: frontmatter[0].length });
-    // Wikilink targets are note names, which may contain literal dollars.
-    for (const wikilink of text.matchAll(WIKILINK_RE)) {
-        excluded.push({ from: wikilink.index, to: wikilink.index + wikilink[0].length });
-    }
+    const ranges: MathRange[] = [];
+    const firstDollar = text.indexOf("$");
+    if (firstDollar < 0) return ranges;
+    const excluded = excludedTextRegions(text);
+    // Only syntax containing a dollar or separating two of them can matter.
     tree.iterate({
+        from: firstDollar,
+        to: text.lastIndexOf("$") + 1,
         enter(node) {
             if (excludedNodes.has(node.name)) {
                 excluded.push({ from: node.from, to: node.to });
@@ -45,9 +66,8 @@ export function parseMathRanges(state: EditorState): MathRange[] {
         },
     });
     excluded.sort((a, b) => a.from - b.from);
-    const ranges: MathRange[] = [];
     let excludedIndex = 0;
-    for (let from = 0; from < text.length; from++) {
+    for (let from = firstDollar; from >= 0; from = text.indexOf("$", from + 1)) {
         while (excludedIndex < excluded.length && excluded[excludedIndex].to <= from) {
             excludedIndex++;
         }
@@ -56,7 +76,7 @@ export function parseMathRanges(state: EditorState): MathRange[] {
             from = boundary.to - 1;
             continue;
         }
-        if (text[from] !== "$" || escaped(text, from)) continue;
+        if (escaped(text, from)) continue;
         let runEnd = from + 1;
         while (text[runEnd] === "$") runEnd++;
         const width = runEnd - from;
@@ -72,13 +92,14 @@ export function parseMathRanges(state: EditorState): MathRange[] {
         // Multiline display math must open on its own line. Embedded $$ stays inline.
         const multiline = display && standaloneOpening &&
             /^\s*$/.test(text.slice(contentFrom, openingLine.to));
+        // Code, HTML or links after the opener end the formula.
         const limit = Math.min(
             boundary?.from ?? text.length,
             multiline ? text.length : openingLine.to,
         );
-        let close = contentFrom;
-        for (; close < limit; close++) {
-            if (text[close] !== "$" || escaped(text, close)) continue;
+        let match: MathRange | null = null;
+        for (let close = text.indexOf("$", contentFrom); close >= 0 && close < limit; close = text.indexOf("$", close + 1)) {
+            if (escaped(text, close)) continue;
             let end = close + 1;
             while (text[end] === "$") end++;
             if (end - close !== width) {
@@ -95,15 +116,19 @@ export function parseMathRanges(state: EditorState): MathRange[] {
             )) continue;
             const tex = text.slice(contentFrom, close).trim();
             if (!tex) break;
-            ranges.push({
+            match = {
                 from, to: end, contentFrom, contentTo: close, tex, display,
                 block: display && standaloneOpening && /^\s*$/.test(text.slice(end, closingLine.to)),
-            });
-            from = end - 1;
+            };
             break;
         }
-        // Never reinterpret the second dollar of an unmatched display delimiter.
-        if (close >= limit || !text.slice(contentFrom, close).trim()) from = Math.max(from, runEnd - 1);
+        if (match) {
+            ranges.push(match);
+            from = match.to - 1;
+        } else {
+            // Never reinterpret the second dollar of an unmatched display delimiter.
+            from = runEnd - 1;
+        }
     }
     return ranges;
 }
