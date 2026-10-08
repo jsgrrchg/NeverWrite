@@ -27,7 +27,13 @@ $$
 ```
 
 A standalone display formula is centered. An embedded `$$x$$` in a paragraph
-uses display-style notation within the line. Wide formulas scroll horizontally.
+uses display-style notation within the line. Wide formulas scroll horizontally;
+pressing a formula's scrollbar scrolls it without revealing the source.
+
+Multiline delimiters must sit on their own lines, indented at most three
+spaces. Multiline display math inside blockquotes and callouts, after a list
+marker, or indented four or more spaces stays literal; a single-line `$$x$$`
+still renders in those places.
 
 Inline formulas cannot span lines. The opening dollar must be followed by a
 non-whitespace character; the closing dollar must follow a non-whitespace
@@ -39,7 +45,7 @@ signs such as `\$5\$`. Numeric formulas such as `$2+2$` are supported.
 
 Unmatched delimiters and runs of three or more dollars remain literal. Math is
 excluded from frontmatter, code spans and blocks, raw HTML, images, link
-destinations/titles/reference definitions, and tables. Table math and the
+destinations/titles/reference definitions, wikilinks and embeds, and tables. Table math and the
 alternative delimiters `\(...\)` and `\[...\]` are outside the initial scope.
 
 ## Editing and errors
@@ -64,7 +70,9 @@ untrusted input mode, a 1,000-expansion limit and a maximum explicit size of 20e
 `mathRanges.ts` collects math ranges outside excluded Markdown syntax nodes and
 shares them through a CodeMirror state field. Background parsing refreshes the
 ranges as more syntax becomes available. Selection changes reuse the parsed
-ranges. Inline widgets are built for the viewport; display blocks use a state
+ranges; notes without dollars skip the syntax walk entirely. Markdown inside a
+formula is not styled, while syntax containing a whole formula, such as a
+paragraph, list item or highlight, still renders around it. Inline widgets are built for the viewport; display blocks use a state
 field because they change document layout. Unchanged widgets retain their DOM
 when positions move. Rendering never rewrites document text.
 
