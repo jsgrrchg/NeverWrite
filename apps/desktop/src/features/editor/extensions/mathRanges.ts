@@ -116,6 +116,34 @@ export function getMathRanges(state: EditorState): readonly MathRange[] {
     return state.field(mathRangesField, false) ?? parseMathRanges(state);
 }
 
+/** Index of the first range ending after `pos`; ranges are sorted and disjoint. */
+function firstRangeEndingAfter(ranges: readonly MathRange[], pos: number): number {
+    let low = 0;
+    let high = ranges.length;
+    while (low < high) {
+        const middle = (low + high) >> 1;
+        if (ranges[middle].to <= pos) low = middle + 1;
+        else high = middle;
+    }
+    return low;
+}
+
+/** Ranges overlapping `[from, to)`, e.g. the formulas of a viewport. */
+export function mathRangesBetween(ranges: readonly MathRange[], from: number, to: number): readonly MathRange[] {
+    const start = firstRangeEndingAfter(ranges, from);
+    let end = start;
+    while (end < ranges.length && ranges[end].from < to) end++;
+    return ranges.slice(start, end);
+}
+
+/** True when `[from, to)` cuts through a formula instead of containing it whole. */
+export function crossesMathRange(ranges: readonly MathRange[], from: number, to: number): boolean {
+    const atStart = ranges[firstRangeEndingAfter(ranges, from)];
+    if (atStart && atStart.from < from) return true;
+    const atEnd = ranges[firstRangeEndingAfter(ranges, to)];
+    return Boolean(atEnd && atEnd.from < to);
+}
+
 /** Positions can be mapped cheaply when formula content and reveal state agree. */
 export function mathRenderingChanged(before: EditorState, after: EditorState, blocksOnly = false): boolean {
     const previous = getMathRanges(before).filter((range) => !blocksOnly || range.block);

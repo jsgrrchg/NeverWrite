@@ -46,7 +46,13 @@ import {
     FRONTMATTER_RE,
     getLeadingContentCollapseRanges,
 } from "../noteTitleHelpers";
-import { getMathRanges, mathRenderingChanged, type MathRange } from "./mathRanges";
+import {
+    crossesMathRange,
+    getMathRanges,
+    mathRangesBetween,
+    mathRenderingChanged,
+    type MathRange,
+} from "./mathRanges";
 import { InlineMathWidget } from "./livePreviewBlocks";
 import {
     perfMeasure,
@@ -1201,7 +1207,8 @@ function applyNodeRules(context: BuildContext) {
         from: context.vpFrom,
         to: context.vpTo,
         enter(node) {
-            if (context.mathRanges.some((range) => node.from >= range.from && node.from < range.to)) return false;
+            // Syntax inside a formula is TeX, but containers around it still render.
+            if (crossesMathRange(context.mathRanges, node.from, node.to)) return false;
             if (node.name === "Table" || node.name === "FencedCode") {
                 context.blockRanges.push({ from: node.from, to: node.to });
                 if (node.name === "Table") return false;
@@ -1768,7 +1775,7 @@ function buildInlineDecorations(
     revealSensitiveRanges: RevealSensitiveRange[];
     activeRevealSignature: string;
 } {
-    const mathRanges = getMathRanges(state);
+    const mathRanges = mathRangesBetween(getMathRanges(state), vpFrom, vpTo);
     const context: BuildContext = {
         state,
         decos: [],

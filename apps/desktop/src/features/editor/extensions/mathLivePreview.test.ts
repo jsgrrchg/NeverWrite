@@ -33,6 +33,33 @@ describe("math live preview integration", () => {
         expect(view.contentDOM.textContent).toContain("$20 and $30");
     });
 
+    it.each([
+        ["inline formula", "$x$ and plain\n\n# Heading\n\nMore **text**."],
+        ["display block", "$$\nx\n$$\n\n# Heading\n\nMore **text**."],
+    ])("keeps Markdown styling when the note starts with a %s", (_, doc) => {
+        const view = mount(doc, doc.length);
+        expect(view.dom.querySelectorAll(".katex")).toHaveLength(1);
+        expect(view.dom.querySelector(".cm-lp-h1")).not.toBeNull();
+        expect(view.dom.querySelector(".cm-lp-bold")?.textContent).toContain("text");
+    });
+
+    it.each([
+        "Intro\n\n$x$ starts **bold** text\n\nEnd",
+        "Intro\n\n- $x$ starts **bold** text\n\nEnd",
+        "Intro\n\n> $x$ starts **bold** text\n\nEnd",
+    ])("styles blocks that start with a formula: %j", (doc) => {
+        const view = mount(doc, doc.length);
+        expect(view.dom.querySelector(".katex annotation")?.textContent).toBe("x");
+        expect(view.dom.querySelector(".cm-lp-bold")?.textContent).toContain("bold");
+    });
+
+    it("does not apply emphasis that crosses a formula boundary", () => {
+        const doc = "Text *a $b* c$ end";
+        const view = mount(doc, 0);
+        expect(view.dom.querySelector(".katex annotation")?.textContent).toBe("b* c");
+        expect(view.dom.querySelector(".cm-lp-italic")).toBeNull();
+    });
+
     it("reveals only the selected inline formula and keeps its full source", () => {
         const doc = "Text $x_1$ and $y^2$ end";
         const view = mount(doc);

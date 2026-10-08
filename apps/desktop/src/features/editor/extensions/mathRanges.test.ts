@@ -1,7 +1,7 @@
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
-import { mathRangesField, parseMathRanges } from "./mathRanges";
+import { crossesMathRange, mathRangesBetween, mathRangesField, parseMathRanges } from "./mathRanges";
 
 function state(doc: string) {
     return EditorState.create({ doc, extensions: [markdown({ base: markdownLanguage }), mathRangesField] });
@@ -54,6 +54,25 @@ describe("Markdown math delimiters", () => {
     it("does not match across code, links or incomplete block delimiters", () => {
         expect(parse("$start `code` end$\n\n$$\n```\nx\n```\n$$")).toEqual([]);
         expect(parse("$$unclosed\n\n$x$").map((range) => range.tex)).toEqual(["x"]);
+    });
+
+    it("finds the formulas overlapping a range", () => {
+        const ranges = parse("$a$ b $c$ d $e$");
+        expect(mathRangesBetween(ranges, 4, 10).map((range) => range.tex)).toEqual(["c"]);
+        expect(mathRangesBetween(ranges, 1, 7).map((range) => range.tex)).toEqual(["a", "c"]);
+        expect(mathRangesBetween(ranges, 3, 6)).toEqual([]);
+    });
+
+    it("distinguishes ranges that contain formulas from ranges that cut them", () => {
+        const ranges = parse("Text $ab$ and $cd$ end");
+        const [first, second] = ranges;
+        expect(crossesMathRange(ranges, 0, 22)).toBe(false);
+        expect(crossesMathRange(ranges, first.from, first.to)).toBe(false);
+        expect(crossesMathRange(ranges, first.to, second.from)).toBe(false);
+        expect(crossesMathRange(ranges, 0, first.from + 2)).toBe(true);
+        expect(crossesMathRange(ranges, first.from + 1, 22)).toBe(true);
+        expect(crossesMathRange(ranges, first.from + 1, first.from + 2)).toBe(true);
+        expect(crossesMathRange(ranges, first.from, first.from + 1)).toBe(true);
     });
 
     it("reuses ranges on selection changes and reparses content changes", () => {
