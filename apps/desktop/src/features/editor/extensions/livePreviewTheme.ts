@@ -828,17 +828,22 @@ export const livePreviewTheme = EditorView.baseTheme({
         boxDecorationBreak: "clone",
         WebkitBoxDecorationBreak: "clone",
     },
+    // An inline-block scroll container sits on its bottom edge; an inline flex
+    // container keeps the formula on the text baseline.
     ".cm-katex-inline": {
-        display: "inline-block",
+        display: "inline-flex",
         verticalAlign: "baseline",
         maxWidth: "100%",
         overflowX: "auto",
         overflowY: "hidden",
-        padding: "0.12em 0.06em",
         cursor: "text",
     },
+    // KaTeX scripts and roots overhang by a -2px margin; the padding absorbs it
+    // so short formulas never show a scrollbar.
+    ".cm-katex-inline > .katex, .cm-katex-inline > .katex-display": {
+        padding: "0.12em 0.15em",
+    },
     ".cm-katex-inline > .katex-display": {
-        display: "inline-block",
         margin: "0",
     },
     ".cm-katex-block": {

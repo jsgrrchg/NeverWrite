@@ -13,6 +13,9 @@ $$
 
 End.`;
 
+// Desktop builds use classic scrollbars; hidden ones would mask stray overflow.
+test.use({ launchOptions: { ignoreDefaultArgs: ["--hide-scrollbars"] } });
+
 async function mount(page: Page, content = formulaDoc) {
     await page.evaluate((doc) => window.editorFixture.mount([
         { id: "math", noteId: "math", title: "Formulas", content: doc },
@@ -32,6 +35,36 @@ test("renders inline and display math without converting prices", async ({ page 
     await expect(page.locator(".cm-katex-block .katex-display")).toHaveCount(2);
     await expect(page.locator(".cm-content")).toContainText("prices $20 and $30");
     expect(await page.evaluate(() => window.editorFixture.getView().state.doc.toString())).toBe(formulaDoc);
+});
+
+test("aligns inline formulas with the text baseline without stray scrollbars", async ({ page }) => {
+    await mount(page, String.raw`# Formulas
+
+Inline $y_1$ and $\frac{p}{q}$, $\sum_{j=1}^n j$, $\sqrt{\frac{a}{b}}$, $x_{gy}$, $\overbrace{a+b}^{n}$ and $$x_1^2$$ gy.
+
+Bad $\badcmd{x}$ end.`);
+    await expect(page.locator(".cm-katex-inline")).toHaveCount(8);
+    const formulas = await page.locator(".cm-katex-inline").evaluateAll((elements) => elements.map((element) => {
+        const probe = () => Object.assign(document.createElement("span"), {
+            style: "display:inline-block;width:0;height:0;vertical-align:baseline",
+        });
+        const outside = probe();
+        const inside = probe();
+        element.after(outside);
+        (element.querySelector(".katex-html .base") ?? element).prepend(inside);
+        const offset = inside.getBoundingClientRect().top - outside.getBoundingClientRect().top;
+        outside.remove();
+        inside.remove();
+        return {
+            source: element.querySelector("annotation")?.textContent ?? element.textContent,
+            offset: Math.round(offset * 10) / 10,
+            scrollbar: element.offsetHeight - element.clientHeight,
+        };
+    }));
+    for (const formula of formulas) {
+        expect(Math.abs(formula.offset), formula.source!).toBeLessThanOrEqual(0.5);
+        expect(formula.scrollbar, formula.source!).toBe(0);
+    }
 });
 
 test("clicks to edit formulas, types, and reveals them with arrow navigation", async ({ page }) => {
