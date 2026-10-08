@@ -137,6 +137,83 @@ describe("PdfTabView", () => {
         ).toBeInTheDocument();
     });
 
+    it("reveals and copies the raw error behind the friendly message", async () => {
+        const user = userEvent.setup();
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, "clipboard", {
+            configurable: true,
+            value: { writeText },
+        });
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.reject(new Error("UnknownErrorException: boom")),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/vault/docs/doc.pdf",
+                page: 1,
+                zoom: 1,
+                viewMode: "single",
+            },
+        ]);
+
+        renderComponent(<PdfTabView />);
+
+        await screen.findByText("Failed to load PDF");
+        expect(
+            screen.queryByText("Error: UnknownErrorException: boom"),
+        ).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Show Details" }));
+        expect(
+            screen.getByText("Error: UnknownErrorException: boom"),
+        ).toBeInTheDocument();
+
+        await user.click(screen.getByRole("button", { name: "Copy" }));
+        expect(writeText).toHaveBeenCalledWith(
+            "Error: UnknownErrorException: boom",
+        );
+        await screen.findByRole("button", { name: "Copied" });
+
+        await user.click(screen.getByRole("button", { name: "Hide Details" }));
+        expect(
+            screen.queryByText("Error: UnknownErrorException: boom"),
+        ).not.toBeInTheDocument();
+    });
+
+    it("explains when the PDF is outside the active vault", async () => {
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/elsewhere/doc.pdf",
+                page: 1,
+                zoom: 1,
+                viewMode: "single",
+            },
+        ]);
+
+        renderComponent(<PdfTabView />);
+
+        expect(
+            await screen.findByText(
+                "This PDF can no longer be previewed because it is outside the active vault.",
+            ),
+        ).toBeInTheDocument();
+        expect(getDocumentMock).not.toHaveBeenCalled();
+        expect(
+            screen.queryByRole("button", { name: "Show Details" }),
+        ).not.toBeInTheDocument();
+    });
+
     it("toggles into continuous mode and only renders the visible pages", async () => {
         const user = userEvent.setup();
         const pdfDocument = {
