@@ -1,7 +1,7 @@
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
-import { crossesMathRange, mathRangesBetween, mathRangesField, parseMathRanges } from "./mathRanges";
+import { crossesMathRange, findMathRanges, mathRangesBetween, mathRangesField, parseMathRanges } from "./mathRanges";
 
 function state(doc: string) {
     return EditorState.create({ doc, extensions: [markdown({ base: markdownLanguage }), mathRangesField] });
@@ -87,5 +87,30 @@ describe("Markdown math delimiters", () => {
         expect(selected.field(mathRangesField)).toBe(initial.field(mathRangesField));
         const edited = selected.update({ changes: { from: 6, to: 7, insert: "y" } }).state;
         expect(edited.field(mathRangesField)[0].tex).toBe("y");
+    });
+});
+
+describe("Math in plain text", () => {
+    it("applies the document delimiter rules outside the editor state", () => {
+        expect(findMathRanges(String.raw`$x^2$, $$y$$, $20 and $30, \$z\$ and $$$w$$$`).map(
+            ({ tex, display, block }) => ({ tex, display, block }),
+        )).toEqual([
+            { tex: "x^2", display: false, block: false },
+            { tex: "y", display: true, block: false },
+        ]);
+    });
+
+    it("skips excluded regions and does not match across them", () => {
+        const text = "`$a$` $b [[Note]] c$ $d$";
+        const code = { from: 0, to: 5 };
+        const wikilink = { from: text.indexOf("[["), to: text.indexOf("]]") + 2 };
+        expect(findMathRanges(text, [wikilink, code]).map((range) => range.tex)).toEqual(["d"]);
+    });
+
+    it("reports offsets relative to the text", () => {
+        const text = "a $x$ b";
+        const [range] = findMathRanges(text);
+        expect(text.slice(range.from, range.to)).toBe("$x$");
+        expect(text.slice(range.contentFrom, range.contentTo)).toBe("x");
     });
 });
