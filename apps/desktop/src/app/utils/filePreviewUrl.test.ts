@@ -42,6 +42,53 @@ describe("filePreviewUrl", () => {
         )?.toContain("?raw=1");
     });
 
+    it.each([
+        String.raw`\\?\C:\Users\José\OneDrive\My Vault`,
+        "//?/C:/Users/José/OneDrive/My Vault",
+        String.raw`\\?\UNC\server\share\My Vault`,
+        "//?/UNC/server/share/My Vault",
+    ])("preserves the Windows namespace in %s", (vaultPath) => {
+        const separator = vaultPath.includes("\\") ? "\\" : "/";
+        const filePath = `${vaultPath}${separator}docs${separator}Asymptoter.pdf`;
+        const expected = buildVaultPreviewUrl(vaultPath, "docs/Asymptoter.pdf");
+
+        expect(buildVaultPreviewUrlFromAbsolutePath(filePath, vaultPath)).toBe(
+            expected,
+        );
+        expect(
+            buildVaultPreviewUrlFromAbsolutePath(
+                `${filePath}?raw=1#page=2`,
+                vaultPath,
+            ),
+        ).toBe(`${expected}?raw=1#page=2`);
+        expect(
+            buildVaultPreviewUrlFromAbsolutePath(`${filePath}#page=2`, vaultPath),
+        ).toBe(`${expected}#page=2`);
+        expect(isAuthorizedVaultPreviewPath(filePath, vaultPath)).toBe(filePath);
+        expect(
+            isAuthorizedVaultPreviewPath(`${filePath}?raw=1`, vaultPath),
+        ).toBe(filePath);
+
+        const outsidePath = `${vaultPath}-other${separator}Asymptoter.pdf`;
+        expect(
+            buildVaultPreviewUrlFromAbsolutePath(outsidePath, vaultPath),
+        ).toBeNull();
+        expect(isAuthorizedVaultPreviewPath(outsidePath, vaultPath)).toBeNull();
+    });
+
+    it("preserves Windows namespaces in generated image previews", () => {
+        const imagePath = String.raw`\\?\C:\Users\José\.codex\generated_images\image.png`;
+        const preview = buildCodexGeneratedImagePreviewUrl(`${imagePath}#preview`)!;
+        const url = new URL(preview);
+        const encodedPath = url.pathname.split("/").at(-1)!;
+
+        expect(Buffer.from(encodedPath, "base64url").toString("utf8")).toBe(
+            imagePath,
+        );
+        expect(url.search).toBe("");
+        expect(url.hash).toBe("#preview");
+    });
+
     it("rejects absolute paths outside the active vault", () => {
         expect(
             buildVaultPreviewUrlFromAbsolutePath(
