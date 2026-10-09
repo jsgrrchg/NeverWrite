@@ -128,6 +128,55 @@ for (const theme of ["light", "dark"]) {
     });
 }
 
+for (const theme of ["light", "dark"]) {
+    test(`keeps table formulas inside their cells in ${theme} mode`, async ({ page }) => {
+        await page.setViewportSize({ width: 760, height: 900 });
+        await page.evaluate((value) => {
+            document.documentElement.classList.toggle("dark", value === "dark");
+        }, theme);
+        const wide = String.raw`\underbrace{${Array(80).fill("a").join("+")}}_{n}`;
+        await mount(page, [
+            "# Formulas", "",
+            "| Name | $\\sum_{j=1}^n j$ |", "| --- | :---: |",
+            "| Short | $y_1$ and $\\frac{p}{q}$ gy |", `| Wide | $${wide}$ |`, "| Bad | $\\badcommand{x}$ |",
+            "", "End",
+        ].join("\n"));
+        await expect(page.locator(".cm-lp-table-cell .cm-katex-inline")).toHaveCount(5);
+        const formulas = await page.locator(".cm-lp-table-cell .cm-katex-inline:not(.cm-katex-error)")
+            .evaluateAll((elements: HTMLElement[]) => elements.map((element) => {
+                const probe = () => Object.assign(document.createElement("span"), {
+                    style: "display:inline-block;width:0;height:0;vertical-align:baseline",
+                });
+                const outside = probe();
+                const inside = probe();
+                element.after(outside);
+                (element.querySelector(".katex-html .base") ?? element).prepend(inside);
+                const offset = inside.getBoundingClientRect().top - outside.getBoundingClientRect().top;
+                outside.remove();
+                inside.remove();
+                const rect = element.getBoundingClientRect();
+                const cell = element.closest(".cm-lp-table-cell")!.getBoundingClientRect();
+                return {
+                    source: element.querySelector("annotation")?.textContent ?? "",
+                    offset: Math.round(offset * 10) / 10,
+                    scrollbar: element.offsetHeight - element.clientHeight,
+                    overflows: element.scrollWidth > element.clientWidth,
+                    inside: rect.left >= cell.left - 0.5 && rect.right <= cell.right + 0.5,
+                };
+            }));
+        expect(formulas.map((formula) => formula.source)).toEqual([
+            String.raw`\sum_{j=1}^n j`, "y_1", String.raw`\frac{p}{q}`, wide,
+        ]);
+        for (const formula of formulas) {
+            expect(formula.inside, formula.source).toBe(true);
+            expect(Math.abs(formula.offset), formula.source).toBeLessThanOrEqual(0.5);
+            expect(formula.overflows, formula.source).toBe(formula.source === wide);
+            if (formula.source !== wide) expect(formula.scrollbar, formula.source).toBe(0);
+        }
+        await expect(page.locator(".cm-lp-table-cell .cm-katex-error")).toHaveText(String.raw`\badcommand{x}`);
+    });
+}
+
 for (const selector of [".cm-katex-inline", ".cm-katex-block"]) {
     test(`scrolls ${selector} from its scrollbar without revealing its source`, async ({ page }) => {
         await page.setViewportSize({ width: 760, height: 900 });

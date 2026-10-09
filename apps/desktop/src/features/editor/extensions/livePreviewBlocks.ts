@@ -15,7 +15,13 @@ import {
 import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import katex from "katex";
-import { getMathRanges, mathRenderingChanged } from "./mathRanges";
+import {
+    findMathRanges,
+    getMathRanges,
+    mathRenderingChanged,
+    type MathRange,
+    type TextRegion,
+} from "./mathRanges";
 import {
     buildVaultPreviewUrlFromAbsolutePath,
     isAuthorizedVaultPreviewPath,
@@ -1835,15 +1841,119 @@ function appendInteractiveTableContent(
     }
 }
 
+/** Code spans keep their dollars literal: a run closes on the next run of equal length. */
+function findCodeSpanRegions(content: string): TextRegion[] {
+    const regions: TextRegion[] = [];
+    const runs = [...content.matchAll(/`+/g)];
+    for (let index = 0; index < runs.length; index++) {
+        const opening = runs[index];
+        const closingIndex = runs.findIndex(
+            (run, candidate) =>
+                candidate > index && run[0].length === opening[0].length,
+        );
+        if (closingIndex < 0) continue;
+        const closing = runs[closingIndex];
+        regions.push({
+            from: opening.index,
+            to: closing.index + closing[0].length,
+        });
+        index = closingIndex;
+    }
+    return regions;
+}
+
+/** Formatting may wrap whole formulas, but never cut through one or sit inside it. */
+function wrapsMathCleanly(
+    math: readonly MathRange[],
+    from: number,
+    to: number,
+    contentFrom: number,
+    contentTo: number,
+) {
+    return math.every(
+        (range) =>
+            range.to <= from ||
+            range.from >= to ||
+            (range.from >= contentFrom && range.to <= contentTo),
+    );
+}
+
+function createTableMath({ tex, display }: MathRange) {
+    const span = document.createElement("span");
+    span.className = "cm-katex-inline";
+    // As in GFM, `\|` is how a cell holds a literal pipe, also inside a formula.
+    renderMath(span, tex.replace(/\\\|/g, "|"), display);
+    // The table widget ignores editor events, so formulas are not click targets.
+    if (!span.classList.contains("cm-katex-error")) {
+        span.removeAttribute("title");
+    }
+    return span;
+}
+
+function appendTableText(
+    parent: HTMLElement,
+    content: string,
+    from: number,
+    to: number,
+    math: readonly MathRange[],
+) {
+    let index = from;
+    for (const range of math) {
+        if (range.from < from || range.to > to) continue;
+        if (range.from > index) {
+            parent.appendChild(
+                document.createTextNode(content.slice(index, range.from)),
+            );
+        }
+        parent.appendChild(createTableMath(range));
+        index = range.to;
+    }
+    if (index < to) {
+        parent.appendChild(document.createTextNode(content.slice(index, to)));
+    }
+}
+
+function findTableBold(
+    content: string,
+    index: number,
+    math: readonly MathRange[],
+) {
+    TABLE_BOLD_RE.lastIndex = index;
+    let match = TABLE_BOLD_RE.exec(content);
+    while (
+        match &&
+        !wrapsMathCleanly(
+            math,
+            match.index,
+            match.index + match[0].length,
+            match.index + 2,
+            match.index + match[0].length - 2,
+        )
+    ) {
+        TABLE_BOLD_RE.lastIndex = match.index + 1;
+        match = TABLE_BOLD_RE.exec(content);
+    }
+    return match;
+}
+
 function appendInlineTableFormatting(parent: HTMLElement, content: string) {
     let index = 0;
-    const highlightRanges = findHighlightRanges(content);
+    const math = content.includes("$")
+        ? findMathRanges(content, findCodeSpanRegions(content))
+        : [];
+    const highlightRanges = findHighlightRanges(content).filter((range) =>
+        wrapsMathCleanly(
+            math,
+            range.from,
+            range.to,
+            range.contentFrom,
+            range.contentTo,
+        ),
+    );
     let highlightIndex = 0;
 
     while (index < content.length) {
-        TABLE_BOLD_RE.lastIndex = index;
-
-        const boldMatch = TABLE_BOLD_RE.exec(content);
+        const boldMatch = findTableBold(content, index, math);
         const highlightRange = highlightRanges[highlightIndex] ?? null;
 
         const nextHighlightIndex =
@@ -1856,24 +1966,29 @@ function appendInlineTableFormatting(parent: HTMLElement, content: string) {
             nextBoldIndex === Number.POSITIVE_INFINITY &&
             nextHighlightIndex === Number.POSITIVE_INFINITY
         ) {
-            parent.appendChild(document.createTextNode(content.slice(index)));
+            appendTableText(parent, content, index, content.length, math);
             break;
         }
 
         if (nextHighlightIndex < nextBoldIndex) {
             if (nextHighlightIndex > index) {
-                parent.appendChild(
-                    document.createTextNode(
-                        content.slice(index, nextHighlightIndex),
-                    ),
+                appendTableText(
+                    parent,
+                    content,
+                    index,
+                    nextHighlightIndex,
+                    math,
                 );
             }
 
             const span = document.createElement("span");
             span.className = "cm-lp-table-highlight";
-            span.textContent = content.slice(
+            appendTableText(
+                span,
+                content,
                 highlightRange!.contentFrom,
                 highlightRange!.contentTo,
+                math,
             );
             parent.appendChild(span);
 
@@ -1883,19 +1998,23 @@ function appendInlineTableFormatting(parent: HTMLElement, content: string) {
         }
 
         if (!boldMatch) {
-            parent.appendChild(document.createTextNode(content.slice(index)));
+            appendTableText(parent, content, index, content.length, math);
             break;
         }
 
         if (boldMatch.index > index) {
-            parent.appendChild(
-                document.createTextNode(content.slice(index, boldMatch.index)),
-            );
+            appendTableText(parent, content, index, boldMatch.index, math);
         }
 
         const span = document.createElement("span");
         span.className = "cm-lp-table-bold";
-        span.textContent = boldMatch[1];
+        appendTableText(
+            span,
+            content,
+            boldMatch.index + 2,
+            boldMatch.index + boldMatch[0].length - 2,
+            math,
+        );
         parent.appendChild(span);
 
         index = boldMatch.index + boldMatch[0].length;

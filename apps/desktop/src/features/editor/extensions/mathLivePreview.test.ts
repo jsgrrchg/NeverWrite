@@ -214,3 +214,68 @@ describe("math live preview integration", () => {
         expect(view.dom.querySelector(".cm-katex-block annotation")?.textContent).toBe("y");
     });
 });
+
+describe("math in table live preview", () => {
+    const table = (...rows: string[]) => ["Intro", "", "| A | B |", "| --- | --- |", ...rows, "", "End"].join("\n");
+    const formulas = (root: ParentNode) =>
+        [...root.querySelectorAll(".cm-katex-inline annotation")].map((node) => node.textContent);
+    const cell = (view: EditorView, index: number) =>
+        view.dom.querySelectorAll<HTMLElement>(".cm-lp-table-cell")[index];
+
+    it("renders formulas in header and body cells with the document delimiter rules", () => {
+        const view = mount(String.raw`Intro
+
+| $x^2$ | Price |
+| --- | --- |
+| $a+b$ and $$y$$ | $20 and $30, \$z\$, $ w$ |`);
+        expect(formulas(view.dom)).toEqual(["x^2", "a+b", "y"]);
+        expect(cell(view, 2).querySelector(".cm-katex-inline .katex-display")).not.toBeNull();
+        expect(cell(view, 3).textContent).toBe(String.raw`$20 and $30, \$z\$, $ w$`);
+    });
+
+    it("keeps code spans, wikilinks and URLs literal", () => {
+        const view = mount(table("| `$x$` and ``a `$y$` b`` | [[Cost $5 and $z$]] https://example.com/$w$ |"));
+        expect(view.dom.querySelector(".katex")).toBeNull();
+        expect(cell(view, 2).textContent).toBe("`$x$` and ``a `$y$` b``");
+        expect(view.dom.querySelector(".cm-lp-table-wikilink")?.textContent).toBe("Cost $5 and $z$");
+        expect(view.dom.querySelector(".cm-lp-table-url")?.textContent).toBe("https://example.com/$w$");
+    });
+
+    it("renders formulas next to links and inside bold or highlighted text", () => {
+        const view = mount(table("| [[Note]] $a$ https://example.com $b$ | **$c$ bold** and ==$d$== |"));
+        expect(formulas(cell(view, 2))).toEqual(["a", "b"]);
+        expect(formulas(view.dom.querySelector(".cm-lp-table-bold")!)).toEqual(["c"]);
+        expect(view.dom.querySelector(".cm-lp-table-bold")?.textContent).toContain("bold");
+        expect(formulas(view.dom.querySelector(".cm-lp-table-highlight")!)).toEqual(["d"]);
+    });
+
+    it("does not apply formatting that cuts through or sits inside a formula", () => {
+        const view = mount(table("| **a $b** c$ | $x **y** z$ ==$p== q$ |"));
+        expect(formulas(view.dom)).toEqual(["b** c", "x **y** z", "p== q"]);
+        expect(view.dom.querySelector(".cm-lp-table-bold, .cm-lp-table-highlight")).toBeNull();
+    });
+
+    it("reads escaped pipes as literal pipes inside formulas", () => {
+        const view = mount(table(String.raw`| $\lvert x \rvert = a \| b$ | 2 |`));
+        expect(view.dom.querySelectorAll(".cm-lp-table-cell")).toHaveLength(4);
+        expect(formulas(view.dom)).toEqual([String.raw`\lvert x \rvert = a | b`]);
+    });
+
+    it("keeps invalid formulas readable", () => {
+        const view = mount(table(String.raw`| $\unknowncommand{x}$ | $y$ |`));
+        const error = view.dom.querySelector<HTMLElement>(".cm-lp-table-cell .cm-katex-error")!;
+        expect(error.textContent).toBe(String.raw`\unknowncommand{x}`);
+        expect(error.title).toContain("Undefined control sequence");
+        expect(cell(view, 3).querySelector<HTMLElement>(".cm-katex-inline")?.title).toBe("");
+    });
+
+    it("shows the raw table source while the cursor is inside it", () => {
+        const doc = table("| $x$ | 2 |");
+        const view = mount(doc);
+        expect(formulas(view.dom)).toEqual(["x"]);
+        view.dispatch({ selection: { anchor: doc.indexOf("$x$") + 1 } });
+        expect(view.dom.querySelector(".cm-lp-table-widget")).toBeNull();
+        expect(view.dom.querySelector(".katex")).toBeNull();
+        expect(view.contentDOM.textContent).toContain("| $x$ | 2 |");
+    });
+});

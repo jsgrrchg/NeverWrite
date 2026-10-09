@@ -19,7 +19,7 @@ const excludedNodes = new Set([
 
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 
-interface TextRegion {
+export interface TextRegion {
     from: number;
     to: number;
 }
@@ -28,6 +28,15 @@ function escaped(text: string, at: number): boolean {
     let slashes = 0;
     while (at > 0 && text[--at] === "\\") slashes++;
     return slashes % 2 === 1;
+}
+
+function lineStart(text: string, at: number): number {
+    return text.lastIndexOf("\n", at - 1) + 1;
+}
+
+function lineEnd(text: string, at: number): number {
+    const end = text.indexOf("\n", at);
+    return end < 0 ? text.length : end;
 }
 
 /** Excluded syntax that the Markdown tree does not model, sorted by position. */
@@ -50,9 +59,8 @@ function excludedTextRegions(text: string): TextRegion[] {
 export function parseMathRanges(state: EditorState): MathRange[] {
     const tree = syntaxTree(state);
     const text = state.doc.sliceString(0, tree.length);
-    const ranges: MathRange[] = [];
     const firstDollar = text.indexOf("$");
-    if (firstDollar < 0) return ranges;
+    if (firstDollar < 0) return [];
     const excluded = excludedTextRegions(text);
     // Only syntax containing a dollar or separating two of them can matter.
     tree.iterate({
@@ -65,7 +73,19 @@ export function parseMathRanges(state: EditorState): MathRange[] {
             }
         },
     });
-    excluded.sort((a, b) => a.from - b.from);
+    return findMathRanges(text, excluded);
+}
+
+/**
+ * Formulas in plain text, skipping `excluded` regions (code, links, ...).
+ * Offsets are relative to `text`, so callers outside the document can reuse
+ * the exact delimiter rules, e.g. table cells rendered by a widget.
+ */
+export function findMathRanges(text: string, excludedRegions: readonly TextRegion[] = []): MathRange[] {
+    const ranges: MathRange[] = [];
+    const firstDollar = text.indexOf("$");
+    if (firstDollar < 0) return ranges;
+    const excluded = [...excludedRegions].sort((a, b) => a.from - b.from);
     let excludedIndex = 0;
     for (let from = firstDollar; from >= 0; from = text.indexOf("$", from + 1)) {
         while (excludedIndex < excluded.length && excluded[excludedIndex].to <= from) {
@@ -87,15 +107,15 @@ export function parseMathRanges(state: EditorState): MathRange[] {
         const display = width === 2;
         const contentFrom = from + width;
         if (!display && (!text[contentFrom] || /\s/.test(text[contentFrom]))) continue;
-        const openingLine = state.doc.lineAt(from);
-        const standaloneOpening = /^ {0,3}$/.test(text.slice(openingLine.from, from));
+        const openingLineEnd = lineEnd(text, from);
+        const standaloneOpening = /^ {0,3}$/.test(text.slice(lineStart(text, from), from));
         // Multiline display math must open on its own line. Embedded $$ stays inline.
         const multiline = display && standaloneOpening &&
-            /^\s*$/.test(text.slice(contentFrom, openingLine.to));
+            /^\s*$/.test(text.slice(contentFrom, openingLineEnd));
         // Code, HTML or links after the opener end the formula.
         const limit = Math.min(
             boundary?.from ?? text.length,
-            multiline ? text.length : openingLine.to,
+            multiline ? text.length : openingLineEnd,
         );
         let match: MathRange | null = null;
         for (let close = text.indexOf("$", contentFrom); close >= 0 && close < limit; close = text.indexOf("$", close + 1)) {
@@ -109,16 +129,16 @@ export function parseMathRanges(state: EditorState): MathRange[] {
                 continue;
             }
             if (!display && (/\s/.test(text[close - 1]) || /\d/.test(text[end] ?? ""))) break;
-            const closingLine = state.doc.lineAt(close);
+            const closingLineEnd = lineEnd(text, close);
             if (multiline && (
-                !/^ {0,3}$/.test(text.slice(closingLine.from, close)) ||
-                !/^\s*$/.test(text.slice(end, closingLine.to))
+                !/^ {0,3}$/.test(text.slice(lineStart(text, close), close)) ||
+                !/^\s*$/.test(text.slice(end, closingLineEnd))
             )) continue;
             const tex = text.slice(contentFrom, close).trim();
             if (!tex) break;
             match = {
                 from, to: end, contentFrom, contentTo: close, tex, display,
-                block: display && standaloneOpening && /^\s*$/.test(text.slice(end, closingLine.to)),
+                block: display && standaloneOpening && /^\s*$/.test(text.slice(end, closingLineEnd)),
             };
             break;
         }
