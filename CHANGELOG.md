@@ -34,6 +34,16 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.13] - 2026-10-09
+
+### Added
+
+- Added LaTeX math rendering inside Markdown Live Preview tables, supporting inline and display-style formulas, escaped pipes, surrounding bold and highlight formatting, and horizontal scrolling for wide expressions. Move the caret into a table to edit its Markdown source.
+
+### Fixed
+
+- Fixed PDF previews failing to load on Windows when file paths use extended-length prefixes, including local drive and network paths.
+
 ## [0.8.12] - 2026-10-08
 
 ### Added
