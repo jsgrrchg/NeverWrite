@@ -16,7 +16,11 @@ function encodeBase64Url(value: string) {
 }
 
 function splitPathSuffix(value: string) {
-    const marker = value.search(/[?#]/);
+    // Rust canonicalizes Windows paths to \\?\C:\... (or \\?\UNC\...).
+    // The namespace's question mark is part of the path, not a URL query.
+    const prefixLength = /^(?:\\\\\?\\|\/\/\?\/)/.test(value) ? 4 : 0;
+    const suffixOffset = value.slice(prefixLength).search(/[?#]/);
+    const marker = suffixOffset === -1 ? -1 : prefixLength + suffixOffset;
     return marker === -1
         ? { pathname: value, suffix: "" }
         : {

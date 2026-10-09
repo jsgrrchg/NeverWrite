@@ -10,6 +10,7 @@ import {
 } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 
 const { getDocumentMock } = vi.hoisted(() => ({
     getDocumentMock: vi.fn(),
@@ -185,6 +186,46 @@ describe("PdfTabView", () => {
         expect(
             screen.queryByText("Error: UnknownErrorException: boom"),
         ).not.toBeInTheDocument();
+    });
+
+    it("loads a PDF under a Windows canonical vault path", async () => {
+        const vaultPath = String.raw`\\?\C:\Users\José\OneDrive\My Vault`;
+        useVaultStore.setState({ vaultPath });
+        const page = createMockPage();
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve({
+                destroy: vi.fn(),
+                getPage: vi.fn().mockResolvedValue(page),
+                numPages: 1,
+            }),
+        });
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "Asymptoter.pdf",
+                title: "Asymptoter",
+                path: `${vaultPath}\\Asymptoter.pdf`,
+                page: 1,
+                zoom: 1,
+                viewMode: "single",
+            },
+        ]);
+
+        renderComponent(<PdfTabView />);
+
+        await waitFor(() => expect(page.render).toHaveBeenCalled());
+        const url = new URL(getDocumentMock.mock.calls[0][0].url);
+        const [, scope, encodedVault, encodedPath] = url.pathname.split("/");
+        expect(scope).toBe("vault");
+        expect(Buffer.from(encodedVault, "base64url").toString("utf8")).toBe(
+            vaultPath,
+        );
+        expect(Buffer.from(encodedPath, "base64url").toString("utf8")).toBe(
+            "Asymptoter.pdf",
+        );
+        expect(screen.queryByText("Failed to load PDF")).not.toBeInTheDocument();
     });
 
     it("explains when the PDF is outside the active vault", async () => {

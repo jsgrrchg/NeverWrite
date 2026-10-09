@@ -1,0 +1,75 @@
+name: PDF Windows paths (temporary issue 519)
+
+# Remove this workflow after validating the Windows path fix.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/pdf-windows-paths-temporary.yml
+      - apps/desktop/src/app/utils/filePreviewUrl*
+      - apps/desktop/src/app/utils/vaultPaths*
+      - apps/desktop/src/features/pdf/**
+      - apps/desktop/src-electron/main/ipc.ts
+      - apps/desktop/src-electron/main/vaultBackend.ts
+      - apps/desktop/scripts/pdf-windows-paths*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pdf-windows-paths-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pdf-paths:
+    name: PDF paths (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: ./.github/actions/setup-rust
+
+      - name: Install desktop dependencies
+        id: dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: Test preview URLs and PDF viewer regression
+        run: >-
+          npx vitest run
+          src/app/utils/filePreviewUrl.test.ts
+          src/app/utils/vaultPaths.test.ts
+          src/features/pdf/PdfTabView.test.tsx
+          --reporter=default --reporter=junit
+          --outputFile=test-results/pdf-paths-unit.xml
+
+      - name: Test Rust canonical paths, real file reads and PDF.js
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: >-
+          npx vitest run --config scripts/pdf-windows-paths.vitest.config.ts
+          --reporter=default --reporter=junit
+          --outputFile=test-results/pdf-paths-integration.xml
+
+      - name: Upload diagnostic test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pdf-paths-${{ matrix.os }}
+          path: apps/desktop/test-results/pdf-paths-*.xml
+          if-no-files-found: warn
+          retention-days: 7
