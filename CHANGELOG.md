@@ -34,6 +34,16 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.12] - 2026-10-08
+
+### Added
+
+- Added LaTeX math rendering to Markdown Live Preview with bundled, offline KaTeX support for inline (`$...$`) and display (`$$...$$`) formulas. Formulas reveal their original Markdown for editing when selected, preserve surrounding Markdown styling, support horizontally scrolling wide expressions, and keep invalid formulas editable with an explanatory error.
+
+### Fixed
+
+- Improved PDF loading failures with clearer messages, expandable and copyable technical details, and renderer logging for diagnosis; PDFs outside the active vault now retain their specific error message.
+
 ## [0.8.11] - 2026-10-08
 
 ### Changed
