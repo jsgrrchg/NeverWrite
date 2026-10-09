@@ -1,12 +1,12 @@
-version: 0.8.12
+version: 0.8.13
 files:
-  - url: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.12/NeverWrite_0.8.12_macOS_Universal.zip
-    sha512: +z6jjL2gR4iSeaQ97HQnsRC0VrD3YKbCrROvdy+KzUAQ3A0/X2x3sRU3bXnWV5L00k2NNTqQy4mYC5bI4ZBC8A==
-    size: 819711539
-  - url: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.12/NeverWrite_0.8.12_macOS_Universal.dmg
-    sha512: /0W1OvoofZppX1xyZPhIrBTRo+fCvp08mKMQDshpWJpGN8dTFY8dBQRxCtJB98CK9Fq6L29US4+eprLRGlEq9g==
-    size: 1022843400
-path: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.12/NeverWrite_0.8.12_macOS_Universal.zip
-sha512: +z6jjL2gR4iSeaQ97HQnsRC0VrD3YKbCrROvdy+KzUAQ3A0/X2x3sRU3bXnWV5L00k2NNTqQy4mYC5bI4ZBC8A==
-releaseDate: '2026-10-09T03:14:31.009Z'
+  - url: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.13/NeverWrite_0.8.13_macOS_Universal.zip
+    sha512: PAySyEzCKU70VgMisrqgqPOB+fD8bSQK8Ddqtan+oA5sjPGlQTDbRBUll4N6wboydlJR+RLCSxgBWvMZC+kv5A==
+    size: 819706079
+  - url: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.13/NeverWrite_0.8.13_macOS_Universal.dmg
+    sha512: 3x0ssnYU3/mShLQkV8tn69fkUnX8MYuD6R+Z7YsH5yBAhge+OzNYfliBDgHcVMm1m7QuXTsm+THgz8k9yYr66Q==
+    size: 1028821941
+path: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.8.13/NeverWrite_0.8.13_macOS_Universal.zip
+sha512: PAySyEzCKU70VgMisrqgqPOB+fD8bSQK8Ddqtan+oA5sjPGlQTDbRBUll4N6wboydlJR+RLCSxgBWvMZC+kv5A==
+releaseDate: '2026-10-09T23:28:39.520Z'
 minimumSystemVersion: 22.0.0
