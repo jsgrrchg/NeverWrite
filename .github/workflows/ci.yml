@@ -154,7 +154,7 @@ jobs:
 
       - name: Run browser regressions
         working-directory: apps/desktop
-        run: npm run test:e2e -- e2e/tests/editorTabRendering.spec.ts e2e/tests/livePreviewLists.spec.ts
+        run: npm run test:e2e -- e2e/tests/editorTabRendering.spec.ts e2e/tests/livePreviewLists.spec.ts e2e/tests/mathLivePreview.spec.ts
 
       - name: Upload browser failure diagnostics
         if: failure()

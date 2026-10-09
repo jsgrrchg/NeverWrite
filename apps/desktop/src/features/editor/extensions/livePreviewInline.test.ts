@@ -1086,20 +1086,20 @@ describe("createInlineLivePreviewPlugin", () => {
     });
 
     it("reveals single-line block math raw when the token is active", () => {
-        const doc = "$$x$$";
+        const doc = "before $$x$$ after";
         const { plugin, parent, view } = createView(
             doc,
-            EditorSelection.cursor(2),
+            EditorSelection.cursor(9),
         );
 
         let decorations = collectDecorations(view, plugin);
-        expect(hasWidgetRange(decorations, 0, 5)).toBe(false);
+        expect(hasWidgetRange(decorations, 7, 12)).toBe(false);
 
         view.dispatch({
             selection: EditorSelection.cursor(doc.length),
         });
         decorations = collectDecorations(view, plugin);
-        expect(hasWidgetRange(decorations, 0, 5)).toBe(true);
+        expect(hasWidgetRange(decorations, 7, 12)).toBe(true);
 
         view.destroy();
         parent.remove();

@@ -146,8 +146,8 @@ export const livePreviewTheme = EditorView.baseTheme({
         boxShadow: "0 1px 0 color-mix(in srgb, var(--border) 70%, transparent)",
     },
     ".cm-lp-math-inline": {
-        fontFamily: "'Times New Roman', Georgia, 'Nimbus Roman No9 L', serif",
-        fontStyle: "italic",
+        fontFamily: "inherit",
+        fontStyle: "normal",
         background:
             "color-mix(in srgb, var(--bg-secondary) 78%, var(--bg-primary))",
         borderRadius: "5px",
@@ -163,8 +163,8 @@ export const livePreviewTheme = EditorView.baseTheme({
         border: "1px solid var(--border)",
     },
     ".cm-lp-math-block": {
-        fontFamily: "'Times New Roman', Georgia, 'Nimbus Roman No9 L', serif",
-        fontStyle: "italic",
+        fontFamily: "inherit",
+        fontStyle: "normal",
     },
     ".cm-lp-blockquote": {
         color: "var(--text-secondary)",
@@ -828,18 +828,43 @@ export const livePreviewTheme = EditorView.baseTheme({
         boxDecorationBreak: "clone",
         WebkitBoxDecorationBreak: "clone",
     },
+    // An inline-block scroll container sits on its bottom edge; an inline flex
+    // container keeps the formula on the text baseline.
     ".cm-katex-inline": {
-        verticalAlign: "middle",
+        display: "inline-flex",
+        verticalAlign: "baseline",
+        maxWidth: "100%",
+        overflowX: "auto",
+        overflowY: "hidden",
+        cursor: "text",
+    },
+    // KaTeX scripts and roots overhang by a -2px margin; the padding absorbs it
+    // so short formulas never show a scrollbar.
+    ".cm-katex-inline > .katex, .cm-katex-inline > .katex-display": {
+        padding: "0.12em 0.15em",
+    },
+    ".cm-katex-inline > .katex-display": {
+        margin: "0",
     },
     ".cm-katex-block": {
-        display: "flex",
-        justifyContent: "center",
-        padding: "20px 0",
+        display: "block",
+        maxWidth: "100%",
+        boxSizing: "border-box",
+        overflowX: "auto",
+        padding: "12px 0",
+        cursor: "text",
+    },
+    ".cm-katex-block > .katex-display": {
+        width: "max-content",
+        minWidth: "100%",
+        margin: "0",
     },
     ".cm-katex-error": {
-        color: "#ef4444",
-        fontStyle: "italic",
+        color: "var(--catppuccin-icon-red, #c00000)",
+        fontFamily: "inherit",
         fontSize: "0.9em",
+        whiteSpace: "pre-wrap",
+        overflowWrap: "anywhere",
     },
     ".cm-code-block-fence-hidden": {
         height: "0",
