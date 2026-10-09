@@ -44,7 +44,7 @@ Inline $y_1$ and $\frac{p}{q}$, $\sum_{j=1}^n j$, $\sqrt{\frac{a}{b}}$, $x_{gy}$
 
 Bad $\badcmd{x}$ end.`);
     await expect(page.locator(".cm-katex-inline")).toHaveCount(8);
-    const formulas = await page.locator(".cm-katex-inline").evaluateAll((elements) => elements.map((element) => {
+    const formulas = await page.locator(".cm-katex-inline").evaluateAll((elements: HTMLElement[]) => elements.map((element) => {
         const probe = () => Object.assign(document.createElement("span"), {
             style: "display:inline-block;width:0;height:0;vertical-align:baseline",
         });
@@ -134,7 +134,7 @@ for (const selector of [".cm-katex-inline", ".cm-katex-block"]) {
         const wide = String.raw`\underbrace{${Array(80).fill("a").join("+")}}_{n}`;
         await mount(page, `# Formulas\n\nInline $${wide}$.\n\n$$${wide}$$\n\nEnd`);
         const math = page.locator(selector);
-        const box = await math.evaluate((element) => {
+        const box = await math.evaluate((element: HTMLElement) => {
             const rect = element.getBoundingClientRect();
             return { right: rect.right, bottom: rect.bottom, bar: element.offsetHeight - element.clientHeight };
         });
@@ -174,6 +174,13 @@ test("renders late formulas in long notes and restores their scrolled tab", asyn
         `Paragraph ${i}: $x_{${i}}$ and **bold** text.\n\n$$\\frac{${i}}{2}$$\n\n`,
     ).join("") + "End.";
     await mount(page, content);
+    // Formulas are recognized in parsed Markdown only. Jumping before background
+    // parsing finishes would let late display blocks grow the note under the
+    // scroll target.
+    await page.waitForFunction(() => {
+        const state = window.editorFixture.snapshot();
+        return state.parsedLength === state.docLength;
+    });
     await page.evaluate(() => {
         const view = window.editorFixture.getView();
         view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true });
