@@ -45,8 +45,31 @@ signs such as `\$5\$`. Numeric formulas such as `$2+2$` are supported.
 
 Unmatched delimiters and runs of three or more dollars remain literal. Math is
 excluded from frontmatter, code spans and blocks, raw HTML, images, link
-destinations/titles/reference definitions, wikilinks and embeds, and tables. Table math and the
+destinations/titles/reference definitions, wikilinks and embeds. The
 alternative delimiters `\(...\)` and `\[...\]` are outside the initial scope.
+
+## Tables
+
+Table cells render inline and display formulas with the same rules:
+
+```markdown
+| Quantity | Formula            |
+| -------- | ------------------ |
+| Energy   | $E=mc^2$           |
+| Norm     | $\lVert v \rVert$  |
+| Absolute | $\lvert x \rvert$  |
+| Pipe     | $a \| b$           |
+```
+
+As in GitHub Flavored Markdown, an unescaped `|` always ends a cell, even inside
+a formula. Write `\lvert`/`\rvert` or `\vert` for bars, or `\|`, which reads as a
+literal `|` inside a cell; use `\Vert` or `\lVert`/`\rVert` for a double bar.
+Bold and highlights may wrap whole formulas, but formatting that cuts through
+a formula or sits inside one stays literal. A `$$x$$` in a cell uses
+display-style notation within the line.
+
+A table renders as a whole: clicking a formula inside it does not reveal that
+formula alone. Move the caret into the table to edit its Markdown source.
 
 ## Editing and errors
 
@@ -75,6 +98,10 @@ formula is not styled, while syntax containing a whole formula, such as a
 paragraph, list item or highlight, still renders around it. Inline widgets are built for the viewport; display blocks use a state
 field because they change document layout. Unchanged widgets retain their DOM
 when positions move. Rendering never rewrites document text.
+
+Tables are excluded from the document ranges because the table widget replaces
+their source. The widget runs the same scanner, `findMathRanges`, on each cell
+and renders its formulas only when the table source changes.
 
 From `apps/desktop`:
 
