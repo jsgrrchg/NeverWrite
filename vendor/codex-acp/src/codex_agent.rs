@@ -1099,6 +1099,7 @@ impl CodexAgent {
                 InitialHistory::Resumed(ResumedHistory {
                     conversation_id: stored_thread.thread_id,
                     history: Arc::new(context.items),
+                    history_revision: context.revision,
                     rollout_path: Some(rollout_path),
                 }),
                 self.auth_manager.clone(),
