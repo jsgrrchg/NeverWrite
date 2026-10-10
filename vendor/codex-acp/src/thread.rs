@@ -4166,19 +4166,14 @@ impl PromptState {
     fn declined_command_reason(
         status: &ExecCommandStatus,
         observed_output: bool,
-        formatted_output: &str,
         aggregated_output: &str,
-        stderr: &str,
     ) -> Option<String> {
         if status != &ExecCommandStatus::Declined || observed_output {
             return None;
         }
 
-        [formatted_output, aggregated_output, stderr]
-            .into_iter()
-            .map(str::trim)
-            .find(|output| !output.is_empty())
-            .map(str::to_string)
+        let reason = aggregated_output.trim();
+        (!reason.is_empty()).then(|| reason.to_string())
     }
 
     async fn exec_command_end(&mut self, client: &SessionClient, event: ExecCommandEndEvent) {
@@ -4192,11 +4187,8 @@ impl PromptState {
             interaction_input: _,
             call_id,
             exit_code,
-            stdout: _,
-            stderr,
             aggregated_output,
             duration: _,
-            formatted_output,
             process_id: _,
             status,
             ..
@@ -4205,9 +4197,7 @@ impl PromptState {
             let declined_reason = Self::declined_command_reason(
                 &status,
                 active_command.observed_output,
-                &formatted_output,
                 &aggregated_output,
-                &stderr,
             );
             let is_success = exit_code == 0;
 
@@ -4272,13 +4262,7 @@ impl PromptState {
         } else {
             // No later event can consume this buffer once the command has ended.
             self.pending_command_output.remove(&call_id);
-            let declined_reason = Self::declined_command_reason(
-                &status,
-                false,
-                &formatted_output,
-                &aggregated_output,
-                &stderr,
-            );
+            let declined_reason = Self::declined_command_reason(&status, false, &aggregated_output);
             let status = match status {
                 ExecCommandStatus::Completed if exit_code == 0 => ToolCallStatus::Completed,
                 ExecCommandStatus::Completed => ToolCallStatus::Failed,
@@ -5636,8 +5620,8 @@ impl<A: Auth> ThreadActor<A> {
                 .await
                 .map_err(|e| Error::internal_error().data(e.to_string()))?
             {
-                TurnInputSubmission::Started { turn_id } => turn_id,
-                TurnInputSubmission::Steered { turn_id } => {
+                TurnInputSubmission::Started { turn_id, .. } => turn_id,
+                TurnInputSubmission::Steered { turn_id, .. } => {
                     return Err(Error::internal_error().data(format!(
                         "runtime unexpectedly steered active turn {turn_id} for a start-if-idle prompt"
                     )));
@@ -7420,12 +7404,9 @@ mod tests {
                     parsed_cmd: vec![],
                     source: Default::default(),
                     interaction_input: None,
-                    stdout: String::new(),
-                    stderr: ACP_COMMAND_REJECTION_REASON.to_string(),
                     aggregated_output: ACP_COMMAND_REJECTION_REASON.to_string(),
                     exit_code: -1,
                     duration: Duration::ZERO,
-                    formatted_output: ACP_COMMAND_REJECTION_REASON.to_string(),
                     status: ExecCommandStatus::Declined,
                 },
             )
@@ -7550,6 +7531,7 @@ mod tests {
         let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
         thread.set_next_turn_submission(TurnInputSubmission::Steered {
             turn_id: "active-turn".to_string(),
+            root_turn_id: "active-turn".to_string(),
         });
         let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
 
@@ -7785,7 +7767,18 @@ mod tests {
             .await?;
         // A page boundary must not create another activity for an equivalent wait.
         actor
-            .handle_replay_stored_history(vec![wait("wait-2", false), wait("wait-3", true)])
+            .handle_replay_stored_history(vec![
+                wait("wait-2", false),
+                wait("wait-3", true),
+                stored_history_item(StoredItem::SubAgentActivity {
+                    id: "subagent-1".into(),
+                    model: Some("gpt-6.1-sol".into()),
+                    reasoning_effort: Some(ReasoningEffort::High),
+                    kind: codex_app_server_protocol::SubAgentActivityKind::Started,
+                    agent_thread_id: receiver.clone(),
+                    agent_path: "/root/research".into(),
+                }),
+            ])
             .await?;
         let notifications = client.notifications.lock().unwrap();
         assert_eq!(notifications.iter().filter(|notification| matches!(&notification.update,
@@ -7802,6 +7795,13 @@ mod tests {
             .iter()
             .find(|call| call.tool_call_id.0.as_ref() == "patch-1")
             .expect("replayed patch");
+        let subagent = calls
+            .iter()
+            .find(|call| call.tool_call_id.0.as_ref() == "codex-acp:subagent:subagent-1")
+            .expect("replayed subagent activity");
+        let raw_output = subagent.raw_output.as_ref().expect("subagent snapshot");
+        assert_eq!(raw_output["model"], json!("gpt-6.1-sol"));
+        assert_eq!(raw_output["reasoning_effort"], json!("high"));
         assert!(patch.content.iter().any(|content| matches!(content, ToolCallContent::Diff(diff)
             if diff.new_text == "hello\n" && diff.meta.as_ref().is_some_and(|meta| meta.contains_key(NEVERWRITE_DIFF_HUNKS_KEY))
         )));
@@ -9069,7 +9069,14 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::TurnStarted(TurnStartedEvent {
-                    root_turn_id: None,
+                    turn_attribution: Some(codex_protocol::turn_input::TurnAttribution {
+                        turn_id: "turn-1".into(),
+                        turn_trigger: None,
+                        parent_turn_id: None,
+                        initiating_agent_path: None,
+                        root_turn_id: Some("originating-turn".into()),
+                    }),
+                    root_turn_id: Some("originating-turn".into()),
                     model_context_window: None,
                     collaboration_mode_kind: ModeKind::default(),
                     turn_id: "turn-1".to_string(),
@@ -9082,6 +9089,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::TurnComplete(TurnCompleteEvent {
+                    root_turn_id: Some("originating-turn".into()),
                     last_agent_message: None,
                     turn_id: "turn-1".to_string(),
                     error: None,
@@ -9106,11 +9114,12 @@ mod tests {
                         .and_then(|value| value.as_str())
                         == Some(CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE) =>
                 {
-                    update
-                        .meta
-                        .as_ref()
-                        .and_then(|meta| meta.get(CODEX_ACP_TURN_EVENT_TYPE_KEY))
-                        .and_then(|value| value.as_str())
+                    update.meta.as_ref().and_then(|meta| {
+                        Some((
+                            meta.get(CODEX_ACP_TURN_EVENT_TYPE_KEY)?.as_str()?,
+                            meta.get(CODEX_ACP_TURN_ID_KEY)?.as_str()?,
+                        ))
+                    })
                 }
                 _ => None,
             })
@@ -9119,8 +9128,8 @@ mod tests {
         assert_eq!(
             lifecycle_events,
             vec![
-                CODEX_ACP_TURN_STARTED_EVENT_TYPE,
-                CODEX_ACP_TURN_COMPLETE_EVENT_TYPE
+                (CODEX_ACP_TURN_STARTED_EVENT_TYPE, "turn-1"),
+                (CODEX_ACP_TURN_COMPLETE_EVENT_TYPE, "turn-1")
             ],
             "notifications={notifications:?}"
         );
@@ -9147,6 +9156,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::TurnComplete(TurnCompleteEvent {
+                    root_turn_id: None,
                     turn_id: "turn-failed".to_string(),
                     last_agent_message: None,
                     error: Some(ErrorEvent {
@@ -9217,6 +9227,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::TurnAborted(TurnAbortedEvent {
+                    root_turn_id: None,
                     turn_id: Some("turn-cancelled".to_string()),
                     reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
                     error: None,
@@ -9275,6 +9286,7 @@ mod tests {
                     .handle_event(
                         &session_client,
                         EventMsg::TurnAborted(TurnAbortedEvent {
+                            root_turn_id: None,
                             turn_id: turn_id.clone(),
                             reason: TurnAbortReason::Interrupted,
                             error: Some(ErrorEvent {
@@ -9683,6 +9695,8 @@ mod tests {
                     thread_id: parent_thread_id,
                     turn_id: "turn-1".to_string(),
                     item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
+                        model: None,
+                        reasoning_effort: None,
                         id: "subagent-activity-1".to_string(),
                         kind: codex_protocol::protocol::SubAgentActivityKind::Started,
                         agent_thread_id: child_thread_id,
@@ -9728,6 +9742,8 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                    model: None,
+                    reasoning_effort: None,
                     event_id: "subagent-activity-1".to_string(),
                     occurred_at_ms: 1,
                     agent_thread_id: child_thread_id,
@@ -9776,6 +9792,8 @@ mod tests {
             .expect("valid agent path");
         let activity = |kind| {
             EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                model: None,
+                reasoning_effort: None,
                 event_id: "stable-activity".to_string(),
                 occurred_at_ms: 1,
                 agent_thread_id: child_thread_id,
@@ -9847,6 +9865,8 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                    model: None,
+                    reasoning_effort: None,
                     event_id: "subagent-activity-1".to_string(),
                     occurred_at_ms: 1,
                     agent_thread_id: child_thread_id,
@@ -9862,6 +9882,8 @@ mod tests {
                     thread_id: parent_thread_id,
                     turn_id: "turn-1".to_string(),
                     item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
+                        model: None,
+                        reasoning_effort: None,
                         id: "subagent-activity-1".to_string(),
                         kind: codex_protocol::protocol::SubAgentActivityKind::Started,
                         agent_thread_id: child_thread_id,
@@ -9902,6 +9924,8 @@ mod tests {
         let (mut prompt_state, session_client, client) =
             prompt_state_for_projection(current_thread_id);
         let item = TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
+            model: None,
+            reasoning_effort: None,
             id: "self-activity".to_string(),
             kind: codex_protocol::protocol::SubAgentActivityKind::Started,
             agent_thread_id: current_thread_id,
@@ -9952,6 +9976,8 @@ mod tests {
                     thread_id: parent_thread_id,
                     turn_id: "turn-1".to_string(),
                     item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
+                        model: None,
+                        reasoning_effort: None,
                         id: "fallback-id".to_string(),
                         kind: codex_protocol::protocol::SubAgentActivityKind::Started,
                         agent_thread_id: child_thread_id,
@@ -9966,6 +9992,8 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                    model: None,
+                    reasoning_effort: None,
                     event_id: "specific-id".to_string(),
                     occurred_at_ms: 1,
                     agent_thread_id: child_thread_id,
@@ -10114,6 +10142,7 @@ mod tests {
 
         for event in [
             EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
                 root_turn_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: ModeKind::default(),
@@ -10122,6 +10151,7 @@ mod tests {
                 started_at: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
+                root_turn_id: None,
                 last_agent_message: None,
                 turn_id: "turn-1".to_string(),
                 error: None,
@@ -10131,6 +10161,7 @@ mod tests {
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnAborted(TurnAbortedEvent {
+                root_turn_id: None,
                 turn_id: Some("turn-2".to_string()),
                 reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
                 error: None,
@@ -10213,6 +10244,7 @@ mod tests {
             .handle_event(Event {
                 id: submission_id.clone(),
                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                    root_turn_id: None,
                     last_agent_message: None,
                     turn_id: "turn-1".to_string(),
                     error: None,
@@ -10618,10 +10650,16 @@ mod tests {
             .expect("runtime catalog should include GPT-6 Astra")
             .clone();
         assert!(astra.show_in_picker, "bundled Astra should be visible");
+        let sol = all_model_presets()
+            .iter()
+            .find(|preset| preset.model == "gpt-6.1-sol")
+            .expect("runtime catalog should include GPT-6.1 Sol")
+            .clone();
+        assert!(sol.show_in_picker, "bundled GPT-6.1 Sol should be visible");
         assert_eq!(
             codex_models_manager::test_support::get_model_offline_for_tests(None),
-            astra.model,
-            "Astra should be the bundled default without an explicit model"
+            sol.model,
+            "GPT-6.1 Sol should be the bundled default without an explicit model"
         );
         assert_eq!(
             codex_models_manager::test_support::get_model_offline_for_tests(Some("gpt-5.6-sol")),
@@ -10645,7 +10683,7 @@ mod tests {
             panic!("model options should be ungrouped");
         };
         assert_eq!(select.current_value.0.as_ref(), "gpt-5.6-sol");
-        for model_id in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+        for model_id in ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
             assert!(
                 models
                     .iter()
@@ -10883,12 +10921,9 @@ mod tests {
                     parsed_cmd: vec![],
                     source: Default::default(),
                     interaction_input: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
                     aggregated_output: String::new(),
                     exit_code: 0,
                     duration: std::time::Duration::from_millis(1),
-                    formatted_output: String::new(),
                     status: ExecCommandStatus::Completed,
                 },
             )
@@ -11006,12 +11041,9 @@ mod tests {
                     parsed_cmd: vec![],
                     source: Default::default(),
                     interaction_input: None,
-                    stdout: String::new(),
-                    stderr: REJECTION_REASON.to_string(),
                     aggregated_output: REJECTION_REASON.to_string(),
                     exit_code: -1,
                     duration: std::time::Duration::ZERO,
-                    formatted_output: REJECTION_REASON.to_string(),
                     status: ExecCommandStatus::Declined,
                 },
             )
@@ -11061,23 +11093,19 @@ mod tests {
     fn declined_command_reason_is_not_duplicated_after_visible_output() {
         let reason = "blocked by policy";
         assert_eq!(
-            PromptState::declined_command_reason(
-                &ExecCommandStatus::Declined,
-                false,
-                reason,
-                "aggregated fallback",
-                "stderr fallback",
-            ),
+            PromptState::declined_command_reason(&ExecCommandStatus::Declined, false, reason),
             Some(reason.to_string())
         );
         assert_eq!(
-            PromptState::declined_command_reason(
-                &ExecCommandStatus::Declined,
-                true,
-                reason,
-                "aggregated fallback",
-                "stderr fallback",
-            ),
+            PromptState::declined_command_reason(&ExecCommandStatus::Declined, true, reason),
+            None
+        );
+        assert_eq!(
+            PromptState::declined_command_reason(&ExecCommandStatus::Declined, false, " \n"),
+            None
+        );
+        assert_eq!(
+            PromptState::declined_command_reason(&ExecCommandStatus::Completed, false, reason),
             None
         );
     }
@@ -11194,12 +11222,9 @@ mod tests {
                     parsed_cmd: vec![],
                     source: Default::default(),
                     interaction_input: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
                     aggregated_output: String::new(),
                     exit_code: 0,
                     duration: std::time::Duration::from_millis(1),
-                    formatted_output: String::new(),
                     status: ExecCommandStatus::Completed,
                 },
             )
@@ -11812,6 +11837,7 @@ mod tests {
                             .take()
                             .unwrap_or_else(|| TurnInputSubmission::Started {
                                 turn_id: id.to_string(),
+                                root_turn_id: id.to_string(),
                             });
                         let turn_started =
                             matches!(turn_submission, TurnInputSubmission::Started { .. });
@@ -11883,12 +11909,9 @@ mod tests {
                                 parsed_cmd: vec![],
                                 source: Default::default(),
                                 interaction_input: None,
-                                stdout: "a\n".into(),
-                                stderr: String::new(),
                                 aggregated_output: "a\n".into(),
                                 exit_code: 0,
                                 duration: std::time::Duration::from_millis(10),
-                                formatted_output: "a\n".into(),
                                 status: ExecCommandStatus::Completed,
                                 completed_at_ms: 0,
                             }));
@@ -11904,16 +11927,14 @@ mod tests {
                                 parsed_cmd: vec![],
                                 source: Default::default(),
                                 interaction_input: None,
-                                stdout: "b\n".into(),
-                                stderr: String::new(),
                                 aggregated_output: "b\n".into(),
                                 exit_code: 0,
                                 duration: std::time::Duration::from_millis(10),
-                                formatted_output: "b\n".into(),
                                 status: ExecCommandStatus::Completed,
                                 completed_at_ms: 0,
                             }));
                             send(EventMsg::TurnComplete(TurnCompleteEvent {
+                                root_turn_id: None,
                                 last_agent_message: None,
                                 turn_id,
                                 error: None,
@@ -11953,6 +11974,7 @@ mod tests {
                                 .send(Event {
                                     id: id.to_string(),
                                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                        root_turn_id: None,
                                         last_agent_message: None,
                                         turn_id: id.to_string(),
                                         error: None,
@@ -11970,6 +11992,7 @@ mod tests {
                             .send(Event {
                                 id: id.to_string(),
                                 msg: EventMsg::TurnStarted(TurnStartedEvent {
+                                    turn_attribution: None,
                                     root_turn_id: None,
                                     model_context_window: None,
                                     collaboration_mode_kind: ModeKind::default(),
@@ -11995,6 +12018,7 @@ mod tests {
                             .send(Event {
                                 id: id.to_string(),
                                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                    root_turn_id: None,
                                     last_agent_message: None,
                                     turn_id: id.to_string(),
                                     error: None,
@@ -12042,6 +12066,7 @@ mod tests {
                             .send(Event {
                                 id: id.to_string(),
                                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                    root_turn_id: None,
                                     last_agent_message: None,
                                     turn_id: id.to_string(),
                                     error: None,

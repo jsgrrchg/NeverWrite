@@ -44,9 +44,9 @@ export const CODEX_RUNTIME_COMPONENTS = [
 ];
 
 export const CODEX_RUNTIME_BASELINE = Object.freeze({
-    tag: "rust-v0.159.0",
-    version: "0.159.0",
-    commit: "687a119f0fcaace47e1f1abcc77cec6c813fd6da",
+    tag: "rust-v0.162.1",
+    version: "0.162.1",
+    commit: "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
     v8Version: "150.4.0",
 });
 

@@ -29,10 +29,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
 - `codex-acp/`
   - upstream baseline: `zed-industries/codex-acp` `0.16.0`
   - synced against upstream adapter commit `bb590500e8646f6daf879b8b3c6a659fbd29017d`
-  - OpenAI Codex Rust crates: `rust-v0.159.0` (`687a119f0fcaace47e1f1abcc77cec6c813fd6da`)
+  - OpenAI Codex Rust crates: `rust-v0.162.1` (`092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`)
   - vendor ACP SDK: `agent-client-protocol` `0.14.0`
   - ACP wire protocol: v1; ACP v2 is not enabled by this runtime promotion
-  - local `vendor/codex-utils-pty/` snapshot: `0.159.0`, with the matching `[patch."https://github.com/openai/codex"]` entry and a self-contained manifest in the adapter workspace
+  - local `vendor/codex-utils-pty/` snapshot: `0.162.1`, with the matching `[patch."https://github.com/openai/codex"]` entry and a self-contained manifest in the adapter workspace
   - resolved V8 crate: `150.4.0`, built with OpenAI's verified `ptrcomp_sandbox_release` archive and source binding for the target
   - Rust toolchain: NeverWrite `1.96.0`; upstream Codex `1.95.0`
   - local NeverWrite delta remains intentionally bounded and currently lives in:
@@ -49,7 +49,7 @@ That means the directory is intentionally reproducible, but not yet minimal.
 
 ## Current Codex Delta
 
-The Codex vendor is no longer a raw upstream checkout. Its runtime compatibility baseline is OpenAI Codex `rust-v0.159.0`, resolved to `687a119f0fcaace47e1f1abcc77cec6c813fd6da` in `Cargo.lock`.
+The Codex vendor is no longer a raw upstream checkout. Its runtime compatibility baseline is OpenAI Codex `rust-v0.162.1`, resolved to `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d` in `Cargo.lock`.
 
 The remaining NeverWrite-specific delta exists to preserve desktop product behavior:
 
@@ -69,7 +69,7 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 - a private `codexAcp*` subagent contract for session creation, navigable activity breadcrumbs, child lifecycle, and receiver-owned inter-agent transcripts
 - per-turn coalescing of equivalent subagent waits; only fully terminal status sets complete the ACP activity
 - localized `StartThreadOptions`, shared models-manager, external code-mode provider, config, auth, MCP, permission, and thread-store adapters at the ACP boundary
-- a local `codex-utils-pty` `0.159.0` snapshot with its self-contained manifest, native executable-path encoding, upstream Unix process-group fallback, Windows Job Object and ConPTY path handling, and the upstream platform tests
+- a local `codex-utils-pty` `0.162.1` snapshot with its self-contained manifest, native executable-path encoding, upstream Unix process-group fallback, Windows Job Object and ConPTY path handling, and the upstream platform tests
 
 The runtime turn-input boundary uses `TurnInputRequest` with `StartIfIdle` and consumes the runtime acknowledgement before registering the ACP prompt. `NotSubmitted` and an impossible `Steered` acknowledgement resolve as ACP errors instead of leaving a response pending.
 
@@ -81,7 +81,7 @@ Reasoning options come from each runtime model preset. `max`, `ultra`, and futur
 
 The desktop release pipeline packages `codex-acp` and `codex-code-mode-host` as one runtime unit for macOS universal, Windows x64/ARM64, and Linux x64/ARM64. Each release build is lockfile-pinned, target-architecture checked, and signed together. Its packaged smoke drives an ACP `initialize`, `session/new`, and `session/prompt` exchange through the standalone host with a deterministic local Responses mock, verifies both the tool completion and assistant response, and proves a missing sibling host fails closed.
 
-When updating Codex again, treat upstream adapter commit `bb590500e8646f6daf879b8b3c6a659fbd29017d`, OpenAI Codex tag `rust-v0.159.0` at `687a119f0fcaace47e1f1abcc77cec6c813fd6da`, the local PTY `0.159.0` snapshot, V8 `150.4.0`, and the committed lockfile as one comparison base. Review the bounded delta file by file instead of replacing the vendor tree.
+When updating Codex again, treat upstream adapter commit `bb590500e8646f6daf879b8b3c6a659fbd29017d`, OpenAI Codex tag `rust-v0.162.1` at `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`, the local PTY `0.162.1` snapshot, V8 `150.4.0`, and the committed lockfile as one comparison base. Review the bounded delta file by file instead of replacing the vendor tree.
 
 Canonical compatibility checks:
 
@@ -92,9 +92,9 @@ node scripts/run-with-codex-v8.mjs --target "$HOST_TARGET" -- cargo check --lock
 node scripts/run-with-codex-v8.mjs --target "$HOST_TARGET" -- cargo test --locked --manifest-path ../../vendor/codex-acp/Cargo.toml --workspace
 ```
 
-## Codex 0.159.0 Compatibility Baseline
+## Codex 0.162.1 Compatibility Baseline
 
-The embedded runtime is pinned to OpenAI Codex `rust-v0.159.0`. Every Codex git dependency in `codex-acp/Cargo.toml` uses that tag, and `Cargo.lock` resolves it to `687a119f0fcaace47e1f1abcc77cec6c813fd6da`. The local `codex-utils-pty` snapshot is also `0.159.0`; it is part of the same runtime baseline, not an independently updatable crate.
+The embedded runtime is pinned to OpenAI Codex `rust-v0.162.1`. Every Codex git dependency in `codex-acp/Cargo.toml` uses that tag, and `Cargo.lock` resolves it to `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`. The local `codex-utils-pty` snapshot is also `0.162.1`; it is part of the same runtime baseline, not an independently updatable crate.
 
 The vendor toolchain inherits Rust `1.96.0` from the repository-root `rust-toolchain.toml`, which is compatible with the upstream Codex `1.95.0` toolchain. This promotion deliberately does not change these protocol boundaries:
 
@@ -103,7 +103,51 @@ The vendor toolchain inherits Rust `1.96.0` from the repository-root `rust-toolc
 - the adapter remains on ACP wire protocol v1; `unstable_protocol_v2` is not enabled
 - the desktop native backend remains `agent-client-protocol` `1.2.0`, which it communicates through the serialized ACP protocol rather than a shared Rust crate boundary
 
-### Changes from 0.157.1
+### Changes from 0.159.0
+
+All OpenAI Codex crates and the local PTY snapshot use `rust-v0.162.1`
+at `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`. The staging baseline,
+fixtures and lockfile resolve the same runtime. Rebuild and stage both
+`codex-acp` and `codex-code-mode-host` together.
+
+`ExecCommandEndEvent` now carries only `aggregated_output`; upstream removed
+`stdout`, `stderr` and `formatted_output`. The ACP projection consumes the
+aggregated text for definitive command-policy rejections while preserving
+streamed command output, terminal status, raw event output, file diffs and
+canonical activity identity. It emits a rejection reason only when no output
+was already displayed, and does not turn policy rejections into permission
+requests. Existing command-event fixtures use the new schema.
+
+Paginated restoration forwards `StoredModelContext.revision` to
+`ResumedHistory.history_revision`, allowing upstream to reuse the exact snapshot
+without losing model-visible context. Paginated subagent replay retains the new
+optional model and reasoning-effort fields in the canonical activity's raw
+output. Turn acknowledgements retain the runtime's local `turn_id` identity;
+new root-turn attribution does not replace the ACP session/turn identity.
+Regression coverage exercises lifecycle events with root-turn attribution and
+subagent model metadata restored across a display-history page boundary.
+
+The subagent snapshot fixture initializes upstream's new host-owned
+`turn_extension_init` field to its empty default. Root threads continue to use
+`StartThreadOptions::new`, preserving upstream defaults at the ACP boundary.
+The full PTY snapshot includes upstream Windows Job Object console suppression
+and unsuspended fallback launches when containment is unavailable. Its platform
+tests use upstream's pinned
+`codex-utils-cargo-bin` helper; the self-contained manifest and the two local
+Windows pointer-type adaptations remain the only source and manifest delta.
+
+The bundled fallback catalog now defaults to GPT-6.1 Sol when no model is
+configured. Explicit model selections and a valid authenticated account catalog
+remain authoritative; Astra, Sol and Luna remain selectable.
+
+Rust remains 1.96.0 (upstream 1.95.0), V8 remains 150.4.0, and the coordinated
+Rama family remains 0.3.0-alpha.4. RMCP and its macros now use upstream's
+3.3.0 Git pin at `3e636cab26c013eca5131103c03d20237f12c4df`.
+ACP v1, start-if-idle prompt admission, model restoration and the private
+NeverWrite metadata contract remain unchanged. New upstream UI features and
+optional tools require separate product integration.
+
+### Retained changes from 0.157.1 to 0.159.0
 
 All OpenAI Codex crates and the full local PTY snapshot now use `rust-v0.159.0`
 at `687a119f0fcaace47e1f1abcc77cec6c813fd6da`. The desktop staging baseline
@@ -183,7 +227,7 @@ certificate verifier. Rama prerelease packages remain coordinated with upstream.
 
 ### Lockfile and V8 provisioning
 
-The committed `Cargo.lock` is part of the runtime pin. In particular, `rama-core`, `rama-error`, `rama-macros`, and `rama-utils` must remain coordinated at `0.3.0-alpha.4`, matching the upstream 0.159.0 dependency graph. A broad lockfile regeneration can select stable Rama packages next to prerelease peers and produce an incompatible graph, so future promotions must compare this family with the candidate tag and update it as a coordinated set.
+The committed `Cargo.lock` is part of the runtime pin. In particular, `rama-core`, `rama-error`, `rama-macros`, and `rama-utils` must remain coordinated at `0.3.0-alpha.4`, matching the upstream 0.162.1 dependency graph. A broad lockfile regeneration can select stable Rama packages next to prerelease peers and produce an incompatible graph, so future promotions must compare this family with the candidate tag and update it as a coordinated set.
 
 The lockfile resolves `v8 150.4.0`. `apps/desktop/scripts/codex-v8-artifacts.mjs` obtains the target-specific `ptrcomp_sandbox_release` archive, source binding, and SHA-256 manifest from the official `openai/codex` release `rusty-v8-v150.4.0`. It authenticates the downloaded or cached manifest against the target-specific digest pinned in `apps/desktop/scripts/codex-v8-manifest-pins.mjs` before downloading archives or bindings, requires the manifest to cover exactly both artifacts, verifies their checksums before use, and caches the verified set under `apps/desktop/.cache/codex-v8/<version>/<profile>/<target>/`.
 
@@ -195,7 +239,7 @@ Local builds may provide `RUSTY_V8_ARCHIVE` and `RUSTY_V8_SRC_BINDING_PATH` only
 - MCP persistent approval, Guardian `WriteStdin`, image-generation failures, optional function-call IDs, `PathUri`, and runtime queue notifications have explicit safe projections.
 - Collaboration tools `SendMessage`, `FollowupTask`, `InterruptAgent`, and `ListAgents` preserve runtime activity identity. `SubAgentActivityKind::Completed` terminalizes that identity once, while internal agent messages remain outside the parent transcript.
 - Reasoning efforts are catalog-driven, including `max`, `ultra`, and future custom values. Load, resume, fork, and model changes retain an effort only when the selected model supports it.
-- The normal model picker follows the authenticated remote catalog and its visibility flags. The bundled fallback catalog lists GPT-6 Astra, Sol and Luna and selects Astra by default when no model is configured. A valid ChatGPT account catalog remains authoritative, and explicit model selections survive the default change. The Codex-only exact model-ID path remains available for unlisted models.
+- The normal model picker follows the authenticated remote catalog and its visibility flags. The bundled fallback catalog lists GPT-6.1 Sol and GPT-6 Astra, Sol and Luna, and selects GPT-6.1 Sol by default when no model is configured. A valid ChatGPT account catalog remains authoritative, and explicit model selections survive the default change. The Codex-only exact model-ID path remains available for unlisted models.
 - `TurnItem::Extension(ExtensionItem::Sleep(...))` is projected as the canonical `Waiting` activity and keeps stable item identity across live events and replay.
 - `ItemCompleted.started_at_ms` is propagated into activity metadata when positive so restored activities keep their upstream start time. Turn-level `started_at` fields are accepted but do not invent a second timeline contract.
 - `TurnComplete.error` emits a visible failed `turn_error` status and fails the pending ACP prompt instead of reporting `EndTurn`; aborts with an error follow the same failure contract, while ordinary cancellation keeps its lifecycle event and `Cancelled` result.
@@ -224,39 +268,39 @@ Portable plugins, thread sections/pinning, side conversations, audio/realtime, e
 | Linux x64 | Yes | — |
 | Linux ARM64 | No, because it is cross-compiled | Packaging, sidecar staging, and architecture checks run without executing the foreign binary |
 
-The smoke uses a temporary `CODEX_HOME`, a local deterministic Responses mock, and the 0.159.0 install-context layout where the packaged host is a sibling of `codex-acp`. It checks that an ACP image reaches Responses as inline image content, asserts a real ACP turn reaches both a code-mode tool completion and a final assistant response, and inspects the ACP process tree to prove the packaged standalone host was launched rather than an in-process fallback.
+The smoke uses a temporary `CODEX_HOME`, a local deterministic Responses mock, and the 0.162.1 install-context layout where the packaged host is a sibling of `codex-acp`. It checks that an ACP image reaches Responses as inline image content, asserts a real ACP turn reaches both a code-mode tool completion and a final assistant response, and inspects the ACP process tree to prove the packaged standalone host was launched rather than an in-process fallback.
 
 The same smoke starts an isolated copy of `codex-acp` without its sibling host and requires the code-mode tool to fail closed with the missing host path in its diagnostic. It does not require credentials or a network service.
 
 Linux x64 package CI also runs the vendor's unit tests and standalone-host
 integration tests in the release profile, reusing the verified V8 artifacts.
 
-Local validation for 0.159.0 on Linux x64 passes Clippy with warnings denied,
-111 adapter unit tests, 2 standalone-host integration tests, 62 PTY unit tests,
-552 frontend product tests and 63 staging/V8 tests. The PTY library and test
-sources also pass cross-target checks for Windows x64 and macOS ARM64.
-The native backend passes 360 tests; 10 vault watcher tests are blocked in this
-local environment by `Too many open files` from inotify, including when run
-serially with a raised process file-descriptor limit. Platform execution,
-signing and complete release packaging remain covered by package CI.
+Local validation for 0.162.1 on Linux x64 passes Clippy with warnings denied,
+112 adapter unit tests, 2 standalone-host integration tests, 62 PTY unit tests,
+615 frontend and staging/V8 tests, and all 370 native-backend tests. Builds use
+the verified V8 archive and source binding. The PTY library and test sources
+also pass cross-target checks for Windows x64 and macOS ARM64. Native platform
+execution, signing and complete release packaging remain covered by package CI.
 
 The deterministic smoke verifies six legacy load/resume transitions across
-0.157.1 → 0.159.0 → 0.157.1 → 0.159.0, plus paginated load/resume with more than
+0.159.0 → 0.162.1 → 0.159.0 → 0.162.1, plus paginated load/resume with more than
 one display-history page, continuation and a missing standalone-host check.
+Its fixture accepts legacy and canonical assistant events and both persisted
+turn-start spellings used by the two runtime versions.
 It uses temporary data and a loopback Responses mock, without real credentials.
 
 ### Follow-up and rollback
 
 #### Rollback baseline
 
-The rollback baseline is OpenAI Codex `rust-v0.157.1` at
-`36650394c5b38c2990ccf2a3457165ca3e9d9726`, local PTY `0.157.1`, V8 `150.4.0`,
+The rollback baseline is OpenAI Codex `rust-v0.159.0` at
+`687a119f0fcaace47e1f1abcc77cec6c813fd6da`, local PTY `0.159.0`, V8 `150.4.0`,
 and the lockfile before this promotion.
 Restore the runtime manifest, lockfile, PTY snapshot, adapter source, staging
 baseline, fixtures and documentation together; rebuild and stage both binaries.
 Do not downgrade one crate or one executable independently.
 
-Upstream state migration 58 adds indexes for sorting archived threads. Rollout
+Upstream state migration 59 adds an attachment reverse-lookup index. Rollout
 JSONL remains canonical.
 Before a deployment rollback, stop all processes sharing the affected
 `CODEX_HOME` and retain a consistent backup of that directory. Do not edit
@@ -275,8 +319,8 @@ feature or every user database.
 ```bash
 cd apps/desktop
 node scripts/smoke-codex-runtime-upgrade.mjs \
-  --previous /path/to/0.157.1/codex-acp \
-  --current /path/to/0.159.0/codex-acp
+  --previous /path/to/0.159.0/codex-acp \
+  --current /path/to/0.162.1/codex-acp
 ```
 
 Each executable must have its matching `codex-code-mode-host` sibling. Build the

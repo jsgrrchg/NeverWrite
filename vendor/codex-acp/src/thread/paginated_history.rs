@@ -205,6 +205,8 @@ impl<A: Auth> ThreadActor<A> {
                 (tool, ToolKind::Other, id)
             }
             ThreadItem::SubAgentActivity {
+                model,
+                reasoning_effort,
                 kind,
                 agent_thread_id,
                 agent_path,
@@ -213,6 +215,8 @@ impl<A: Auth> ThreadActor<A> {
                 let thread_id =
                     ThreadId::from_string(&agent_thread_id).map_err(Error::into_internal_error)?;
                 let core = codex_protocol::items::SubAgentActivityItem {
+                    model,
+                    reasoning_effort,
                     id,
                     kind: match kind {
                         codex_app_server_protocol::SubAgentActivityKind::Started => {

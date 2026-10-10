@@ -86,9 +86,13 @@ await runCodeModeTurn({
             const lines = (await fs.readFile(path.join(sessionsRoot, rolloutName), "utf8"))
                 .trim().split("\n").map((line) => JSON.parse(line));
             lines[0].payload.history_mode = "paginated";
+            // Accept legacy and canonical assistant events and both turn-start
+            // spellings from the independently built runtimes under test.
             const messageIndex = lines.findIndex((line) =>
-                line.type === "event_msg" && line.payload.type === "agent_message");
-            const turnStarted = lines.find((line) => line.type === "event_msg" && line.payload.type === "task_started");
+                line.type === "event_msg" && (line.payload.type === "agent_message" ||
+                    (line.payload.type === "item_completed" && line.payload.item.type === "AgentMessage")));
+            const turnStarted = lines.find((line) => line.type === "event_msg" &&
+                ["task_started", "turn_started"].includes(line.payload.type));
             assert(messageIndex >= 0 && turnStarted, "seed requires a completed conversation");
             const template = {
                 timestamp: lines[messageIndex].timestamp,

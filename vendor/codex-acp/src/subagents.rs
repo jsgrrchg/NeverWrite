@@ -1220,6 +1220,7 @@ mod tests {
             .try_into()
             .expect("current dir should be absolute");
         ThreadConfigSnapshot {
+            turn_extension_init: Default::default(),
             model: "gpt-5.5".to_string(),
             model_provider_id: "openai".to_string(),
             service_tier: Some("fast".to_string()),
@@ -1396,6 +1397,8 @@ mod tests {
         ] {
             let projection = projection_for_event(
                 &EventMsg::SubAgentActivity(SubAgentActivityEvent {
+                    model: None,
+                    reasoning_effort: None,
                     event_id: format!("event-{kind:?}"),
                     occurred_at_ms: 12,
                     agent_thread_id: child_thread_id,
@@ -1446,6 +1449,8 @@ mod tests {
     fn subagent_activity_uses_typed_thread_identity_for_self_reference() {
         let current_thread_id = ThreadId::new();
         let event = EventMsg::SubAgentActivity(SubAgentActivityEvent {
+            model: None,
+            reasoning_effort: None,
             event_id: "self".to_string(),
             occurred_at_ms: 0,
             agent_thread_id: current_thread_id,
@@ -1468,6 +1473,8 @@ mod tests {
         assert!(
             projection_for_event(
                 &EventMsg::SubAgentActivity(SubAgentActivityEvent {
+                    model: None,
+                    reasoning_effort: None,
                     agent_thread_id: distinct_thread_id,
                     ..event
                 }),
@@ -1716,6 +1723,8 @@ mod tests {
         let child_thread_id = ThreadId::new();
         let parent_session_id = SessionId::new(parent_thread_id.to_string());
         let item = SubAgentActivityItem {
+            model: None,
+            reasoning_effort: None,
             id: "activity-1".to_string(),
             kind: SubAgentActivityKind::Completed,
             agent_thread_id: child_thread_id,
