@@ -1,55 +1,17 @@
-//! Typed bridge for the unstable ACP provider configuration methods.
+//! ACP provider configuration using the SDK's native provider requests.
 //!
-//! The Rust ACP SDK exposes the provider schema but does not yet register the
-//! provider JSON-RPC methods. Keep that compatibility boundary here so this
-//! module can be removed when the SDK implements `unstable_llm_providers`.
-
-// The lifecycle integration lands separately; remove this allowance as soon as
-// the connection path starts calling the bridge.
-#![allow(dead_code)]
+//! Keep Claude-specific validation, capability checks, and Vertex metadata here.
 
 use std::collections::HashMap;
 
-use agent_client_protocol::{Agent, ConnectionTo, Error, JsonRpcRequest, JsonRpcResponse};
+use agent_client_protocol::{Agent, ConnectionTo, Error};
 use agent_client_protocol_schema::v1::{
-    DisableProviderRequest, DisableProviderResponse, InitializeResponse, ListProvidersRequest,
-    ListProvidersResponse, LlmProtocol, Meta, ProviderInfo, SetProviderRequest,
-    SetProviderResponse,
+    DisableProviderRequest, InitializeResponse, ListProvidersRequest, LlmProtocol, Meta,
+    ProviderInfo, SetProviderRequest,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const MAIN_PROVIDER_ID: &str = "main";
-const PROVIDERS_LIST_METHOD: &str = "providers/list";
-const PROVIDERS_SET_METHOD: &str = "providers/set";
-const PROVIDERS_DISABLE_METHOD: &str = "providers/disable";
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
-#[request(method = "providers/list", response = ListProvidersResult)]
-#[serde(transparent)]
-struct ListProviders(ListProvidersRequest);
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
-#[serde(transparent)]
-struct ListProvidersResult(ListProvidersResponse);
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
-#[request(method = "providers/set", response = SetProviderResult)]
-#[serde(transparent)]
-struct SetProvider(SetProviderRequest);
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
-#[serde(transparent)]
-struct SetProviderResult(SetProviderResponse);
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
-#[request(method = "providers/disable", response = DisableProviderResult)]
-#[serde(transparent)]
-struct DisableProvider(DisableProviderRequest);
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
-#[serde(transparent)]
-struct DisableProviderResult(DisableProviderResponse);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VertexProviderMeta {
@@ -74,10 +36,10 @@ pub(crate) async fn list_providers(
     connection: &ConnectionTo<Agent>,
 ) -> Result<Vec<ProviderInfo>, Error> {
     let response = connection
-        .send_request(ListProviders(ListProvidersRequest::new()))
+        .send_request(ListProvidersRequest::new())
         .block_task()
         .await?;
-    Ok(response.0.providers)
+    Ok(response.providers)
 }
 
 pub(crate) fn main_provider(providers: &[ProviderInfo]) -> Result<&ProviderInfo, Error> {
@@ -95,10 +57,7 @@ pub(crate) async fn set_main_provider(
     vertex: Option<VertexProviderMeta>,
 ) -> Result<(), Error> {
     let request = build_set_main_provider_request(api_type, base_url, headers, vertex)?;
-    connection
-        .send_request(SetProvider(request))
-        .block_task()
-        .await?;
+    connection.send_request(request).block_task().await?;
     Ok(())
 }
 
@@ -122,9 +81,7 @@ pub(crate) async fn configure_main_provider(
 #[allow(dead_code)]
 pub(crate) async fn disable_main_provider(connection: &ConnectionTo<Agent>) -> Result<(), Error> {
     connection
-        .send_request(DisableProvider(DisableProviderRequest::new(
-            MAIN_PROVIDER_ID,
-        )))
+        .send_request(DisableProviderRequest::new(MAIN_PROVIDER_ID))
         .block_task()
         .await?;
     Ok(())
@@ -213,10 +170,17 @@ fn invalid_params(message: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::JsonRpcMessage;
-    use agent_client_protocol_schema::v1::{AgentCapabilities, ErrorCode, ProvidersCapabilities};
+    use agent_client_protocol::{JsonRpcMessage, JsonRpcResponse};
+    use agent_client_protocol_schema::v1::{
+        AgentCapabilities, DisableProviderResponse, ErrorCode, ListProvidersResponse,
+        ProvidersCapabilities, SetProviderResponse,
+    };
     use agent_client_protocol_schema::ProtocolVersion;
     use serde_json::{json, Value};
+
+    const PROVIDERS_LIST_METHOD: &str = "providers/list";
+    const PROVIDERS_SET_METHOD: &str = "providers/set";
+    const PROVIDERS_DISABLE_METHOD: &str = "providers/disable";
 
     fn error_reason(error: &Error) -> Option<&str> {
         error
@@ -241,7 +205,7 @@ mod tests {
 
     #[test]
     fn serializes_list_request_with_the_official_method() {
-        let request = ListProviders(ListProvidersRequest::new());
+        let request = ListProvidersRequest::new();
         let untyped = request
             .to_untyped_message()
             .expect("list request should serialize");
@@ -259,7 +223,7 @@ mod tests {
             Some(VertexProviderMeta::new("project-1", "us-east5")),
         )
         .expect("valid Vertex request should build");
-        let untyped = SetProvider(request)
+        let untyped = request
             .to_untyped_message()
             .expect("set request should serialize");
 
@@ -282,7 +246,7 @@ mod tests {
             })
         );
 
-        let response = <ListProvidersResult as JsonRpcResponse>::from_value(
+        let response = <ListProvidersResponse as JsonRpcResponse>::from_value(
             PROVIDERS_LIST_METHOD,
             json!({
                 "providers": [{
@@ -302,32 +266,32 @@ mod tests {
 
         assert!(!serialized.contains("secret"));
         assert_eq!(
-            main_provider(&response.0.providers)
-                .unwrap()
-                .supported
-                .len(),
+            main_provider(&response.providers).unwrap().supported.len(),
             3
         );
     }
 
     #[test]
     fn serializes_disable_request_for_main_provider() {
-        let request = DisableProvider(DisableProviderRequest::new(MAIN_PROVIDER_ID));
+        let request = DisableProviderRequest::new(MAIN_PROVIDER_ID);
         let untyped = request
             .to_untyped_message()
             .expect("disable request should serialize");
 
         assert_eq!(untyped.method, PROVIDERS_DISABLE_METHOD);
         assert_eq!(untyped.params, json!({ "providerId": "main" }));
-        <DisableProviderResult as JsonRpcResponse>::from_value(PROVIDERS_DISABLE_METHOD, json!({}))
-            .expect("empty disable response should deserialize");
-        <SetProviderResult as JsonRpcResponse>::from_value(PROVIDERS_SET_METHOD, json!({}))
+        <DisableProviderResponse as JsonRpcResponse>::from_value(
+            PROVIDERS_DISABLE_METHOD,
+            json!({}),
+        )
+        .expect("empty disable response should deserialize");
+        <SetProviderResponse as JsonRpcResponse>::from_value(PROVIDERS_SET_METHOD, json!({}))
             .expect("empty set response should deserialize");
     }
 
     #[test]
     fn rejects_unknown_methods_and_missing_main_provider() {
-        let method_error = ListProviders::parse_message("providers/unknown", &json!({}))
+        let method_error = ListProvidersRequest::parse_message("providers/unknown", &json!({}))
             .expect_err("unknown method should fail");
         let provider_error = main_provider(&[ProviderInfo::new(
             "secondary",
