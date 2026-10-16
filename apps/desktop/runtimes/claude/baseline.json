@@ -1,11 +1,11 @@
 {
-  "version": "0.90.0",
-  "upstreamCommit": "7f7a1404a15024a45e62b699ced4de3fb7a814a2",
+  "version": "0.91.0",
+  "upstreamCommit": "c0af592d252e6bd072b53407f618a9dd4cd02797",
   "normalization": "Trim trailing whitespace on each line and terminate with one newline.",
   "runtimeFiles": {
-    "dist/acp-agent.js": "4d45b664d504589ca01d48c47ea379ede4070e7856569f0320226043f7c6b178",
+    "dist/acp-agent.js": "93144761f852703cd9e24ec1f452f7c0a7a176aa2ee18339dff63ff583ae717c",
     "dist/acp-subagents.js": "b67b240ca5e255562f03cbdd76ba34f78f9e358d76c0d5fa0a40501281e1e1cb",
-    "dist/air-extension.js": "69875f9340c9a7b2547c4200eee8b36eb5362877706dece4b6b786a6635e21dc",
+    "dist/air-extension.js": "b955ce93cd81d8975654ad0f3306dad26810c984c048bb35fbb1e8b0f27803c3",
     "dist/async-tasks.js": "e459b0b24d6cd6a17ab2c289a37c1e6ed634d43c7e840919c5efb52cfc96891a",
     "dist/auth-status.js": "ed7284417722a046dee8f057bd8c1291d809e9f3981197ae747674f24c9f353a",
     "dist/clear-context-coordinator.js": "c388c199e2a04591bb54a6df7018861b52ef9fea222768cf07f6e6b7b11735e0",
@@ -16,13 +16,14 @@
     "dist/exit-plan.js": "7872a2204bb2de25daa6e6a48a292a6237941e5e8a8730254bfeb1122f725cb7",
     "dist/file-change-audit.js": "716c24e6b6fb289dfc3ecf98c2d9832ecaafe7c3e24b169d44ef4148aaae9527",
     "dist/fork-session.js": "70da6567b5d9f76dedef4aa02dc1c53e4bdb5e7f4bc28e374d1ad680e6287c2a",
+    "dist/gateway-models.js": "f4432fc29bf4d1169d963419e3a38b5e27f5aac48ec9f18cf3b319a654b5bbb0",
     "dist/goal-extension.js": "822a8e90ac4eaf4b7ffb866abd3de531498e9c9a5ad72ec582dc232e814cbb1a",
     "dist/hide-claude-auth.js": "f40b3bb1ddf782f81b485cf1b199a64a1cdc23d6099ca44569b3db9ef3081edd",
     "dist/index.js": "4a1f0fff5cdd26b8c9adb5f9b3d314640e06f876cfff97cac437159b4551ec27",
     "dist/lib.js": "a39ff2411f35100442ba9092fe9628ab551f470bfa5d672969d349e376a85e02",
     "dist/managed-policy.js": "7371dcd3aa94c29b72061521269b5cbe3473ca8e838dc32e303bc2b7f22d5756",
     "dist/mcp-command.js": "0e7d482e38c95621da65ffcb16cb183867c799f3443d9bab82f74f556f788042",
-    "dist/native-subagents.js": "47d09c79822e8cd3fc1c5ff9c4e4fbfcbe5ea2d97aadf9948e04753987a5598f",
+    "dist/native-subagents.js": "c581f8125a6deeb42588d9cc78d89183ba58633dae1a100a7f277a4bb844faa5",
     "dist/paths.js": "bfb69caad5d450788eba632e0046cfdd66c2f8b2631286c9457e20844886c879",
     "dist/permissions/effects.js": "f2d2ce76f2012b6062ad565b079c2078ae4dbf9282f505876ff38313c521745b",
     "dist/permissions/modes.js": "34a150030f60e7708b268b42a32a6c704492e68de83cac2cf70f76f642bd3551",
@@ -41,25 +42,25 @@
     "dist/session-failure-extension.js": "79661ca0cbd893849d0610e5ed730c903117139d319ee010a4a851844028a068",
     "dist/session-index/activity.js": "58ce567131b85e0749dbf23fd99c47ce895f92f90859dd08307eafe07a4d0cd2",
     "dist/session-index/archive-title.js": "048af1cf5985f69780931715a8301f4180a3de3eef6b3584b674d08f9daca6f3",
-    "dist/session-index/connection.js": "fdf8f844ec41fbef7b00ebfa794a23784fb7e0e569edd53f24290fdadf637ab6",
+    "dist/session-index/connection.js": "379e8aa5484376f050f857359c0e0f4cd83d5d06669ae6fc212cc6917b24b56d",
     "dist/session-index/dir-listing.js": "754505218d82676aa85bac20daf9eb4b3726540a65b91fd5c9911fd9d85587f0",
     "dist/session-index/explicit-title.js": "9c82645871dbcfa1f95ba5e477a8ce332b10277138c6c4444bfa9c41598e247a",
     "dist/session-index/first-prompt.js": "fd36ea4e9616eb9594d4864dece0fc0acb701c10eb25049b39aafb04415d5078",
-    "dist/session-index/list-subscriptions.js": "bd76ce014c20a0bf612b0af97ae580196020cf8bf2ecaddb668dada900ee682f",
+    "dist/session-index/list-subscriptions.js": "a0dbe2bed9de369ae3f09f68a6ccbd2447d2a65e8a975a687323c52eee0bd14b",
     "dist/session-index/live-registry.js": "e4c72794ed6b007932ca9a51957517004ec1695b356363406d2baf8d816b7452",
     "dist/session-index/project-dirs.js": "48e4190cbd2d4b42d4da06dc0082801efc35bb537b7fe7e838c89b4fdcec65f4",
-    "dist/session-index/service.js": "5e95f39d64b29744a71ea94ffd203d33e3eacd61ac2e85fddcb6e7b665fec034",
-    "dist/session-index/session-index.js": "339a97d180a7d1f1eb7df2fb346396e5702480dd9c994e7845943b783098772d",
-    "dist/session-index/session-info.js": "09f3580bfb722d83d7e7d61bea04ddf2255bcf70bcccd7cc48cd116740950a40",
-    "dist/session-index/transcript-scan.js": "eee6c8808fffd9df8c6389b85c68f458449aa8f6cd77b82ad9f9c92a2a473664",
-    "dist/session-index/worktrees.js": "8b662c574081e3e288bfd3850f3bf322daffb8dc08391062095c74664da268eb",
+    "dist/session-index/service.js": "946b843b2814da5365361f07b2709ab07759fb53994e4c753a14af91ebb070f0",
+    "dist/session-index/session-index.js": "edc430bbf151774125faff15149cf154da73235d4193bfb0bc9f690c5d6bd532",
+    "dist/session-index/session-info.js": "19fc35a757869d1370872322e2a05f257c1d46498ad7387ac291b006f3a6e9fe",
+    "dist/session-index/transcript-scan.js": "ba360044bb3a16d81313cefa5851116865f802d168e8f517ecca5a4c9d45e2b7",
+    "dist/session-index/worktrees.js": "3d3d2b68c32f36a5c122428cff26af7ec69e5bcdd67e499668bb0c0ff2d16ddf",
     "dist/session-mode.js": "169095da66c8ce7e00d1975830c158acf3f1ffba267c20027d374c74b2df5614",
-    "dist/session-model.js": "b54f68d0a26e279729bc7761c8fa4ac21bb918f9d3a4e865e48f8d101b01f310",
+    "dist/session-model.js": "048fa591b1851a32db444523fb4a2c342d59045fc55b86cc8c3a1b06b85c4296",
     "dist/session-notices.js": "e538588d8a0b0cf09e3d411348c5a488663c3b2eedc1a936eb485e08fc62c5d4",
     "dist/session-timing.js": "7bf1567850d05094c1313295efd404b5cceb90d4251c5357387b8841bca4819f",
     "dist/session-titles.js": "f240005fcf400e167ecf3c043d055c6bf48f2855a0d3704d08cd30ac8fd10771",
     "dist/settings.js": "e0689304d5f5359148d6bf24d5c8ddedac4f9f5d0885ee81a99bff31fc5c08ae",
-    "dist/subagent-history.js": "ea76244f28d3b08da5e56dbb5967bc5ffbfdc396a73bb5b95724a27477f20520",
+    "dist/subagent-history.js": "8c557eef96882ffa99908feebab6a7d4782e9e004821bad53c0ca5dd45ef6076",
     "dist/subagent-replay.js": "8342ea38ca10540c43fe5e9ac194eb923c688a38309c390367fda3ee40d08f00",
     "dist/tool-calls/background.js": "77c7900e29ec6218a1fdea2983b430e7f29f95f4175d9237f1ef36a1983d3ab4",
     "dist/tool-calls/changed-meta-filter.js": "eb9ab3b811e56146a96a1ee23992ce975d56b6320723c57d02c71235b0982820",
@@ -67,7 +68,7 @@
     "dist/tool-calls/content.js": "51a91f15420e50de2a380f4c6fd966e8f5f3c11f6a30ae1ed84e682a806c4ca4",
     "dist/tool-calls/facts.js": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
     "dist/tool-calls/field-tracker.js": "d39ff27d4d3594b187ff37a3f69c6d2955da2c766962dc81b5755fb5681e8132",
-    "dist/tool-calls/renderer.js": "21e9221eecf8f623e3263a0ccf68d3f92a343baf8b03e269a9805051064a04e1",
+    "dist/tool-calls/renderer.js": "f989ff28b7bb75a543d78c363aaa804a13f43589f6962d76c0289464608d7bf0",
     "dist/tool-calls/reporters/agent.js": "7d63619e553778984d57e348fbecd9a261030d3db029856b81d1eca1f8a7089f",
     "dist/tool-calls/reporters/bash.js": "48e7f64477dc79642eea5215c4d14d349ae5efd1fb38b4973e45d8eb454ae340",
     "dist/tool-calls/reporters/compaction.js": "6724c5b0ac51ea929f19dc61645a0433fb5b90ced5e45ea4a676ad4986a26454",
@@ -85,7 +86,7 @@
     "dist/v2/agent.js": "9ee51ac08c3ec89078b6cc2634fe3819e68afda4212be4e7bd3172fe22cfa2b9",
     "dist/v2/initialize.js": "a280db3a67d6a02942423cf2a74b1cf4ce19d2eb941d628b735ebfeeb473b9af",
     "dist/v2/permission.js": "46d72c21a5ea84277a3812039300561d4c4aeb90fa44222e370e9f77a08ead52",
-    "dist/v2/prompt.js": "1fec1704cbd80e530419a2b2740f3c9ab0f5c7f803e9a3e97d9935a4c7146258",
+    "dist/v2/prompt.js": "95173b810929ab13a419ba7ad15c428a8eb2ca534bb22680c5ab7be221fb63fa",
     "dist/v2/session-update.js": "119758fd95271110d53a72040878520b0c667b7b042cac0e533c9fc429cc66c3",
     "dist/v2/session.js": "041b96453ea070c8e1ca2cffd113e885ce8a789869617bdafbcf7d5126307790",
     "dist/v2/terminal.js": "d5b9fbc8e8cad4d8e48cc13c9c53c801b546f26036043bde0ce44c8841c22fd9",
@@ -98,52 +99,52 @@
       "integrity": "sha512-fbP7qHZsFyTJVT0/RPrcWJ8An26qLXHEuGCHHEKDyxD1xpXV+Ejyh2LAE6vBAFePkpVjZeeohnbgvuEhZ7wLMg=="
     },
     "node_modules/@anthropic-ai/claude-agent-sdk": {
-      "version": "0.3.296",
-      "integrity": "sha512-Y+cZ2BT8X94mQ9GJOVyIqhjC/nWGvwozUVLjdkzX7aSt+zuo5tgk7Hdv9V7tEUQ9fKnEuiL6moYNWDeHqCD4Lw=="
+      "version": "0.3.300",
+      "integrity": "sha512-3NGPEUj+VTMQAQ0vaUUQtrce6rNb9a4XhY8QKIOLUp9mDkdbwrrjjD9oMKcDpcLhFKqZdTc02RBUo55GrbY9CA=="
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64": {
-      "version": "0.3.296",
-      "integrity": "sha512-Wrhy7rxQVUNowQRDpSZD+3MFSBAlN4TINZSpKD8PKpEValCG6x05N855MuITvwgkH0EeoyNLRCsowJaIHa8V9Q==",
+      "version": "0.3.300",
+      "integrity": "sha512-+pFKo4x5S6j4v+UTVZZFiLoJO7PMLVPNhIUBalk/RvMhcaN33Ubgk4aRAZpJmkxCcGMN6rWCevYhgT0nXkqytg==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64": {
-      "version": "0.3.296",
-      "integrity": "sha512-klMOQ1TdA7u6sWZJYw9l5byWYxMiWzbuPhzCgVVY+LJOs4FlhsS3qLXn2RZmIFhQv1u65zwX+2CRSWEJddqfVQ==",
+      "version": "0.3.300",
+      "integrity": "sha512-5mJ0Fdl85HQvFJM6XdFJry68vjEt5XyJ5mVvVO3G6U9R4a8rMJDH7Ypik3jlCW2eaB/mjbJVSI2ffV8ClaYA6A==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64": {
-      "version": "0.3.296",
-      "integrity": "sha512-+tC1KlUlp/3BQS+EfG8RBrmru4xKwF6hNEm15gNct8k9tNVRLYOftbkNCGJPTKkoBoq0sQ+Omojzwr/W2Dg60A==",
+      "version": "0.3.300",
+      "integrity": "sha512-zTl6mMnIDEaEEWebiwmZw+k3Sgi6zHlZcZDvrb3VlHaX1Ru5iikdWt+PS36tzJtrSnwX0XBV0EO8x1qqC2TmhA==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl": {
-      "version": "0.3.296",
-      "integrity": "sha512-8DEazoBU4I8HsPrXgSJ1Vq30nCBF7PaKjHz1o/igCz+HZu3qepHztWpoKJKQee5Mt4XsvZLwtKuxQo1F+SC6yQ==",
+      "version": "0.3.300",
+      "integrity": "sha512-du/RXcLDhWSMlpj3UoR9gHHb65uYOAHVQtQVtKtMyUYv4pC6M6zkY3GAqQFkW48I7wBlrHAFmScdD6nUDl005A==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64": {
-      "version": "0.3.296",
-      "integrity": "sha512-TStCnbg2iBtWJBQeMdO7Xwpx5IYWICmdcf7J9eXhIi4JbahWD+VLRaH5sxB+LLZjdBXekp8piKv6Ne2+arag0w==",
+      "version": "0.3.300",
+      "integrity": "sha512-sd2IUPPTVYiN5YPoC2InyOJy0fEt9HBwBZbtVobhugO0KWACMPzrYefLD/yu1uJsf73+tBnVQRfgb/btXukd8Q==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl": {
-      "version": "0.3.296",
-      "integrity": "sha512-lMquemenM5CDNZv6g1+xBSfQpat2xiwOQUnY2mwSQKjT+IfE5/F8CgRd38ZBljwGnedPIuKs/DAZMt4YslLF5w==",
+      "version": "0.3.300",
+      "integrity": "sha512-ncvILYs6HFkGkhec5fmhkVl57gZErqJNhv4YSpmLx5kIBL1vPzf666sG3VgApLUY74rAJ3y/vyr1e4DJBB6nWg==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-win32-arm64": {
-      "version": "0.3.296",
-      "integrity": "sha512-/epluPyoLm1NQAcHV0LUierKog7c9yyU8BgpZOtGWiM54nqTZKKBuCwANraV3ROfXYFfJdMV4Vehk/8fqxoOqQ==",
+      "version": "0.3.300",
+      "integrity": "sha512-TKH6bbbh4fUMhJycOun1AzOXPmNQ6vvsvWLMVxVsCca8Ro3aAo4zfdfniOjEktEDMUT53v45/fMe6Ca5/rtyrQ==",
       "optional": true
     },
     "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64": {
-      "version": "0.3.296",
-      "integrity": "sha512-T71Y/hp0v7VtRzTOoxAsIkPa68JpB1d/VvCKTTE9GzTkbjQZHjs3S1DM06LDxSpwjITF7OCVJq14+XjN8M9t/g==",
+      "version": "0.3.300",
+      "integrity": "sha512-VXY2/y9/3psK2Dd4H+s9m6J5HfkvC3g0fYH4KGeOdbko2LYWmBmIk8E9NsjUVsKL7oN//G2I82+yAZdie5JuDg==",
       "optional": true
     },
     "node_modules/@anthropic-ai/sdk": {
-      "version": "0.134.0",
-      "integrity": "sha512-j0DNXXKUKkr3kKyVR/I3pPWVv93g7vgHjgGYgh9uCXv5IKoXZPWmTwXKiVq/SZSbhBaD3KmtKhIszzt8dBnzog=="
+      "version": "0.135.0",
+      "integrity": "sha512-WWrdL57JhU5KoynpTjt9GXK6k7ud9nPw2uw/Trn+oBXh6s0KpjhAccWZm2Qxw08ARYG1UDQj5iC+JO42j1rt/g=="
     },
     "node_modules/@babel/runtime": {
       "version": "7.29.10",
