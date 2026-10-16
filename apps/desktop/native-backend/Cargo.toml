@@ -4,8 +4,8 @@ version = "0.8.13"
 edition = "2021"
 
 [dependencies]
-agent-client-protocol = { version = "=1.2.0", features = ["unstable"] }
-agent-client-protocol-schema = { version = "=1.4.0", features = ["unstable_llm_providers"] }
+agent-client-protocol = { version = "=3.3.0", features = ["unstable"] }
+agent-client-protocol-schema = { version = "=1.11.0", features = ["unstable_llm_providers"] }
 base64 = "0.22.1"
 cap-std = "3"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-async-persistent", "async-io", "crypto-rust"] }
