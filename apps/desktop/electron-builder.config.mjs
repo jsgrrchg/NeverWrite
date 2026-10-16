@@ -165,6 +165,11 @@ export default {
             url: "https://updates.neverwrite.invalid/feed",
         },
     ],
+    // The legacy ARM64 AppImage runtime requires an unversioned libz.so on
+    // the user's machine. Use the static runtime for ARM64 packages.
+    toolsets: {
+        appimage: process.arch === "arm64" ? "1.0.3" : "0.0.0",
+    },
     afterPack: path.join(__dirname, "scripts", "verify-electron-bundle.mjs"),
     mac: {
         category: "public.app-category.productivity",
