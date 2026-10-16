@@ -28,8 +28,8 @@ and terminal-auth routing helpers are in
 
 All built-in and custom runtimes use the native backend's shared ACP actor and
 ACP wire protocol v1. There is no separate Grok protocol implementation or
-vendored legacy ACP SDK. The backend uses `agent-client-protocol` 1.2.0 with
-schema 1.4.0; these SDK package versions are not the wire protocol version.
+vendored legacy ACP SDK. The backend uses `agent-client-protocol` 3.3.0 with
+schema 1.11.0; these SDK package versions are not the wire protocol version.
 
 Model, mode, and reasoning selectors use advertised ACP `configOptions` and
 `session/set_config_option`. Grok's old `models` and `_meta.modelState` fields
