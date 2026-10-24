@@ -1,8 +1,8 @@
 # Claude runtime
 
 This private installation manifest pins the published Claude ACP adapter to
-`0.91.0`, using its official Claude Agent SDK dependency `0.3.300`. All eight
-SDK native packages are locked to `0.3.300` too. `baseline.json` records the
+`0.94.0`, using its official Claude Agent SDK dependency `0.3.303`. All eight
+SDK native packages are locked to `0.3.303` too. `baseline.json` records the
 complete production graph and published runtime hashes. There is no SDK
 override or local runtime patch; `patches.json` is empty.
 
@@ -36,7 +36,7 @@ https://github.com/agentclientprotocol/claude-agent-acp/pull/1006, so the runtim
 no longer carries a TaskList patch. The TaskList contracts remain as regression
 coverage for the published implementation.
 
-ACP `0.91.0` supplies Claude Code `2.1.300`. Its model catalog exposes Sonnet 5.5
+ACP `0.94.0` supplies Claude Code `2.1.303`. Its model catalog exposes Sonnet 5.5
 and Haiku 5.5 under the official `sonnet` and `haiku` aliases. NeverWrite's chat
 selector uses the model options returned by ACP; the native CLI resolves these
 aliases to `claude-sonnet-5-5` and `claude-haiku-5-5` on provider requests.
@@ -80,12 +80,13 @@ The `0.81.2` update keeps the same production dependency graph. Its published
 JavaScript changes the ACP agent, exit-plan handling, and native subagent
 runtime; the runtime baseline records those three new file hashes.
 
-The `0.91.0` baseline comes from published tag commit
-`c0af592d252e6bd072b53407f618a9dd4cd02797`. It includes ACP SDK `1.8.0`,
-Claude Agent SDK `0.3.300`, the resolved Anthropic SDK peer `0.135.0`, `diff`
-`9.0.0` and `zod` `4.6.7`. It records all 89 published JavaScript modules,
-including gateway model discovery, the MCP command, turn events, AIR session index
-and draft ACP v2 surface, and the complete locked production dependency graph.
+The `0.94.0` baseline comes from published tag commit
+`7bcbfc7a5ca7ab9c7eece4f0749ccaf49c7ba7e1`. It includes ACP SDK `2.0.0`,
+Claude Agent SDK `0.3.303`, the resolved Anthropic SDK peer `0.135.0`, `diff`
+`9.0.0` and `zod` `4.6.7`. It records all 91 published JavaScript modules,
+including client system prompts, prompt suggestions, gateway model discovery,
+the MCP command, turn events, AIR session index and draft ACP v2 surface, and
+the complete locked production dependency graph.
 
 ### Updating the runtime
 
@@ -196,6 +197,24 @@ Vertex and gateways configured through `authenticate` retain their existing
 catalog behavior. Child-session cancellation, subagent restoration, AIR worktree
 metadata and draft ACP v2 changes remain outside the current client capabilities.
 The runtime remains unmodified, with no local patches or SDK overrides.
+
+In `0.92.0`, the adapter publishes predicted follow-up prompts through
+`session_info_update._meta.promptSuggestions`. NeverWrite currently consumes only
+the title from session info updates, so suggestions do not change its composer.
+MCP server/tool metadata, subagent file-change reports and restored subagent
+sessions remain outside the advertised AIR and native-subagent capabilities.
+ACP SDK `1.9.0` and the draft v2 clarifications retain the ACP v1 integration.
+In `0.93.0`, `/remote-control` becomes available when the SDK supports it; the
+existing available-command bridge can forward it without a new UI. Its native
+fork/session-list fix does not change NeverWrite's persisted-history forks.
+In `0.94.0`, ACP SDK moves to `2.0.0`. Upstream switches to its `/unstable`
+entrypoints while preserving the ACP v1 wire surface; this does not require a
+Rust client migration or enable draft ACP v2. Claude Agent SDK and all eight
+native packages move to `0.3.303`. Gateway model matching now accepts OpenRouter's
+`anthropic/` prefix, dotted versions and variant suffixes, and skill resolution
+uses the declared skill name instead of its directory name. The AIR history-replay
+end event remains outside the current capabilities. The runtime remains
+unmodified, with no local patches or SDK overrides.
 
 The push-only authStatus, goal, AIR session-failure and JetBrains file-audit
 extensions remain outside the current client integration. NeverWrite's own
