@@ -88,6 +88,11 @@ including client system prompts, prompt suggestions, gateway model discovery,
 the MCP command, turn events, AIR session index and draft ACP v2 surface, and
 the complete locked production dependency graph.
 
+The `0.94.0` dependency baseline includes the security updates to `body-parser`
+`2.4.0` and `fast-uri` `3.1.9`. Their versions and integrity hashes are recorded
+alongside the isolated lockfile; the ACP adapter, SDK, native packages and
+published JavaScript hashes retain the same versions and contents.
+
 ### Updating the runtime
 
 1. Update the exact stable ACP pin in `package.json`.
