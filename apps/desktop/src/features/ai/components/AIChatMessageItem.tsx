@@ -1234,6 +1234,7 @@ function GeneratedImageMessage({ message }: { message: AIChatMessage }) {
     const [loadFailed, setLoadFailed] = useState(false);
     const [copied, setCopied] = useState(false);
     const imagePath = messageMetaString(message, "image_path");
+    const fileId = messageMetaString(message, "image_file_id");
     const revisedPrompt = messageMetaString(message, "revised_prompt");
     const status = String(message.meta?.image_status ?? "");
     const isInProgress =
@@ -1344,9 +1345,11 @@ function GeneratedImageMessage({ message }: { message: AIChatMessage }) {
                             ? message.content || "Image generation failed"
                             : previewUrl
                               ? "Image file could not be loaded"
-                              : "Image path is unavailable"}
+                              : fileId
+                                ? `Image attachment: ${fileId}`
+                                : "Image path is unavailable"}
                     </div>
-                    {!isFailed ? (
+                    {!isFailed && !fileId ? (
                         <div
                             className="mt-1"
                             style={{

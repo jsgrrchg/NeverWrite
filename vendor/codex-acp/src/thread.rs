@@ -29,7 +29,10 @@ use codex_core::{
     config::{Config, PermissionProfileSnapshot, set_project_trust_level},
     review_prompts::user_facing_hint,
 };
-use codex_extension_items::{ExtensionItem, image_generation::ImageGenerationFailure};
+use codex_extension_items::{
+    ExtensionItem,
+    image_generation::{GeneratedImageRef, ImageGenerationFailure},
+};
 use codex_features::Feature;
 use codex_http_client::{HttpClientFactory, OutboundProxyPolicy};
 use codex_login::auth::AuthManager;
@@ -1048,10 +1051,17 @@ fn image_generation_tool_status(status: &str) -> ToolCallStatus {
     }
 }
 
+fn generated_image_detail(image: &GeneratedImageRef) -> String {
+    match image {
+        GeneratedImageRef::Inline { result } => result.clone(),
+        GeneratedImageRef::File { file_id } => format!("Image attachment: {file_id}"),
+    }
+}
+
 fn image_generation_completion_parts(
     status: String,
     revised_prompt: Option<String>,
-    result: String,
+    image: GeneratedImageRef,
     saved_path: Option<String>,
     failure: Option<ImageGenerationFailure>,
 ) -> (String, ToolCallStatus, Option<String>, serde_json::Value) {
@@ -1078,14 +1088,15 @@ fn image_generation_completion_parts(
         "Generated image"
     }
     .to_string();
+    let image_detail = generated_image_detail(&image);
     let detail = failure_detail
         .clone()
         .or_else(|| saved_path.clone())
-        .or_else(|| Some(result.clone()));
-    let mut raw_input = json!({
-        "status": status,
-        "result": result.clone(),
-    });
+        .or_else(|| Some(image_detail.clone()));
+    let mut raw_input = match image {
+        GeneratedImageRef::Inline { result } => json!({ "status": status, "result": result }),
+        GeneratedImageRef::File { file_id } => json!({ "status": status, "fileId": file_id }),
+    };
     if let Some(object) = raw_input.as_object_mut() {
         if let Some(saved_path) = saved_path {
             object.insert("path".to_string(), json!(saved_path));
@@ -1097,7 +1108,10 @@ fn image_generation_completion_parts(
             object.insert("failure".to_string(), json!(failure));
         }
         if is_failure {
-            object.insert("error".to_string(), json!(failure_detail.unwrap_or(result)));
+            object.insert(
+                "error".to_string(),
+                json!(failure_detail.unwrap_or(image_detail)),
+            );
         }
     }
 
@@ -1108,12 +1122,12 @@ fn completed_image_generation_tool_call(
     call_id: String,
     status: String,
     revised_prompt: Option<String>,
-    result: String,
+    image: GeneratedImageRef,
     saved_path: Option<String>,
     failure: Option<ImageGenerationFailure>,
 ) -> ToolCall {
     let (title, tool_status, detail, raw_input) =
-        image_generation_completion_parts(status, revised_prompt, result, saved_path, failure);
+        image_generation_completion_parts(status, revised_prompt, image, saved_path, failure);
     let mut tool_call = ToolCall::new(image_generation_tool_call_id(&call_id), title)
         .kind(ToolKind::Other)
         .status(tool_status)
@@ -1129,12 +1143,12 @@ fn completed_image_generation_tool_update(
     call_id: String,
     status: String,
     revised_prompt: Option<String>,
-    result: String,
+    image: GeneratedImageRef,
     saved_path: Option<String>,
     failure: Option<ImageGenerationFailure>,
 ) -> ToolCallUpdate {
     let (title, tool_status, detail, raw_input) =
-        image_generation_completion_parts(status, revised_prompt, result, saved_path, failure);
+        image_generation_completion_parts(status, revised_prompt, image, saved_path, failure);
     let mut fields = ToolCallUpdateFields::new()
         .title(title)
         .status(tool_status)
@@ -1425,7 +1439,7 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
             item.saved_path
                 .as_ref()
                 .map(|path| path.display().to_string())
-                .or_else(|| Some(item.result.clone())),
+                .or_else(|| Some(generated_image_detail(&item.image))),
         ),
         TurnItem::ImageView(item) => (
             "Viewing image",
@@ -1879,6 +1893,32 @@ impl PromptState {
                 request: pending_request,
             },
         );
+    }
+
+    async fn abandon_mcp_elicitation(
+        &mut self,
+        client: &SessionClient,
+        event: &codex_protocol::approvals::ElicitationAbandonedEvent,
+    ) {
+        let key = mcp_elicitation_request_key(&event.server_name, &event.id);
+        if self.pending_permission_interactions.remove(&key).is_none() {
+            return;
+        }
+        // ACP still requires a response to the original permission request. Leave
+        // that task alive; its eventual response is ignored after retiring this key.
+        let call_id = mcp_tool_approval_call_id(&event.id)
+            .unwrap_or_else(|| format!("mcp_elicitation_{}", event.id));
+        client
+            .send_tool_call_update(ToolCallUpdate::new(
+                call_id,
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Failed)
+                    .content(vec![ToolCallContent::Content(Content::new(
+                        "MCP approval request is no longer active.",
+                    ))])
+                    .raw_output(json!({"cancelled": true, "reason": "elicitation_abandoned"})),
+            ))
+            .await;
     }
 
     fn detach_pending_interactions(&mut self) {
@@ -2492,7 +2532,7 @@ impl PromptState {
             call_id,
             status,
             revised_prompt,
-            result,
+            image,
             saved_path,
             failure,
             ..
@@ -2503,7 +2543,7 @@ impl PromptState {
                 call_id,
                 status,
                 revised_prompt,
-                result,
+                image,
                 saved_path,
                 failure,
             ))
@@ -2680,9 +2720,6 @@ impl PromptState {
             }
             EventMsg::UserMessage(UserMessageEvent {
                 message,
-                images: _,
-                text_elements: _,
-                local_images: _,
                 ..
             }) => {
                 info!("User message: {message:?}");
@@ -2729,7 +2766,6 @@ impl PromptState {
             }
             EventMsg::AgentMessage(AgentMessageEvent {
                 message,
-                phase: _,
                 ..
             }) => {
                 info!("Agent message (non-delta) received: {message:?}");
@@ -2950,7 +2986,8 @@ impl PromptState {
                                 call_id: image_item.id,
                                 status: image_item.status,
                                 revised_prompt: image_item.revised_prompt,
-                                result: image_item.result,
+                                image: GeneratedImageRef::Inline { result: image_item.result },
+                                input_images: Vec::new(),
                                 saved_path: image_item.saved_path,
                                 transparent_background: None,
                                 failure: None,
@@ -2965,10 +3002,11 @@ impl PromptState {
                                 call_id: image_item.id,
                                 status: image_item.status,
                                 revised_prompt: image_item.revised_prompt,
-                                result: image_item.result,
+                                image: image_item.image,
+                                input_images: image_item.input_images,
                                 saved_path: image_item.saved_path,
-                                transparent_background: None,
-                                failure: None,
+                                transparent_background: image_item.transparent_background,
+                                failure: image_item.failure,
                             },
                         )
                         .await;
@@ -3314,6 +3352,9 @@ impl PromptState {
             | EventMsg::SafetyBuffering(..)
             | EventMsg::SubAgentActivity(..) => {}
 
+            // Abandonment is routed by request identity before submission dispatch.
+            EventMsg::ElicitationAbandoned(..) => {}
+
             // Ignore these events
             EventMsg::AgentReasoningRawContent(..)
             | EventMsg::ThreadRolledBack(..)
@@ -3568,8 +3609,6 @@ impl PromptState {
             changes,
             reason,
             // grant_root doesn't seem to be set anywhere on the codex side
-            grant_root: _,
-            turn_id: _,
             ..
         } = event;
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
@@ -3756,7 +3795,6 @@ impl PromptState {
             content_items,
             success,
             error,
-            duration: _,
             ..
         } = event;
 
@@ -4005,7 +4043,6 @@ impl PromptState {
             command,
             cwd,
             parsed_cmd,
-            process_id: _,
             ..
         } = event;
         // Events can arrive out of order. Once an end event has made this
@@ -5751,9 +5788,7 @@ impl<A: Auth> ThreadActor<A> {
             EventMsg::UserMessage(UserMessageEvent { message, .. }) => {
                 self.client.send_user_message(message.clone()).await;
             }
-            EventMsg::AgentMessage(AgentMessageEvent {
-                message, phase: _, ..
-            }) => {
+            EventMsg::AgentMessage(AgentMessageEvent { message, .. }) => {
                 self.client.send_agent_text(message.clone()).await;
             }
             EventMsg::AgentReasoning(AgentReasoningEvent { text }) => {
@@ -5771,7 +5806,7 @@ impl<A: Auth> ThreadActor<A> {
                 call_id,
                 status,
                 revised_prompt,
-                result,
+                image,
                 saved_path,
                 failure,
                 ..
@@ -5781,7 +5816,7 @@ impl<A: Auth> ThreadActor<A> {
                         call_id.clone(),
                         status.clone(),
                         revised_prompt.clone(),
-                        result.clone(),
+                        image.clone(),
                         saved_path.as_ref().map(|path| path.display().to_string()),
                         failure.clone(),
                     ))
@@ -6135,7 +6170,9 @@ impl<A: Auth> ThreadActor<A> {
                             .unwrap_or_else(|| generate_fallback_id("image_generation")),
                         status.clone(),
                         revised_prompt.clone(),
-                        result.clone(),
+                        GeneratedImageRef::Inline {
+                            result: result.clone(),
+                        },
                         None,
                         None,
                     ))
@@ -6147,6 +6184,22 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     async fn handle_event(&mut self, Event { id, msg }: Event) {
+        if let EventMsg::ElicitationAbandoned(event) = &msg {
+            // Upstream emits a synthetic event ID rather than the originating
+            // submission ID. Match the server and request token across projections.
+            for state in self
+                .submissions
+                .values_mut()
+                .map(|submission| match submission {
+                    SubmissionState::Prompt(state) => state,
+                })
+                .chain(self.event_projections.values_mut())
+            {
+                state.abandon_mcp_elicitation(&self.client, event).await;
+            }
+            return;
+        }
+
         if let EventMsg::ThreadSettingsApplied(event) = &msg {
             if let Err(error) = self.sync_config_with_thread_settings(&event.thread_settings) {
                 warn!("Failed to synchronize ACP session configuration: {error:?}");
@@ -7238,7 +7291,10 @@ mod tests {
                     call_id: "img-limited".to_string(),
                     status: "completed".to_string(),
                     revised_prompt: None,
-                    result: String::new(),
+                    image: GeneratedImageRef::Inline {
+                        result: String::new(),
+                    },
+                    input_images: Vec::new(),
                     transparent_background: None,
                     failure: Some(ImageGenerationFailure::UsageLimitExceeded {
                         limit_id: "images-per-day".to_string(),
@@ -10339,6 +10395,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_backed_images_preserve_identity_in_live_and_paginated_replay()
+    -> anyhow::Result<()> {
+        let (mut actor, client, thread) = setup_actor(|_| {}).await?;
+        let state =
+            PromptState::projection("live-image".into(), thread, actor.resolution_tx.clone());
+        // Transitional rollouts can contain an empty legacy result beside fileId.
+        let event: ImageGenerationEndEvent = serde_json::from_value(json!({
+            "call_id": "file-image", "status": "completed", "fileId": "file-123", "result": ""
+        }))?;
+        state
+            .send_image_generation_completed(&actor.client, event)
+            .await;
+        let item: codex_app_server_protocol::ThreadItem = serde_json::from_value(json!({
+            "type": "imageGeneration", "id": "file-replay", "status": "completed", "fileId": "file-456"
+        }))?;
+        actor
+            .handle_replay_stored_history(vec![stored_history_item(item)])
+            .await?;
+        let notifications = client.notifications.lock().unwrap();
+        for (id, file_id) in [
+            ("neverwrite:image:file-image", "file-123"),
+            ("neverwrite:image:file-replay", "file-456"),
+        ] {
+            let raw = notifications
+                .iter()
+                .find_map(|notification| match &notification.update {
+                    SessionUpdate::ToolCallUpdate(update)
+                        if update.tool_call_id.0.as_ref() == id =>
+                    {
+                        update.fields.raw_input.as_ref()
+                    }
+                    SessionUpdate::ToolCall(call) if call.tool_call_id.0.as_ref() == id => {
+                        call.raw_input.as_ref()
+                    }
+                    _ => None,
+                })
+                .expect("file-backed image should cross the ACP boundary");
+            assert_eq!(raw["fileId"], file_id);
+            assert!(
+                raw.get("result").is_none(),
+                "file IDs must never be treated as base64"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abandoned_elicitation_retires_only_matching_request_and_ignores_late_reply()
+    -> anyhow::Result<()> {
+        let (mut actor, client, thread) = setup_actor(|_| {}).await?;
+        let mut state = PromptState::projection(
+            "original-submission".into(),
+            thread.clone(),
+            actor.resolution_tx.clone(),
+        );
+        let request_id =
+            codex_protocol::mcp::RequestId::String("mcp_tool_call_approval_tool-1".into());
+        let key = mcp_elicitation_request_key("server-a", &request_id);
+        for server in ["server-a", "server-b"] {
+            state.pending_permission_interactions.insert(
+                mcp_elicitation_request_key(server, &request_id),
+                PendingPermissionInteraction {
+                    id: 7,
+                    request: PendingPermissionRequest::McpElicitation {
+                        server_name: server.into(),
+                        request_id: request_id.clone(),
+                        option_map: HashMap::new(),
+                    },
+                },
+            );
+        }
+        actor
+            .submissions
+            .insert("original-submission".into(), SubmissionState::Prompt(state));
+        let event =
+            EventMsg::ElicitationAbandoned(codex_protocol::approvals::ElicitationAbandonedEvent {
+                server_name: "server-a".into(),
+                id: request_id.clone(),
+            });
+        for _ in 0..2 {
+            actor
+                .handle_event(Event {
+                    id: "mcp_elicitation_abandoned".into(),
+                    msg: event.clone(),
+                })
+                .await;
+        }
+        let SubmissionState::Prompt(state) =
+            actor.submissions.get_mut("original-submission").unwrap();
+        assert!(!state.pending_permission_interactions.contains_key(&key));
+        assert!(
+            state
+                .pending_permission_interactions
+                .contains_key(&mcp_elicitation_request_key("server-b", &request_id))
+        );
+        state
+            .handle_permission_request_resolved(
+                &actor.client,
+                7,
+                key,
+                Ok(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("approved")),
+                )),
+            )
+            .await?;
+        assert!(
+            thread.ops.lock().unwrap().is_empty(),
+            "a late reply cannot grant abandoned permissions"
+        );
+        let notifications = client.notifications.lock().unwrap();
+        let updates: Vec<_> = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update) => Some(update),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].tool_call_id.0.as_ref(), "tool-1");
+        assert_eq!(updates[0].fields.status, Some(ToolCallStatus::Failed));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn image_generation_events_preserve_neverwrite_contract() -> anyhow::Result<()> {
         let session_id = SessionId::new("test");
         let client = Arc::new(StubClient::new());
@@ -10369,7 +10549,10 @@ mod tests {
                     call_id: "img-1".to_string(),
                     status: "completed".to_string(),
                     revised_prompt: Some("A clearer prompt".to_string()),
-                    result: "base64-image-data".to_string(),
+                    image: GeneratedImageRef::Inline {
+                        result: "base64-image-data".to_string(),
+                    },
+                    input_images: Vec::new(),
                     failure: None,
                     saved_path: Some(
                         std::env::current_dir()
@@ -10444,6 +10627,7 @@ mod tests {
 
         actor
             .replay_response_item(&ResponseItem::ImageGenerationCall {
+                encrypted_content: None,
                 id: Some(ResponseItemId::from_server("img-replay-1".to_string())),
                 status: "completed".to_string(),
                 revised_prompt: Some("A replayed prompt".to_string()),
@@ -10509,7 +10693,10 @@ mod tests {
                 call_id: "img-event-replay".to_string(),
                 status: "failed".to_string(),
                 revised_prompt: None,
-                result: "image generation failed".to_string(),
+                image: GeneratedImageRef::Inline {
+                    result: "image generation failed".to_string(),
+                },
+                input_images: Vec::new(),
                 saved_path: Some(saved_path),
                 transparent_background: None,
                 failure: None,

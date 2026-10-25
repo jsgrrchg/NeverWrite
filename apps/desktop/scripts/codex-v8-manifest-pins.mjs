@@ -1,4 +1,20 @@
 const pinnedManifestSha256ByVersion = Object.freeze({
+    "152.2.0": Object.freeze({
+        ptrcomp_sandbox_release: Object.freeze({
+            "aarch64-apple-darwin":
+                "5cebc5830127b460ae8af23004430fd70b535bb22d599d68d024b60df08400d8",
+            "x86_64-apple-darwin":
+                "f9259abda68c50bfd71d856ece97d272832ac9c18e91fdc892fa9625a003b7bc",
+            "aarch64-pc-windows-msvc":
+                "a4c895148240270c8b685bf0b86ca6257533c3ecad8833560e462b0854cb3bfc",
+            "x86_64-pc-windows-msvc":
+                "e16bf2d7bc4b64a96a89e87048d61b9c466040e4c82ae64cfe9f7f2052ef3179",
+            "aarch64-unknown-linux-gnu":
+                "94195fe3a70a6043474afabd145c0bbe322f409e95a52c745d64c9f929f80a22",
+            "x86_64-unknown-linux-gnu":
+                "1ec730635970ab1c0e8f4764ea113ad29d69d7f8d4c2ae69f3d766434a759350",
+        }),
+    }),
     "150.4.0": Object.freeze({
         ptrcomp_sandbox_release: Object.freeze({
             "aarch64-apple-darwin":

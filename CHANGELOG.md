@@ -40,6 +40,11 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 - Updated the ACP SDK to `3.3.0` and its schema to `1.11.0`, with no user-facing changes. The wire protocol remains ACP v1.
 
+### Fixed
+
+- Preserved generated-image attachment references when Codex conversations are restored, showing the attachment identity when a local preview is unavailable.
+- Closed abandoned Codex MCP approval requests without leaving pending permission controls or accepting late approval responses.
+
 ## [0.8.13] - 2026-10-09
 
 ### Added

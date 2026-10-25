@@ -27,7 +27,7 @@ Learn more about the [Agent Client Protocol](https://agentclientprotocol.com/).
 
 ## NeverWrite compatibility boundary
 
-NeverWrite's vendored build keeps the ACP Rust SDK at `0.14.0` and the wire protocol at ACP v1 while running the OpenAI Codex `rust-v0.162.1` crates at `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`. The matching PTY snapshot, lockfile, ACP executable and standalone code-mode host form one runtime baseline. Steer and `instant_interrupt` remain disabled by default and are not exposed by the adapter.
+NeverWrite's vendored build keeps the ACP Rust SDK at `0.14.0` and the wire protocol at ACP v1 while running the OpenAI Codex `rust-v0.164.0` crates at `6aaac694803004a63c6f393d153c96d22521a6b9`. The matching PTY snapshot, lockfile, ACP executable and standalone code-mode host form one runtime baseline. Steer is not exposed; `instant_interrupt` and the optional gRPC code-mode host transport are explicitly disabled by the adapter to preserve its ACP v1 queue and stdio contracts. The build uses Rust `1.99.1` and verified V8 `152.2.0` artifacts.
 
 MCP protocol `2026-07-28` remains disabled for both client servers and the host-owned Codex Apps server because ACP `0.14.0` does not provide the trusted client-extension boundary required to adopt it; client-provided stdio environment variables, HTTP headers, working directories, and existing server authentication or approval configuration remain supported through the legacy MCP path.
 

@@ -407,6 +407,16 @@ describe("AIChatMessageItem generated images", () => {
         expect(screen.getByText("Generating image...")).toBeInTheDocument();
     });
 
+    it("shows an attachment reference when a generated image has no local path", () => {
+        renderMessage({
+            id: "image:file-123", role: "assistant", kind: "image", title: "Generated image", content: "Generated image", timestamp: Date.now(),
+            meta: { image_status: "completed", image_file_id: "file-123" },
+        });
+        expect(screen.getByText("Image attachment: file-123")).toBeTruthy();
+        expect(screen.queryByText("Image path is unavailable")).toBeNull();
+        expect(screen.queryByRole("img")).toBeNull();
+    });
+
     it("renders a generated image preview with file actions", () => {
         const imagePath =
             "/Users/test/.codex/generated_images/session/ig_1.png";

@@ -2757,6 +2757,7 @@ function createImageGenerationMessage(
         meta: {
             image_status: status,
             image_path: payload.path ?? null,
+            image_file_id: payload.file_id ?? null,
             image_mime_type: payload.mime_type ?? null,
             revised_prompt: payload.revised_prompt ?? null,
             result: payload.result ?? null,
@@ -12217,10 +12218,37 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     },
                 };
 
-                const activitySession = upsertSessionActivityMessage(
+                let activitySession = upsertSessionActivityMessage(
                     consolidated,
                     nextMessage,
                 );
+                if (payload.status === "failed" || payload.status === "completed") {
+                    const messages = activitySession.messages.map((message) =>
+                        message.kind === "permission" &&
+                        message.meta?.status === "pending" &&
+                        message.meta?.tool_call_id === payload.tool_call_id
+                            ? {
+                                  ...message,
+                                  permissionOptions: [],
+                                  meta: { ...message.meta, status: "cancelled" },
+                              }
+                            : message,
+                    );
+                    const stillWaiting = messages.some(
+                        (message) =>
+                            message.kind === "permission" &&
+                            message.meta?.status === "pending",
+                    );
+                    activitySession = {
+                        ...activitySession,
+                        messages,
+                        status:
+                            activitySession.status === "waiting_permission" &&
+                            !stillWaiting
+                                ? "streaming"
+                                : activitySession.status,
+                    };
+                }
 
                 return {
                     sessionsById: replaceSessionById(
@@ -12480,6 +12508,7 @@ const createChatStore: StateCreator<ChatStore> = (set, get) => {
                     reviewDiffs,
                     meta: {
                         status: "pending",
+                        tool_call_id: payload.tool_call_id,
                         target: payload.target ?? null,
                     },
                 };
