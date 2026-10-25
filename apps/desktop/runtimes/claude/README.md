@@ -1,8 +1,8 @@
 # Claude runtime
 
 This private installation manifest pins the published Claude ACP adapter to
-`0.94.0`, using its official Claude Agent SDK dependency `0.3.303`. All eight
-SDK native packages are locked to `0.3.303` too. `baseline.json` records the
+`0.95.0`, using its official Claude Agent SDK dependency `0.3.309`. All eight
+SDK native packages are locked to `0.3.309` too. `baseline.json` records the
 complete production graph and published runtime hashes. There is no SDK
 override or local runtime patch; `patches.json` is empty.
 
@@ -36,7 +36,7 @@ https://github.com/agentclientprotocol/claude-agent-acp/pull/1006, so the runtim
 no longer carries a TaskList patch. The TaskList contracts remain as regression
 coverage for the published implementation.
 
-ACP `0.94.0` supplies Claude Code `2.1.303`. Its model catalog exposes Sonnet 5.5
+ACP `0.95.0` supplies Claude Code `2.1.309`. Its model catalog exposes Sonnet 5.5
 and Haiku 5.5 under the official `sonnet` and `haiku` aliases. NeverWrite's chat
 selector uses the model options returned by ACP; the native CLI resolves these
 aliases to `claude-sonnet-5-5` and `claude-haiku-5-5` on provider requests.
@@ -80,18 +80,13 @@ The `0.81.2` update keeps the same production dependency graph. Its published
 JavaScript changes the ACP agent, exit-plan handling, and native subagent
 runtime; the runtime baseline records those three new file hashes.
 
-The `0.94.0` baseline comes from published tag commit
-`7bcbfc7a5ca7ab9c7eece4f0749ccaf49c7ba7e1`. It includes ACP SDK `2.0.0`,
-Claude Agent SDK `0.3.303`, the resolved Anthropic SDK peer `0.135.0`, `diff`
-`9.0.0` and `zod` `4.6.7`. It records all 91 published JavaScript modules,
-including client system prompts, prompt suggestions, gateway model discovery,
-the MCP command, turn events, AIR session index and draft ACP v2 surface, and
-the complete locked production dependency graph.
-
-The `0.94.0` dependency baseline includes the security updates to `body-parser`
-`2.4.0` and `fast-uri` `3.1.9`. Their versions and integrity hashes are recorded
-alongside the isolated lockfile; the ACP adapter, SDK, native packages and
-published JavaScript hashes retain the same versions and contents.
+The `0.95.0` baseline comes from published tag commit
+`ebfbfbdaa9c2a6a8bd9eb0a4965b521009152350`. It includes ACP SDK `2.0.1`,
+Claude Agent SDK `0.3.309`, the resolved Anthropic SDK peer `1.3.0`, `diff`
+`9.0.0` and `zod` `4.6.7`. It records all 93 published JavaScript modules,
+including the background-task session-index helper and task-notification parser,
+and the complete locked production dependency graph. The security updates to
+`body-parser` `2.4.0` and `fast-uri` `3.1.9` remain locked with their integrity hashes.
 
 ### Updating the runtime
 
@@ -220,6 +215,20 @@ native packages move to `0.3.303`. Gateway model matching now accepts OpenRouter
 uses the declared skill name instead of its directory name. The AIR history-replay
 end event remains outside the current capabilities. The runtime remains
 unmodified, with no local patches or SDK overrides.
+
+In `0.95.0`, Claude Agent SDK and all eight native packages move to `0.3.309`,
+and ACP SDK moves to `2.0.1`. The adapter now serves both ACP versions by default:
+`CLAUDE_AGENT_ACP_PROTOCOL` accepts `auto`, `v1` or `v2` and replaces the old
+`CLAUDE_AGENT_ACP_EXPERIMENTAL_V2` switch. NeverWrite still initializes with
+protocol version 1; the runtime smoke verifies negotiation through the new router.
+Session titles can arrive during the first turn, and NeverWrite continues to
+preserve manual renames. Messages typed in other Remote Control clients are
+forwarded as user-message chunks, and `/usage` can include recommendations.
+Subagent plan-mode changes no longer change the main session's mode.
+AIR background-subagent turn completion, session-index background activity,
+linked subagent delegations and read-only child configuration remain outside
+NeverWrite's advertised capabilities. The runtime remains unmodified, with no
+local patches or SDK overrides.
 
 The push-only authStatus, goal, AIR session-failure and JetBrains file-audit
 extensions remain outside the current client integration. NeverWrite's own
