@@ -322,6 +322,15 @@ The same smoke starts an isolated copy of `codex-acp` without its sibling host a
 Linux x64 package CI also runs the vendor's unit tests and standalone-host
 integration tests in the release profile, reusing the verified V8 artifacts.
 
+The macOS package job runs the complete native PTY suite, including the
+high-stdio fallback regression that opens more than 10,240 descriptors. Before
+running it, the job raises Darwin's kernel ceilings to at least 131,072 system
+files and 32,768 files per process, and the shell's soft limit to at least
+16,384. Existing higher limits are retained. Kernel and shell limits are logged;
+the shell adjustment and Cargo invocation share one step so the limit is
+inherited. Raising only `RLIMIT_NOFILE` inside the test can still hit `EMFILE`
+on hosted runners whose kernel ceiling is lower.
+
 Local validation for 0.164.0 on Linux x64 passes 114 adapter unit tests,
 2 standalone-host integration tests, 62 PTY unit tests, all 629 workspace Rust
 tests (including 372 native-backend tests), and 618 focused frontend, review

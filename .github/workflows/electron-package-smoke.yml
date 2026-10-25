@@ -107,7 +107,25 @@ jobs:
 
             - name: Test vendored PTY process lifecycle
               shell: bash
-              run: cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml -p codex-utils-pty
+              run: |
+                  # The high-stdio regression test opens more than 10,240 FDs.
+                  # Its setrlimit call does not raise Darwin's kernel ceilings.
+                  if (( $(sysctl -n kern.maxfiles) < 131072 )); then
+                    sudo sysctl -w kern.maxfiles=131072
+                  fi
+                  if (( $(sysctl -n kern.maxfilesperproc) < 32768 )); then
+                    sudo sysctl -w kern.maxfilesperproc=32768
+                  fi
+
+                  # Keep the shell limit in the same step so Cargo inherits it.
+                  soft_limit="$(ulimit -S -n)"
+                  if [[ "$soft_limit" != "unlimited" ]] && (( soft_limit < 16384 )); then
+                    ulimit -S -n 16384
+                  fi
+                  sysctl kern.maxfiles kern.maxfilesperproc
+                  echo "Open-file limits: soft=$(ulimit -S -n), hard=$(ulimit -H -n)"
+
+                  cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml -p codex-utils-pty
 
             - name: Build target-specific sidecars
               shell: bash
