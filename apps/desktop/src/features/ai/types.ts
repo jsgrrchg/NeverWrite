@@ -797,6 +797,7 @@ export interface AIImageGenerationPayload {
     mime_type?: string | null;
     revised_prompt?: string | null;
     result?: string | null;
+    file_id?: string | null;
     error?: string | null;
 }
 

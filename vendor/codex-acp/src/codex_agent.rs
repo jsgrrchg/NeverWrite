@@ -123,10 +123,15 @@ fn start_thread_options(config: Config) -> StartThreadOptions {
 }
 
 fn apply_runtime_feature_contracts(config: &mut Config) -> std::io::Result<()> {
-    for feature in [Feature::Mcp20260728, Feature::CodexAppsMcp20260728] {
+    for feature in [
+        Feature::Mcp20260728,
+        Feature::CodexAppsMcp20260728,
+        Feature::InstantInterrupt,
+        Feature::CodeModeHostGrpc,
+    ] {
         config.features.disable(feature).map_err(|error| {
             std::io::Error::other(format!(
-                "MCP protocol 2026-07-28 must remain disabled for ACP 0.14: {error}"
+                "Feature {feature:?} is outside the ACP v1 runtime contract: {error}"
             ))
         })?;
     }
@@ -139,7 +144,7 @@ impl CodexAgent {
         mut config: Config,
         codex_linux_sandbox_exe: Option<PathBuf>,
     ) -> std::io::Result<Self> {
-        // The modern MCP protocol remains outside NeverWrite's ACP 0.14 contract.
+        // Preserve ACP v1 prompt admission, MCP negotiation and the stdio host transport.
         apply_runtime_feature_contracts(&mut config)?;
         let auth_manager =
             AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false)
@@ -826,7 +831,6 @@ impl CodexAgent {
         let InitializeRequest {
             protocol_version,
             client_capabilities,
-            client_info: _, // TODO: save and pass into Codex somehow
             ..
         } = request;
         debug!("Received initialize request with protocol version {protocol_version:?}",);
@@ -1145,6 +1149,7 @@ impl CodexAgent {
                         let page = self
                             .thread_store
                             .list_items(ListItemsParams {
+                                item_ids: None,
                                 thread_id,
                                 turn_id: None,
                                 include_archived: true,
@@ -1500,7 +1505,11 @@ mod tests {
         config.approvals_reviewer = ApprovalsReviewer::AutoReview;
         config.features.enable(Feature::Mcp20260728)?;
         config.features.enable(Feature::CodexAppsMcp20260728)?;
+        config.features.enable(Feature::InstantInterrupt)?;
+        config.features.enable(Feature::CodeModeHostGrpc)?;
         apply_runtime_feature_contracts(&mut config)?;
+        assert!(!config.features.enabled(Feature::InstantInterrupt));
+        assert!(!config.features.enabled(Feature::CodeModeHostGrpc));
 
         let options = start_thread_options(config.clone());
 

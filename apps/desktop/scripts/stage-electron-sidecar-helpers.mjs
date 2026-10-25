@@ -44,10 +44,10 @@ export const CODEX_RUNTIME_COMPONENTS = [
 ];
 
 export const CODEX_RUNTIME_BASELINE = Object.freeze({
-    tag: "rust-v0.162.1",
-    version: "0.162.1",
-    commit: "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
-    v8Version: "150.4.0",
+    tag: "rust-v0.164.0",
+    version: "0.164.0",
+    commit: "6aaac694803004a63c6f393d153c96d22521a6b9",
+    v8Version: "152.2.0",
 });
 
 export function validateCodexRuntimeSourceAlignment({

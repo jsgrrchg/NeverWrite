@@ -13636,6 +13636,37 @@ describe("chatStore", () => {
         });
     });
 
+    it("retains file-backed image references without treating them as image data", async () => {
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        useChatStore.getState().applyImageGeneration({
+            session_id: sessionId, image_id: "image-file", status: "completed", title: "Generated image", file_id: "file-123",
+        });
+        expect(useChatStore.getState().sessionsById[sessionId]!.messages.find((message) => message.id === "image:image-file")?.meta)
+            .toMatchObject({ image_file_id: "file-123", result: null, image_path: null });
+    });
+
+    it("retires a permission when its tool ends while preserving other pending requests", async () => {
+        await useChatStore.getState().initialize();
+        const sessionId = getActiveSessionId();
+        for (const id of ["tool-1", "tool-2"]) {
+            useChatStore.getState().applyPermissionRequest({
+                session_id: sessionId, request_id: id, tool_call_id: id, title: "Approval", target: null, options: [], diffs: [],
+            });
+        }
+        const finish = (id: string) => useChatStore.getState().applyToolActivity({
+            session_id: sessionId, tool_call_id: id, title: "Approval", kind: "other", status: "failed", summary: "Request abandoned", diffs: [],
+        });
+        finish("tool-1");
+        let session = useChatStore.getState().sessionsById[sessionId]!;
+        expect(session.messages.find((message) => message.permissionRequestId === "tool-1")?.meta?.status).toBe("cancelled");
+        expect(session.messages.find((message) => message.permissionRequestId === "tool-2")?.meta?.status).toBe("pending");
+        expect(session.status).toBe("waiting_permission");
+        finish("tool-2");
+        session = useChatStore.getState().sessionsById[sessionId]!;
+        expect(session.status).toBe("streaming");
+    });
+
     it("upserts generated images as assistant image messages", async () => {
         await useChatStore.getState().initialize();
 

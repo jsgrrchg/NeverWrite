@@ -97,7 +97,7 @@ impl<A: Auth> ThreadActor<A> {
                         image.id,
                         image.status,
                         image.revised_prompt,
-                        image.result,
+                        image.image,
                         image.saved_path.map(|path| path.display().to_string()),
                         image.failure,
                     ))

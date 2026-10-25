@@ -3121,6 +3121,7 @@ struct NativeAcpClient {
     message_ids: Arc<Mutex<HashMap<MessageStreamKey, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+    permission_request_tools: Arc<Mutex<PermissionRequestTools>>,
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
     url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
     completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
@@ -3131,6 +3132,12 @@ struct NativeAcpClient {
     terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
     suppress_replayed_session_events: Arc<AtomicBool>,
     product_profile: RuntimeProductProfile,
+}
+
+#[derive(Default)]
+struct PermissionRequestTools {
+    by_request: HashMap<String, (String, String)>,
+    abandoned_tools: HashSet<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -3183,6 +3190,47 @@ impl NativeAcpClient {
                     message,
                 },
             ),
+        }
+    }
+
+    fn cancel_abandoned_permission(&self, session_id: &str, update: &ToolCallUpdate) {
+        if update.fields.status != Some(ToolCallStatus::Failed)
+            || update
+                .fields
+                .raw_output
+                .as_ref()
+                .and_then(|raw| raw.get("reason"))
+                .and_then(Value::as_str)
+                != Some("elicitation_abandoned")
+        {
+            return;
+        }
+        let ids = {
+            let Ok(mut tools) = self.permission_request_tools.lock() else {
+                return;
+            };
+            tools
+                .abandoned_tools
+                .insert((session_id.to_string(), update.tool_call_id.0.to_string()));
+            let ids: Vec<_> = tools
+                .by_request
+                .iter()
+                .filter(|(_, (session, tool))| {
+                    session == session_id && tool == update.tool_call_id.0.as_ref()
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &ids {
+                tools.by_request.remove(id);
+            }
+            ids
+        };
+        if let Ok(mut waiters) = self.permission_waiters.lock() {
+            for id in ids {
+                if let Some(waiter) = waiters.remove(&id) {
+                    let _ = waiter.send(RequestPermissionOutcome::Cancelled);
+                }
+            }
         }
     }
 
@@ -3984,59 +4032,82 @@ impl NativeAcpClient {
             .clone()
             .unwrap_or_else(|| "Permission required".to_string());
         let tool_call_id = args.tool_call.tool_call_id.0.to_string();
-        let target = args
-            .tool_call
-            .fields
-            .locations
-            .as_ref()
-            .and_then(|locations| locations.first())
-            .map(|location| location.path.display().to_string());
-        let pending_tool_call = ToolCall::try_from(args.tool_call.clone())
-            .unwrap_or_else(|_| ToolCall::new(args.tool_call.tool_call_id.clone(), title.clone()));
-        self.record_terminal_meta(
-            &session_id,
-            &pending_tool_call.tool_call_id.0,
-            args.tool_call.meta.as_ref(),
-        );
-        let registered = self
-            .tool_diffs
-            .upsert_tool_call(&session_id, pending_tool_call);
-        let diffs = self
-            .tool_diffs
-            .normalized_diffs_for_tool_call(&session_id, &registered);
-        self.end_text_streams_before_activity(&session_id);
-        self.emit(
-            AI_TOOL_ACTIVITY_EVENT,
-            map_tool_call(
+        let rx = {
+            let (tx, rx) = oneshot::channel();
+            let mut tools = self.permission_request_tools.lock().map_err(|error| {
+                agent_client_protocol::Error::internal_error().data(error.to_string())
+            })?;
+            if tools
+                .abandoned_tools
+                .contains(&(session_id.clone(), tool_call_id.clone()))
+            {
+                return Ok(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ));
+            }
+            tools.by_request.insert(
+                request_id.clone(),
+                (session_id.clone(), tool_call_id.clone()),
+            );
+            if let Ok(mut waiters) = self.permission_waiters.lock() {
+                waiters.insert(request_id.clone(), tx);
+            }
+            let target = args
+                .tool_call
+                .fields
+                .locations
+                .as_ref()
+                .and_then(|locations| locations.first())
+                .map(|location| location.path.display().to_string());
+            let pending_tool_call =
+                ToolCall::try_from(args.tool_call.clone()).unwrap_or_else(|_| {
+                    ToolCall::new(args.tool_call.tool_call_id.clone(), title.clone())
+                });
+            self.record_terminal_meta(
                 &session_id,
-                &registered,
-                self.subagent_open_session_action(&session_id, &registered),
-                self.terminal_summary(&session_id, &registered.tool_call_id.0),
-                diffs.clone(),
-            ),
-        );
-        let options = args
-            .options
-            .into_iter()
-            .map(map_permission_option)
-            .collect();
-        let (tx, rx) = oneshot::channel();
-        if let Ok(mut waiters) = self.permission_waiters.lock() {
-            waiters.insert(request_id.clone(), tx);
-        }
-        self.emit(
-            AI_PERMISSION_REQUEST_EVENT,
-            AiPermissionRequestPayload {
-                session_id,
-                request_id,
-                tool_call_id,
-                title,
-                target,
-                options,
-                diffs,
-            },
-        );
+                &pending_tool_call.tool_call_id.0,
+                args.tool_call.meta.as_ref(),
+            );
+            let registered = self
+                .tool_diffs
+                .upsert_tool_call(&session_id, pending_tool_call);
+            let diffs = self
+                .tool_diffs
+                .normalized_diffs_for_tool_call(&session_id, &registered);
+            self.end_text_streams_before_activity(&session_id);
+            self.emit(
+                AI_TOOL_ACTIVITY_EVENT,
+                map_tool_call(
+                    &session_id,
+                    &registered,
+                    self.subagent_open_session_action(&session_id, &registered),
+                    self.terminal_summary(&session_id, &registered.tool_call_id.0),
+                    diffs.clone(),
+                ),
+            );
+            let options = args
+                .options
+                .into_iter()
+                .map(map_permission_option)
+                .collect();
+            self.emit(
+                AI_PERMISSION_REQUEST_EVENT,
+                AiPermissionRequestPayload {
+                    session_id,
+                    request_id: request_id.clone(),
+                    tool_call_id,
+                    title,
+                    target,
+                    options,
+                    diffs,
+                },
+            );
+            rx
+        };
         let outcome = rx.await.unwrap_or(RequestPermissionOutcome::Cancelled);
+        if let Ok(mut tools) = self.permission_request_tools.lock() {
+            tools.by_request.remove(&request_id);
+        }
         Ok(RequestPermissionResponse::new(outcome))
     }
 
@@ -4300,6 +4371,7 @@ impl NativeAcpClient {
             }
             SessionUpdate::ToolCallUpdate(update) => {
                 let update = tool_call_update_with_merged_meta(update, meta.as_ref());
+                self.cancel_abandoned_permission(&session_id, &update);
                 if self.should_suppress_tool_call_update(&session_id, &update) {
                     return Ok(());
                 }
@@ -4890,6 +4962,7 @@ async fn run_acp_actor_inner(
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        permission_request_tools: Arc::default(),
         user_input_waiters: Arc::clone(&context.elicitations.user_input_waiters),
         url_elicitation_waiters: Arc::clone(&context.elicitations.url_elicitation_waiters),
         completed_url_elicitations: Arc::clone(&context.elicitations.completed_url_elicitations),
@@ -6765,6 +6838,7 @@ fn map_image_generation_event(
         path,
         revised_prompt,
         result,
+        file_id: raw_string_field(raw, &["fileId"]),
         error,
     })
 }
@@ -6801,6 +6875,7 @@ fn map_legacy_image_generation_status_event(
         mime_type: path.as_deref().and_then(image_mime_type_from_path),
         path,
         revised_prompt: None,
+        file_id: None,
         result: detail.filter(|_| failed),
         error: failed.then(|| "Image generation failed".to_string()),
     })
@@ -10666,6 +10741,7 @@ mod tests {
             message_ids: Arc::new(Mutex::new(HashMap::new())),
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+            permission_request_tools: Arc::default(),
             user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
             url_elicitation_waiters: Arc::new(Mutex::new(HashMap::new())),
             completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
@@ -17593,6 +17669,84 @@ mod tests {
         assert_eq!(
             payload.get("revised_prompt").and_then(Value::as_str),
             Some("A tiny blue square")
+        );
+    }
+
+    #[test]
+    fn file_backed_image_preserves_file_id_without_base64_result() {
+        let call = ToolCall::new("image-file", "Generated image")
+            .status(ToolCallStatus::Completed)
+            .meta(
+                serde_json::from_value::<Meta>(json!({"neverwriteEventType": "image_generation"}))
+                    .unwrap(),
+            )
+            .raw_input(json!({"status": "completed", "fileId": "file-123"}));
+        let payload = map_image_generation_event("session-1", &call).unwrap();
+        assert_eq!(payload.file_id.as_deref(), Some("file-123"));
+        assert!(payload.result.is_none());
+        assert!(payload.path.is_none());
+    }
+
+    #[test]
+    fn abandoned_permission_cancels_only_its_session_and_tool_waiter() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let mut receivers = Vec::new();
+        for (id, session, tool) in [
+            ("match", "session-1", "tool-1"),
+            ("other-session", "session-2", "tool-1"),
+            ("other-tool", "session-1", "tool-2"),
+        ] {
+            let (tx, rx) = oneshot::channel();
+            client
+                .permission_waiters
+                .lock()
+                .unwrap()
+                .insert(id.into(), tx);
+            client
+                .permission_request_tools
+                .lock()
+                .unwrap()
+                .by_request
+                .insert(id.into(), (session.into(), tool.into()));
+            receivers.push(rx);
+        }
+        let update = ToolCallUpdate::new(
+            "tool-1",
+            ToolCallUpdateFields::new()
+                .status(ToolCallStatus::Failed)
+                .raw_output(json!({"reason": "elicitation_abandoned"})),
+        );
+        client.cancel_abandoned_permission("session-1", &update);
+        assert_eq!(
+            receivers[0].try_recv().unwrap(),
+            RequestPermissionOutcome::Cancelled
+        );
+        assert!(receivers[1].try_recv().is_err());
+        assert!(receivers[2].try_recv().is_err());
+        assert_eq!(client.permission_waiters.lock().unwrap().len(), 2);
+        assert_eq!(
+            client
+                .permission_request_tools
+                .lock()
+                .unwrap()
+                .by_request
+                .len(),
+            2
+        );
+        let delayed = run_client_future(client.request_permission(RequestPermissionRequest::new(
+            "session-1",
+            ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new().title("Delayed approval"),
+            ),
+            Vec::new(),
+        )))
+        .unwrap();
+        assert_eq!(delayed.outcome, RequestPermissionOutcome::Cancelled);
+        assert!(
+            event_rx.try_recv().is_err(),
+            "an abandoned request cannot reopen the permission UI"
         );
     }
 

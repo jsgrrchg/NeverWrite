@@ -127,6 +127,8 @@ pub struct AiImageGenerationPayload {
     pub mime_type: Option<String>,
     pub revised_prompt: Option<String>,
     pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
     pub error: Option<String>,
 }
 
