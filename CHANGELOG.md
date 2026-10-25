@@ -36,14 +36,29 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ## [Unreleased]
 
+## [0.8.14] - 2026-10-25
+
+### Added
+
+- Added Claude's `/remote-control` command when supported by the runtime, with messages sent from other Remote Control clients appearing in the conversation.
+
 ### Changed
 
-- Updated the ACP SDK to `3.3.0` and its schema to `1.11.0`, with no user-facing changes. The wire protocol remains ACP v1.
+- Updated the bundled Codex runtime to `0.164.0`; its fallback model catalog now defaults to GPT-6.1 Sol when no model is configured, while preserving explicit selections and the authenticated account's model catalog.
+- Updated the bundled Claude ACP runtime to `0.95.0`, allowing session titles to arrive during the first turn while preserving manual renames, and adding recommendations to `/usage` when supplied by the runtime.
+- Improved Claude model selection for custom Anthropic and Bedrock gateways by discovering their available models before accepting provider changes, with broader support for OpenRouter model names.
 
 ### Fixed
 
 - Preserved generated-image attachment references when Codex conversations are restored, showing the attachment identity when a local preview is unavailable.
 - Closed abandoned Codex MCP approval requests without leaving pending permission controls or accepting late approval responses.
+- Fixed Claude cancellation leaving abandoned tool calls or questions pending, suppressed late output and tool requests from cancelled prompts, and preserved output from background work that was not stopped.
+- Fixed Claude skill resolution to use the skill's declared name instead of its directory name.
+- Improved Codex command startup on Windows when process containment is unavailable and on macOS when many file descriptors are open.
+
+### Security
+
+- Patched a stack-overflow vulnerability in the PDF text-extraction dependency used for vault indexing.
 
 ## [0.8.13] - 2026-10-09
 
