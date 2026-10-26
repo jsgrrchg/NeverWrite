@@ -3,5 +3,8 @@
   "private": true,
   "dependencies": {
     "pi-acp": "0.0.33"
+  },
+  "overrides": {
+    "zod": "4.6.6"
   }
 }
