@@ -5,6 +5,11 @@ pinned in this directory, matching the validated Zeron integration. The adapter
 runs with NeverWrite's embedded Node runtime; the Pi
 CLI itself remains user-managed and must be available as `pi` on `PATH`.
 
+The runtime overrides Zod to `4.6.6` for GHSA-mrhx-c7xc-m3w5. The adapter
+delegates validation to `@agentclientprotocol/sdk`, which already imports
+`zod/v4` and supports Zod 4. Keep the runtime tests passing when updating this
+override; it does not add size limits to otherwise unbounded ACP messages.
+
 From `apps/desktop`, run `npm run pi:prepare` to build the validated local runtime
 under `.cache/pi-runtime`. Release staging performs the same preparation and
 copies it to `native-backend/embedded/pi-acp` outside the Electron ASAR.
