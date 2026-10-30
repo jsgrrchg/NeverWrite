@@ -36,6 +36,10 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Updated the bundled Claude ACP runtime to `0.99.1`, improving expired-login detection, plan approvals, cancelled background permissions, and MCP startup failure reporting.
+
 ## [0.8.14] - 2026-10-25
 
 ### Added
