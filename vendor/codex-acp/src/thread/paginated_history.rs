@@ -1,7 +1,8 @@
 //! ACP replay of the store's display history, independent of its model-context suffix.
 
 use codex_app_server_protocol::{
-    DynamicToolCallOutputContentItem, PatchChangeKind, ThreadItem, UserInput as StoredUserInput,
+    DynamicToolCallOutputContentItem, PatchChangeKind, ThreadItemPayload as ThreadItem,
+    UserInput as StoredUserInput,
 };
 use codex_thread_store::StoredThreadItem;
 
@@ -13,7 +14,8 @@ impl<A: Auth> ThreadActor<A> {
         items: Vec<StoredThreadItem>,
     ) -> Result<(), Error> {
         // Validate the whole page before emitting any of it. Never decode this
-        // app-server display schema as Core's differently shaped TurnItem.
+        // app-server display payload as Core's differently shaped TurnItem. Lifecycle
+        // times belong to StoredThreadItem, not the app-server ThreadItem wrapper.
         let items = items
             .into_iter()
             .map(|stored| {

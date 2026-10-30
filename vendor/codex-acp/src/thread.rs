@@ -2983,6 +2983,7 @@ impl PromptState {
                         self.send_image_generation_completed(
                             client,
                             ImageGenerationEndEvent {
+                                generation_id: None,
                                 call_id: image_item.id,
                                 status: image_item.status,
                                 revised_prompt: image_item.revised_prompt,
@@ -2999,6 +3000,7 @@ impl PromptState {
                         self.send_image_generation_completed(
                             client,
                             ImageGenerationEndEvent {
+                                generation_id: image_item.generation_id,
                                 call_id: image_item.id,
                                 status: image_item.status,
                                 revised_prompt: image_item.revised_prompt,
@@ -3331,6 +3333,9 @@ impl PromptState {
                     event.thread_id
                 );
             }
+            // Private reviewer events belong to that session and must not finish the
+            // parent prompt or expose private reviewer content in its transcript.
+            EventMsg::PrivateSessionEvent(..) => {}
             EventMsg::RawResponseItem(..) => {
                 // Canonical ItemStarted/ItemCompleted and dedicated tool events own activity
                 // projection. Re-projecting raw provider items would create a second activity for
@@ -7288,6 +7293,7 @@ mod tests {
             .send_image_generation_completed(
                 &session_client,
                 ImageGenerationEndEvent {
+                    generation_id: None,
                     call_id: "img-limited".to_string(),
                     status: "completed".to_string(),
                     revised_prompt: None,
@@ -7757,7 +7763,7 @@ mod tests {
     }
 
     fn stored_history_item(
-        item: codex_app_server_protocol::ThreadItem,
+        item: codex_app_server_protocol::ThreadItemPayload,
     ) -> codex_thread_store::StoredThreadItem {
         codex_thread_store::StoredThreadItem {
             turn_id: "stored-turn".to_string(),
@@ -7775,7 +7781,7 @@ mod tests {
     -> anyhow::Result<()> {
         use codex_app_server_protocol::{
             CollabAgentState, CollabAgentStatus, CollabAgentTool, CollabAgentToolCallStatus,
-            FileUpdateChange, PatchChangeKind, ThreadItem as StoredItem,
+            FileUpdateChange, PatchChangeKind, ThreadItemPayload as StoredItem,
         };
         let (mut actor, client, _) = setup_actor(|_| {}).await?;
         let sender = ThreadId::new().to_string();
@@ -9398,6 +9404,7 @@ mod tests {
                 &session_client,
                 EventMsg::TokenCount(TokenCountEvent {
                     info: Some(TokenUsageInfo {
+                        last_usage_includes_reasoning: None,
                         total_token_usage: TokenUsage::default(),
                         last_token_usage: TokenUsage {
                             input_tokens: 100_000,
@@ -9437,6 +9444,7 @@ mod tests {
                 &session_client,
                 EventMsg::TokenCount(TokenCountEvent {
                     info: Some(TokenUsageInfo {
+                        last_usage_includes_reasoning: None,
                         total_token_usage: TokenUsage::default(),
                         last_token_usage: TokenUsage::default(),
                         model_context_window: Some(128_000),
@@ -9477,6 +9485,51 @@ mod tests {
             1
         );
         assert!(state.response_tx.is_some());
+    }
+
+    #[tokio::test]
+    async fn private_reviewer_events_do_not_leak_or_cancel_the_parent_prompt() {
+        use codex_protocol::protocol::{PrivateSessionEvent, PrivateSessionEventPayload};
+
+        let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
+        let reviewer_id = ThreadId::new();
+        let item: ResponseItem = serde_json::from_value(json!({
+            "type": "message",
+            "id": "private-review",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "Private reviewer evidence" }],
+        }))
+        .unwrap();
+        for event in [
+            PrivateSessionEventPayload::RecordedItem(
+                codex_protocol::protocol::RawResponseItemEvent { item },
+            ),
+            PrivateSessionEventPayload::TurnAborted(TurnAbortedEvent {
+                root_turn_id: None,
+                turn_id: Some("private-turn".to_string()),
+                reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                error: None,
+                started_at: Some(10),
+                completed_at: Some(11),
+                duration_ms: Some(1_000),
+            }),
+        ] {
+            state
+                .handle_event(
+                    &session_client,
+                    EventMsg::PrivateSessionEvent(PrivateSessionEvent {
+                        thread_id: reviewer_id,
+                        event,
+                    }),
+                )
+                .await;
+        }
+
+        assert!(client.notifications.lock().unwrap().is_empty());
+        assert!(
+            state.response_tx.is_some(),
+            "private cancellation must leave the parent prompt pending"
+        );
     }
 
     #[tokio::test]
@@ -10407,7 +10460,7 @@ mod tests {
         state
             .send_image_generation_completed(&actor.client, event)
             .await;
-        let item: codex_app_server_protocol::ThreadItem = serde_json::from_value(json!({
+        let item: codex_app_server_protocol::ThreadItemPayload = serde_json::from_value(json!({
             "type": "imageGeneration", "id": "file-replay", "status": "completed", "fileId": "file-456"
         }))?;
         actor
@@ -10546,6 +10599,7 @@ mod tests {
             .send_image_generation_completed(
                 &session_client,
                 ImageGenerationEndEvent {
+                    generation_id: None,
                     call_id: "img-1".to_string(),
                     status: "completed".to_string(),
                     revised_prompt: Some("A clearer prompt".to_string()),
@@ -10690,6 +10744,7 @@ mod tests {
 
         actor
             .replay_event_msg(&EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
+                generation_id: None,
                 call_id: "img-event-replay".to_string(),
                 status: "failed".to_string(),
                 revised_prompt: None,
