@@ -148,11 +148,12 @@ under `native-backend/binaries/`. NeverWrite launches `codex-acp`; the companion
 is required for Codex code-mode features. In development, build or point to a
 local runtime pair if the vendor fallback is not present.
 
-The vendored adapter currently embeds Codex `0.164.0` and retains NeverWrite's
+The vendored adapter currently embeds Codex `0.166.0` and retains NeverWrite's
 ACP v1 product contracts, using Rust `1.99.1` and verified V8 `152.2.0`
-artifacts. Updating a global Codex CLI does not update this pair.
+artifacts with upstream's pinned Rust-side cppgc alignment patch. Updating a
+global Codex CLI does not update this pair.
 The runtime's source pins, compatibility tests and rollback procedure are in
-[`vendor/README.md`](../vendor/README.md#codex-01640-compatibility-baseline).
+[`vendor/README.md`](../vendor/README.md#codex-01660-compatibility-baseline).
 
 ### Claude
 
