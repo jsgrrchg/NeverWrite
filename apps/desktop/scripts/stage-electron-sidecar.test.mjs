@@ -22,6 +22,26 @@ const checkedInWorkspaceRoot = path.resolve(
     "..",
 );
 
+function runtimeSourceFixture() {
+    return {
+        adapterManifest: `[dependencies]
+codex-core = { tag = "rust-v0.166.0" }
+[patch.crates-io]
+v8 = { git = "https://github.com/seanh-oai/rusty_v8.git", rev = "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0" }
+`,
+        lockfile: `[[package]]
+name = "codex-core"
+version = "0.166.0"
+source = "git+https://github.com/openai/codex?tag=rust-v0.166.0#6ff1e1ca3b30fc8b914720681fcf5fe62e95f856"
+[[package]]
+name = "v8"
+version = "152.2.0"
+source = "git+https://github.com/seanh-oai/rusty_v8.git?rev=350c5a859a9b3c84ab8701b3ad51e3b7699b30c0#350c5a859a9b3c84ab8701b3ad51e3b7699b30c0"
+`,
+        ptyManifest: '[package]\nversion = "0.166.0"',
+    };
+}
+
 function existingPaths(...paths) {
     const existing = new Set(paths);
     return async (filePath) => existing.has(filePath);
@@ -133,10 +153,62 @@ test("rejects a mixed runtime source baseline before staging", () => {
                 adapterManifest:
                     '[dependencies]\ncodex-core = { tag = "rust-v0.149.0" }',
                 lockfile: "",
-                ptyManifest: '[package]\nversion = "0.164.0"',
+                ptyManifest: '[package]\nversion = "0.166.0"',
             }),
-        /must all use tag = "rust-v0\.164\.0"/,
+        /must all use tag = "rust-v0\.166\.0"/,
     );
+});
+
+test("accepts the pinned V8 fork with reordered fields, comments, and Windows line endings", () => {
+    const fixture = runtimeSourceFixture();
+    fixture.lockfile = fixture.lockfile.replace(
+        'name = "v8"\nversion = "152.2.0"',
+        "# unrelated v8 comment\nversion = '152.2.0'\nname = 'v8'",
+    ).replace(/\n/g, "\r\n");
+    fixture.adapterManifest = fixture.adapterManifest.replace(
+        'v8 = { git = "https://github.com/seanh-oai/rusty_v8.git", rev = "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0" }',
+        "v8 = { rev = '350c5a859a9b3c84ab8701b3ad51e3b7699b30c0', git = 'https://github.com/seanh-oai/rusty_v8.git' } # approved fork",
+    ).replace(/\n/g, "\r\n");
+    assert.doesNotThrow(() => validateCodexRuntimeSourceAlignment(fixture));
+});
+
+test("accepts a dedicated V8 patch table", () => {
+    const fixture = runtimeSourceFixture();
+    fixture.adapterManifest = fixture.adapterManifest.replace(
+        '[patch.crates-io]\nv8 = { git = "https://github.com/seanh-oai/rusty_v8.git", rev = "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0" }',
+        '[patch.crates-io.v8]\ngit = "https://github.com/seanh-oai/rusty_v8.git"\nrev = "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0"',
+    );
+    assert.doesNotThrow(() => validateCodexRuntimeSourceAlignment(fixture));
+});
+
+test.each([
+    ["registry V8 at the same version", (lockfile) => lockfile.replace(
+        /source = "git\+https:\/\/github.com\/seanh-oai[^\n]+/,
+        'source = "registry+https://github.com/rust-lang/crates.io-index"',
+    )],
+    ["different V8 repository", (lockfile) => lockfile.replaceAll("seanh-oai", "other-owner")],
+    ["different V8 revision", (lockfile) => lockfile.replace("?rev=350c5a85", "?rev=00000000")],
+    ["different resolved V8 commit", (lockfile) => lockfile.replace("#350c5a85", "#00000000")],
+    ["different V8 version", (lockfile) => lockfile.replace("152.2.0", "152.3.0")],
+    ["missing V8 package", (lockfile) => lockfile.slice(0, lockfile.lastIndexOf("[[package]]"))],
+    ["multiple V8 packages", (lockfile) => `${lockfile}\n[[package]]\nname = "v8"\nversion = "152.2.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n`],
+])("rejects %s before staging", (_description, mutate) => {
+    const fixture = runtimeSourceFixture();
+    fixture.lockfile = mutate(fixture.lockfile);
+    assert.throws(() => validateCodexRuntimeSourceAlignment(fixture), /V8 lockfile must resolve/);
+});
+
+test.each([
+    ["missing V8 patch", (manifest) => manifest.replace(/^v8 = .*$/m, "")],
+    ["commented-out V8 patch", (manifest) => manifest.replace(/^v8 = /m, "# v8 = ")],
+    ["V8 dependency outside the patch table", (manifest) => manifest.replace("[patch.crates-io]", "[dev-dependencies]")],
+    ["different manifest V8 repository", (manifest) => manifest.replace("seanh-oai", "other-owner")],
+    ["different manifest V8 revision", (manifest) => manifest.replace("350c5a85", "00000000")],
+    ["commented-out V8 patch table", (manifest) => manifest.replace("[patch.crates-io]", "# [patch.crates-io]")],
+])("rejects %s before staging", (_description, mutate) => {
+    const fixture = runtimeSourceFixture();
+    fixture.adapterManifest = mutate(fixture.adapterManifest);
+    assert.throws(() => validateCodexRuntimeSourceAlignment(fixture), /V8 manifest patch must use/);
 });
 
 test("places the universal input before the lipo verification command", () => {

@@ -28,26 +28,26 @@ path = "src/lib.rs"
 agent-client-protocol = { version = "=0.14.0", features = ["unstable"] }
 anyhow = "1"
 clap = "4"
-codex-apply-patch = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-app-server-protocol = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-arg0 = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-code-mode-host = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-config = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-core = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-exec-server = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-extension-api = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-extension-items = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-features = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-http-client = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-login = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-models-manager = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-protocol = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-rollout = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-shell-command = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-thread-store = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-utils-approval-presets = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-utils-cli = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
-codex-utils-path-uri = { git = "https://github.com/openai/codex", tag = "rust-v0.164.0" }
+codex-apply-patch = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-app-server-protocol = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-arg0 = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-code-mode-host = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-config = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-core = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-exec-server = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-extension-api = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-extension-items = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-features = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-http-client = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-login = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-models-manager = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-protocol = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-rollout = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-shell-command = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-thread-store = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-utils-approval-presets = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-utils-cli = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
+codex-utils-path-uri = { git = "https://github.com/openai/codex", tag = "rust-v0.166.0" }
 allocative = "=0.3.6"
 diffy = { version = "0.5.0", features = ["std"] }
 itertools = "0.14.0"
@@ -74,6 +74,8 @@ rust_2018_idioms = "warn"
 unused = "warn"
 
 [patch.crates-io]
+# Match the runtime's cppgc pointer-alignment fix; dependency patches are not inherited.
+v8 = { git = "https://github.com/seanh-oai/rusty_v8.git", rev = "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0" }
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
 tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
 
