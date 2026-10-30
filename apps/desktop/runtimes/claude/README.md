@@ -1,8 +1,8 @@
 # Claude runtime
 
 This private installation manifest pins the published Claude ACP adapter to
-`0.95.0`, using its official Claude Agent SDK dependency `0.3.309`. All eight
-SDK native packages are locked to `0.3.309` too. `baseline.json` records the
+`0.99.1`, using its official Claude Agent SDK dependency `0.3.312`. All eight
+SDK native packages are locked to `0.3.312` too. `baseline.json` records the
 complete production graph and published runtime hashes. There is no SDK
 override or local runtime patch; `patches.json` is empty.
 
@@ -36,7 +36,7 @@ https://github.com/agentclientprotocol/claude-agent-acp/pull/1006, so the runtim
 no longer carries a TaskList patch. The TaskList contracts remain as regression
 coverage for the published implementation.
 
-ACP `0.95.0` supplies Claude Code `2.1.309`. Its model catalog exposes Sonnet 5.5
+ACP `0.99.1` supplies Claude Code `2.1.312`. Its model catalog exposes Sonnet 5.5
 and Haiku 5.5 under the official `sonnet` and `haiku` aliases. NeverWrite's chat
 selector uses the model options returned by ACP; the native CLI resolves these
 aliases to `claude-sonnet-5-5` and `claude-haiku-5-5` on provider requests.
@@ -80,10 +80,10 @@ The `0.81.2` update keeps the same production dependency graph. Its published
 JavaScript changes the ACP agent, exit-plan handling, and native subagent
 runtime; the runtime baseline records those three new file hashes.
 
-The `0.95.0` baseline comes from published tag commit
-`ebfbfbdaa9c2a6a8bd9eb0a4965b521009152350`. It includes ACP SDK `2.0.1`,
-Claude Agent SDK `0.3.309`, the resolved Anthropic SDK peer `1.3.0`, `diff`
-`9.0.0` and `zod` `4.6.7`. It records all 93 published JavaScript modules,
+The `0.99.1` baseline comes from published tag commit
+`0f78dbbdd089e5c64fc908173e8656aa9cc757fb`. It includes ACP SDK `2.1.0`,
+Claude Agent SDK `0.3.312`, the resolved Anthropic SDK peer `1.3.0`, `diff`
+`9.0.0` and `zod` `4.6.7`. It records all 95 published JavaScript modules,
 including the background-task session-index helper and task-notification parser,
 and the complete locked production dependency graph. The security updates to
 `body-parser` `2.4.0` and `fast-uri` `3.1.9` remain locked with their integrity hashes.
@@ -229,6 +229,18 @@ AIR background-subagent turn completion, session-index background activity,
 linked subagent delegations and read-only child configuration remain outside
 NeverWrite's advertised capabilities. The runtime remains unmodified, with no
 local patches or SDK overrides.
+
+In `0.99.1`, Claude Agent SDK and all eight native packages move to `0.3.312`,
+and ACP SDK moves to `2.1.0`. The accumulated `0.96.0`–`0.99.1` changes add
+thinking-display and ultracode configuration options, report MCP startup failures,
+preserve the current model in configuration options, and retain usage-limit
+errors after compaction. Cancelled background permission requests are denied,
+plan approvals include their approval ID, and expired-login messages requesting
+`/login` are classified as authentication-required. NeverWrite continues using
+ACP v1 and the runtime-provided configuration options. Native subagent reporting,
+AIR skill/session metadata, native forks into another directory and ACP v2
+changes remain outside the current integration. No client capabilities, local
+patches or SDK overrides are added.
 
 The push-only authStatus, goal, AIR session-failure and JetBrains file-audit
 extensions remain outside the current client integration. NeverWrite's own

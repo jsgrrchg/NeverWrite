@@ -144,13 +144,13 @@ upstream license is retained at
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.81.2  | Apache-2.0                      |
-| @agentclientprotocol/sdk                | 1.5.0   | Apache-2.0                      |
-| @anthropic-ai/claude-agent-sdk          | 0.3.280 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/claude-agent-sdk-*        | 0.3.280 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/sdk                       | 0.128.0 | MIT                             |
-| @modelcontextprotocol/sdk               | 1.30.0  | MIT                             |
-| zod                                     | 4.6.5   | MIT                             |
+| @agentclientprotocol/claude-agent-acp   | 0.99.1  | Apache-2.0                      |
+| @agentclientprotocol/sdk                | 2.1.0   | Apache-2.0                      |
+| @anthropic-ai/claude-agent-sdk          | 0.3.312 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/claude-agent-sdk-*        | 0.3.312 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/sdk                       | 1.3.0   | MIT                             |
+| @modelcontextprotocol/sdk               | 1.32.2  | MIT                             |
+| zod                                     | 4.6.7   | MIT                             |
 
 Zod provides runtime schema validation and parsing for the structured data
 exchanged by the Claude ACP adapter and its protocol SDKs.
@@ -302,7 +302,7 @@ The bundled dictionary metadata lives in
 | -------------------------------- | ----------- | --------------------------------------- |
 | codex-acp 0.16.0                 | Apache-2.0  | github.com/zed-industries/codex-acp     |
 | OpenAI Codex runtime rust-v0.153.4 | Apache-2.0 | github.com/openai/codex                 |
-| @agentclientprotocol/claude-agent-acp 0.81.2 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
+| @agentclientprotocol/claude-agent-acp 0.99.1 | Apache-2.0 | github.com/agentclientprotocol/claude-agent-acp |
 | @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
 | pi-acp 0.0.33                    | MIT         | github.com/svkozak/pi-acp               |
