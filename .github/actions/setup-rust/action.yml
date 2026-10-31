@@ -10,6 +10,12 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Use system Git for macOS Cargo dependencies
+      if: runner.os == 'macOS'
+      shell: bash
+      # Cargo's libgit2/SecureTransport fetches can lose TLS connections while
+      # downloading the V8 submodules from chromium.googlesource.com.
+      run: echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
     - name: Enable long paths for Windows Cargo Git dependencies
       if: runner.os == 'Windows'
       shell: bash

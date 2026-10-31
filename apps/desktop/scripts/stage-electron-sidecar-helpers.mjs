@@ -44,11 +44,26 @@ export const CODEX_RUNTIME_COMPONENTS = [
 ];
 
 export const CODEX_RUNTIME_BASELINE = Object.freeze({
-    tag: "rust-v0.164.0",
-    version: "0.164.0",
-    commit: "6aaac694803004a63c6f393d153c96d22521a6b9",
+    tag: "rust-v0.166.0",
+    version: "0.166.0",
+    commit: "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856",
     v8Version: "152.2.0",
+    v8Git: "https://github.com/seanh-oai/rusty_v8.git",
+    v8Rev: "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0",
 });
+
+// Preserve quoted URL fragments while removing commented-out pins.
+function withoutTomlComments(source) {
+    return source.replace(/("(?:\\.|[^"\\])*"|'[^']*')|#[^\n]*/g,
+        (match, quoted) => quoted ?? "");
+}
+
+function tomlStringField(source, field) {
+    return source.match(new RegExp(
+        `(?:^|[,\\n])\\s*${field}\\s*=\\s*(?:"([^"\\n]*)"|'([^'\\n]*)')(?=\\s*(?:,|$))`,
+        "m",
+    ))?.slice(1).find((value) => value !== undefined);
+}
 
 export function validateCodexRuntimeSourceAlignment({
     adapterManifest,
@@ -93,12 +108,35 @@ export function validateCodexRuntimeSourceAlignment({
         );
     }
 
-    const v8Version = normalizedLockfile.match(
-        /\[\[package\]\]\nname = "v8"\nversion = "([^"]+)"/,
-    )?.[1];
-    if (v8Version !== CODEX_RUNTIME_BASELINE.v8Version) {
+    const v8Packages = withoutTomlComments(normalizedLockfile)
+        .split(/^\s*\[\[package\]\]\s*$/m)
+        .filter((block) => tomlStringField(block, "name") === "v8");
+    const expectedV8Source = `git+${CODEX_RUNTIME_BASELINE.v8Git}?rev=${CODEX_RUNTIME_BASELINE.v8Rev}#${CODEX_RUNTIME_BASELINE.v8Rev}`;
+    if (
+        v8Packages.length !== 1 ||
+        tomlStringField(v8Packages[0], "version") !== CODEX_RUNTIME_BASELINE.v8Version ||
+        tomlStringField(v8Packages[0], "source") !== expectedV8Source
+    ) {
         throw new Error(
-            `Codex V8 dependency must remain ${CODEX_RUNTIME_BASELINE.v8Version}; found ${v8Version ?? "unknown"}`,
+            `Codex V8 lockfile must resolve exactly one ${CODEX_RUNTIME_BASELINE.v8Version} package from ${expectedV8Source}`,
+        );
+    }
+
+    const manifest = withoutTomlComments(adapterManifest.replace(/\r\n?/g, "\n"));
+    const patchTable = manifest.match(
+        /^\s*\[patch\.crates-io\]\s*\n([\s\S]*?)(?=^\s*\[|(?![\s\S]))/m,
+    )?.[1] ?? "";
+    const inlinePatch = patchTable.match(/^\s*v8\s*=\s*\{([^}]*)\}\s*$/m)?.[1];
+    const separatePatch = manifest.match(
+        /^\s*\[patch\.crates-io\.v8\]\s*\n([\s\S]*?)(?=^\s*\[|(?![\s\S]))/m,
+    )?.[1];
+    const v8Patch = inlinePatch ?? separatePatch ?? "";
+    if (
+        tomlStringField(v8Patch, "git") !== CODEX_RUNTIME_BASELINE.v8Git ||
+        tomlStringField(v8Patch, "rev") !== CODEX_RUNTIME_BASELINE.v8Rev
+    ) {
+        throw new Error(
+            `Codex V8 manifest patch must use ${CODEX_RUNTIME_BASELINE.v8Git} at ${CODEX_RUNTIME_BASELINE.v8Rev}`,
         );
     }
 }
