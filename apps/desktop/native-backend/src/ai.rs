@@ -3201,7 +3201,12 @@ impl NativeAcpClient {
                 .as_ref()
                 .and_then(|raw| raw.get("reason"))
                 .and_then(Value::as_str)
-                != Some("elicitation_abandoned")
+                .is_none_or(|reason| {
+                    !matches!(
+                        reason,
+                        "elicitation_abandoned" | "network_approval_resolved"
+                    )
+                })
         {
             return;
         }
@@ -17689,65 +17694,68 @@ mod tests {
 
     #[test]
     fn abandoned_permission_cancels_only_its_session_and_tool_waiter() {
-        let (event_tx, event_rx) = mpsc::channel();
-        let client = test_client(event_tx);
-        let mut receivers = Vec::new();
-        for (id, session, tool) in [
-            ("match", "session-1", "tool-1"),
-            ("other-session", "session-2", "tool-1"),
-            ("other-tool", "session-1", "tool-2"),
-        ] {
-            let (tx, rx) = oneshot::channel();
-            client
-                .permission_waiters
-                .lock()
-                .unwrap()
-                .insert(id.into(), tx);
-            client
-                .permission_request_tools
-                .lock()
-                .unwrap()
-                .by_request
-                .insert(id.into(), (session.into(), tool.into()));
-            receivers.push(rx);
-        }
-        let update = ToolCallUpdate::new(
-            "tool-1",
-            ToolCallUpdateFields::new()
-                .status(ToolCallStatus::Failed)
-                .raw_output(json!({"reason": "elicitation_abandoned"})),
-        );
-        client.cancel_abandoned_permission("session-1", &update);
-        assert_eq!(
-            receivers[0].try_recv().unwrap(),
-            RequestPermissionOutcome::Cancelled
-        );
-        assert!(receivers[1].try_recv().is_err());
-        assert!(receivers[2].try_recv().is_err());
-        assert_eq!(client.permission_waiters.lock().unwrap().len(), 2);
-        assert_eq!(
-            client
-                .permission_request_tools
-                .lock()
-                .unwrap()
-                .by_request
-                .len(),
-            2
-        );
-        let delayed = run_client_future(client.request_permission(RequestPermissionRequest::new(
-            "session-1",
-            ToolCallUpdate::new(
+        for reason in ["elicitation_abandoned", "network_approval_resolved"] {
+            let (event_tx, event_rx) = mpsc::channel();
+            let client = test_client(event_tx);
+            let mut receivers = Vec::new();
+            for (id, session, tool) in [
+                ("match", "session-1", "tool-1"),
+                ("other-session", "session-2", "tool-1"),
+                ("other-tool", "session-1", "tool-2"),
+            ] {
+                let (tx, rx) = oneshot::channel();
+                client
+                    .permission_waiters
+                    .lock()
+                    .unwrap()
+                    .insert(id.into(), tx);
+                client
+                    .permission_request_tools
+                    .lock()
+                    .unwrap()
+                    .by_request
+                    .insert(id.into(), (session.into(), tool.into()));
+                receivers.push(rx);
+            }
+            let update = ToolCallUpdate::new(
                 "tool-1",
-                ToolCallUpdateFields::new().title("Delayed approval"),
-            ),
-            Vec::new(),
-        )))
-        .unwrap();
-        assert_eq!(delayed.outcome, RequestPermissionOutcome::Cancelled);
-        assert!(
-            event_rx.try_recv().is_err(),
-            "an abandoned request cannot reopen the permission UI"
-        );
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Failed)
+                    .raw_output(json!({"reason": reason})),
+            );
+            client.cancel_abandoned_permission("session-1", &update);
+            assert_eq!(
+                receivers[0].try_recv().unwrap(),
+                RequestPermissionOutcome::Cancelled
+            );
+            assert!(receivers[1].try_recv().is_err());
+            assert!(receivers[2].try_recv().is_err());
+            assert_eq!(client.permission_waiters.lock().unwrap().len(), 2);
+            assert_eq!(
+                client
+                    .permission_request_tools
+                    .lock()
+                    .unwrap()
+                    .by_request
+                    .len(),
+                2
+            );
+            let delayed =
+                run_client_future(client.request_permission(RequestPermissionRequest::new(
+                    "session-1",
+                    ToolCallUpdate::new(
+                        "tool-1",
+                        ToolCallUpdateFields::new().title("Delayed approval"),
+                    ),
+                    Vec::new(),
+                )))
+                .unwrap();
+            assert_eq!(delayed.outcome, RequestPermissionOutcome::Cancelled);
+            assert!(
+                event_rx.try_recv().is_err(),
+                "an abandoned request cannot reopen the permission UI"
+            );
+        }
     }
 
     #[test]
