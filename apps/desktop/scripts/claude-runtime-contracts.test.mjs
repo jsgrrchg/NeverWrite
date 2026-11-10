@@ -75,15 +75,15 @@ test("compaction remains tool activity without the experimental client capabilit
 });
 
 test("shell output keeps the content fallback without terminal delta support", async () => {
-    const { toolUpdateFromToolResult } = await import(
-        pathToFileURL(path.join(runtimeRoot, "dist/tools.js")).href
+    const { AcpToolCallRenderer } = await import(
+        pathToFileURL(path.join(runtimeRoot, "dist/tool-calls/renderer.js")).href
     );
     const toolUse = { id: "shell-1", name: "Bash", input: { command: "printf hello" } };
     const toolResult = { tool_use_id: "shell-1", content: "hello\n" };
-    assert.deepEqual(toolUpdateFromToolResult(toolResult, toolUse), {
+    assert.deepEqual(new AcpToolCallRenderer().resultFields(toolUse, toolResult), {
         content: [{ type: "content", content: { type: "text", text: "```console\nhello\n```" } }],
     });
-    const withTerminal = toolUpdateFromToolResult(toolResult, toolUse, true);
+    const withTerminal = AcpToolCallRenderer.for({ _meta: { terminal_output: true } }).resultFields(toolUse, toolResult);
     assert.deepEqual(withTerminal._meta.terminal_output, {
         terminal_id: "shell-1", data: "hello\n",
     });
@@ -101,14 +101,14 @@ test("session advisories remain transcript messages without the notices capabili
         severity: "warning", title: "Model fallback", description: "Using another model",
     }, supportsNotices), {
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "**Model fallback:** Using another model" },
+        content: { type: "text", text: "\n\n> **Model fallback:** Using another model\n\n" },
     });
     const informational = noticeOrTranscriptUpdate({
         severity: "info", title: "Running hook",
     }, supportsNotices, "Running hook", { claudeCode: { kind: "informational", level: "info" } });
     assert.deepEqual(informational, {
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "Running hook" },
+        content: { type: "text", text: "\n\n> Running hook\n\n" },
         _meta: { claudeCode: { kind: "informational", level: "info" } },
     });
 });
