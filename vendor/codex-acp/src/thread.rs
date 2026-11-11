@@ -58,7 +58,7 @@ use codex_protocol::review_format::format_review_findings_block;
 use codex_protocol::turn_input::TurnInput;
 use codex_protocol::{
     ResponseItemId, ThreadId,
-    approvals::{ElicitationRequest, ElicitationRequestEvent},
+    approvals::{ElicitationRequest, ElicitationRequestEvent, ExecApprovalKind},
     config_types::{ServiceTier, TrustLevel},
     dynamic_tools::{DynamicToolCallOutputContentItem, DynamicToolCallRequest},
     error::CodexErr,
@@ -641,6 +641,7 @@ struct PendingPermissionInteraction {
 enum PendingPermissionRequest {
     Exec {
         approval_id: String,
+        standalone_tool_call_id: Option<ToolCallId>,
         turn_id: String,
         option_map: HashMap<String, ReviewDecision>,
     },
@@ -951,6 +952,7 @@ fn format_mcp_tool_approval_value(value: &serde_json::Value) -> String {
 struct PromptState {
     submission_id: String,
     active_commands: HashMap<String, ActiveCommand>,
+    network_approval_calls: HashMap<String, ToolCallId>,
     pending_command_output: HashMap<String, String>,
     active_web_search: Option<String>,
     active_guardian_assessments: HashSet<String>,
@@ -1809,6 +1811,7 @@ impl PromptState {
         Self {
             submission_id,
             active_commands: HashMap::new(),
+            network_approval_calls: HashMap::new(),
             pending_command_output: HashMap::new(),
             active_web_search: None,
             active_guardian_assessments: HashSet::new(),
@@ -1835,6 +1838,7 @@ impl PromptState {
         Self {
             submission_id,
             active_commands: HashMap::new(),
+            network_approval_calls: HashMap::new(),
             pending_command_output: HashMap::new(),
             active_web_search: None,
             active_guardian_assessments: HashSet::new(),
@@ -1921,6 +1925,35 @@ impl PromptState {
             .await;
     }
 
+    async fn resolve_network_approval(&mut self, client: &SessionClient, approval_id: &str) {
+        let Some(tool_call_id) = self.network_approval_calls.remove(approval_id) else {
+            return;
+        };
+        let cancelled = self
+            .pending_permission_interactions
+            .remove(&exec_request_key(tool_call_id.0.as_ref()))
+            .is_some();
+        // Retire only this callback. The command and other network prompts can
+        // remain active, and a late ACP response must not approve anything.
+        client
+            .send_tool_call_update(ToolCallUpdate::new(
+                tool_call_id,
+                ToolCallUpdateFields::new()
+                    .status(if cancelled {
+                        ToolCallStatus::Failed
+                    } else {
+                        ToolCallStatus::Completed
+                    })
+                    .content(vec![ToolCallContent::from(
+                        "Network approval request is no longer active.",
+                    )])
+                    .raw_output(
+                        json!({"cancelled": cancelled, "reason": "network_approval_resolved"}),
+                    ),
+            ))
+            .await;
+    }
+
     fn detach_pending_interactions(&mut self) {
         // Keep detached permission request tasks running so ACP can route the
         // client's required `Cancelled` response after session cancellation.
@@ -1935,7 +1968,7 @@ impl PromptState {
 
     async fn handle_permission_request_resolved(
         &mut self,
-        _client: &SessionClient,
+        client: &SessionClient,
         interaction_id: u64,
         request_key: String,
         response: Result<RequestPermissionResponse, Error>,
@@ -1964,6 +1997,7 @@ impl PromptState {
         match pending_request {
             PendingPermissionRequest::Exec {
                 approval_id,
+                standalone_tool_call_id,
                 turn_id,
                 option_map,
             } => {
@@ -1978,6 +2012,7 @@ impl PromptState {
                     RequestPermissionOutcome::Cancelled | _ => ReviewDecision::Abort,
                 };
 
+                let approved = matches!(decision, ReviewDecision::Approved);
                 self.thread
                     .submit(Op::ExecApproval {
                         id: approval_id,
@@ -1986,6 +2021,18 @@ impl PromptState {
                     })
                     .await
                     .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+                if let Some(tool_call_id) = standalone_tool_call_id {
+                    client
+                        .send_tool_call_update(ToolCallUpdate::new(
+                            tool_call_id,
+                            ToolCallUpdateFields::new().status(if approved {
+                                ToolCallStatus::Completed
+                            } else {
+                                ToolCallStatus::Failed
+                            }),
+                        ))
+                        .await;
+                }
             }
             PendingPermissionRequest::Patch {
                 call_id,
@@ -3287,6 +3334,9 @@ impl PromptState {
                     )
                     .await;
             }
+            EventMsg::NetworkApprovalResolved { approval_id } => {
+                self.resolve_network_approval(client, &approval_id).await;
+            }
             EventMsg::GuardianAssessment(event) => {
                 info!(
                     "Guardian assessment: id={}, status={:?}, turn_id={}",
@@ -3898,7 +3948,20 @@ impl PromptState {
         client: &SessionClient,
         event: ExecApprovalRequestEvent,
     ) -> Result<(), Error> {
-        let available_decisions = event.effective_available_decisions();
+        let human_command = event.kind == ExecApprovalKind::HumanCommand;
+        let available_decisions: Vec<_> = event
+            .effective_available_decisions()
+            .into_iter()
+            .filter(|decision| {
+                !human_command
+                    || matches!(
+                        decision,
+                        ReviewDecision::Approved
+                            | ReviewDecision::Denied { .. }
+                            | ReviewDecision::Abort
+                    )
+            })
+            .collect();
         let raw_input = serde_json::json!(&event);
         let ExecApprovalRequestEvent {
             call_id,
@@ -3916,8 +3979,18 @@ impl PromptState {
             ..
         } = event;
 
-        // Create a new tool call for the command execution
-        let tool_call_id = ToolCallId::new(call_id.clone());
+        // Callback identities must not share the command's execution lifecycle.
+        let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
+        let network_approval = network_approval_context.is_some();
+        let tool_call_id = ToolCallId::new(if network_approval || human_command {
+            format!("approval:{effective_approval_id}")
+        } else {
+            call_id.clone()
+        });
+        if network_approval {
+            self.network_approval_calls
+                .insert(effective_approval_id, tool_call_id.clone());
+        }
         let ParseCommandToolCall {
             title,
             terminal_output,
@@ -3935,17 +4008,19 @@ impl PromptState {
                 })?
                 .as_path(),
         );
-        self.active_commands.insert(
-            call_id.clone(),
-            ActiveCommand {
-                terminal_output,
-                tool_call_id: tool_call_id.clone(),
-                output: String::new(),
-                observed_output: false,
-                file_extension,
-                file_snapshots: HashMap::new(),
-            },
-        );
+        if !human_command && !network_approval {
+            self.active_commands.insert(
+                call_id.clone(),
+                ActiveCommand {
+                    terminal_output,
+                    tool_call_id: tool_call_id.clone(),
+                    output: String::new(),
+                    observed_output: false,
+                    file_extension,
+                    file_snapshots: HashMap::new(),
+                },
+            );
+        }
 
         let mut content = vec![];
 
@@ -4006,8 +4081,9 @@ impl PromptState {
 
         self.spawn_permission_request(
             client,
-            exec_request_key(&call_id),
+            exec_request_key(tool_call_id.0.as_ref()),
             PendingPermissionRequest::Exec {
+                standalone_tool_call_id: human_command.then(|| tool_call_id.clone()),
                 approval_id: approval_id.unwrap_or(call_id.clone()),
                 turn_id,
                 option_map: permission_options
@@ -6205,6 +6281,22 @@ impl<A: Auth> ThreadActor<A> {
             return;
         }
 
+        if let EventMsg::NetworkApprovalResolved { approval_id } = &msg {
+            for state in self
+                .submissions
+                .values_mut()
+                .map(|submission| match submission {
+                    SubmissionState::Prompt(state) => state,
+                })
+                .chain(self.event_projections.values_mut())
+            {
+                state
+                    .resolve_network_approval(&self.client, approval_id)
+                    .await;
+            }
+            return;
+        }
+
         if let EventMsg::ThreadSettingsApplied(event) = &msg {
             if let Err(error) = self.sync_config_with_thread_settings(&event.thread_settings) {
                 warn!("Failed to synchronize ACP session configuration: {error:?}");
@@ -7396,6 +7488,7 @@ mod tests {
             PendingPermissionInteraction {
                 id: 2,
                 request: PendingPermissionRequest::Exec {
+                    standalone_tool_call_id: None,
                     approval_id: "new-approval".to_string(),
                     turn_id: "new-turn".to_string(),
                     option_map: HashMap::from([(
@@ -10494,6 +10587,170 @@ mod tests {
         Ok(())
     }
 
+    fn approval_fixture(kind: ExecApprovalKind, approval_id: &str) -> ExecApprovalRequestEvent {
+        serde_json::from_value(json!({
+            "kind": kind, "call_id": "shared-command", "approval_id": approval_id,
+            "turn_id": "original-turn", "started_at_ms": 1,
+            "command": ["echo", "hello"], "cwd": std::env::current_dir().unwrap(),
+            "parsed_cmd": [],
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn network_resolution_is_scoped_idempotent_and_ignores_late_replies() -> anyhow::Result<()>
+    {
+        let (mut actor, client, thread) = setup_actor(|_| {}).await?;
+        let mut state = PromptState::projection(
+            "original-submission".into(),
+            thread.clone(),
+            actor.resolution_tx.clone(),
+        );
+        for id in ["network-a", "network-b"] {
+            let mut event = approval_fixture(ExecApprovalKind::Command, id);
+            event.network_approval_context = Some(serde_json::from_value(json!({
+                "host": "example.com", "protocol": "https"
+            }))?);
+            state.exec_approval(&actor.client, event).await?;
+        }
+        let key = exec_request_key("approval:network-a");
+        let interaction_id = state.pending_permission_interactions[&key].id;
+        assert!(
+            state.active_commands.is_empty(),
+            "network callbacks are not command executions"
+        );
+        actor
+            .submissions
+            .insert("original-submission".into(), SubmissionState::Prompt(state));
+        for _ in 0..2 {
+            actor
+                .handle_event(Event {
+                    id: "different-event-id".into(),
+                    msg: EventMsg::NetworkApprovalResolved {
+                        approval_id: "network-a".into(),
+                    },
+                })
+                .await;
+        }
+        let SubmissionState::Prompt(state) =
+            actor.submissions.get_mut("original-submission").unwrap();
+        assert!(!state.pending_permission_interactions.contains_key(&key));
+        assert!(
+            state
+                .pending_permission_interactions
+                .contains_key(&exec_request_key("approval:network-b"))
+        );
+        state
+            .handle_permission_request_resolved(
+                &actor.client,
+                interaction_id,
+                key,
+                Ok(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("approved")),
+                )),
+            )
+            .await?;
+        assert!(thread.ops.lock().unwrap().is_empty());
+        let notifications = client.notifications.lock().unwrap();
+        let resolved: Vec<_> = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update)
+                    if update
+                        .fields
+                        .raw_output
+                        .as_ref()
+                        .is_some_and(|raw| raw["reason"] == "network_approval_resolved") =>
+                {
+                    Some(update)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].tool_call_id.0.as_ref(), "approval:network-a");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn answered_network_approval_completes_without_cancelling_the_command()
+    -> anyhow::Result<()> {
+        let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
+        let mut event = approval_fixture(ExecApprovalKind::Command, "answered-network");
+        event.network_approval_context = Some(serde_json::from_value(json!({
+            "host": "example.com", "protocol": "https"
+        }))?);
+        state.exec_approval(&session_client, event).await?;
+        let key = exec_request_key("approval:answered-network");
+        let id = state.pending_permission_interactions[&key].id;
+        state
+            .handle_permission_request_resolved(
+                &session_client,
+                id,
+                key,
+                Ok(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("approved")),
+                )),
+            )
+            .await?;
+        state
+            .resolve_network_approval(&session_client, "answered-network")
+            .await;
+        let notifications = client.notifications.lock().unwrap();
+        assert!(notifications.iter().any(|notification| matches!(&notification.update,
+            SessionUpdate::ToolCallUpdate(update) if update.tool_call_id.0.as_ref() == "approval:answered-network"
+                && update.fields.status == Some(ToolCallStatus::Completed)
+                && update.fields.raw_output.as_ref().is_some_and(|raw| raw["cancelled"] == false))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn human_checkpoint_offers_only_once_and_has_its_own_lifecycle() -> anyhow::Result<()> {
+        let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
+        let mut event = approval_fixture(ExecApprovalKind::HumanCommand, "human-checkpoint");
+        event.available_decisions = Some(vec![
+            ReviewDecision::Approved,
+            ReviewDecision::ApprovedForSession,
+            ReviewDecision::denied("rejected"),
+            ReviewDecision::Abort,
+        ]);
+        state.exec_approval(&session_client, event).await?;
+        tokio::task::yield_now().await;
+        {
+            let requests = client.requested_permissions.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].options.len(), 3);
+            assert!(requests[0].options.iter().all(|option| matches!(
+                option.kind,
+                PermissionOptionKind::AllowOnce | PermissionOptionKind::RejectOnce
+            )));
+        }
+        assert!(state.active_commands.is_empty());
+        let key = exec_request_key("approval:human-checkpoint");
+        let id = state.pending_permission_interactions[&key].id;
+        state
+            .handle_permission_request_resolved(
+                &session_client,
+                id,
+                key,
+                Ok(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("approved")),
+                )),
+            )
+            .await?;
+        let notifications = client.notifications.lock().unwrap();
+        assert!(notifications.iter().any(|notification| matches!(&notification.update,
+            SessionUpdate::ToolCallUpdate(update) if update.tool_call_id.0.as_ref() == "approval:human-checkpoint"
+                && update.fields.status == Some(ToolCallStatus::Completed))));
+        assert!(
+            !notifications
+                .iter()
+                .any(|notification| matches!(&notification.update,
+            SessionUpdate::ToolCall(call) if call.tool_call_id.0.as_ref() == "shared-command"))
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn abandoned_elicitation_retires_only_matching_request_and_ignores_late_reply()
     -> anyhow::Result<()> {
@@ -12354,6 +12611,7 @@ mod tests {
     struct StubClient {
         notifications: std::sync::Mutex<Vec<SessionNotification>>,
         permission_requests: AtomicUsize,
+        requested_permissions: std::sync::Mutex<Vec<RequestPermissionRequest>>,
     }
 
     impl StubClient {
@@ -12361,6 +12619,7 @@ mod tests {
             StubClient {
                 notifications: std::sync::Mutex::default(),
                 permission_requests: AtomicUsize::new(0),
+                requested_permissions: std::sync::Mutex::default(),
             }
         }
     }
@@ -12373,12 +12632,13 @@ mod tests {
 
         fn request_permission(
             &self,
-            _args: RequestPermissionRequest,
+            args: RequestPermissionRequest,
         ) -> Pin<Box<dyn Future<Output = Result<RequestPermissionResponse, Error>> + Send + '_>>
         {
             self.permission_requests
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(async { unimplemented!() })
+            self.requested_permissions.lock().unwrap().push(args);
+            Box::pin(std::future::pending())
         }
     }
 

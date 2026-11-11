@@ -25,20 +25,20 @@ const checkedInWorkspaceRoot = path.resolve(
 function runtimeSourceFixture() {
     return {
         adapterManifest: `[dependencies]
-codex-core = { tag = "rust-v0.166.0" }
+codex-core = { tag = "rust-v0.167.0" }
 [patch.crates-io]
 v8 = { git = "https://github.com/seanh-oai/rusty_v8.git", rev = "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0" }
 `,
         lockfile: `[[package]]
 name = "codex-core"
-version = "0.166.0"
-source = "git+https://github.com/openai/codex?tag=rust-v0.166.0#6ff1e1ca3b30fc8b914720681fcf5fe62e95f856"
+version = "0.167.0"
+source = "git+https://github.com/openai/codex?tag=rust-v0.167.0#086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a"
 [[package]]
 name = "v8"
 version = "152.2.0"
 source = "git+https://github.com/seanh-oai/rusty_v8.git?rev=350c5a859a9b3c84ab8701b3ad51e3b7699b30c0#350c5a859a9b3c84ab8701b3ad51e3b7699b30c0"
 `,
-        ptyManifest: '[package]\nversion = "0.166.0"',
+        ptyManifest: '[package]\nversion = "0.167.0"',
     };
 }
 
@@ -153,9 +153,9 @@ test("rejects a mixed runtime source baseline before staging", () => {
                 adapterManifest:
                     '[dependencies]\ncodex-core = { tag = "rust-v0.149.0" }',
                 lockfile: "",
-                ptyManifest: '[package]\nversion = "0.166.0"',
+                ptyManifest: '[package]\nversion = "0.167.0"',
             }),
-        /must all use tag = "rust-v0\.166\.0"/,
+        /must all use tag = "rust-v0\.167\.0"/,
     );
 });
 

@@ -44,9 +44,9 @@ export const CODEX_RUNTIME_COMPONENTS = [
 ];
 
 export const CODEX_RUNTIME_BASELINE = Object.freeze({
-    tag: "rust-v0.166.0",
-    version: "0.166.0",
-    commit: "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856",
+    tag: "rust-v0.167.0",
+    version: "0.167.0",
+    commit: "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a",
     v8Version: "152.2.0",
     v8Git: "https://github.com/seanh-oai/rusty_v8.git",
     v8Rev: "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0",
