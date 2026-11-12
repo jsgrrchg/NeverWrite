@@ -124,7 +124,8 @@ jobs:
 
   editor-browser:
     name: Editor browser regressions
-    runs-on: ubuntu-latest
+    # Playwright's Chromium installer does not support Ubuntu 26.04 yet.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
