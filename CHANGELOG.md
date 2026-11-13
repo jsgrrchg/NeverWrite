@@ -39,7 +39,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 ### Changed
 
 - Updated the bundled Codex runtime to `0.167.0`, with improvements to compaction estimates, authentication refresh, permission restoration, and reasoning-token accounting. The bundled fallback model catalog now also includes GPT-6.1 Terra; available models continue to follow the authenticated account's catalog.
-- Updated the bundled Claude ACP runtime to `0.104.1`, adding thinking-display and ultracode configuration options, defaulting new sessions to Auto mode, and allowing idle sessions to compact before the prompt cache expires.
+- Updated the bundled Claude ACP runtime to `0.106.0`, adding thinking-display and ultracode configuration options, defaulting new sessions to Auto mode, and allowing idle sessions to compact before the prompt cache expires.
 
 ### Fixed
 
@@ -49,6 +49,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 - Improved Codex command output handling and process cleanup on Unix and Windows, and fixed a runtime memory-alignment issue.
 - Improved Claude expired-login detection, plan approvals, cancelled background permissions, and reporting of MCP startup failures, session startup failures, and early rate limits. Usage-limit errors now remain visible after compaction.
 - Preserved Claude's current model and live settings during configuration and provider refreshes, and separated transcript notices into their own blockquote paragraphs.
+- Fixed Claude idle compaction ignoring inline client settings, and made model selection respect inline model allowlists, overrides, and managed settings.
 
 ### Security
 
