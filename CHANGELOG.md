@@ -34,11 +34,25 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [Unreleased]
+## [0.8.15] - 2026-11-12
+
+### Changed
+
+- Updated the bundled Codex runtime to `0.167.0`, with improvements to compaction estimates, authentication refresh, permission restoration, and reasoning-token accounting. The bundled fallback model catalog now also includes GPT-6.1 Terra; available models continue to follow the authenticated account's catalog.
+- Updated the bundled Claude ACP runtime to `0.104.1`, adding thinking-display and ultracode configuration options, defaulting new sessions to Auto mode, and allowing idle sessions to compact before the prompt cache expires.
 
 ### Fixed
 
-- Updated the bundled Claude ACP runtime to `0.99.1`, improving expired-login detection, plan approvals, cancelled background permissions, and MCP startup failure reporting.
+- Fixed concurrent Codex network approval requests overwriting one another or their command activity. Resolved or expired requests now close their matching permission controls and ignore late responses.
+- Fixed Codex managed command checkpoints sharing their command's execution activity; each checkpoint now has its own approval activity and offers one-time approval, rejection, or cancellation.
+- Prevented private Codex reviewer messages and cancellation events from appearing in the parent conversation or ending its prompt.
+- Improved Codex command output handling and process cleanup on Unix and Windows, and fixed a runtime memory-alignment issue.
+- Improved Claude expired-login detection, plan approvals, cancelled background permissions, and reporting of MCP startup failures, session startup failures, and early rate limits. Usage-limit errors now remain visible after compaction.
+- Preserved Claude's current model and live settings during configuration and provider refreshes, and separated transcript notices into their own blockquote paragraphs.
+
+### Security
+
+- Updated input validation in the bundled Pi runtime to address a Zod security advisory.
 
 ## [0.8.14] - 2026-10-25
 
