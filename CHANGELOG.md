@@ -34,6 +34,17 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.8.16] - 2026-11-20
+
+### Changed
+
+- Updated the bundled Codex runtime to `0.171.0`, with improved Windows command output and diagnostics handling. The bundled fallback model catalog now defaults to GPT-6.2 Sol and also lists GPT-6.2 Astra; available models continue to follow the authenticated account's catalog, and explicit model selections are preserved.
+- Updated the bundled Claude ACP runtime to `0.109.0`, adding live streaming of foreground Bash output, and improving rate-limit reporting, model selection, and Fast mode persistence across model switches.
+
+### Fixed
+
+- Fixed Claude steered turns ending early on an autonomous result, and made session setup fail clearly for an incompatible model provider.
+
 ## [0.8.15] - 2026-11-12
 
 ### Changed
