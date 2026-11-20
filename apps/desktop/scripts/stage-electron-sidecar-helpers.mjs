@@ -44,12 +44,12 @@ export const CODEX_RUNTIME_COMPONENTS = [
 ];
 
 export const CODEX_RUNTIME_BASELINE = Object.freeze({
-    tag: "rust-v0.167.0",
-    version: "0.167.0",
-    commit: "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a",
+    tag: "rust-v0.171.0",
+    version: "0.171.0",
+    commit: "ccf9be8cc458bd6b8336fe84d68d8893f2691a5e",
     v8Version: "152.2.0",
-    v8Git: "https://github.com/seanh-oai/rusty_v8.git",
-    v8Rev: "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0",
+    v8Git: "https://github.com/openai-oss-forks/rusty_v8.git",
+    v8Rev: "90a65f887a0c0f048f3784afbcb320b373c8a2e0",
 });
 
 // Preserve quoted URL fragments while removing commented-out pins.

@@ -2,7 +2,7 @@
 edition = "2024"
 license = "Apache-2.0"
 name = "codex-utils-pty"
-version = "0.167.0"
+version = "0.171.0"
 
 [dependencies]
 anyhow = "1"
@@ -10,7 +10,7 @@ portable-pty = "0.9.0"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
-codex-utils-cargo-bin = { git = "https://github.com/openai/codex", tag = "rust-v0.167.0" }
+codex-utils-cargo-bin = { git = "https://github.com/openai/codex", tag = "rust-v0.171.0" }
 ctor = "0.6.3"
 tempfile = "3"
 pretty_assertions = "1.4.1"
@@ -35,6 +35,7 @@ winapi = { version = "0.3.9", features = [
 ] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.182"
+nix = { version = "0.28", features = ["fs", "user"] }
 
 [lib]
 doctest = false

@@ -79,7 +79,7 @@ use codex_protocol::{
         PermissionGrantScope, RequestPermissionProfile, RequestPermissionsEvent,
         RequestPermissionsResponse,
     },
-    turn_input::{TurnInputMode, TurnInputRequest, TurnInputSubmission},
+    turn_input::{StartIfIdleSubmission, TurnInputRequest},
     user_input::UserInput,
 };
 use codex_rollout::RolloutItem;
@@ -275,22 +275,10 @@ pub trait CodexThreadImpl: Send + Sync {
         })
     }
 
-    fn submit_turn_input(
+    fn start_turn_if_idle(
         &self,
         request: TurnInputRequest,
-        mode: TurnInputMode,
-    ) -> Pin<Box<dyn Future<Output = Result<TurnInputSubmission, CodexErr>> + Send + '_>> {
-        Box::pin(async move {
-            let (reply_tx, reply_rx) = oneshot::channel();
-            self.submit(Op::TurnInput {
-                request: Box::new(request),
-                mode,
-                reply: reply_tx,
-            })
-            .await?;
-            reply_rx.await.map_err(|_| CodexErr::InternalAgentDied)?
-        })
-    }
+    ) -> Pin<Box<dyn Future<Output = Result<StartIfIdleSubmission, CodexErr>> + Send + '_>>;
 
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Result<Event, CodexErr>> + Send + '_>>;
 }
@@ -301,6 +289,13 @@ impl CodexThreadImpl for CodexThread {
         op: Op,
     ) -> Pin<Box<dyn Future<Output = Result<String, CodexErr>> + Send + '_>> {
         Box::pin(self.submit(op))
+    }
+
+    fn start_turn_if_idle(
+        &self,
+        request: TurnInputRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<StartIfIdleSubmission, CodexErr>> + Send + '_>> {
+        Box::pin(CodexThread::start_turn_if_idle(self, request))
     }
 
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Result<Event, CodexErr>> + Send + '_>> {
@@ -3147,6 +3142,7 @@ impl PromptState {
                 message,
                 codex_error_info,
                 misalignment,
+                rejected_audio_file_ids: _,
             }) => {
                 error!(
                     "Unhandled error during turn: {message} {codex_error_info:?} {misalignment:?}"
@@ -3255,7 +3251,11 @@ impl PromptState {
                 // informational notices (e.g., the post-compact advisory message).
                 client.send_agent_text(message).await;
             }
-            EventMsg::McpStartupUpdate(McpStartupUpdateEvent { server, status }) => {
+            EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
+                server,
+                status,
+                environment_id: _,
+            }) => {
                 info!("MCP startup update: server={server}, status={status:?}");
             }
             EventMsg::McpStartupComplete(McpStartupCompleteEvent {
@@ -3443,6 +3443,7 @@ impl PromptState {
             id,
             request,
             turn_id: _,
+            environment_id: _,
         } = event;
         if let Some(supported_request) = build_supported_mcp_elicitation_permission_request(
             &server_name,
@@ -5734,17 +5735,12 @@ impl<A: Auth> ThreadActor<A> {
                 .map_err(|e| Error::internal_error().data(e.to_string()))?,
             PromptSubmission::Turn(request) => match self
                 .thread
-                .submit_turn_input(*request, TurnInputMode::StartIfIdle)
+                .start_turn_if_idle(*request)
                 .await
                 .map_err(|e| Error::internal_error().data(e.to_string()))?
             {
-                TurnInputSubmission::Started { turn_id, .. } => turn_id,
-                TurnInputSubmission::Steered { turn_id, .. } => {
-                    return Err(Error::internal_error().data(format!(
-                        "runtime unexpectedly steered active turn {turn_id} for a start-if-idle prompt"
-                    )));
-                }
-                TurnInputSubmission::NotSubmitted { reason } => {
+                StartIfIdleSubmission::Started { turn_id, .. } => turn_id,
+                StartIfIdleSubmission::NotSubmitted { reason } => {
                     return Err(Error::invalid_params()
                         .data(format!("runtime declined prompt submission: {reason:?}")));
                 }
@@ -7126,6 +7122,7 @@ fn extract_slash_command(content: &[UserInput]) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
+    use codex_protocol::turn_input::TurnInputMode;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
@@ -7201,6 +7198,7 @@ mod tests {
             .mcp_elicitation(
                 &session_client,
                 ElicitationRequestEvent {
+                    environment_id: None,
                     server_name: "verification-server".into(),
                     id: codex_protocol::mcp::RequestId::String("verification-1".into()),
                     turn_id: None,
@@ -7650,7 +7648,7 @@ mod tests {
         ] {
             let expected_reason = format!("{reason:?}");
             let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
-            thread.set_next_turn_submission(TurnInputSubmission::NotSubmitted { reason });
+            thread.set_next_turn_submission(StartIfIdleSubmission::NotSubmitted { reason });
             let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
 
             message_tx.send(ThreadMessage::Prompt {
@@ -7678,35 +7676,6 @@ mod tests {
             drop(message_tx);
             drop(local_set.await);
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn start_if_idle_rejects_an_unexpected_steered_acknowledgement() -> anyhow::Result<()> {
-        let (session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
-        thread.set_next_turn_submission(TurnInputSubmission::Steered {
-            turn_id: "active-turn".to_string(),
-            root_turn_id: "active-turn".to_string(),
-        });
-        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
-
-        message_tx.send(ThreadMessage::Prompt {
-            request: PromptRequest::new(session_id, vec!["must not steer".into()]),
-            response_tx: prompt_response_tx,
-        })?;
-
-        let result = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx).await??;
-        let error = match result {
-            Ok(_) => anyhow::bail!("start-if-idle unexpectedly accepted a steered prompt"),
-            Err(error) => error,
-        };
-        assert!(
-            format!("{error:?}").contains("unexpectedly steered active turn active-turn"),
-            "unexpected submission error: {error:?}"
-        );
-
-        drop(message_tx);
-        drop(local_set.await);
         Ok(())
     }
 
@@ -8927,6 +8896,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::ItemCompleted(ItemCompletedEvent {
+                    content_token_count: None,
                     thread_id,
                     turn_id: "turn-1".to_string(),
                     item: live_item,
@@ -8946,6 +8916,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::ItemCompleted(ItemCompletedEvent {
+                    content_token_count: None,
                     thread_id,
                     turn_id: "turn-2".to_string(),
                     item: restored_item,
@@ -9007,11 +8978,13 @@ mod tests {
 
         let (mut state, session_client, client) = prompt_state_for_projection(ThreadId::new());
         let invocation = McpInvocation {
+            environment_id: None,
             server: "calendar".to_string(),
             tool: "create_event".to_string(),
             arguments: Some(json!({"title": "Runtime review"})),
         };
         let item = TurnItem::McpToolCall(McpToolCallItem {
+            environment_id: None,
             id: "mcp-call-1".to_string(),
             server: invocation.server.clone(),
             tool: invocation.tool.clone(),
@@ -9147,6 +9120,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::ItemCompleted(ItemCompletedEvent {
+                    content_token_count: None,
                     thread_id: codex_protocol::ThreadId::new(),
                     turn_id: "turn-1".into(),
                     item: TurnItem::Plan(codex_protocol::items::PlanItem {
@@ -9315,6 +9289,7 @@ mod tests {
                     turn_id: "turn-failed".to_string(),
                     last_agent_message: None,
                     error: Some(ErrorEvent {
+                        rejected_audio_file_ids: Vec::new(),
                         message: "The upstream response was rejected".to_string(),
                         codex_error_info: None,
                         misalignment: None,
@@ -9421,6 +9396,7 @@ mod tests {
         for (classification, expected) in [
             (CodexErrorInfo::TooManyDenials, "too_many_denials"),
             (CodexErrorInfo::FlexUnavailable, "flex_unavailable"),
+            (CodexErrorInfo::InferenceHookDenied, "inference_hook_denied"),
         ] {
             for turn_id in [Some("turn-denied".to_string()), None] {
                 let client = Arc::new(StubClient::new());
@@ -9445,6 +9421,7 @@ mod tests {
                             turn_id: turn_id.clone(),
                             reason: TurnAbortReason::Interrupted,
                             error: Some(ErrorEvent {
+                                rejected_audio_file_ids: Vec::new(),
                                 message: "Guardian stopped the turn after repeated denials"
                                     .to_string(),
                                 codex_error_info: Some(classification.clone()),
@@ -9814,6 +9791,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::ItemCompleted(ItemCompletedEvent {
+                    content_token_count: None,
                     thread_id: parent_thread_id,
                     turn_id: "turn-1".to_string(),
                     item: TurnItem::CollabAgentToolCall(
@@ -9894,6 +9872,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::ItemCompleted(ItemCompletedEvent {
+                    content_token_count: None,
                     thread_id: parent_thread_id,
                     turn_id: "turn-1".to_string(),
                     item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
@@ -10081,6 +10060,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::ItemCompleted(ItemCompletedEvent {
+                    content_token_count: None,
                     thread_id: parent_thread_id,
                     turn_id: "turn-1".to_string(),
                     item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
@@ -10149,6 +10129,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::ItemCompleted(ItemCompletedEvent {
+                    content_token_count: None,
                     thread_id: current_thread_id,
                     turn_id: "turn-1".to_string(),
                     item,
@@ -10175,6 +10156,7 @@ mod tests {
             .handle_event(
                 &session_client,
                 EventMsg::ItemCompleted(ItemCompletedEvent {
+                    content_token_count: None,
                     thread_id: parent_thread_id,
                     turn_id: "turn-1".to_string(),
                     item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
@@ -11151,14 +11133,14 @@ mod tests {
         assert!(astra.show_in_picker, "bundled Astra should be visible");
         let sol = all_model_presets()
             .iter()
-            .find(|preset| preset.model == "gpt-6.1-sol")
-            .expect("runtime catalog should include GPT-6.1 Sol")
+            .find(|preset| preset.model == "gpt-6.2-sol")
+            .expect("runtime catalog should include GPT-6.2 Sol")
             .clone();
-        assert!(sol.show_in_picker, "bundled GPT-6.1 Sol should be visible");
+        assert!(sol.show_in_picker, "bundled GPT-6.2 Sol should be visible");
         assert_eq!(
             codex_models_manager::test_support::get_model_offline_for_tests(None),
             sol.model,
-            "GPT-6.1 Sol should be the bundled default without an explicit model"
+            "GPT-6.2 Sol should be the bundled default without an explicit model"
         );
         assert_eq!(
             codex_models_manager::test_support::get_model_offline_for_tests(Some("gpt-5.6-sol")),
@@ -11182,7 +11164,15 @@ mod tests {
             panic!("model options should be ungrouped");
         };
         assert_eq!(select.current_value.0.as_ref(), "gpt-5.6-sol");
-        for model_id in ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+        for model_id in [
+            "gpt-6.2-sol",
+            "gpt-6.2-astra",
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        ] {
             assert!(
                 models
                     .iter()
@@ -11997,6 +11987,7 @@ mod tests {
         EventMsg::ThreadSettingsApplied(ThreadSettingsAppliedEvent {
             thread_id: None,
             thread_settings: ThreadSettingsSnapshot {
+                requested_approvals_reviewer: None,
                 model: model.clone(),
                 model_provider_id: config.model_provider_id.clone(),
                 service_tier: config.service_tier.clone(),
@@ -12250,7 +12241,7 @@ mod tests {
     struct StubCodexThread {
         current_id: AtomicUsize,
         ops: std::sync::Mutex<Vec<RecordedOp>>,
-        next_turn_submission: std::sync::Mutex<Option<TurnInputSubmission>>,
+        next_turn_submission: std::sync::Mutex<Option<StartIfIdleSubmission>>,
         settings_reply_observer: std::sync::Mutex<Option<mpsc::UnboundedSender<SettingsReply>>>,
         op_tx: mpsc::UnboundedSender<Event>,
         op_rx: Mutex<mpsc::UnboundedReceiver<Event>>,
@@ -12269,7 +12260,7 @@ mod tests {
             }
         }
 
-        fn set_next_turn_submission(&self, submission: TurnInputSubmission) {
+        fn set_next_turn_submission(&self, submission: StartIfIdleSubmission) {
             *self.next_turn_submission.lock().unwrap() = Some(submission);
         }
     }
@@ -12295,13 +12286,6 @@ mod tests {
                         content: content.clone(),
                         meta: meta.clone(),
                     },
-                    Op::TurnInput { request, mode, .. } => match &request.input {
-                        TurnInput::UserInput { content, .. } => RecordedOp::TurnInput {
-                            items: content.clone(),
-                            mode: mode.clone(),
-                        },
-                        input => RecordedOp::Other(format!("turn input: {input:?}")),
-                    },
                     Op::Compact => RecordedOp::Compact,
                     Op::Review { review_request } => RecordedOp::Review {
                         review_request: review_request.clone(),
@@ -12325,167 +12309,6 @@ mod tests {
                 self.ops.lock().unwrap().push(recorded_op);
 
                 match op {
-                    Op::TurnInput { request, reply, .. } => {
-                        let TurnInput::UserInput { content: items, .. } = request.input else {
-                            unimplemented!()
-                        };
-                        let turn_submission = self
-                            .next_turn_submission
-                            .lock()
-                            .unwrap()
-                            .take()
-                            .unwrap_or_else(|| TurnInputSubmission::Started {
-                                turn_id: id.to_string(),
-                                root_turn_id: id.to_string(),
-                            });
-                        let turn_started =
-                            matches!(turn_submission, TurnInputSubmission::Started { .. });
-                        drop(reply.send(Ok(turn_submission)));
-                        if !turn_started {
-                            return Ok(id.to_string());
-                        }
-                        let prompt = items
-                            .into_iter()
-                            .map(|i| match i {
-                                UserInput::Text { text, .. } => text,
-                                _ => unimplemented!(),
-                            })
-                            .join("\n");
-
-                        if prompt == "parallel-exec" {
-                            // Emit interleaved exec events: Begin A, Begin B, End A, End B
-                            let turn_id = id.to_string();
-                            let cwd = std::env::current_dir().unwrap();
-                            let send = |msg| {
-                                self.op_tx
-                                    .send(Event {
-                                        id: id.to_string(),
-                                        msg,
-                                    })
-                                    .unwrap();
-                            };
-                            send(EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
-                                call_id: "call-a".into(),
-                                plugin_id: None,
-                                script_path: None,
-                                process_id: None,
-                                turn_id: turn_id.clone(),
-                                command: vec!["echo".into(), "a".into()],
-                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
-                                    .unwrap(),
-                                parsed_cmd: vec![ParsedCommand::Unknown {
-                                    cmd: "echo a".into(),
-                                }],
-                                source: Default::default(),
-                                interaction_input: None,
-                                started_at_ms: 0,
-                            }));
-                            send(EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
-                                call_id: "call-b".into(),
-                                plugin_id: None,
-                                script_path: None,
-                                process_id: None,
-                                turn_id: turn_id.clone(),
-                                command: vec!["echo".into(), "b".into()],
-                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
-                                    .unwrap(),
-                                parsed_cmd: vec![ParsedCommand::Unknown {
-                                    cmd: "echo b".into(),
-                                }],
-                                source: Default::default(),
-                                interaction_input: None,
-                                started_at_ms: 0,
-                            }));
-                            send(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
-                                call_id: "call-a".into(),
-                                plugin_id: None,
-                                script_path: None,
-                                process_id: None,
-                                turn_id: turn_id.clone(),
-                                command: vec!["echo".into(), "a".into()],
-                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
-                                    .unwrap(),
-                                parsed_cmd: vec![],
-                                source: Default::default(),
-                                interaction_input: None,
-                                aggregated_output: "a\n".into(),
-                                exit_code: 0,
-                                duration: std::time::Duration::from_millis(10),
-                                status: ExecCommandStatus::Completed,
-                                completed_at_ms: 0,
-                            }));
-                            send(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
-                                call_id: "call-b".into(),
-                                plugin_id: None,
-                                script_path: None,
-                                process_id: None,
-                                turn_id: turn_id.clone(),
-                                command: vec!["echo".into(), "b".into()],
-                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
-                                    .unwrap(),
-                                parsed_cmd: vec![],
-                                source: Default::default(),
-                                interaction_input: None,
-                                aggregated_output: "b\n".into(),
-                                exit_code: 0,
-                                duration: std::time::Duration::from_millis(10),
-                                status: ExecCommandStatus::Completed,
-                                completed_at_ms: 0,
-                            }));
-                            send(EventMsg::TurnComplete(TurnCompleteEvent {
-                                root_turn_id: None,
-                                last_agent_message: None,
-                                turn_id,
-                                error: None,
-                                started_at: None,
-                                completed_at: None,
-                                duration_ms: None,
-                                time_to_first_token_ms: None,
-                            }));
-                        } else {
-                            self.op_tx
-                                .send(Event {
-                                    id: id.to_string(),
-                                    msg: EventMsg::AgentMessageContentDelta(
-                                        AgentMessageContentDeltaEvent {
-                                            thread_id: id.to_string(),
-                                            turn_id: id.to_string(),
-                                            item_id: id.to_string(),
-                                            delta: prompt.clone(),
-                                        },
-                                    ),
-                                })
-                                .unwrap();
-                            // Send non-delta event (should be deduplicated, but handled by deduplication)
-                            self.op_tx
-                                .send(Event {
-                                    id: id.to_string(),
-                                    msg: EventMsg::AgentMessage(AgentMessageEvent {
-                                        message: prompt,
-                                        phase: None,
-                                        memory_citation: None,
-                                        delivery: None,
-                                        questions: None,
-                                    }),
-                                })
-                                .unwrap();
-                            self.op_tx
-                                .send(Event {
-                                    id: id.to_string(),
-                                    msg: EventMsg::TurnComplete(TurnCompleteEvent {
-                                        root_turn_id: None,
-                                        last_agent_message: None,
-                                        turn_id: id.to_string(),
-                                        error: None,
-                                        started_at: None,
-                                        completed_at: None,
-                                        duration_ms: None,
-                                        time_to_first_token_ms: None,
-                                    }),
-                                })
-                                .unwrap();
-                        }
-                    }
                     Op::Compact => {
                         self.op_tx
                             .send(Event {
@@ -12505,6 +12328,7 @@ mod tests {
                             .send(Event {
                                 id: id.to_string(),
                                 msg: EventMsg::AgentMessage(AgentMessageEvent {
+                                    moderation: None,
                                     message: "Compact task completed".to_string(),
                                     phase: None,
                                     memory_citation: None,
@@ -12595,6 +12419,176 @@ mod tests {
                     }
                 }
                 Ok(id.to_string())
+            })
+        }
+
+        fn start_turn_if_idle(
+            &self,
+            request: TurnInputRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<StartIfIdleSubmission, CodexErr>> + Send + '_>>
+        {
+            Box::pin(async move {
+                let id = self
+                    .current_id
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let TurnInput::UserInput { content: items, .. } = request.input else {
+                    unimplemented!()
+                };
+                self.ops.lock().unwrap().push(RecordedOp::TurnInput {
+                    items: items.clone(),
+                    mode: TurnInputMode::StartIfIdle,
+                });
+                let turn_submission = self
+                    .next_turn_submission
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap_or_else(|| StartIfIdleSubmission::Started {
+                        turn_id: id.to_string(),
+                        root_turn_id: id.to_string(),
+                    });
+                if !matches!(turn_submission, StartIfIdleSubmission::Started { .. }) {
+                    return Ok(turn_submission);
+                }
+                let prompt = items
+                    .into_iter()
+                    .map(|i| match i {
+                        UserInput::Text { text, .. } => text,
+                        _ => unimplemented!(),
+                    })
+                    .join("\n");
+
+                if prompt == "parallel-exec" {
+                    // Emit interleaved exec events: Begin A, Begin B, End A, End B
+                    let turn_id = id.to_string();
+                    let cwd = std::env::current_dir().unwrap();
+                    let send = |msg| {
+                        self.op_tx
+                            .send(Event {
+                                id: id.to_string(),
+                                msg,
+                            })
+                            .unwrap();
+                    };
+                    send(EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                        call_id: "call-a".into(),
+                        plugin_id: None,
+                        script_path: None,
+                        process_id: None,
+                        turn_id: turn_id.clone(),
+                        command: vec!["echo".into(), "a".into()],
+                        cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd).unwrap(),
+                        parsed_cmd: vec![ParsedCommand::Unknown {
+                            cmd: "echo a".into(),
+                        }],
+                        source: Default::default(),
+                        interaction_input: None,
+                        started_at_ms: 0,
+                    }));
+                    send(EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                        call_id: "call-b".into(),
+                        plugin_id: None,
+                        script_path: None,
+                        process_id: None,
+                        turn_id: turn_id.clone(),
+                        command: vec!["echo".into(), "b".into()],
+                        cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd).unwrap(),
+                        parsed_cmd: vec![ParsedCommand::Unknown {
+                            cmd: "echo b".into(),
+                        }],
+                        source: Default::default(),
+                        interaction_input: None,
+                        started_at_ms: 0,
+                    }));
+                    send(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                        call_id: "call-a".into(),
+                        plugin_id: None,
+                        script_path: None,
+                        process_id: None,
+                        turn_id: turn_id.clone(),
+                        command: vec!["echo".into(), "a".into()],
+                        cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd).unwrap(),
+                        parsed_cmd: vec![],
+                        source: Default::default(),
+                        interaction_input: None,
+                        aggregated_output: "a\n".into(),
+                        exit_code: 0,
+                        duration: std::time::Duration::from_millis(10),
+                        status: ExecCommandStatus::Completed,
+                        completed_at_ms: 0,
+                    }));
+                    send(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                        call_id: "call-b".into(),
+                        plugin_id: None,
+                        script_path: None,
+                        process_id: None,
+                        turn_id: turn_id.clone(),
+                        command: vec!["echo".into(), "b".into()],
+                        cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd).unwrap(),
+                        parsed_cmd: vec![],
+                        source: Default::default(),
+                        interaction_input: None,
+                        aggregated_output: "b\n".into(),
+                        exit_code: 0,
+                        duration: std::time::Duration::from_millis(10),
+                        status: ExecCommandStatus::Completed,
+                        completed_at_ms: 0,
+                    }));
+                    send(EventMsg::TurnComplete(TurnCompleteEvent {
+                        root_turn_id: None,
+                        last_agent_message: None,
+                        turn_id,
+                        error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
+                        time_to_first_token_ms: None,
+                    }));
+                } else {
+                    self.op_tx
+                        .send(Event {
+                            id: id.to_string(),
+                            msg: EventMsg::AgentMessageContentDelta(
+                                AgentMessageContentDeltaEvent {
+                                    thread_id: id.to_string(),
+                                    turn_id: id.to_string(),
+                                    item_id: id.to_string(),
+                                    delta: prompt.clone(),
+                                },
+                            ),
+                        })
+                        .unwrap();
+                    // Send non-delta event (should be deduplicated, but handled by deduplication)
+                    self.op_tx
+                        .send(Event {
+                            id: id.to_string(),
+                            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                                moderation: None,
+                                message: prompt,
+                                phase: None,
+                                memory_citation: None,
+                                delivery: None,
+                                questions: None,
+                            }),
+                        })
+                        .unwrap();
+                    self.op_tx
+                        .send(Event {
+                            id: id.to_string(),
+                            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                root_turn_id: None,
+                                last_agent_message: None,
+                                turn_id: id.to_string(),
+                                error: None,
+                                started_at: None,
+                                completed_at: None,
+                                duration_ms: None,
+                                time_to_first_token_ms: None,
+                            }),
+                        })
+                        .unwrap();
+                }
+                Ok(turn_submission)
             })
         }
 
