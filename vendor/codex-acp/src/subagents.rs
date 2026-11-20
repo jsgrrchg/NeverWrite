@@ -1220,6 +1220,7 @@ mod tests {
             .try_into()
             .expect("current dir should be absolute");
         ThreadConfigSnapshot {
+            request_country: Default::default(),
             turn_extension_init: Default::default(),
             model: "gpt-5.5".to_string(),
             model_provider_id: "openai".to_string(),

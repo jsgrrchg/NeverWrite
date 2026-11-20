@@ -16,10 +16,10 @@ use agent_client_protocol as acp;
 use codex_config::{DEFAULT_MCP_SERVER_ENVIRONMENT_ID, McpServerConfig, McpServerTransportConfig};
 use codex_core::{
     CodexAppsToolsCache, NewThread, RolloutRecorder, StartThreadOptions, StateDbHandle,
-    ThreadConfigSnapshot, ThreadManager, build_models_manager,
+    ThreadConfigSnapshot, ThreadManager, ThreadStoreBuilder, build_startup_models,
     config::{Config, PermissionProfileSnapshot},
     find_thread_path_by_id_str, init_state_db, local_agent_graph_store_from_state_db,
-    passthrough_image_store, resolve_installation_id, thread_store_from_config,
+    passthrough_image_store, resolve_installation_id,
 };
 use codex_exec_server::{EnvironmentManager, ExecServerRuntimeOptions};
 use codex_extension_api::{
@@ -34,6 +34,7 @@ use codex_login::{
         read_openai_api_key_from_env,
     },
 };
+use codex_models_manager::manager::ModelCatalogSettings;
 use codex_protocol::{
     ThreadId,
     mcp::ClientMcpExtensions,
@@ -165,12 +166,17 @@ impl CodexAgent {
             .await
             .map_err(std::io::Error::other)?,
         );
-        let thread_store = thread_store_from_config(&config, state_db.clone());
+        let thread_store = ThreadStoreBuilder::from_config(&config, state_db.clone()).build();
         let installation_id = resolve_installation_id(&config.codex_home).await?;
-        let thread_manager = Arc::new(ThreadManager::new(
+        let startup_models = build_startup_models(
             &config,
             auth_manager.clone(),
-            build_models_manager(&config, auth_manager.clone()),
+            installation_id,
+            Arc::new(ModelCatalogSettings::disk(config.codex_home.to_path_buf())),
+        );
+        let thread_manager = Arc::new(ThreadManager::new(
+            &config,
+            startup_models,
             CodexAppsToolsCache::default(),
             SessionSource::Unknown,
             environment_manager,
@@ -180,7 +186,6 @@ impl CodexAgent {
             passthrough_image_store(),
             thread_store.clone(),
             local_agent_graph_store_from_state_db(state_db.as_ref()),
-            installation_id,
             None,
             None,
         ));
@@ -1158,6 +1163,7 @@ impl CodexAgent {
                                 sort_direction: StoreSortDirection::Asc,
                                 sort_key: ItemSortKey::CreatedAtOrdinal,
                                 after_updated_at_ordinal: None,
+                                before_updated_at_ordinal: None,
                             })
                             .await
                             .map_err(Error::into_internal_error)?;
@@ -1213,6 +1219,7 @@ impl CodexAgent {
         let page = self
             .thread_store
             .list_threads(ListThreadsParams {
+                included_thread_ids: None,
                 page_size: SESSION_LIST_PAGE_SIZE,
                 cursor,
                 sort_key: StoreThreadSortKey::UpdatedAt,
