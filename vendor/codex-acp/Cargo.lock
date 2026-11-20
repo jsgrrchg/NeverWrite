@@ -3660,7 +3660,7 @@ source = "git+https://github.com/openai/codex?tag=rust-v0.167.0#086ccc833bc9cf01
 
 [[package]]
 name = "codex-utils-pty"
-version = "0.167.0"
+version = "0.171.0"
 dependencies = [
  "anyhow",
  "codex-utils-cargo-bin",
@@ -3669,6 +3669,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "log",
+ "nix 0.28.0",
  "portable-pty",
  "pretty_assertions",
  "shared_library",
